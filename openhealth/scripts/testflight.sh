@@ -87,6 +87,7 @@ echo "    changelog: $CHANGELOG"
 fastlane pilot distribute \
   --api_key_path "$FASTLANE_KEY_JSON" \
   --app_identifier "$APP_BUNDLE_ID" \
+  --app_platform ios \
   --app_version "$MARKETING_VERSION" \
   --build_number "$BUILD_NUMBER" \
   --distribute_external true \
