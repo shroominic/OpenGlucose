@@ -1,0 +1,40 @@
+name: openglucose
+description: Flutter example app for the pure Dart CGM SDK.
+publish_to: none
+version: 0.0.1+1
+
+environment:
+  sdk: ^3.11.4
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cgm_aidex:
+    path: ../packages/cgm_aidex
+  cgm_ble_flutter:
+    path: ../packages/cgm_ble_flutter
+  cgm_core:
+    path: ../packages/cgm_core
+  intl: ^0.20.2
+  shared_preferences: ^2.5.3
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/logo.png
+
+flutter_launcher_icons:
+  image_path: "assets/icon/logo.png"
+  android: "launcher_icon"
+  ios: true
+  remove_alpha_ios: true
+  background_color_ios: "#FFFFFF"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icon/logo.png"

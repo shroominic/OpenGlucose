@@ -1,0 +1,22 @@
+name: cgm_ble_flutter
+description: Flutter BLE transport bridge for the pure Dart CGM SDK.
+publish_to: none
+version: 1.0.0
+
+environment:
+  sdk: ^3.11.4
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cgm_ble:
+    path: ../cgm_ble
+  flutter_blue_plus: ^2.2.1
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:

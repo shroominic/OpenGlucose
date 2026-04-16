@@ -1,0 +1,774 @@
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:cgm_aidex/cgm_aidex.dart';
+import 'package:cgm_ble/cgm_ble.dart';
+import 'package:cgm_core/cgm_core.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('session initializes, pairs, and syncs vendor history', () async {
+    final transport = _FakeBleTransport();
+    final driver = AidexSensorDriver(
+      transport,
+      clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+      timingProfile: const AidexTimingProfile(
+        gattGap: Duration.zero,
+        postStartSession: Duration.zero,
+        postSessionStartWrite: Duration.zero,
+        vendorPairTimeout: Duration(seconds: 1),
+        vendorCommandTimeout: Duration(seconds: 1),
+      ),
+    );
+    final sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'AA:BB:CC:DD:EE:FF',
+      displayName: 'AiDEX-2222293Q2E',
+      storageKey: 'serial:2222293Q2E',
+      rssi: -40,
+      capabilities: const CgmCapabilities(
+        supportsDirectBle: true,
+        supportsVendorPairing: true,
+        supportsHistory: true,
+        supportsDiagnostics: true,
+        supportsCalibration: true,
+        supportsAutoUpdateControl: true,
+      ),
+      metadata: const <String, String>{'serial': '2222293Q2E'},
+    );
+
+    final session = await driver.connect(sensor) as AidexSession;
+    await session.initialize();
+    final snapshots = <CgmSessionSnapshot>[];
+    final snapshotSubscription = session.snapshots.listen(snapshots.add);
+    await session.syncHistory();
+    final diagnostics = await session.refreshDiagnostics();
+    final ready = session.currentSnapshot;
+
+    expect(
+      ready.stage,
+      CgmSyncStage.ready,
+      reason: 'stage=${ready.stage} error=${ready.lastError}',
+    );
+
+    expect(ready.sessionInfo.serial, '2222293Q2E');
+    expect(ready.history.map((reading) => reading.valueMgdl).toList(), <double>[
+      85,
+      86,
+      87,
+    ]);
+    expect(
+      snapshots.any(
+        (snapshot) =>
+            snapshot.history.isNotEmpty && snapshot.historySync.inProgress,
+      ),
+      isTrue,
+    );
+    expect(transport.lastConnection.requestedHistoryIndices, <int>[1, 3]);
+    expect(diagnostics, isNotEmpty);
+
+    final calibrations = await session.fetchCalibrations();
+    expect(calibrations.length, 2);
+
+    final interval = await session.getCommunicationInterval();
+    expect(interval.current, 1);
+
+    final autoUpdate = await session.getAutoUpdateStatus();
+    expect(autoUpdate, isTrue);
+
+    await snapshotSubscription.cancel();
+    await session.disconnect();
+    expect(transport.lastConnection.didVendorUnpair, isFalse);
+    expect(transport.lastConnection.didClearBondViaBms, isFalse);
+    expect(transport.lastConnection.didRemoveBond, isFalse);
+    expect(
+      transport.lastConnection.operations,
+      containsAllInOrder(<String>[
+        'discoverServices',
+        'setNotify:${AidexUuids.f001}',
+        'setNotify:${AidexUuids.f003}',
+        'ensureBonded',
+      ]),
+    );
+  });
+
+  test(
+    'session enables vendor auto-update when the sensor reports disabled',
+    () async {
+      final transport = _FakeBleTransport(autoUpdateEnabled: false);
+      final driver = AidexSensorDriver(
+        transport,
+        clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+        timingProfile: const AidexTimingProfile(
+          gattGap: Duration.zero,
+          postStartSession: Duration.zero,
+          postSessionStartWrite: Duration.zero,
+          vendorPairTimeout: Duration(seconds: 1),
+          vendorCommandTimeout: Duration(seconds: 1),
+        ),
+      );
+      final sensor = DiscoveredSensor(
+        driverId: 'aidex',
+        deviceId: 'AA:BB:CC:DD:EE:FF',
+        displayName: 'AiDEX-2222293Q2E',
+        storageKey: 'serial:2222293Q2E',
+        rssi: -40,
+        capabilities: const CgmCapabilities(
+          supportsDirectBle: true,
+          supportsVendorPairing: true,
+          supportsHistory: true,
+          supportsDiagnostics: true,
+          supportsCalibration: true,
+          supportsAutoUpdateControl: true,
+        ),
+        metadata: const <String, String>{'serial': '2222293Q2E'},
+      );
+
+      final session = await driver.connect(sensor) as AidexSession;
+      await session.initialize();
+
+      expect(transport.lastConnection.didSetAutoUpdate, isTrue);
+      expect(await session.getAutoUpdateStatus(), isTrue);
+
+      await session.disconnect();
+    },
+  );
+
+  test(
+    'session can sync raw vendor history when explicitly requested',
+    () async {
+      final transport = _FakeBleTransport();
+      final driver = AidexSensorDriver(
+        transport,
+        clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+        timingProfile: const AidexTimingProfile(
+          gattGap: Duration.zero,
+          postStartSession: Duration.zero,
+          postSessionStartWrite: Duration.zero,
+          vendorPairTimeout: Duration(seconds: 1),
+          vendorCommandTimeout: Duration(seconds: 1),
+        ),
+      );
+      final sensor = DiscoveredSensor(
+        driverId: 'aidex',
+        deviceId: 'AA:BB:CC:DD:EE:FF',
+        displayName: 'AiDEX-2222293Q2E',
+        storageKey: 'serial:2222293Q2E',
+        rssi: -40,
+        capabilities: const CgmCapabilities(
+          supportsDirectBle: true,
+          supportsVendorPairing: true,
+          supportsHistory: true,
+          supportsDiagnostics: true,
+          supportsCalibration: true,
+        ),
+        metadata: const <String, String>{'serial': '2222293Q2E'},
+      );
+
+      final session = await driver.connect(sensor) as AidexSession;
+      await session.initialize();
+      await session.syncHistory(includeRawHistory: true);
+
+      expect(
+        session.currentSnapshot.rawHistory
+            .map((reading) => reading.valueMgdl)
+            .toList(),
+        <double>[101, 102, 103],
+      );
+
+      await session.disconnect();
+    },
+  );
+
+  test('explicit unsafe unpair clears vendor and local bond state', () async {
+    final transport = _FakeBleTransport();
+    final driver = AidexSensorDriver(
+      transport,
+      clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+      timingProfile: const AidexTimingProfile(
+        gattGap: Duration.zero,
+        postStartSession: Duration.zero,
+        postSessionStartWrite: Duration.zero,
+        vendorPairTimeout: Duration(seconds: 1),
+        vendorCommandTimeout: Duration(seconds: 1),
+      ),
+    );
+    final sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'AA:BB:CC:DD:EE:FF',
+      displayName: 'AiDEX-2222293Q2E',
+      storageKey: 'serial:2222293Q2E',
+      rssi: -40,
+      capabilities: const CgmCapabilities(
+        supportsDirectBle: true,
+        supportsVendorPairing: true,
+        supportsHistory: true,
+        supportsDiagnostics: true,
+        supportsCalibration: true,
+        supportsAutoUpdateControl: true,
+      ),
+      metadata: const <String, String>{'serial': '2222293Q2E'},
+    );
+
+    final session = await driver.connect(sensor) as AidexSession;
+    await session.initialize();
+
+    await session.unsafeAdmin.perform(CgmUnsafeOperation.unpair);
+
+    expect(transport.lastConnection.didVendorUnpair, isTrue);
+    expect(transport.lastConnection.didClearBondViaBms, isTrue);
+    expect(transport.lastConnection.didRemoveBond, isTrue);
+
+    await session.disconnect();
+  });
+
+  test(
+    'session can pair using the GATT serial when the BLE name lacks it',
+    () async {
+      final transport = _FakeBleTransport();
+      final driver = AidexSensorDriver(
+        transport,
+        clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+        timingProfile: const AidexTimingProfile(
+          gattGap: Duration.zero,
+          postStartSession: Duration.zero,
+          postSessionStartWrite: Duration.zero,
+          vendorPairTimeout: Duration(seconds: 1),
+          vendorCommandTimeout: Duration(seconds: 1),
+        ),
+      );
+      final sensor = DiscoveredSensor(
+        driverId: 'aidex',
+        deviceId: 'AA:BB:CC:DD:EE:FF',
+        displayName: 'AiDEX',
+        storageKey: 'AA:BB:CC:DD:EE:FF',
+        rssi: -40,
+        capabilities: const CgmCapabilities(
+          supportsDirectBle: true,
+          supportsVendorPairing: true,
+          supportsHistory: true,
+          supportsDiagnostics: true,
+          supportsCalibration: true,
+        ),
+      );
+
+      final session = await driver.connect(sensor) as AidexSession;
+      await session.initialize();
+      await session.syncHistory();
+      expect(
+        session.currentSnapshot.sessionInfo.serial,
+        '2222293Q2E',
+        reason: 'error=${session.currentSnapshot.lastError}',
+      );
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      await session.disconnect();
+    },
+  );
+
+  test('session retries once after clearing a stale bond', () async {
+    final transport = _FakeBleTransport(failDiscoverServicesOnce: true);
+    final driver = AidexSensorDriver(
+      transport,
+      clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+      timingProfile: const AidexTimingProfile(
+        gattGap: Duration.zero,
+        postStartSession: Duration.zero,
+        postSessionStartWrite: Duration.zero,
+        vendorPairTimeout: Duration(seconds: 1),
+        vendorCommandTimeout: Duration(seconds: 1),
+      ),
+    );
+    final sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'AA:BB:CC:DD:EE:FF',
+      displayName: 'AiDEX-2222293Q2E',
+      storageKey: 'serial:2222293Q2E',
+      rssi: -40,
+      capabilities: const CgmCapabilities(
+        supportsDirectBle: true,
+        supportsVendorPairing: true,
+        supportsHistory: true,
+        supportsDiagnostics: true,
+        supportsCalibration: true,
+      ),
+      metadata: const <String, String>{'serial': '2222293Q2E'},
+    );
+
+    final session = await driver.connect(sensor) as AidexSession;
+    await session.initialize();
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+    expect(transport.connections, hasLength(2));
+    expect(transport.connections.first.didRemoveBond, isTrue);
+
+    await session.disconnect();
+  });
+}
+
+class _FakeBleTransport implements BleTransport {
+  _FakeBleTransport({
+    this.failDiscoverServicesOnce = false,
+    this.autoUpdateEnabled = true,
+  });
+
+  final bool failDiscoverServicesOnce;
+  final bool autoUpdateEnabled;
+  final List<_FakeBleConnection> connections = <_FakeBleConnection>[];
+  late _FakeBleConnection lastConnection;
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    lastConnection = _FakeBleConnection(
+      deviceId,
+      failDiscoverServices: failDiscoverServicesOnce && connections.isEmpty,
+      autoUpdateEnabled: autoUpdateEnabled,
+    );
+    connections.add(lastConnection);
+    return lastConnection;
+  }
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) async* {
+    yield const BleScanResult(
+      deviceId: 'AA:BB:CC:DD:EE:FF',
+      deviceName: 'AiDEX-2222293Q2E',
+      rssi: -40,
+      serviceUuids: <String>[AidexUuids.cgmService],
+      manufacturerData: <BleManufacturerData>[
+        BleManufacturerData(
+          companyId: 0x0059,
+          bytes: <int>[
+            0x00,
+            0x01,
+            0x00,
+            0x08,
+            0x02,
+            0x00,
+            0x55,
+            0x88,
+            0x00,
+            0x56,
+            0x80,
+            0x00,
+            0x57,
+            0x84,
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _FakeBleConnection implements BleConnection {
+  _FakeBleConnection(
+    this.deviceId, {
+    bool failDiscoverServices = false,
+    bool autoUpdateEnabled = true,
+  }) : _failDiscoverServices = failDiscoverServices,
+       _autoUpdateEnabled = autoUpdateEnabled {
+    _services = <BleService>[
+      const BleService(
+        uuid: AidexUuids.deviceInfoService,
+        characteristics: <BleCharacteristicRef>[
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.deviceInfoService,
+            characteristicUuid: AidexUuids.manufacturerName,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.deviceInfoService,
+            characteristicUuid: AidexUuids.modelNumber,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.deviceInfoService,
+            characteristicUuid: AidexUuids.serialNumber,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.deviceInfoService,
+            characteristicUuid: AidexUuids.softwareRevision,
+          ),
+        ],
+      ),
+      const BleService(
+        uuid: AidexUuids.cgmService,
+        characteristics: <BleCharacteristicRef>[
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.measurement,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.feature,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.status,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.sessionStart,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.sessionRunTime,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.racp,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.specificOps,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.f001,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.f002,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.f003,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.cgmService,
+            characteristicUuid: AidexUuids.f005,
+          ),
+        ],
+      ),
+      const BleService(
+        uuid: AidexUuids.bondManagementService,
+        characteristics: <BleCharacteristicRef>[
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.bondManagementService,
+            characteristicUuid: AidexUuids.bondManagementControlPoint,
+          ),
+          BleCharacteristicRef(
+            serviceUuid: AidexUuids.bondManagementService,
+            characteristicUuid: AidexUuids.bondManagementFeature,
+          ),
+        ],
+      ),
+    ];
+
+    final crypto = deriveAidexCrypto('2222293Q2E');
+    _serialIv = crypto.iv;
+    _expectedSecret = crypto.secret;
+    _rawSeed = Uint8List.fromList(
+      List<int>.generate(16, (index) => index + 16),
+    );
+    _sessionKey = Uint8List.fromList(List<int>.generate(16, (index) => index));
+    final pairPlaintext = Uint8List.fromList(<int>[
+      ..._sessionKey,
+      vendorCrc8(_sessionKey),
+    ]);
+    _pairResponse = aesCfb128Encrypt(pairPlaintext, _rawSeed, _serialIv);
+
+    final zeroStart = Uint8List(9);
+    final zeroStartCrc = crc16CcittFalse(zeroStart);
+    _reads[AidexUuids.manufacturerName] = Uint8List.fromList(
+      'Microtech Medical'.codeUnits,
+    );
+    _reads[AidexUuids.modelNumber] = Uint8List.fromList('GX-01S'.codeUnits);
+    _reads[AidexUuids.serialNumber] = Uint8List.fromList(
+      '2222293Q2E'.codeUnits,
+    );
+    _reads[AidexUuids.softwareRevision] = Uint8List.fromList('1.8.1'.codeUnits);
+    _reads[AidexUuids.feature] = bytesFromHex('419101590c2b');
+    _reads[AidexUuids.status] = _statusPayload(0);
+    _reads[AidexUuids.sessionStart] = Uint8List.fromList(<int>[
+      ...zeroStart,
+      zeroStartCrc & 0xFF,
+      (zeroStartCrc >> 8) & 0xFF,
+    ]);
+    _reads[AidexUuids.sessionRunTime] = bytesFromHex('6801ad8f');
+    _reads[AidexUuids.f002] = _pairResponse;
+    _reads[AidexUuids.f005] = Uint8List.fromList(<int>[0x00]);
+    _reads[AidexUuids.bondManagementFeature] = Uint8List.fromList(<int>[
+      0x00,
+      0x04,
+      0x00,
+    ]);
+  }
+
+  @override
+  final String deviceId;
+
+  late final List<BleService> _services;
+  final StreamController<BleConnectionState> _connectionStates =
+      StreamController<BleConnectionState>.broadcast();
+  final Map<String, StreamController<List<int>>> _notifications =
+      <String, StreamController<List<int>>>{};
+  final Map<String, Uint8List> _reads = <String, Uint8List>{};
+  late final Uint8List _expectedSecret;
+  late final Uint8List _rawSeed;
+  late final Uint8List _sessionKey;
+  late final Uint8List _serialIv;
+  late final Uint8List _pairResponse;
+  bool _failDiscoverServices;
+  bool _autoUpdateEnabled;
+  bool _didInjectInvalidHistoryFrame = false;
+  bool didVendorUnpair = false;
+  bool didClearBondViaBms = false;
+  bool didRemoveBond = false;
+  bool didSetAutoUpdate = false;
+  final List<int> requestedHistoryIndices = <int>[];
+  final List<String> operations = <String>[];
+
+  @override
+  Stream<BleConnectionState> get connectionStates => _connectionStates.stream;
+
+  @override
+  bool get supportsBondLifecycle => true;
+
+  @override
+  Future<BleBondState> currentBondState() async => BleBondState.bonded;
+
+  @override
+  Future<List<BleService>> discoverServices() async {
+    operations.add('discoverServices');
+    if (_failDiscoverServices) {
+      _failDiscoverServices = false;
+      throw StateError('Device is disconnected');
+    }
+    return _services;
+  }
+
+  @override
+  Future<void> disconnect() async {
+    await _connectionStates.close();
+    for (final controller in _notifications.values) {
+      await controller.close();
+    }
+  }
+
+  @override
+  Future<void> ensureBonded() async {
+    operations.add('ensureBonded');
+  }
+
+  @override
+  Future<void> removeBond() async {
+    didRemoveBond = true;
+  }
+
+  @override
+  Stream<List<int>> notifications(BleCharacteristicRef characteristic) {
+    return _notifications
+        .putIfAbsent(
+          characteristic.characteristicUuid,
+          () => StreamController<List<int>>.broadcast(),
+        )
+        .stream;
+  }
+
+  @override
+  Future<List<int>> read(BleCharacteristicRef characteristic) async {
+    return _reads[characteristic.characteristicUuid] ?? Uint8List(0);
+  }
+
+  @override
+  Future<void> requestMtu(int mtu) async {
+    operations.add('requestMtu:$mtu');
+  }
+
+  @override
+  Future<void> setNotify(
+    BleCharacteristicRef characteristic,
+    bool enabled,
+  ) async {
+    operations.add('setNotify:${characteristic.characteristicUuid}');
+    _notifications.putIfAbsent(
+      characteristic.characteristicUuid,
+      () => StreamController<List<int>>.broadcast(),
+    );
+  }
+
+  @override
+  Future<void> write(
+    BleCharacteristicRef characteristic,
+    List<int> value, {
+    bool withoutResponse = false,
+  }) async {
+    final uuid = characteristic.characteristicUuid;
+    if (uuid == AidexUuids.bondManagementControlPoint) {
+      expect(value, <int>[0x06]);
+      didClearBondViaBms = true;
+      return;
+    }
+    if (uuid == AidexUuids.f001) {
+      expect(value, _expectedSecret);
+      scheduleMicrotask(() {
+        _notifications[AidexUuids.f001]!.add(_rawSeed);
+      });
+      return;
+    }
+
+    if (uuid == AidexUuids.specificOps) {
+      final opcode = value.first;
+      if (opcode == 0x1A) {
+        _reads[AidexUuids.sessionStart] = buildAidexSessionStartPayload(
+          DateTime.parse('2026-04-02T04:28:10Z'),
+        );
+        _reads[AidexUuids.status] = _statusPayload(61);
+        scheduleMicrotask(() {
+          _notifications[AidexUuids.specificOps]!.add(<int>[0x1C, 0x1A, 0x01]);
+        });
+        return;
+      }
+      if (opcode == 0x02) {
+        scheduleMicrotask(() {
+          _notifications[AidexUuids.specificOps]!.add(
+            buildSpecificOpsRequest(0x03, payload: const <int>[0x01]),
+          );
+        });
+        return;
+      }
+      if (opcode == 0x01) {
+        scheduleMicrotask(() {
+          _notifications[AidexUuids.specificOps]!.add(<int>[
+            0x1C,
+            0x01,
+            0x01,
+            value[1],
+          ]);
+        });
+        return;
+      }
+    }
+
+    if (uuid != AidexUuids.f002) {
+      return;
+    }
+
+    final request = decryptVendorResponse(
+      Uint8List.fromList(value),
+      _sessionKey,
+      _serialIv,
+    )!;
+    final opcode = AidexVendorOpcode.fromCode(request.opcode)!;
+    final requestIndex = request.payload.length < 2
+        ? null
+        : request.payload[0] | (request.payload[1] << 8);
+    if (opcode == AidexVendorOpcode.getHistories &&
+        !_didInjectInvalidHistoryFrame) {
+      _didInjectInvalidHistoryFrame = true;
+      scheduleMicrotask(() {
+        _notifications[AidexUuids.f002]!.add(<int>[0xAA, 0x55, 0x01]);
+      });
+    }
+    if (opcode == AidexVendorOpcode.getHistories && requestIndex != null) {
+      requestedHistoryIndices.add(requestIndex);
+    }
+    final payload = switch (opcode) {
+      AidexVendorOpcode.getHistoryRange => bytesFromHex('01010001000300'),
+      AidexVendorOpcode.getHistories => _historyPage(request.payload),
+      AidexVendorOpcode.getRawHistories => _rawHistoryPage(request.payload),
+      AidexVendorOpcode.getDeviceInfo => bytesFromHex('01020304'),
+      AidexVendorOpcode.getBroadcastData => bytesFromHex('5500'),
+      AidexVendorOpcode.getStartTime => buildAidexDateTimeBody(
+        DateTime.parse('2026-04-02T04:28:10Z'),
+      ),
+      AidexVendorOpcode.getSensorCheck => bytesFromHex('0102aa'),
+      AidexVendorOpcode.getAutoUpdateStatus => Uint8List.fromList(<int>[
+        0x01,
+        _autoUpdateEnabled ? 0x01 : 0x00,
+      ]),
+      AidexVendorOpcode.setAutoUpdateStatus => () {
+        didSetAutoUpdate = true;
+        _autoUpdateEnabled =
+            request.payload.isNotEmpty && request.payload.first == 0x01;
+        return Uint8List.fromList(<int>[
+          0x01,
+          request.payload.isNotEmpty ? request.payload.first : 0x00,
+        ]);
+      }(),
+      AidexVendorOpcode.setDynamicAdvMode => Uint8List.fromList(<int>[0x01]),
+      AidexVendorOpcode.getCalibrationRange => bytesFromHex('01010002000200'),
+      AidexVendorOpcode.getCalibration => Uint8List.fromList(<int>[
+        0x01,
+        ...request.payload,
+        0x55,
+        0x00,
+      ]),
+      AidexVendorOpcode.calibration => Uint8List.fromList(<int>[0x01]),
+      AidexVendorOpcode.getLogRange => bytesFromHex('01010002000200'),
+      AidexVendorOpcode.getLogs => Uint8List.fromList(<int>[
+        0x01,
+        ...request.payload,
+        0xAB,
+        0xCD,
+      ]),
+      AidexVendorOpcode.getErrorLogs => bytesFromHex('beef'),
+      AidexVendorOpcode.unpair => () {
+        didVendorUnpair = true;
+        return Uint8List.fromList(<int>[0x01]);
+      }(),
+      AidexVendorOpcode.reset ||
+      AidexVendorOpcode.shelfMode ||
+      AidexVendorOpcode.clearStorage ||
+      AidexVendorOpcode.setGcBiasTrimming ||
+      AidexVendorOpcode.setGcImeasTrimming ||
+      AidexVendorOpcode.newSensor => Uint8List.fromList(<int>[0x01]),
+    };
+    final response = buildVendorCommand(
+      opcode,
+      _sessionKey,
+      _serialIv,
+      payload: payload,
+    );
+    scheduleMicrotask(() {
+      _notifications[AidexUuids.f002]!.add(response);
+    });
+  }
+
+  Uint8List _historyPage(Uint8List payload) {
+    final index = payload[0] | (payload[1] << 8);
+    if (index >= 3) {
+      return Uint8List.fromList(<int>[0x01, ...payload, 87, 0x80]);
+    }
+    return Uint8List.fromList(<int>[
+      0x01,
+      ...payload,
+      84 + index,
+      0x80,
+      85 + index,
+      0x84,
+    ]);
+  }
+
+  Uint8List _rawHistoryPage(Uint8List payload) {
+    final index = payload[0] | (payload[1] << 8);
+    if (index >= 3) {
+      return Uint8List.fromList(<int>[0x01, ...payload, 103, 0x80]);
+    }
+    return Uint8List.fromList(<int>[
+      0x01,
+      ...payload,
+      100 + index,
+      0x80,
+      101 + index,
+      0x84,
+    ]);
+  }
+
+  Uint8List _statusPayload(int minute) {
+    final body = <int>[
+      minute & 0xFF,
+      (minute >> 8) & 0xFF,
+      minute == 0 ? 0x01 : 0x00,
+      0x02,
+      0x00,
+    ];
+    final crc = crc16CcittFalse(body);
+    return Uint8List.fromList(<int>[...body, crc & 0xFF, (crc >> 8) & 0xFF]);
+  }
+}

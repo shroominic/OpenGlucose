@@ -1,0 +1,64 @@
+# macOS
+.DS_Store
+
+# Inspiration / reference apps (12GB of third-party material, not part of source)
+other-apps-to-take-inspiration/
+
+# Flutter / Dart
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.last_build_id
+**/.pub-cache/
+**/.pub/
+**/coverage/
+**/doc/api/
+
+# Generated symbols / obfuscation
+app.*.symbols
+app.*.map.json
+
+# iOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/ephemeral/
+**/Runner.xcworkspace/xcuserdata/
+**/Runner.xcodeproj/xcuserdata/
+**/Runner.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Android
+**/android/.gradle/
+**/android/captures/
+**/android/local.properties
+**/android/key.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/**/keystore.jks
+**/android/**/upload-keystore.jks
+
+# Web
+**/web/main.dart.js
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+
+# Logs / swap
+*.log
+*.swp
+
+# Apple credentials / certs (defense in depth — these should never be in repo)
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+**/private_keys/

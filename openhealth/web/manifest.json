@@ -1,0 +1,35 @@
+{
+  "name": "OpenGlucose",
+  "short_name": "OpenGlucose",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0B6E69",
+  "theme_color": "#0B6E69",
+  "description": "OpenGlucose CGM example app backed by the pure Dart Aidex protocol SDK.",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "icons/Icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/Icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/Icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/Icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
