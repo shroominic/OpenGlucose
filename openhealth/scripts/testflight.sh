@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-API_KEY_ID="6LCR3BWZ8A"
-API_ISSUER_ID="e1fe0677-4413-4dec-b6ee-284ec0b07d2b"
-API_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
-FASTLANE_KEY_JSON="$HOME/.appstoreconnect/fastlane_api_key.json"
-
-APP_ID="com.openglucose.app"
-EXTERNAL_GROUP="${TESTFLIGHT_GROUP:-External Testers}"
-CHANGELOG="${TESTFLIGHT_CHANGELOG:-Latest build.}"
-
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
+if [[ -f "$ROOT/.env" ]]; then
+  set -a; source "$ROOT/.env"; set +a
+fi
+
+: "${ASC_API_KEY_ID:?missing ASC_API_KEY_ID (see .env.example)}"
+: "${ASC_API_ISSUER_ID:?missing ASC_API_ISSUER_ID (see .env.example)}"
+: "${APP_BUNDLE_ID:?missing APP_BUNDLE_ID (see .env.example)}"
+ASC_API_KEY_PATH="${ASC_API_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8}"
+FASTLANE_KEY_JSON="$HOME/.appstoreconnect/fastlane_api_key.json"
+
+EXTERNAL_GROUP="${TESTFLIGHT_GROUP:-External Testers}"
+CHANGELOG="${TESTFLIGHT_CHANGELOG:-Latest build.}"
+
 export PATH="$HOME/.local/flutter/bin:$PATH"
 command -v flutter >/dev/null || { echo "flutter not found in PATH"; exit 1; }
-[[ -f "$API_KEY_PATH" ]] || { echo "missing API key: $API_KEY_PATH"; exit 1; }
+[[ -f "$ASC_API_KEY_PATH" ]] || { echo "missing API key: $ASC_API_KEY_PATH"; exit 1; }
 
 ensure_fastlane() {
   if ! command -v fastlane >/dev/null; then
@@ -32,12 +36,12 @@ ensure_fastlane_key_json() {
   if [[ ! -f "$FASTLANE_KEY_JSON" ]]; then
     echo "==> Writing fastlane API key JSON to $FASTLANE_KEY_JSON"
     local key_pem
-    key_pem=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$API_KEY_PATH")
+    key_pem=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$ASC_API_KEY_PATH")
     mkdir -p "$(dirname "$FASTLANE_KEY_JSON")"
     cat > "$FASTLANE_KEY_JSON" <<EOF
 {
-  "key_id": "$API_KEY_ID",
-  "issuer_id": "$API_ISSUER_ID",
+  "key_id": "$ASC_API_KEY_ID",
+  "issuer_id": "$ASC_API_ISSUER_ID",
   "key": $key_pem,
   "in_house": false
 }
@@ -71,7 +75,7 @@ echo "    built: $IPA"
 
 echo "==> Uploading to App Store Connect"
 xcrun altool --upload-app --type ios -f "$IPA" \
-  --apiKey "$API_KEY_ID" --apiIssuer "$API_ISSUER_ID"
+  --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
 
 ensure_fastlane
 ensure_fastlane_key_json
@@ -82,7 +86,7 @@ echo "    changelog: $CHANGELOG"
 
 fastlane pilot distribute \
   --api_key_path "$FASTLANE_KEY_JSON" \
-  --app_identifier "$APP_ID" \
+  --app_identifier "$APP_BUNDLE_ID" \
   --app_version "$MARKETING_VERSION" \
   --build_number "$BUILD_NUMBER" \
   --distribute_external true \

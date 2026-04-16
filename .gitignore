@@ -62,3 +62,7 @@ app.*.map.json
 *.cer
 *.mobileprovision
 **/private_keys/
+
+# Local env (API key IDs, issuer ID, etc.)
+.env
+.env.local
