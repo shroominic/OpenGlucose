@@ -73,29 +73,23 @@ IPA=$(ls "$ROOT"/build/ios/ipa/*.ipa | head -n 1)
 [[ -f "$IPA" ]] || { echo "IPA not found in build/ios/ipa/"; exit 1; }
 echo "    built: $IPA"
 
-echo "==> Uploading to App Store Connect"
-xcrun altool --upload-app --type ios -f "$IPA" \
-  --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
-
 ensure_fastlane
 ensure_fastlane_key_json
 
-echo "==> Waiting for Apple processing and submitting for external beta review"
-echo "    group:     $EXTERNAL_GROUP"
+echo "==> Uploading to App Store Connect, waiting for processing, and submitting to '$EXTERNAL_GROUP'"
 echo "    changelog: $CHANGELOG"
 
-fastlane pilot distribute \
+fastlane pilot upload \
   --api_key_path "$FASTLANE_KEY_JSON" \
   --app_identifier "$APP_BUNDLE_ID" \
   --app_platform ios \
-  --app_version "$MARKETING_VERSION" \
-  --build_number "$BUILD_NUMBER" \
+  --ipa "$IPA" \
+  --skip_waiting_for_build_processing false \
   --distribute_external true \
   --groups "$EXTERNAL_GROUP" \
   --notify_external_testers true \
   --changelog "$CHANGELOG" \
-  --wait_processing_interval 30 \
-  --skip_waiting_for_build_processing false
+  --wait_processing_interval 30
 
 echo "==> Done. Build $VERSION submitted to group '$EXTERNAL_GROUP'"
 echo "    https://appstoreconnect.apple.com/apps → TestFlight"
