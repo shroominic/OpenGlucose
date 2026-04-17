@@ -623,7 +623,7 @@ class AidexSession implements CgmSession {
   }
 
   Future<void> _discoverServices() async {
-    final services = await _connection!.discoverServices();
+    final services = await _requireConnection.discoverServices();
     for (final service in services) {
       for (final characteristic in service.characteristics) {
         _characteristics[_normalizeUuid(characteristic.characteristicUuid)] =
@@ -669,17 +669,20 @@ class AidexSession implements CgmSession {
     StreamController<List<int>> sink,
   ) async {
     final ref = _characteristic(uuid);
-    final stream = _connection!.notifications(ref);
+    final conn = _requireConnection;
+    final stream = conn.notifications(ref);
     _notificationSubscriptions[uuid] = stream.listen((bytes) {
       _rawHex[uuid] = hexOf(bytes);
-      sink.add(bytes);
+      if (!sink.isClosed) {
+        sink.add(bytes);
+      }
       if (uuid == AidexUuids.f003) {
         _lastF003Hex = hexOf(bytes);
       } else if (uuid == AidexUuids.measurement) {
         _handleMeasurementNotification(bytes);
       }
     });
-    await _connection!.setNotify(ref, true);
+    await conn.setNotify(ref, true);
     await Future<void>.delayed(_timings.gattGap);
   }
 
@@ -1574,17 +1577,25 @@ class AidexSession implements CgmSession {
     }
   }
 
+  BleConnection get _requireConnection {
+    final conn = _connection;
+    if (conn == null) {
+      throw StateError('BLE connection lost');
+    }
+    return conn;
+  }
+
   Future<void> _write(
     BleCharacteristicRef ref,
     List<int> value, {
     bool withoutResponse = false,
   }) async {
-    await _connection!.write(ref, value, withoutResponse: withoutResponse);
+    await _requireConnection.write(ref, value, withoutResponse: withoutResponse);
     await Future<void>.delayed(_timings.gattGap);
   }
 
   Future<List<int>> _read(BleCharacteristicRef ref) async {
-    final value = await _connection!.read(ref);
+    final value = await _requireConnection.read(ref);
     await Future<void>.delayed(_timings.gattGap);
     return value;
   }
