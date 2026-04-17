@@ -43,7 +43,7 @@ void main() {
       now: now,
     );
 
-    expect(payload.stageLabel, 'LIVE');
+    expect(payload.stageLabel, 'Connected');
     expect(payload.recordedAtIso8601, now.toIso8601String());
     expect(payload.lastReadingText, '06:58');
   });
@@ -97,8 +97,8 @@ void main() {
       now: now,
     );
 
-    expect(payload.stageCode, 'progress');
-    expect(payload.stageLabel, 'SYNC 50%');
+    expect(payload.stageCode, 'live');
+    expect(payload.stageLabel, 'Connected');
     expect(payload.trendSymbol, '↑');
     expect(payload.deltaText, '+14');
     expect(payload.detailText, 'Updated ${readingTimeText(latest, now: now)}');
@@ -130,7 +130,7 @@ void main() {
         ),
       );
 
-      expect(stageLabelForSnapshot(snapshot), 'SYNCING');
+      expect(stageLabelForSnapshot(snapshot), 'Setting up');
     },
   );
 }

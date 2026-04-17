@@ -51,33 +51,46 @@ int? historySyncPercent(CgmHistorySyncState historySync) {
 }
 
 String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
-  final syncPercent = historySyncPercent(snapshot.historySync);
-  if (snapshot.historySync.inProgress) {
-    if (syncPercent == null || syncPercent >= 90) {
-      return 'SYNCING';
-    }
-    return 'SYNC $syncPercent%';
+  final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
+
+  if (snapshot.stage == CgmSyncStage.error) {
+    return 'Error';
+  }
+  if (snapshot.stage == CgmSyncStage.disconnected) {
+    return hasData ? 'Reconnecting' : 'Disconnected';
   }
   if (snapshot.stage == CgmSyncStage.ready) {
-    return 'LIVE';
+    if (snapshot.historySync.inProgress && !hasData) {
+      return 'Setting up';
+    }
+    return 'Connected';
   }
-  return snapshot.stage.name.toUpperCase();
+  if (snapshot.stage == CgmSyncStage.connecting ||
+      snapshot.stage == CgmSyncStage.bonding ||
+      snapshot.stage == CgmSyncStage.pairing ||
+      snapshot.stage == CgmSyncStage.activating ||
+      snapshot.stage == CgmSyncStage.syncing) {
+    return hasData ? 'Connected' : 'Connecting';
+  }
+  return 'Connecting';
 }
 
 String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
-  if (snapshot.historySync.inProgress ||
-      snapshot.stage == CgmSyncStage.pairing ||
-      snapshot.stage == CgmSyncStage.syncing ||
-      snapshot.stage == CgmSyncStage.activating) {
-    return 'progress';
+  final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
+
+  if (snapshot.stage == CgmSyncStage.error) {
+    return 'error';
+  }
+  if (snapshot.stage == CgmSyncStage.disconnected) {
+    return hasData ? 'progress' : 'error';
   }
   if (snapshot.stage == CgmSyncStage.ready) {
     return 'live';
   }
-  if (snapshot.stage == CgmSyncStage.error) {
-    return 'error';
+  if (hasData) {
+    return 'live';
   }
-  return 'pending';
+  return 'progress';
 }
 
 bool shouldShowPrimaryError(CgmSessionSnapshot snapshot) {

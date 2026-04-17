@@ -583,9 +583,6 @@ class _DashboardView extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
                             child: _StagePill(
-                              stage: snapshot.historySync.inProgress
-                                  ? CgmSyncStage.syncing
-                                  : snapshot.stage,
                               label: stageLabel,
                             ),
                           ),
@@ -736,19 +733,16 @@ class _MetricChip extends StatelessWidget {
 }
 
 class _StagePill extends StatelessWidget {
-  const _StagePill({required this.stage, required this.label});
+  const _StagePill({required this.label});
 
-  final CgmSyncStage stage;
   final String label;
 
   @override
   Widget build(BuildContext context) {
-    final color = switch (stage) {
-      CgmSyncStage.ready => const Color(0xFF2AB67D),
-      CgmSyncStage.error => const Color(0xFFF26D5B),
-      CgmSyncStage.pairing ||
-      CgmSyncStage.syncing ||
-      CgmSyncStage.activating => const Color(0xFFF2A65A),
+    final color = switch (label) {
+      'Connected' => const Color(0xFF2AB67D),
+      'Error' => const Color(0xFFF26D5B),
+      'Connecting' || 'Setting up' || 'Reconnecting' => const Color(0xFFF2A65A),
       _ => const Color(0xFF78A5A3),
     };
     return DecoratedBox(

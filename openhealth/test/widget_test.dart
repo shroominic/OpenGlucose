@@ -28,7 +28,7 @@ void main() {
     await tester.tap(find.text('Connect'));
     await tester.pumpAndSettle();
 
-    expect(find.text('LIVE'), findsOneWidget);
+    expect(find.text('Connected'), findsOneWidget);
     expect(find.text('History'), findsOneWidget);
   });
 
@@ -74,7 +74,7 @@ void main() {
     await tester.pumpAndSettle(const Duration(milliseconds: 1200));
 
     expect(find.text('AiDEX Demo 07A12'), findsOneWidget);
-    expect(find.text('LIVE'), findsOneWidget);
+    expect(find.text('Connected'), findsOneWidget);
     expect(find.text('History'), findsOneWidget);
   });
 }
