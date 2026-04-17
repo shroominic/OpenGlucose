@@ -343,8 +343,10 @@ class AidexSession implements CgmSession {
       );
       _emitLog(CgmLogLevel.debug, 'Discovering services');
       await _discoverServices();
-      final bondStateBeforeSetup = _connection!.supportsBondLifecycle
-          ? await _connection!.currentBondState()
+      var conn = _connection;
+      if (conn == null) throw StateError('Disconnected during setup');
+      final bondStateBeforeSetup = conn.supportsBondLifecycle
+          ? await conn.currentBondState()
           : BleBondState.bonded;
       _emitLog(CgmLogLevel.debug, 'Subscribing to notifications');
       await _subscribeToNotifications();
@@ -354,13 +356,17 @@ class AidexSession implements CgmSession {
           statusText: 'Bonding BLE link',
         ),
       );
+      conn = _connection;
+      if (conn == null) throw StateError('Disconnected during setup');
       _emitLog(CgmLogLevel.debug, 'Ensuring BLE bond');
-      await _connection!.ensureBonded();
-      final bondStateAfterSetup = _connection!.supportsBondLifecycle
-          ? await _connection!.currentBondState()
+      await conn.ensureBonded();
+      conn = _connection;
+      if (conn == null) throw StateError('Disconnected during setup');
+      final bondStateAfterSetup = conn.supportsBondLifecycle
+          ? await conn.currentBondState()
           : BleBondState.bonded;
       final didEstablishBond =
-          _connection!.supportsBondLifecycle &&
+          conn.supportsBondLifecycle &&
           bondStateBeforeSetup != BleBondState.bonded &&
           bondStateAfterSetup == BleBondState.bonded;
       if (didEstablishBond) {
@@ -527,6 +533,7 @@ class AidexSession implements CgmSession {
     if (_disconnecting || _snapshot.stage == CgmSyncStage.disconnected) {
       return;
     }
+    _connection = null;
     _connectionState = BleConnectionState.disconnected;
     _liveRefreshTimer?.cancel();
     _liveRefreshTimer = null;

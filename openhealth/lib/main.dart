@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/app_controller.dart';
@@ -6,12 +7,24 @@ import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('FlutterError: ${details.exception}\n${details.stack}');
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('Unhandled error: $error\n$stack');
+    return true;
+  };
+
   runApp(const _BootstrapApp());
 }
 
