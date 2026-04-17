@@ -1987,9 +1987,11 @@ class AidexSession implements CgmSession {
 
   void _emitLog(CgmLogLevel level, String message) {
     print('[Aidex][${level.name}] $message');
-    _logController.add(
-      CgmLogEntry(timestamp: _clock(), level: level, message: message),
-    );
+    if (!_logController.isClosed) {
+      _logController.add(
+        CgmLogEntry(timestamp: _clock(), level: level, message: message),
+      );
+    }
   }
 
   void _setSnapshot(CgmSessionSnapshot snapshot) {
