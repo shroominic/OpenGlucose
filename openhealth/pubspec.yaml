@@ -1,7 +1,7 @@
 name: openglucose
-description: Flutter example app for the pure Dart CGM SDK.
+description: Your Open-source health and wellness app focused on local data and privacy.
 publish_to: none
-version: 0.0.1+2
+version: 0.0.1+6
 
 environment:
   sdk: ^3.11.4
