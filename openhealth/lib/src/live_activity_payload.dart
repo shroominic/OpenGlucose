@@ -32,7 +32,7 @@ class LiveActivityPayload {
   final bool isStale;
   final String? recordedAtIso8601;
 
-  Map<String, Object?> toMap() => <String, Object?>{
+  Map<String, Object> toMap() => <String, Object>{
     'sensorName': sensorName,
     'stageCode': stageCode,
     'stageLabel': stageLabel,
@@ -44,7 +44,7 @@ class LiveActivityPayload {
     'trendSymbol': trendSymbol,
     'deltaText': deltaText,
     'isStale': isStale,
-    'recordedAtIso8601': recordedAtIso8601,
+    if (recordedAtIso8601 case final iso?) 'recordedAtIso8601': iso,
   };
 }
 

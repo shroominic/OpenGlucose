@@ -185,7 +185,8 @@ final class GlucoseLiveActivityController {
   }
 
   private func persistBackgroundPayload(_ payload: [String: Any]) {
-    defaults.set(payload, forKey: backgroundPayloadKey)
+    let sanitized = payload.filter { !($0.value is NSNull) }
+    defaults.set(sanitized, forKey: backgroundPayloadKey)
   }
 
   @available(iOS 16.1, *)
