@@ -24,6 +24,93 @@ String readingTimeText(CgmReading? reading, {DateTime? now}) {
   return DateFormat('HH:mm').format(recordedAt);
 }
 
+enum WarmupPhase { warming, waiting }
+
+class WarmupStatus {
+  const WarmupStatus({
+    required this.phase,
+    required this.elapsedMinutes,
+    required this.remainingMinutes,
+    required this.totalMinutes,
+  });
+
+  final WarmupPhase phase;
+  final int elapsedMinutes;
+  final int remainingMinutes;
+  final int totalMinutes;
+}
+
+WarmupStatus? computeWarmupStatus(
+  CgmSessionSnapshot snapshot, {
+  CgmReading? latestReading,
+  DateTime? now,
+}) {
+  final sessionStart = snapshot.sessionInfo.sessionStart;
+  if (sessionStart == null) {
+    return null;
+  }
+  if (latestReading != null) {
+    return null;
+  }
+  final total = snapshot.sessionInfo.warmupMinutes;
+  if (total <= 0) {
+    return null;
+  }
+  final effectiveNow = now ?? DateTime.now();
+  final elapsed = effectiveNow.difference(sessionStart).inMinutes;
+  if (elapsed < 0) {
+    return WarmupStatus(
+      phase: WarmupPhase.warming,
+      elapsedMinutes: 0,
+      remainingMinutes: total,
+      totalMinutes: total,
+    );
+  }
+  if (elapsed >= total) {
+    return WarmupStatus(
+      phase: WarmupPhase.waiting,
+      elapsedMinutes: elapsed,
+      remainingMinutes: 0,
+      totalMinutes: total,
+    );
+  }
+  return WarmupStatus(
+    phase: WarmupPhase.warming,
+    elapsedMinutes: elapsed,
+    remainingMinutes: total - elapsed,
+    totalMinutes: total,
+  );
+}
+
+String warmupBigValueText(WarmupStatus status) {
+  return switch (status.phase) {
+    WarmupPhase.warming => status.remainingMinutes.toString(),
+    WarmupPhase.waiting => '…',
+  };
+}
+
+String warmupUnitText(WarmupStatus status) {
+  return switch (status.phase) {
+    WarmupPhase.warming => 'min remaining',
+    WarmupPhase.waiting => 'waiting for first reading',
+  };
+}
+
+String warmupSubtext(WarmupStatus status) {
+  return switch (status.phase) {
+    WarmupPhase.warming =>
+      '${status.elapsedMinutes} / ${status.totalMinutes} min elapsed',
+    WarmupPhase.waiting => 'warmup complete, t=${status.elapsedMinutes} min',
+  };
+}
+
+String warmupStageLabel(WarmupStatus status) {
+  return switch (status.phase) {
+    WarmupPhase.warming => 'Warmup',
+    WarmupPhase.waiting => 'Waiting',
+  };
+}
+
 String sensorLifeText(DateTime? sessionStart, {DateTime? now}) {
   if (sessionStart == null) {
     return 'Life remaining unavailable';

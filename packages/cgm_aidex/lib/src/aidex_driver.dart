@@ -114,6 +114,12 @@ class AidexSensorDriver implements CgmDriver {
 }
 
 class AidexSession implements CgmSession {
+  // AiDEX-X sensors require a 60-minute warmup before reporting glucose. The
+  // protocol does not expose this duration via any characteristic; elapsed-
+  // since-start IS sensor-reported (2AA9 byte 0-1 -> sessionInfo.elapsedMinutes
+  // + _reconcileSessionStartToElapsedClock), but the warmup length itself is a
+  // sensor-model constant the driver owns.
+  static const int _aidexWarmupMinutes = 60;
   static const Duration _liveRefreshInterval = Duration(minutes: 1);
   static const Duration _liveStaleThreshold = Duration(minutes: 3);
   static const Duration _sessionStartTolerance = Duration(minutes: 45);
@@ -139,6 +145,9 @@ class AidexSession implements CgmSession {
          sensor: sensor,
          capabilities: sensor.capabilities,
          lastAdvertisement: sensor.advertisement,
+         sessionInfo: const CgmSessionInfo(
+           warmupMinutes: _aidexWarmupMinutes,
+         ),
          metadata: <String, String>{'deviceId': sensor.deviceId},
        ),
        _unsafeAdmin = AidexUnsafeAdmin._() {

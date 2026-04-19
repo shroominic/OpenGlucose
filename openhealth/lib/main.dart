@@ -467,22 +467,8 @@ class _DashboardView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final preferences = controller.displayPreferences;
-    final latest = controller.latestReading;
     final history = controller.visibleHistory;
-    final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
-    final displayedValue =
-        latest?.displayValue(preferences) ??
-        (fallbackValue == null
-            ? null
-            : preferences.unit.convertFromMgdl(fallbackValue));
-    final latestValue = displayedValue == null
-        ? '--'
-        : displayedValue.toStringAsFixed(
-            preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
-          );
-    final latestTime = readingTimeText(latest);
     final remainingLife = sensorLifeText(snapshot.sessionInfo.sessionStart);
-    final stageLabel = stageLabelForSnapshot(snapshot);
     final totalReadingCount =
         snapshot.historySync.totalAvailable > history.length
         ? snapshot.historySync.totalAvailable
@@ -534,80 +520,9 @@ class _DashboardView extends StatelessWidget {
             ),
           ),
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Card(
-                color: const Color(0xFF113437),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Expanded(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: <Widget>[
-                                Flexible(
-                                  child: Text(
-                                    latestValue,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.fade,
-                                    softWrap: false,
-                                    style: theme.textTheme.displayMedium
-                                        ?.copyWith(
-                                          color: Colors.white,
-                                          height: 0.92,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 6),
-                                  child: Text(
-                                    preferences.unit.label,
-                                    style: theme.textTheme.titleMedium
-                                        ?.copyWith(
-                                          color: const Color(0xFFC7E4DD),
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: _StagePill(
-                              label: stageLabel,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Latest reading at $latestTime',
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          color: const Color(0xFFD6ECE7),
-                        ),
-                      ),
-                      if (shouldShowPrimaryError(snapshot)) ...<Widget>[
-                        const SizedBox(height: 12),
-                        Text(
-                          snapshot.lastError!,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: const Color(0xFFFFC4AA),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
+            child: _DashboardHeroCard(
+              controller: controller,
+              snapshot: snapshot,
             ),
           ),
           SliverToBoxAdapter(
@@ -732,6 +647,145 @@ class _MetricChip extends StatelessWidget {
   }
 }
 
+class _DashboardHeroCard extends StatefulWidget {
+  const _DashboardHeroCard({required this.controller, required this.snapshot});
+
+  final CgmAppController controller;
+  final CgmSessionSnapshot snapshot;
+
+  @override
+  State<_DashboardHeroCard> createState() => _DashboardHeroCardState();
+}
+
+class _DashboardHeroCardState extends State<_DashboardHeroCard> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _ticker = null;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final preferences = widget.controller.displayPreferences;
+    final snapshot = widget.snapshot;
+    final latest = widget.controller.latestReading;
+    final warmup = computeWarmupStatus(snapshot, latestReading: latest);
+
+    final String bigValue;
+    final String unitLabel;
+    final String subtitle;
+    final String stageLabel;
+    if (warmup != null) {
+      bigValue = warmupBigValueText(warmup);
+      unitLabel = warmupUnitText(warmup);
+      subtitle = warmupSubtext(warmup);
+      stageLabel = warmupStageLabel(warmup);
+    } else {
+      final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
+      final displayedValue =
+          latest?.displayValue(preferences) ??
+          (fallbackValue == null
+              ? null
+              : preferences.unit.convertFromMgdl(fallbackValue));
+      bigValue = displayedValue == null
+          ? '--'
+          : displayedValue.toStringAsFixed(
+              preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
+            );
+      unitLabel = preferences.unit.label;
+      subtitle = 'Latest reading at ${readingTimeText(latest)}';
+      stageLabel = stageLabelForSnapshot(snapshot);
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Card(
+        color: const Color(0xFF113437),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: <Widget>[
+                        Flexible(
+                          child: Text(
+                            bigValue,
+                            maxLines: 1,
+                            overflow: TextOverflow.fade,
+                            softWrap: false,
+                            style: theme.textTheme.displayMedium?.copyWith(
+                              color: Colors.white,
+                              height: 0.92,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text(
+                            unitLabel,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: const Color(0xFFC7E4DD),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: _StagePill(label: stageLabel),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                subtitle,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: const Color(0xFFD6ECE7),
+                ),
+              ),
+              if (shouldShowPrimaryError(snapshot)) ...<Widget>[
+                const SizedBox(height: 12),
+                Text(
+                  snapshot.lastError!,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: const Color(0xFFFFC4AA),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _StagePill extends StatelessWidget {
   const _StagePill({required this.label});
 
@@ -742,7 +796,11 @@ class _StagePill extends StatelessWidget {
     final color = switch (label) {
       'Connected' => const Color(0xFF2AB67D),
       'Error' => const Color(0xFFF26D5B),
-      'Connecting' || 'Setting up' || 'Reconnecting' => const Color(0xFFF2A65A),
+      'Connecting' ||
+      'Setting up' ||
+      'Reconnecting' ||
+      'Warmup' ||
+      'Waiting' => const Color(0xFFF2A65A),
       _ => const Color(0xFF78A5A3),
     };
     return DecoratedBox(
@@ -1005,6 +1063,10 @@ Widget _buildSensorSettingsPane(
   CgmSessionSnapshot snapshot,
 ) {
   final sessionStart = snapshot.sessionInfo.sessionStart;
+  final warmup = computeWarmupStatus(
+    snapshot,
+    latestReading: controller.latestReading,
+  );
   return ListView(
     padding: const EdgeInsets.all(20),
     children: <Widget>[
@@ -1015,6 +1077,8 @@ Widget _buildSensorSettingsPane(
         ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 16),
+      if (warmup != null)
+        _KeyValueRow(label: 'Warmup', value: warmupSubtext(warmup)),
       _KeyValueRow(label: 'Life', value: sensorLifeText(sessionStart)),
       _KeyValueRow(label: 'Serial', value: snapshot.sessionInfo.serial),
       _KeyValueRow(label: 'Model', value: snapshot.sessionInfo.model),

@@ -266,6 +266,7 @@ class DemoCgmSession implements CgmSession {
         sessionStart: sessionStart,
         sessionStartPayloadHex: 'E907040D01080C0000',
         elapsedMinutes: history.last.sensorMinute,
+        warmupMinutes: 60,
       ),
       health: const CgmHealthSnapshot(
         statusText: 'Sensor active',
