@@ -20,8 +20,25 @@ final class GlucoseLiveActivityController {
     return formatter
   }()
   private var channel: FlutterMethodChannel?
+  // All Activity<…> operations (lookup, request, update, end) are funneled
+  // through this chain so concurrent upsert calls can't each observe an empty
+  // Activity.activities and both call Activity.request — which would leave two
+  // Live Activities registered for the same sensor.
+  private var activityChain: Task<Void, Never> = Task {}
+  private let activityChainLock = NSLock()
 
   private init() {}
+
+  private func serializeActivityWork(_ operation: @escaping () async -> Void) {
+    activityChainLock.lock()
+    let previous = activityChain
+    let next = Task {
+      await previous.value
+      await operation()
+    }
+    activityChain = next
+    activityChainLock.unlock()
+  }
 
   func configure(with messenger: FlutterBinaryMessenger) {
     guard channel == nil else {
@@ -97,10 +114,14 @@ final class GlucoseLiveActivityController {
       return
     }
 
-    Task {
-      let state = contentState(from: payload)
+    serializeActivityWork {
+      guard #available(iOS 16.1, *) else {
+        result(false)
+        return
+      }
+      let state = self.contentState(from: payload)
       do {
-        let activity = try await upsertActivity(
+        let activity = try await self.upsertActivity(
           sensorName: sensorName,
           state: state
         )
@@ -126,8 +147,9 @@ final class GlucoseLiveActivityController {
       return
     }
 
-    Task {
-      var payload = defaults.dictionary(forKey: backgroundPayloadKey) ?? [:]
+    serializeActivityWork {
+      guard #available(iOS 16.1, *) else { return }
+      var payload = self.defaults.dictionary(forKey: self.backgroundPayloadKey) ?? [:]
       payload["sensorName"] = sensorName
       payload["stageCode"] = "live"
       payload["stageLabel"] = "LIVE"
@@ -135,18 +157,18 @@ final class GlucoseLiveActivityController {
       let unitText = (payload["unitText"] as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       payload["unitText"] = (unitText?.isEmpty == false) ? unitText : "mg/dL"
-      let updatedText = timeFormatter.string(from: observedAt)
+      let updatedText = self.timeFormatter.string(from: observedAt)
       payload["lastReadingText"] = updatedText
       payload["detailText"] = "Updated \(updatedText)"
       payload["trendSymbol"] = ""
       payload["deltaText"] = ""
       payload["isStale"] = false
-      payload["recordedAtIso8601"] = iso8601.string(from: observedAt)
-      persistBackgroundPayload(payload)
+      payload["recordedAtIso8601"] = self.iso8601.string(from: observedAt)
+      self.persistBackgroundPayload(payload)
 
-      let state = contentState(from: payload)
+      let state = self.contentState(from: payload)
       do {
-        _ = try await upsertActivity(sensorName: sensorName, state: state)
+        _ = try await self.upsertActivity(sensorName: sensorName, state: state)
       } catch {
         return
       }
@@ -159,9 +181,13 @@ final class GlucoseLiveActivityController {
       return
     }
 
-    Task {
+    serializeActivityWork {
+      guard #available(iOS 16.1, *) else {
+        result(false)
+        return
+      }
       for activity in Activity<GlucoseLiveActivityAttributes>.activities {
-        await end(activity, immediately: true)
+        await self.end(activity, immediately: true)
       }
       result(true)
     }

@@ -55,6 +55,29 @@ LiveActivityPayload buildLiveActivityPayload({
   DateTime? now,
 }) {
   final effectiveNow = now ?? DateTime.now();
+  final warmup = computeWarmupStatus(
+    snapshot,
+    latestReading: latestReading,
+    now: effectiveNow,
+  );
+  if (warmup != null) {
+    return LiveActivityPayload(
+      sensorName: snapshot.sensor.displayName,
+      stageCode: 'progress',
+      stageLabel: warmupStageLabel(warmup).toUpperCase(),
+      valueText: warmupBigValueText(warmup),
+      unitText: warmup.phase == WarmupPhase.warming ? 'min' : '',
+      lastReadingText: '--',
+      lifeText: sensorLifeText(
+        snapshot.sessionInfo.sessionStart,
+        now: effectiveNow,
+      ),
+      detailText: warmupSubtext(warmup),
+      trendSymbol: '',
+      deltaText: '',
+      isStale: false,
+    );
+  }
   final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
   final displayedValue =
       latestReading?.displayValue(preferences) ??

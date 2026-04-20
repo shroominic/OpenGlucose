@@ -69,10 +69,29 @@ void main() {
       expect(computeWarmupStatus(snapshotWith()), isNull);
     });
 
-    test('returns null once a reading is available', () {
+    test(
+      'keeps warming phase when a reading arrives inside the warmup window',
+      () {
+        final now = DateTime.parse('2026-04-17T10:00:00Z');
+        final status = computeWarmupStatus(
+          snapshotWith(sessionStart: now.subtract(const Duration(minutes: 10))),
+          latestReading: CgmReading(
+            valueMgdl: 157,
+            source: CgmRecordSource.broadcast,
+            recordedAt: now,
+          ),
+          now: now,
+        );
+        expect(status, isNotNull);
+        expect(status!.phase, WarmupPhase.warming);
+        expect(status.remainingMinutes, 50);
+      },
+    );
+
+    test('returns null once a reading exists past the warmup window', () {
       final now = DateTime.parse('2026-04-17T10:00:00Z');
       final status = computeWarmupStatus(
-        snapshotWith(sessionStart: now.subtract(const Duration(minutes: 10))),
+        snapshotWith(sessionStart: now.subtract(const Duration(minutes: 75))),
         latestReading: CgmReading(
           valueMgdl: 112,
           source: CgmRecordSource.vendor,
@@ -95,8 +114,8 @@ void main() {
       expect(status.remainingMinutes, 48);
       expect(status.totalMinutes, 60);
       expect(warmupBigValueText(status), '48');
-      expect(warmupUnitText(status), 'min remaining');
-      expect(warmupSubtext(status), '12 / 60 min elapsed');
+      expect(warmupUnitText(status), 'min');
+      expect(warmupSubtext(status), 'Warming up');
       expect(warmupStageLabel(status), 'Warmup');
     });
 
@@ -112,7 +131,7 @@ void main() {
       expect(status.remainingMinutes, 0);
       expect(warmupBigValueText(status), '…');
       expect(warmupUnitText(status), 'waiting for first reading');
-      expect(warmupSubtext(status), 'warmup complete, t=63 min');
+      expect(warmupSubtext(status), 'Warmup complete');
       expect(warmupStageLabel(status), 'Waiting');
     });
 

@@ -49,9 +49,6 @@ WarmupStatus? computeWarmupStatus(
   if (sessionStart == null) {
     return null;
   }
-  if (latestReading != null) {
-    return null;
-  }
   final total = snapshot.sessionInfo.warmupMinutes;
   if (total <= 0) {
     return null;
@@ -66,18 +63,24 @@ WarmupStatus? computeWarmupStatus(
       totalMinutes: total,
     );
   }
-  if (elapsed >= total) {
+  if (elapsed < total) {
+    // Inside the warmup window readings are unreliable (sensor noise during
+    // equilibration), so the warmup countdown always wins over any value the
+    // sensor happens to broadcast.
     return WarmupStatus(
-      phase: WarmupPhase.waiting,
+      phase: WarmupPhase.warming,
       elapsedMinutes: elapsed,
-      remainingMinutes: 0,
+      remainingMinutes: total - elapsed,
       totalMinutes: total,
     );
   }
+  if (latestReading != null) {
+    return null;
+  }
   return WarmupStatus(
-    phase: WarmupPhase.warming,
+    phase: WarmupPhase.waiting,
     elapsedMinutes: elapsed,
-    remainingMinutes: total - elapsed,
+    remainingMinutes: 0,
     totalMinutes: total,
   );
 }
@@ -91,16 +94,15 @@ String warmupBigValueText(WarmupStatus status) {
 
 String warmupUnitText(WarmupStatus status) {
   return switch (status.phase) {
-    WarmupPhase.warming => 'min remaining',
+    WarmupPhase.warming => 'min',
     WarmupPhase.waiting => 'waiting for first reading',
   };
 }
 
 String warmupSubtext(WarmupStatus status) {
   return switch (status.phase) {
-    WarmupPhase.warming =>
-      '${status.elapsedMinutes} / ${status.totalMinutes} min elapsed',
-    WarmupPhase.waiting => 'warmup complete, t=${status.elapsedMinutes} min',
+    WarmupPhase.warming => 'Warming up',
+    WarmupPhase.waiting => 'Warmup complete',
   };
 }
 
