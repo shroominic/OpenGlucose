@@ -1,4 +1,4 @@
-# OpenHealth
+# OpenGlucose
 
 Your Open-source health and wellness app focused on local data and privacy.
 
