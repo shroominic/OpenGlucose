@@ -113,13 +113,21 @@ String warmupStageLabel(WarmupStatus status) {
   };
 }
 
+/// Total wear life of the Aidex X sensor. Single source of truth so the
+/// dashboard, lifecycle card, and tests never drift (the device is a 15-day
+/// sensor — previously the older 14-day Aidex; see TASK-043).
+const Duration kSensorLifeDuration = Duration(days: 15);
+
+/// When less than this remains, the sensor is treated as "expiring soon" and
+/// the lifecycle card shows a heads-up to have a replacement ready.
+const Duration kSensorExpiringSoonThreshold = Duration(hours: 12);
+
 String sensorLifeText(DateTime? sessionStart, {DateTime? now}) {
   if (sessionStart == null) {
     return 'Life remaining unavailable';
   }
   final effectiveNow = now ?? DateTime.now();
-  final remaining =
-      const Duration(days: 15) - effectiveNow.difference(sessionStart);
+  final remaining = kSensorLifeDuration - effectiveNow.difference(sessionStart);
   if (remaining <= Duration.zero) {
     return 'Sensor expired';
   }
@@ -127,8 +135,169 @@ String sensorLifeText(DateTime? sessionStart, {DateTime? now}) {
     final hours = remaining.inHours <= 0 ? 1 : remaining.inHours;
     return '$hours ${hours == 1 ? 'hour' : 'hours'} left';
   }
-  final days = remaining.inDays <= 0 ? 1 : remaining.inDays;
+  // Round up so a freshly-started 15-day sensor reads "15 days left" rather
+  // than "14" (a partial first day still counts as a day of life).
+  final days = (remaining.inHours / 24).ceil();
   return '$days ${days == 1 ? 'day' : 'days'} left';
+}
+
+/// Lifecycle phase of the sensor derived purely from session timing + health.
+enum SensorLifecyclePhase {
+  /// No `sessionStart` known yet — can't place the sensor in its life.
+  unknown,
+
+  /// Inside the ~1h warmup window after insertion (no reliable readings yet).
+  warmup,
+
+  /// Normal in-life operation.
+  active,
+
+  /// Within [kSensorExpiringSoonThreshold] of end-of-life — replace soon.
+  expiringSoon,
+
+  /// Past 15 days, or the session was stopped / flagged expired by the sensor.
+  expired,
+}
+
+/// A self-contained, testable view-model for the sensor lifecycle card.
+///
+/// Derived from the session timing (`sessionStart` / `warmupMinutes`) plus the
+/// expiry/stopped health flags. Pure: pass `now` in tests for determinism.
+class SensorLifecycle {
+  const SensorLifecycle({
+    required this.phase,
+    required this.lifeUsedFraction,
+    required this.age,
+    required this.remaining,
+    required this.totalLife,
+    this.sessionStart,
+    this.warmup,
+  });
+
+  final SensorLifecyclePhase phase;
+
+  /// Fraction (0.0–1.0) of the 15-day life consumed.
+  final double lifeUsedFraction;
+
+  /// Time since the sensor session started (clamped to >= 0).
+  final Duration age;
+
+  /// Time left before end-of-life (clamped to >= 0; zero when expired).
+  final Duration remaining;
+
+  final Duration totalLife;
+  final DateTime? sessionStart;
+
+  /// Non-null only while warming up.
+  final WarmupStatus? warmup;
+
+  /// Whole-percent of life used, 0–100.
+  int get lifeUsedPercent => (lifeUsedFraction * 100).round().clamp(0, 100);
+
+  bool get isExpired => phase == SensorLifecyclePhase.expired;
+  bool get isExpiringSoon => phase == SensorLifecyclePhase.expiringSoon;
+  bool get isWarmingUp => phase == SensorLifecyclePhase.warmup;
+}
+
+/// Computes the [SensorLifecycle] for [snapshot] as of [now].
+SensorLifecycle computeSensorLifecycle(
+  CgmSessionSnapshot snapshot, {
+  CgmReading? latestReading,
+  DateTime? now,
+}) {
+  final effectiveNow = now ?? DateTime.now();
+  final sessionStart = snapshot.sessionInfo.sessionStart;
+  final totalLife = kSensorLifeDuration;
+
+  // A stopped session or an explicit expired health flag means the sensor is
+  // done regardless of the exact clock math (covers the mock `expired`
+  // scenario where readings froze but the wall clock is just past 15 days).
+  final stoppedOrFlagged =
+      snapshot.sessionInfo.sessionStopped || snapshot.health.expired;
+
+  if (sessionStart == null) {
+    return SensorLifecycle(
+      phase: stoppedOrFlagged
+          ? SensorLifecyclePhase.expired
+          : SensorLifecyclePhase.unknown,
+      lifeUsedFraction: stoppedOrFlagged ? 1 : 0,
+      age: Duration.zero,
+      remaining: Duration.zero,
+      totalLife: totalLife,
+    );
+  }
+
+  final rawAge = effectiveNow.difference(sessionStart);
+  final age = rawAge.isNegative ? Duration.zero : rawAge;
+  final rawRemaining = totalLife - age;
+  final remaining = rawRemaining.isNegative ? Duration.zero : rawRemaining;
+  final fraction = (age.inSeconds / totalLife.inSeconds).clamp(0.0, 1.0);
+
+  final warmup = computeWarmupStatus(
+    snapshot,
+    latestReading: latestReading,
+    now: effectiveNow,
+  );
+
+  final SensorLifecyclePhase phase;
+  if (stoppedOrFlagged || remaining <= Duration.zero) {
+    phase = SensorLifecyclePhase.expired;
+  } else if (warmup != null && warmup.phase == WarmupPhase.warming) {
+    phase = SensorLifecyclePhase.warmup;
+  } else if (remaining <= kSensorExpiringSoonThreshold) {
+    phase = SensorLifecyclePhase.expiringSoon;
+  } else {
+    phase = SensorLifecyclePhase.active;
+  }
+
+  return SensorLifecycle(
+    phase: phase,
+    lifeUsedFraction: phase == SensorLifecyclePhase.expired ? 1.0 : fraction,
+    age: age,
+    remaining: phase == SensorLifecyclePhase.expired ? Duration.zero : remaining,
+    totalLife: totalLife,
+    sessionStart: sessionStart,
+    warmup: warmup,
+  );
+}
+
+/// "3d 4h" style compact duration for the lifecycle card.
+String compactDurationText(Duration duration) {
+  if (duration <= Duration.zero) {
+    return '0h';
+  }
+  final days = duration.inDays;
+  final hours = duration.inHours % 24;
+  final minutes = duration.inMinutes % 60;
+  if (days > 0) {
+    return hours > 0 ? '${days}d ${hours}h' : '${days}d';
+  }
+  if (hours > 0) {
+    return minutes > 0 ? '${hours}h ${minutes}m' : '${hours}h';
+  }
+  return '${minutes}m';
+}
+
+/// "Last synced 2 min ago" style relative text for the most recent reading.
+String lastSyncText(DateTime? lastSyncAt, {DateTime? now}) {
+  if (lastSyncAt == null) {
+    return 'Not synced yet';
+  }
+  final effectiveNow = now ?? DateTime.now();
+  final delta = effectiveNow.difference(lastSyncAt.toLocal());
+  if (delta.isNegative || delta < const Duration(seconds: 45)) {
+    return 'Synced just now';
+  }
+  if (delta < const Duration(hours: 1)) {
+    final mins = delta.inMinutes;
+    return 'Synced $mins min ago';
+  }
+  if (delta < const Duration(days: 1)) {
+    final hours = delta.inHours;
+    return 'Synced $hours ${hours == 1 ? 'hour' : 'hours'} ago';
+  }
+  final days = delta.inDays;
+  return 'Synced $days ${days == 1 ? 'day' : 'days'} ago';
 }
 
 int? historySyncPercent(CgmHistorySyncState historySync) {
