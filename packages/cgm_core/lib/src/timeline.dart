@@ -45,6 +45,9 @@ enum TimelineEntryKind {
 
   /// A heart-rate sample (`HeartRateSample`).
   heartRate,
+
+  /// An AI-generated insight (`AiInsight`).
+  aiInsight,
 }
 
 /// A common interface that lets heterogeneous health data — CGM readings,
