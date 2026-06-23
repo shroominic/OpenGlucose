@@ -24,24 +24,30 @@ overstate what exists — most of the platform vision is still ahead of us.
 ## Sensor integrations roadmap
 
 OpenGlucose is built on a vendor-agnostic driver stack (`cgm_core` /
-`cgm_ble` / per-vendor drivers), so adding sensors is a matter of writing a
-driver, not rewriting the app.
+`cgm_ble` / per-vendor `cgm_*` drivers), so adding sensors is a matter of
+writing a driver, not rewriting the app. The architecture is moving toward a
+**pluggable multi-sensor / multi-analyte** abstraction — not glucose-only, but
+**glucose *and* ketone** (and, longer term, other continuous-biosensor signals),
+in the spirit of a Whoop/Oura-style always-on wellness layer.
 
-| Sensor | Status |
-| --- | --- |
-| Microtech **Aidex X** (15-day, BLE, all-in-one) | ✅ Supported |
-| Dexcom **G7** | 🟡 Wanted / planned |
-| Dexcom **G6** | 🟡 Wanted / planned |
-| Abbott **FreeStyle Libre 3** | 🟡 Wanted / planned |
-| Abbott **FreeStyle Libre 2** | 🟡 Wanted / planned |
-| Medtronic **Guardian** | ⚪ Wanted (exploratory) |
-| Senseonics **Eversense** | ⚪ Wanted (exploratory) |
+| Sensor | Maker | Analyte | Status |
+| --- | --- | --- | --- |
+| **Aidex X** (15-day, BLE, all-in-one) | Microtech | Glucose | ✅ Supported |
+| **FreeStyle Libre** family — Libre 1, Libre 2, Libre 2 Plus, Libre 3, Libre 3 Plus, Libre Sense, **Lingo** | Abbott | Glucose | 🟡 Wanted / planned (all FreeStyle Libre sensors) |
+| **G6, G7, ONE / ONE+, Stelo** | Dexcom | Glucose | 🟡 Wanted / planned |
+| **GS1 CGM** | SiBionics (SiBio) | Glucose | 🟡 Wanted / planned |
+| **CKM** (continuous **ketone** monitor) | SiBionics (SiBio) | **Ketone** | 🟡 Wanted / planned — drives the multi-analyte vision |
+| **Guardian** | Medtronic | Glucose | ⚪ Wanted (exploratory) |
+| **Eversense** | Senseonics | Glucose | ⚪ Wanted (exploratory) |
 
 "Wanted / planned" means we'd like to support it and the architecture is ready
-for a driver — not that support exists today. Commercial-sensor protocols can be
-technically and legally constrained, so each is tracked as its own piece of
-work. See the in-app sensor compatibility center (planned) and the backlog for
-status. Today, only **Aidex X** is actually supported.
+for a driver — **not** that support exists today. Commercial-sensor protocols
+can be technically and legally constrained, so each is tracked as its own piece
+of work. See the in-app sensor compatibility center (planned) and the backlog
+for status. Today, only **Aidex X** is actually supported.
+
+OpenGlucose is a **wellness / self-experimentation** tool, not an FDA-cleared or
+CE-marked medical device — none of the above is for diabetes management.
 
 ## Roadmap / TODO
 
