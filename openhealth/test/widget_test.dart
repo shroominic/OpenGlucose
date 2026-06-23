@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
+import 'package:openglucose/src/healthkit_export.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,7 +18,13 @@ void main() {
     );
     await controller.initialize();
 
-    await tester.pumpWidget(OpenGlucoseApp(controller: controller));
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(preferences: preferences)
+          ..initialize(),
+      ),
+    );
     await tester.pumpAndSettle(const Duration(milliseconds: 500));
 
     expect(find.text('OpenGlucose'), findsOneWidget);
@@ -70,7 +77,13 @@ void main() {
     );
     await controller.initialize();
 
-    await tester.pumpWidget(OpenGlucoseApp(controller: controller));
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(preferences: preferences)
+          ..initialize(),
+      ),
+    );
     await tester.pumpAndSettle(const Duration(milliseconds: 1200));
 
     expect(find.text('AiDEX Demo 07A12'), findsOneWidget);

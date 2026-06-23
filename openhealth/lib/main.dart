@@ -6,6 +6,8 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -34,13 +36,23 @@ Future<void> main() async {
   runApp(const _BootstrapApp());
 }
 
-Future<CgmAppController> _bootstrap() async {
+/// Holds the app-wide controllers built during [_bootstrap].
+class _AppServices {
+  const _AppServices({required this.controller, required this.healthExport});
+
+  final CgmAppController controller;
+  final HealthExportController healthExport;
+}
+
+Future<_AppServices> _bootstrap() async {
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
   );
   await controller.initialize();
+  final healthExport = HealthExportController(preferences: preferences)
+    ..initialize();
   if (kOgDemo) {
     // In demo mode (simulator/feature verification) the demo driver only
     // surfaces its sensor after a scan, so auto-scan and auto-connect to land
@@ -48,7 +60,7 @@ Future<CgmAppController> _bootstrap() async {
     // skipped when a previous session was already restored from preferences.
     unawaited(_autoConnectDemoSensor(controller));
   }
-  return controller;
+  return _AppServices(controller: controller, healthExport: healthExport);
 }
 
 /// Scans with the demo driver and connects to the first discovered sensor so
@@ -74,11 +86,11 @@ class _BootstrapApp extends StatefulWidget {
 }
 
 class _BootstrapAppState extends State<_BootstrapApp> {
-  late final Future<CgmAppController> _future = _bootstrap();
+  late final Future<_AppServices> _future = _bootstrap();
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<CgmAppController>(
+    return FutureBuilder<_AppServices>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
@@ -87,7 +99,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         if (snapshot.hasError) {
           return _SplashApp(error: snapshot.error);
         }
-        return OpenGlucoseApp(controller: snapshot.data!);
+        final services = snapshot.data!;
+        return OpenGlucoseApp(
+          controller: services.controller,
+          healthExport: services.healthExport,
+        );
       },
     );
   }
@@ -161,10 +177,33 @@ class _SpinningLogoState extends State<_SpinningLogo>
   }
 }
 
+/// Provides the [HealthExportController] to descendant widgets (notably the
+/// settings sheet's Integrations tab) without threading it through every
+/// constructor.
+class HealthExportScope extends InheritedNotifier<HealthExportController> {
+  const HealthExportScope({
+    super.key,
+    required HealthExportController controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static HealthExportController of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<HealthExportScope>();
+    assert(scope != null, 'No HealthExportScope found in context');
+    return scope!.notifier!;
+  }
+}
+
 class OpenGlucoseApp extends StatelessWidget {
-  const OpenGlucoseApp({super.key, required this.controller});
+  const OpenGlucoseApp({
+    super.key,
+    required this.controller,
+    required this.healthExport,
+  });
 
   final CgmAppController controller;
+  final HealthExportController healthExport;
 
   @override
   Widget build(BuildContext context) {
@@ -205,7 +244,10 @@ class OpenGlucoseApp extends StatelessWidget {
           ),
         ),
       ),
-      home: CgmHomePage(controller: controller),
+      home: HealthExportScope(
+        controller: healthExport,
+        child: CgmHomePage(controller: controller),
+      ),
     );
   }
 }
@@ -888,6 +930,7 @@ Future<void> _showSettings(
     unawaited(controller.refreshDiagnostics());
     unawaited(controller.loadCalibrations());
   }
+  final healthExport = HealthExportScope.of(context);
   var working = controller.displayPreferences;
   final scaleController = TextEditingController(
     text: working.calibrationScale.toStringAsFixed(2),
@@ -943,13 +986,16 @@ Future<void> _showSettings(
             child: SizedBox(
               height: MediaQuery.of(context).size.height * 0.84,
               child: DefaultTabController(
-                length: 3,
+                length: 4,
                 child: Column(
                   children: <Widget>[
                     const TabBar(
+                      isScrollable: true,
+                      tabAlignment: TabAlignment.center,
                       tabs: <Widget>[
                         Tab(text: 'Display'),
                         Tab(text: 'Sensor'),
+                        Tab(text: 'Integrations'),
                         Tab(text: 'Developer'),
                       ],
                     ),
@@ -962,6 +1008,12 @@ Future<void> _showSettings(
                             controller,
                             snapshot,
                           ),
+                          // --- BEGIN Integrations tab (TASK-016) ---
+                          IntegrationsSettingsPane(
+                            healthExport: healthExport,
+                            controller: controller,
+                          ),
+                          // --- END Integrations tab (TASK-016) ---
                           _buildDeveloperSettingsPane(
                             context: context,
                             snapshot: snapshot,
