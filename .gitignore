@@ -66,3 +66,6 @@ app.*.map.json
 # Local env (API key IDs, issuer ID, etc.)
 .env
 .env.local
+
+# Lefthook local overrides (https://lefthook.dev)
+lefthook-local.yml
