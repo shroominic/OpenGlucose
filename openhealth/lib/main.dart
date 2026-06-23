@@ -6,6 +6,8 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/onboarding/onboarding_flow.dart';
+import 'package:openglucose/src/onboarding/onboarding_store.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -34,7 +36,7 @@ Future<void> main() async {
   runApp(const _BootstrapApp());
 }
 
-Future<CgmAppController> _bootstrap() async {
+Future<_BootstrapResult> _bootstrap() async {
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
     preferences: preferences,
@@ -48,8 +50,13 @@ Future<CgmAppController> _bootstrap() async {
     // skipped when a previous session was already restored from preferences.
     unawaited(_autoConnectDemoSensor(controller));
   }
-  return controller;
+  return (controller: controller, preferences: preferences);
 }
+
+typedef _BootstrapResult = ({
+  CgmAppController controller,
+  SharedPreferences preferences,
+});
 
 /// Scans with the demo driver and connects to the first discovered sensor so
 /// OG_DEMO builds open straight onto the populated dashboard.
@@ -74,11 +81,11 @@ class _BootstrapApp extends StatefulWidget {
 }
 
 class _BootstrapAppState extends State<_BootstrapApp> {
-  late final Future<CgmAppController> _future = _bootstrap();
+  late final Future<_BootstrapResult> _future = _bootstrap();
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<CgmAppController>(
+    return FutureBuilder<_BootstrapResult>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
@@ -87,7 +94,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         if (snapshot.hasError) {
           return _SplashApp(error: snapshot.error);
         }
-        return OpenGlucoseApp(controller: snapshot.data!);
+        final result = snapshot.data!;
+        return OpenGlucoseApp(
+          controller: result.controller,
+          preferences: result.preferences,
+        );
       },
     );
   }
@@ -162,9 +173,14 @@ class _SpinningLogoState extends State<_SpinningLogo>
 }
 
 class OpenGlucoseApp extends StatelessWidget {
-  const OpenGlucoseApp({super.key, required this.controller});
+  const OpenGlucoseApp({
+    super.key,
+    required this.controller,
+    required this.preferences,
+  });
 
   final CgmAppController controller;
+  final SharedPreferences preferences;
 
   @override
   Widget build(BuildContext context) {
@@ -205,10 +221,54 @@ class OpenGlucoseApp extends StatelessWidget {
           ),
         ),
       ),
-      home: CgmHomePage(controller: controller),
+      // --- TASK-007 onboarding gate ---
+      // First-run only: show the skippable onboarding flow, then hand off to
+      // the existing scan/connect home. Persisted via OnboardingStore; once
+      // completed/skipped the gate falls straight through on later launches.
+      home: _OnboardingGate(
+        store: OnboardingStore(preferences),
+        unit: controller.displayPreferences.unit,
+        home: CgmHomePage(controller: controller),
+      ),
+      // --- end TASK-007 onboarding gate ---
     );
   }
 }
+
+// --- TASK-007 onboarding gate ---
+/// Chooses between first-run onboarding and the main app. Kept deliberately
+/// small and self-contained so it merges cleanly with other `main.dart` edits.
+class _OnboardingGate extends StatefulWidget {
+  const _OnboardingGate({
+    required this.store,
+    required this.unit,
+    required this.home,
+  });
+
+  final OnboardingStore store;
+  final GlucoseUnit unit;
+  final Widget home;
+
+  @override
+  State<_OnboardingGate> createState() => _OnboardingGateState();
+}
+
+class _OnboardingGateState extends State<_OnboardingGate> {
+  late bool _showOnboarding = !widget.store.isCompleted;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_showOnboarding) {
+      return widget.home;
+    }
+    return OnboardingFlow(
+      store: widget.store,
+      unit: widget.unit,
+      onFinished: () => setState(() => _showOnboarding = false),
+    );
+  }
+}
+// --- end TASK-007 onboarding gate ---
 
 class CgmHomePage extends StatefulWidget {
   const CgmHomePage({super.key, required this.controller});

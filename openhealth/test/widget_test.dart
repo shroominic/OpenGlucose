@@ -9,7 +9,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets('demo driver renders scan results and dashboard', (tester) async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      // Bypass first-run onboarding so this test targets the scan/dashboard.
+      'openHealth.onboarding.completed': true,
+    });
     final preferences = await SharedPreferences.getInstance();
     final controller = CgmAppController(
       preferences: preferences,
@@ -17,7 +20,9 @@ void main() {
     );
     await controller.initialize();
 
-    await tester.pumpWidget(OpenGlucoseApp(controller: controller));
+    await tester.pumpWidget(
+      OpenGlucoseApp(controller: controller, preferences: preferences),
+    );
     await tester.pumpAndSettle(const Duration(milliseconds: 500));
 
     expect(find.text('OpenGlucose'), findsOneWidget);
@@ -62,6 +67,8 @@ void main() {
 
     SharedPreferences.setMockInitialValues(<String, Object>{
       'openHealth.lastSensor': jsonEncode(rememberedSensor.toJson()),
+      // Bypass first-run onboarding so this test targets sensor restore.
+      'openHealth.onboarding.completed': true,
     });
     final preferences = await SharedPreferences.getInstance();
     final controller = CgmAppController(
@@ -70,7 +77,9 @@ void main() {
     );
     await controller.initialize();
 
-    await tester.pumpWidget(OpenGlucoseApp(controller: controller));
+    await tester.pumpWidget(
+      OpenGlucoseApp(controller: controller, preferences: preferences),
+    );
     await tester.pumpAndSettle(const Duration(milliseconds: 1200));
 
     expect(find.text('AiDEX Demo 07A12'), findsOneWidget);
