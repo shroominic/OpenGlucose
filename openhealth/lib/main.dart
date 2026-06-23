@@ -6,6 +6,10 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_context_builder.dart';
+import 'package:openglucose/src/messaging/message_controller.dart';
+import 'package:openglucose/src/messaging/message_host.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter/foundation.dart';
@@ -35,13 +39,25 @@ Future<void> main() async {
   runApp(const _BootstrapApp());
 }
 
-Future<CgmAppController> _bootstrap() async {
+/// Bundles the app's controllers built during bootstrap.
+class _AppControllers {
+  const _AppControllers({required this.cgm, required this.messages});
+
+  final CgmAppController cgm;
+  final MessageController messages;
+}
+
+Future<_AppControllers> _bootstrap() async {
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
   );
   await controller.initialize();
+  final messages = MessageController(
+    preferences: preferences,
+    messages: defaultMessageCatalog,
+  );
   if (kOgDemo) {
     // In demo mode (simulator/feature verification) the demo driver only
     // surfaces its sensor after a scan, so auto-scan and auto-connect to land
@@ -49,7 +65,7 @@ Future<CgmAppController> _bootstrap() async {
     // skipped when a previous session was already restored from preferences.
     unawaited(_autoConnectDemoSensor(controller));
   }
-  return controller;
+  return _AppControllers(cgm: controller, messages: messages);
 }
 
 /// Scans with the demo driver and connects to the first discovered sensor so
@@ -75,11 +91,11 @@ class _BootstrapApp extends StatefulWidget {
 }
 
 class _BootstrapAppState extends State<_BootstrapApp> {
-  late final Future<CgmAppController> _future = _bootstrap();
+  late final Future<_AppControllers> _future = _bootstrap();
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<CgmAppController>(
+    return FutureBuilder<_AppControllers>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
@@ -88,7 +104,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         if (snapshot.hasError) {
           return _SplashApp(error: snapshot.error);
         }
-        return OpenGlucoseApp(controller: snapshot.data!);
+        final controllers = snapshot.data!;
+        return OpenGlucoseApp(
+          controller: controllers.cgm,
+          messageController: controllers.messages,
+        );
       },
     );
   }
@@ -163,9 +183,17 @@ class _SpinningLogoState extends State<_SpinningLogo>
 }
 
 class OpenGlucoseApp extends StatelessWidget {
-  const OpenGlucoseApp({super.key, required this.controller});
+  const OpenGlucoseApp({
+    super.key,
+    required this.controller,
+    this.messageController,
+  });
 
   final CgmAppController controller;
+
+  /// Optional contextual-messaging engine. When null (e.g. in some tests) the
+  /// dashboard simply renders no message host.
+  final MessageController? messageController;
 
   @override
   Widget build(BuildContext context) {
@@ -206,15 +234,23 @@ class OpenGlucoseApp extends StatelessWidget {
           ),
         ),
       ),
-      home: CgmHomePage(controller: controller),
+      home: CgmHomePage(
+        controller: controller,
+        messageController: messageController,
+      ),
     );
   }
 }
 
 class CgmHomePage extends StatefulWidget {
-  const CgmHomePage({super.key, required this.controller});
+  const CgmHomePage({
+    super.key,
+    required this.controller,
+    this.messageController,
+  });
 
   final CgmAppController controller;
+  final MessageController? messageController;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -255,6 +291,17 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
       animation: widget.controller,
       builder: (context, _) {
         final snapshot = widget.controller.snapshot;
+        // Contextual-messaging bridge: recompute which messages are relevant
+        // from the latest app state on every controller change. Deferred to
+        // post-frame so it never triggers a rebuild during this build pass.
+        final messageController = widget.messageController;
+        if (messageController != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            messageController.updateContext(
+              buildMessageContext(widget.controller),
+            );
+          });
+        }
         return Scaffold(
           body: DecoratedBox(
             decoration: const BoxDecoration(
@@ -274,6 +321,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                   : _DashboardView(
                       controller: widget.controller,
                       snapshot: snapshot,
+                      messageController: widget.messageController,
                     ),
             ),
           ),
@@ -487,10 +535,15 @@ class _ScanView extends StatelessWidget {
 }
 
 class _DashboardView extends StatelessWidget {
-  const _DashboardView({required this.controller, required this.snapshot});
+  const _DashboardView({
+    required this.controller,
+    required this.snapshot,
+    this.messageController,
+  });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
+  final MessageController? messageController;
 
   @override
   Widget build(BuildContext context) {
@@ -548,6 +601,12 @@ class _DashboardView extends StatelessWidget {
               ),
             ),
           ),
+          // Contextual messaging host (TASK-004). Self-contained; renders the
+          // current top tip/info/alert as a dismissible card, or nothing.
+          if (messageController != null)
+            SliverToBoxAdapter(
+              child: MessageHost(controller: messageController!),
+            ),
           SliverToBoxAdapter(
             child: _DashboardHeroCard(
               controller: controller,
