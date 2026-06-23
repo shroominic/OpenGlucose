@@ -6,9 +6,11 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'android_live_update_bridge.dart';
+import 'demo_driver.dart';
 import 'display_preferences.dart';
 import 'ios_live_activity_bridge.dart';
 import 'live_activity_payload.dart';
+import 'mock_scenarios.dart';
 
 class CgmAppController extends ChangeNotifier {
   CgmAppController({
@@ -421,6 +423,38 @@ class CgmAppController extends ChangeNotifier {
         jsonEncode(preferences.toJson()),
       ),
     );
+    unawaited(_pushLiveActivity());
+    notifyListeners();
+  }
+
+  /// Whether the active driver is the OG_DEMO mock driver, i.e. the Developer
+  /// scenario switcher should be shown.
+  bool get isMockDriver => _driver is DemoCgmDriver;
+
+  /// The mock scenario currently driving the demo session, or null when not in
+  /// demo mode.
+  MockScenario? get mockScenario {
+    final driver = _driver;
+    return driver is DemoCgmDriver ? driver.scenario : null;
+  }
+
+  /// Switches the live mock scenario without a rebuild. No-op outside OG_DEMO.
+  /// The demo session emits a fresh snapshot through the existing stream, so
+  /// the dashboard updates automatically.
+  void applyMockScenario(MockScenario scenario) {
+    final driver = _driver;
+    if (driver is! DemoCgmDriver) {
+      return;
+    }
+    final session = driver.applyScenario(scenario);
+    if (session == null) {
+      // Not connected yet; the new scenario becomes the default for the next
+      // connect. Trigger a (re)connect to surface it immediately.
+      unawaited(connect(_selectedSensor ?? driver.scenarioSensor));
+      return;
+    }
+    _snapshot = session.currentSnapshot;
+    _lastError = _snapshot?.lastError;
     unawaited(_pushLiveActivity());
     notifyListeners();
   }

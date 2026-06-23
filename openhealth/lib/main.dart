@@ -6,6 +6,7 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -964,10 +965,15 @@ Future<void> _showSettings(
                           ),
                           _buildDeveloperSettingsPane(
                             context: context,
+                            controller: controller,
                             snapshot: snapshot,
                             diagnostics: diagnostics,
                             calibrations: calibrations,
                             logs: logs,
+                            onScenarioChanged: (scenario) {
+                              controller.applyMockScenario(scenario);
+                              setState(() {});
+                            },
                           ),
                         ],
                       ),
@@ -1141,10 +1147,12 @@ Widget _buildSensorSettingsPane(
 
 Widget _buildDeveloperSettingsPane({
   required BuildContext context,
+  required CgmAppController controller,
   required CgmSessionSnapshot snapshot,
   required List<CgmDiagnosticItem> diagnostics,
   required List<CgmCalibrationEntry> calibrations,
   required List<CgmLogEntry> logs,
+  required ValueChanged<MockScenario> onScenarioChanged,
 }) {
   final metadataEntries = <MapEntry<String, String>>[
     MapEntry('deviceId', snapshot.sensor.deviceId),
@@ -1166,6 +1174,42 @@ Widget _buildDeveloperSettingsPane({
         ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 16),
+      if (controller.isMockDriver) ...<Widget>[
+        Text(
+          'Mock scenario',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<MockScenario>(
+          key: const ValueKey<String>('mockScenarioPicker'),
+          initialValue: controller.mockScenario ?? MockScenario.activeNormal,
+          isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Simulated sensor state'),
+          items: MockScenario.values
+              .map(
+                (scenario) => DropdownMenuItem<MockScenario>(
+                  value: scenario,
+                  child: Text(scenario.label),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: (scenario) {
+            if (scenario != null) {
+              onScenarioChanged(scenario);
+            }
+          },
+        ),
+        const SizedBox(height: 6),
+        Text(
+          (controller.mockScenario ?? MockScenario.activeNormal).description,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: const Color(0xFF5B6E6A),
+          ),
+        ),
+        const Divider(height: 28),
+      ],
       Text(
         'Metadata',
         style: Theme.of(
