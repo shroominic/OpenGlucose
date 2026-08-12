@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:cgm_core/cgm_core.dart';
+import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
@@ -1046,7 +1047,7 @@ Future<void> _showSettings(
             child: SizedBox(
               height: MediaQuery.of(context).size.height * 0.84,
               child: DefaultTabController(
-                length: 4,
+                length: 5,
                 child: Column(
                   children: <Widget>[
                     const TabBar(
@@ -1056,6 +1057,7 @@ Future<void> _showSettings(
                         Tab(text: 'Display'),
                         Tab(text: 'Sensor'),
                         Tab(text: 'Integrations'),
+                        Tab(text: 'AI'),
                         Tab(text: 'Developer'),
                       ],
                     ),
@@ -1074,6 +1076,14 @@ Future<void> _showSettings(
                             controller: controller,
                           ),
                           // --- END Integrations tab (TASK-016) ---
+                          // --- AI insights (optional) ----------------------
+                          // Self-contained pane; other settings agents should
+                          // not need to touch this block. See src/ai/.
+                          AiSettingsPane(
+                            recentReadings: controller.visibleHistory,
+                            unit: controller.displayPreferences.unit,
+                          ),
+                          // -------------------------------------------------
                           _buildDeveloperSettingsPane(
                             context: context,
                             controller: controller,

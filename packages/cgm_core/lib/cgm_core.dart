@@ -1,5 +1,6 @@
 library;
 
+export 'src/ai/ai.dart';
 export 'src/ai_insight.dart';
 export 'src/cgm_models.dart';
 export 'src/cgm_session.dart';
