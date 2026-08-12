@@ -163,6 +163,20 @@ void main() {
   });
 
   group('release safety defaults', () {
+    test('CI isolates the pinned CocoaPods installation', () {
+      final workflow = _read('../.github/workflows/ci.yml');
+
+      expect(workflow, contains(r'cocoapods_root="$RUNNER_TEMP/cocoapods/'));
+      expect(workflow, contains('gem install --install-dir'));
+      expect(workflow, contains(r'GEM_HOME="$cocoapods_root"'));
+      expect(workflow, contains(r'GEM_PATH="$cocoapods_root"'));
+      expect(
+        workflow,
+        contains(r'test "$actual_cocoapods" = "$cocoapods_version"'),
+      );
+      expect(workflow, isNot(contains('gem install --user-install')));
+    });
+
     test('Android release never falls back to debug signing', () {
       final gradle = _read('android/app/build.gradle.kts');
       expect(gradle, contains('ANDROID_KEYSTORE_PATH'));

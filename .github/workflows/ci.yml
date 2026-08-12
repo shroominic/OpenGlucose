@@ -150,8 +150,21 @@ jobs:
 
       - name: Install pinned CocoaPods
         run: |
-          gem install --user-install cocoapods -v "$(cat .cocoapods-version)" --no-document
-          echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+          cocoapods_version=$(cat .cocoapods-version)
+          cocoapods_root="$RUNNER_TEMP/cocoapods/$cocoapods_version"
+          gem install --install-dir "$cocoapods_root" \
+            cocoapods -v "$cocoapods_version" --no-document
+
+          actual_cocoapods=$(
+            GEM_HOME="$cocoapods_root" \
+              GEM_PATH="$cocoapods_root" \
+              "$cocoapods_root/bin/pod" --version
+          )
+          test "$actual_cocoapods" = "$cocoapods_version"
+
+          printf 'GEM_HOME=%s\n' "$cocoapods_root" >> "$GITHUB_ENV"
+          printf 'GEM_PATH=%s\n' "$cocoapods_root" >> "$GITHUB_ENV"
+          printf '%s\n' "$cocoapods_root/bin" >> "$GITHUB_PATH"
 
       - name: Restore locked app and resolve package dependencies
         run: make bootstrap
