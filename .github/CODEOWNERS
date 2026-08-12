@@ -1,0 +1,14 @@
+# CODEOWNERS expresses review intent. Repository settings must separately
+# require code-owner approval for this to be an enforced control.
+
+* @shroominic
+
+/openhealth/ @shroominic
+/packages/cgm_core/ @shroominic
+/packages/cgm_ble/ @shroominic
+/packages/cgm_ble_flutter/ @shroominic
+/packages/cgm_aidex/ @shroominic
+/.github/ @shroominic
+/docs/ @shroominic
+/SECURITY.md @shroominic
+/LICENSE @shroominic

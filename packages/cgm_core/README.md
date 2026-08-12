@@ -1,39 +1,60 @@
-<!-- 
-This README describes the package. If you publish this package to pub.dev,
-this README's contents appear on the landing page for your package.
+# cgm_core
 
-For information about how to write a good package README, see the guide for
-[writing package pages](https://dart.dev/tools/pub/writing-package-pages). 
+Sensor-neutral Dart models and session contracts for continuous glucose monitor
+drivers. This package has no Flutter or vendor-protocol dependency.
 
-For general information about developing packages, see the Dart guide for
-[creating packages](https://dart.dev/guides/libraries/create-packages)
-and the Flutter guide for
-[developing packages and plugins](https://flutter.dev/to/develop-packages). 
--->
+> This is an early-stage software interface for wellness and reference use. It
+> is not a medical device API and must not be used to make dosing, diagnosis,
+> treatment, or emergency decisions.
 
-TODO: Put a short description of the package here that helps potential users
-know whether this package might be useful for them.
+## API surface
 
-## Features
+- normalized glucose readings, trends, session information, calibrations, and
+  diagnostics;
+- sensor discovery metadata and capability negotiation;
+- immutable session snapshots and structured log entries;
+- `CgmDriver` and `CgmSession` contracts for vendor implementations; and
+- an explicitly separated `CgmUnsafeAdmin` interface for destructive sensor
+  operations.
 
-TODO: List what your package can do. Maybe include images, gifs, or videos.
+Only declarations exported from `lib/cgm_core.dart` are public. Files below
+`lib/src/` are implementation details.
 
-## Getting started
+## Workspace use
 
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
-
-## Usage
-
-TODO: Include short and useful examples for package users. Add longer examples
-to `/example` folder. 
-
-```dart
-const like = 'sample';
+```yaml
+dependencies:
+  cgm_core:
+    path: ../packages/cgm_core
 ```
 
-## Additional information
+```dart
+import 'package:cgm_core/cgm_core.dart';
 
-TODO: Tell users more about the package: where to find more information, how to 
-contribute to the package, how to file issues, what response they can expect 
-from the package authors, and more.
+final reading = CgmReading(
+  valueMgdl: 105,
+  source: CgmRecordSource.vendor,
+  recordedAt: DateTime.now().toUtc(),
+);
+
+final displayedMmol = GlucoseUnit.mmolL.convertFromMgdl(reading.valueMgdl);
+```
+
+Driver packages implement `CgmDriver` and publish state through
+`CgmSession.snapshots`. Consumers should branch on advertised capabilities
+instead of downcasting to a vendor session.
+
+## Development
+
+From the repository root, run `make check`. To exercise this package alone:
+
+```sh
+cd packages/cgm_core
+dart pub get
+dart analyze
+dart test
+```
+
+Public API changes require tests, an entry in this package's `CHANGELOG.md`, and
+the compatibility process in [`docs/compatibility.md`](../../docs/compatibility.md).
+See [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for review expectations.

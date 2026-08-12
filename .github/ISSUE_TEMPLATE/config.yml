@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private vulnerability reporting (verify availability)
+    url: https://github.com/shroominic/OpenGlucose/security/advisories/new
+    about: This external GitHub intake is unverified; send details only if a private report form is shown.
+  - name: Support and safety boundaries
+    url: https://github.com/shroominic/OpenGlucose/blob/main/SUPPORT.md
+    about: Read what the community can support before sharing diagnostics.

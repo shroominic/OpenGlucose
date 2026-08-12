@@ -1,5 +1,6 @@
 name: cgm_ble
 description: BLE transport abstraction for CGM drivers.
+publish_to: none
 version: 1.0.0
 
 environment:
