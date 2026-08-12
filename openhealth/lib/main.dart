@@ -14,6 +14,7 @@ import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -686,6 +687,28 @@ class _DashboardView extends StatelessWidget {
             ),
           ),
           // --- end TASK-012 metrics pack ---
+          // --- TASK-028 weekly recap entry point ---
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: FilledButton.tonalIcon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => WeeklyRecapScreen(
+                      readings: history,
+                      preferences: preferences,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.insights_rounded),
+                label: const Text('Weekly recap'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            ),
+          ),
+          // --- end TASK-028 weekly recap entry point ---
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
