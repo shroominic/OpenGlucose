@@ -22,7 +22,7 @@ dependencies:
   health: ^13.3.1
   # Secure on-device storage (iOS Keychain / Android Keystore) for the optional
   # BYO AI API key. The key is never written to SharedPreferences or logged.
-  flutter_secure_storage: ^9.2.4
+  flutter_secure_storage: ^10.3.1
   # Local-first persistence for events / health-samples / AI insights.
   # sqflite chosen over hive/isar: it's relational and query-friendly, so the
   # repository's window/type filtered queries push down to SQL indexes instead
