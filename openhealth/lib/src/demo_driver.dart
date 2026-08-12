@@ -3,21 +3,36 @@ import 'dart:math' as math;
 
 import 'package:cgm_core/cgm_core.dart';
 
+import 'mock_scenarios.dart';
+
+/// In-memory CGM driver used by the OG_DEMO harness so the app can be exercised
+/// in the iOS simulator (no Bluetooth) and in widget tests.
+///
+/// The driver is **scenario-driven**: it builds snapshots from
+/// [MockScenarioCatalog] for a selectable [MockScenario]. The default scenario
+/// is [MockScenario.activeNormal], which preserves the original demo behaviour.
+/// The live scenario can be swapped at runtime via
+/// [DemoCgmSession.applyScenario] (wired to the Developer-tab picker).
 class DemoCgmDriver implements CgmDriver {
-  DemoCgmDriver({DateTime Function()? clock}) : _clock = clock ?? DateTime.now;
+  DemoCgmDriver({
+    MockScenario initialScenario = MockScenario.activeNormal,
+    DateTime Function()? clock,
+  }) : _scenario = initialScenario,
+       _clock = clock ?? DateTime.now;
 
   final DateTime Function() _clock;
+  MockScenario _scenario;
 
-  static const _capabilities = CgmCapabilities(
-    supportsDirectBle: true,
-    supportsVendorPairing: true,
-    supportsAdvertisementGlucose: true,
-    supportsHistory: true,
-    supportsRawHistory: true,
-    supportsCalibration: true,
-    supportsDiagnostics: true,
-    supportsCommunicationInterval: true,
-  );
+  /// The active session, if connected. Exposed so the app controller can swap
+  /// the live scenario without reconnecting.
+  DemoCgmSession? _session;
+
+  /// The currently selected scenario (initial define or last runtime switch).
+  MockScenario get scenario => _session?.scenario ?? _scenario;
+
+  /// The sensor this driver advertises, for callers that need to (re)connect
+  /// without first running a scan.
+  DiscoveredSensor get scenarioSensor => MockScenarioCatalog.sensor;
 
   @override
   String get driverId => 'demo-aidex';
@@ -28,57 +43,67 @@ class DemoCgmDriver implements CgmDriver {
     bool allowDuplicates = true,
   }) async* {
     await Future<void>.delayed(const Duration(milliseconds: 250));
-    yield DiscoveredSensor(
-      driverId: driverId,
-      deviceId: 'demo-aidex-07A12',
-      displayName: 'AiDEX Demo 07A12',
-      storageKey: 'demo:07A12',
-      rssi: -46,
-      capabilities: _capabilities,
-      advertisement: const CgmAdvertisement(
-        payloadHex: '5900DEMO0712',
-        counter: 12,
-        phaseHex: '21',
-        glucoseTriplet: <int>[122, 124, 127],
-        qualifiers: <int>[1, 0, 0],
-        displayValueMgdl: 124,
-      ),
-      notes: 'Demo transport for web, screenshots, and widget tests.',
-      metadata: const <String, String>{'serial': '07A12', 'mode': 'demo'},
-    );
+    yield MockScenarioCatalog.sensor;
   }
 
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async {
-    return DemoCgmSession(sensor: sensor, clock: _clock);
+    final session = DemoCgmSession(
+      sensor: sensor,
+      scenario: _scenario,
+      clock: _clock,
+    );
+    _session = session;
+    return session;
+  }
+
+  /// Swaps the live scenario on the active session (if any) and remembers it
+  /// as the default for future connections. Returns the connected session, or
+  /// null if not connected.
+  DemoCgmSession? applyScenario(MockScenario scenario) {
+    _scenario = scenario;
+    final session = _session;
+    if (session != null && !session.isClosed) {
+      session.applyScenario(scenario);
+      return session;
+    }
+    return null;
   }
 }
 
 class DemoCgmSession implements CgmSession {
-  DemoCgmSession({required this.sensor, required DateTime Function() clock})
-    : _clock = clock {
-    final snapshot = _buildSnapshot();
-    _snapshot = snapshot;
-    _history = snapshot.history;
-    _calibrations = snapshot.calibrations;
-    _diagnostics = snapshot.diagnostics;
-    _log(CgmLogLevel.info, 'Demo session initialized');
+  DemoCgmSession({
+    required this.sensor,
+    required MockScenario scenario,
+    required DateTime Function() clock,
+  }) : _scenario = scenario,
+       _clock = clock,
+       _catalog = MockScenarioCatalog(clock: clock) {
+    _applyScenarioInternal(scenario, announce: false);
+    _log(CgmLogLevel.info, 'Demo session initialized (${scenario.label})');
   }
 
   @override
   final DiscoveredSensor sensor;
 
   final DateTime Function() _clock;
+  final MockScenarioCatalog _catalog;
   final StreamController<CgmSessionSnapshot> _snapshotController =
       StreamController<CgmSessionSnapshot>.broadcast();
   final StreamController<CgmLogEntry> _logController =
       StreamController<CgmLogEntry>.broadcast();
 
+  MockScenario _scenario;
   late CgmSessionSnapshot _snapshot;
   late List<CgmReading> _history;
   late List<CgmCalibrationEntry> _calibrations;
   late List<CgmDiagnosticItem> _diagnostics;
   bool _closed = false;
+
+  /// The scenario currently driving this session.
+  MockScenario get scenario => _scenario;
+
+  bool get isClosed => _closed;
 
   @override
   CgmSessionSnapshot get currentSnapshot => _snapshot;
@@ -92,14 +117,45 @@ class DemoCgmSession implements CgmSession {
   @override
   CgmUnsafeAdmin? get unsafeAdmin => null;
 
+  /// Rebuilds the session from [scenario] and emits the new snapshot so the UI
+  /// switches live without a reconnect. Gated behind OG_DEMO by the caller.
+  void applyScenario(MockScenario scenario) {
+    _ensureOpen();
+    _applyScenarioInternal(scenario, announce: true);
+    _log(CgmLogLevel.info, 'Demo scenario switched to ${scenario.label}');
+  }
+
+  void _applyScenarioInternal(MockScenario scenario, {required bool announce}) {
+    _scenario = scenario;
+    final snapshot = _catalog.buildSnapshot(scenario);
+    _history = snapshot.history;
+    _calibrations = snapshot.calibrations;
+    _diagnostics = snapshot.diagnostics;
+    if (announce) {
+      _emitSnapshot(snapshot);
+    } else {
+      _snapshot = snapshot;
+    }
+  }
+
   @override
   Future<void> refresh() async {
     _ensureOpen();
+    // Frozen/error lifecycle scenarios must stay authoritative. In particular,
+    // freshness polling must not turn stale, expired, or disconnected demo
+    // readings into new glucose values.
+    if (!_scenario.supportsLiveRefresh) {
+      _emitSnapshot(_snapshot);
+      return;
+    }
     final latestTime = _clock();
     final sessionStart = _snapshot.sessionInfo.sessionStart ?? latestTime;
     final sensorMinute = latestTime.difference(sessionStart).inMinutes;
+    // Continue around the last known value so the live tick matches the
+    // scenario's glucose band (high stays high, low stays low, etc.).
+    final base = _history.last.valueMgdl;
     final latest = CgmReading(
-      valueMgdl: 118 + (math.sin(sensorMinute / 11) * 10),
+      valueMgdl: base + (math.sin(sensorMinute / 11) * 6),
       source: CgmRecordSource.broadcast,
       sensorMinute: sensorMinute,
       recordedAt: latestTime,
@@ -126,7 +182,7 @@ class DemoCgmSession implements CgmSession {
         },
       ),
     );
-    _log(CgmLogLevel.info, 'Demo refresh produced ${latest.valueMgdl}');
+    _log(CgmLogLevel.info, 'Demo refresh completed');
   }
 
   @override
@@ -195,13 +251,12 @@ class DemoCgmSession implements CgmSession {
       ),
     ];
     _emitSnapshot(_snapshot.copyWith(calibrations: _calibrations));
-    _log(CgmLogLevel.info, 'Demo calibration submitted: $glucoseMgdl mg/dL');
+    _log(CgmLogLevel.info, 'Demo calibration submitted');
   }
 
   @override
   Future<List<CgmDiagnosticItem>> refreshDiagnostics() async {
     _ensureOpen();
-    _diagnostics = _buildDiagnostics();
     _emitSnapshot(_snapshot.copyWith(diagnostics: _diagnostics));
     _log(CgmLogLevel.debug, 'Demo diagnostics refreshed');
     return _diagnostics;
@@ -215,109 +270,6 @@ class DemoCgmSession implements CgmSession {
     _closed = true;
     await _snapshotController.close();
     await _logController.close();
-  }
-
-  CgmSessionSnapshot _buildSnapshot() {
-    final now = _clock();
-    final sessionStart = now.subtract(const Duration(hours: 16));
-    final history = List<CgmReading>.generate(48, (index) {
-      final recordedAt = now.subtract(Duration(minutes: (47 - index) * 5));
-      final sensorMinute = recordedAt.difference(sessionStart).inMinutes;
-      final value = 118 + (math.sin(index / 4) * 16) + ((index % 5) - 2);
-      return CgmReading(
-        valueMgdl: value,
-        source: index == 47
-            ? CgmRecordSource.broadcast
-            : CgmRecordSource.vendor,
-        sensorMinute: sensorMinute,
-        recordedAt: recordedAt,
-        rawValue: value.round(),
-        qualifier: 1,
-      );
-    });
-    final diagnostics = _buildDiagnostics();
-    final calibrations = <CgmCalibrationEntry>[
-      CgmCalibrationEntry(
-        index: 1,
-        glucoseMgdl: 118,
-        sensorMinute: history[20].sensorMinute,
-        recordedAt: history[20].recordedAt,
-        payloadHex: '7600150c',
-      ),
-    ];
-    return CgmSessionSnapshot(
-      stage: CgmSyncStage.ready,
-      statusText: 'Demo session ready',
-      sensor: sensor,
-      capabilities: sensor.capabilities,
-      latestReading: history.last,
-      lastAdvertisement: sensor.advertisement,
-      history: history,
-      rawHistory: history
-          .map((reading) => reading.copyWith(source: CgmRecordSource.raw))
-          .toList(growable: false),
-      calibrations: calibrations,
-      diagnostics: diagnostics,
-      sessionInfo: CgmSessionInfo(
-        manufacturer: 'MicroTech Medical',
-        model: 'AiDEX X',
-        serial: sensor.metadata['serial'] ?? '07A12',
-        firmware: '1.9.7-demo',
-        sessionStart: sessionStart,
-        sessionStartPayloadHex: 'E907040D01080C0000',
-        elapsedMinutes: history.last.sensorMinute,
-        warmupMinutes: 60,
-      ),
-      health: const CgmHealthSnapshot(
-        statusText: 'Sensor active',
-        warningFlagsHex: '0x00',
-        sensorCheckHex: '0100',
-      ),
-      historySync: CgmHistorySyncState(
-        storedCount: history.length,
-        totalAvailable: history.length,
-        latestStoredOffset: history.last.sensorMinute,
-        startIndex: history.first.sensorMinute,
-        targetIndex: history.last.sensorMinute,
-        lastSyncAt: now,
-      ),
-      metadata: <String, String>{
-        'deviceId': sensor.deviceId,
-        'serial': sensor.metadata['serial'] ?? '07A12',
-        'mode': 'demo',
-        'driverId': sensor.driverId,
-        'historyCount': history.length.toString(),
-      },
-    );
-  }
-
-  List<CgmDiagnosticItem> _buildDiagnostics() {
-    return <CgmDiagnosticItem>[
-      CgmDiagnosticItem(
-        key: 'pair',
-        title: 'Vendor Pair State',
-        summary: 'Demo transport always reports the vendor session as ready.',
-        rawHex: '1122334455667788',
-      ),
-      const CgmDiagnosticItem(
-        key: 'device',
-        title: 'Device Information',
-        fields: <String, String>{
-          'manufacturer': 'MicroTech Medical',
-          'model': 'AiDEX X',
-          'firmware': '1.9.7-demo',
-        },
-      ),
-      const CgmDiagnosticItem(
-        key: 'status',
-        title: 'Standard CGM State',
-        fields: <String, String>{
-          'featureHex': '8B3F',
-          'statusHex': '0000010000000000',
-          'sessionRunTimeHex': '00480000',
-        },
-      ),
-    ];
   }
 
   void _emitSnapshot(CgmSessionSnapshot snapshot) {
@@ -341,4 +293,21 @@ class DemoCgmSession implements CgmSession {
       throw StateError('Demo session is disconnected.');
     }
   }
+}
+
+extension on MockScenario {
+  bool get supportsLiveRefresh => switch (this) {
+    MockScenario.activeNormal ||
+    MockScenario.activeHigh ||
+    MockScenario.activeLow ||
+    MockScenario.rapidRise ||
+    MockScenario.rapidFall ||
+    MockScenario.expiringSoon ||
+    MockScenario.multiSensorHistory => true,
+    MockScenario.warmup ||
+    MockScenario.expired ||
+    MockScenario.signalLoss ||
+    MockScenario.disconnected ||
+    MockScenario.error => false,
+  };
 }

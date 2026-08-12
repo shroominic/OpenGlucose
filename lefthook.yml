@@ -1,0 +1,19 @@
+min_version: 2.1.9
+
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      glob: "*.dart"
+      run: dart format --output=none --set-exit-if-changed {staged_files}
+    analyze:
+      glob: "{openhealth,packages}/**/*.{dart,yaml}"
+      run: make lint
+    tooling:
+      glob: "{.github/workflows/*.yml,.github/workflows/*.yaml,scripts/*.sh,openhealth/scripts/*.sh,openhealth/fastlane/Fastfile,Makefile,lefthook.yml,.java-version,.xcode-version,.cocoapods-version,.fastlane-version}"
+      run: make tooling-check
+
+pre-push:
+  commands:
+    check:
+      run: make check

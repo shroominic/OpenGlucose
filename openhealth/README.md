@@ -1,17 +1,84 @@
-# aidex_flutter
+# OpenGlucose app
 
-A new Flutter project.
+This directory contains the Flutter reference app for the OpenGlucose CGM
+packages. The historical directory name is `openhealth`; the product and Dart
+package name are OpenGlucose and `openglucose`.
 
-## Getting Started
+> [!CAUTION]
+> This early-stage wellness/reference app is not a medical device. Do not use it
+> for diagnosis, dosing, treatment, or emergency decisions.
 
-This project is a starting point for a Flutter application.
+## Driver selection
 
-A few resources to get you started if this is your first Flutter project:
+- iOS and Android builds create `AidexSensorDriver` with the
+  `FlutterBluePlusTransport` platform adapter.
+- Web builds and widget tests create `DemoCgmDriver`, allowing UI development
+  without Bluetooth hardware.
+- A successful demo run does not validate a physical sensor or native
+  background behavior.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Run locally
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Use the repository-approved Flutter toolchain. Bootstrap the entire workspace
+from its root first:
+
+```sh
+make bootstrap
+```
+
+For a hardware-free demo:
+
+```sh
+cd openhealth
+flutter run -d chrome
+```
+
+For a connected mobile target:
+
+```sh
+cd openhealth
+flutter devices
+flutter run -d <device-id>
+```
+
+Mobile operation depends on Bluetooth availability, granted platform
+permissions, and a supported sensor. Never add provisioning profiles, signing
+keys, `.env` files, sensor exports, or identifiers to the repository.
+
+## Verify changes
+
+Run the shared checks from the repository root:
+
+```sh
+make check
+```
+
+For app-only iteration:
+
+```sh
+cd openhealth
+flutter analyze
+flutter test
+flutter build web
+```
+
+The repository-wide `make check` covers formatting, static analysis,
+unit/widget tests, the deterministic demo lifecycle integration test, Android
+and web builds, and the negative Android release-signing gate. On macOS it also
+runs the unsigned iOS build and `RunnerTests` on the pinned simulator. Physical-
+device end-to-end automation is still deferred.
+
+Focused native iteration can use `make build-android`, `make build-ios`, or
+`make test-ios-native`. User-interface changes require behavior checks and screenshots on
+the affected form factors; see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Architecture and support
+
+- [Workspace architecture](../docs/architecture/README.md)
+- [Compatibility policy](../docs/compatibility.md)
+- [Dependency policy](../docs/dependencies.md)
+- [Support](../SUPPORT.md)
+- [Security reporting](../SECURITY.md)
+
+The application is not a substitute for the sensor manufacturer's supported
+software, medical advice, or emergency services.

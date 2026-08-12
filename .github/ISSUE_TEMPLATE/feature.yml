@@ -1,0 +1,87 @@
+name: Feature proposal
+description: Propose a scoped improvement consistent with OpenGlucose's local-first wellness mission.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the user problem. Features must preserve the wellness/reference boundary: no diagnosis, dosing, treatment, or emergency-decision behavior.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is affected, in what situation, and what outcome is missing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe observable acceptance criteria rather than only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: exclusions
+    attributes:
+      label: Explicit exclusions
+      description: What should this proposal not attempt to solve?
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Primary component
+      options:
+        - OpenGlucose app or demo
+        - Sensor-neutral domain model
+        - BLE transport
+        - AiDEX/LinX driver
+        - Build, release, or developer experience
+        - Documentation or governance
+        - Unsure
+    validations:
+      required: true
+  - type: checkboxes
+    id: impacts
+    attributes:
+      label: Risk signals
+      description: Select every area the feature may affect.
+      options:
+        - label: Public package API or serialized data
+        - label: Health/personal data collection, retention, export, backup, or deletion
+        - label: Sensor commands, BLE behavior, permissions, or native background execution
+        - label: AI-generated content or third-party network processing
+        - label: Signing, release, dependency, or supply-chain behavior
+        - label: Accessibility or a critical user journey
+  - type: textarea
+    id: local_first
+    attributes:
+      label: Local-first and safety behavior
+      description: Explain offline behavior, data ownership, failure presentation, and how this avoids medical or emergency claims.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include doing nothing or solving the problem outside OpenGlucose when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Suggested verification
+      description: What unit, contract, integration, UI, native-device, compatibility, or recovery evidence should establish success?
+  - type: checkboxes
+    id: declarations
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: The proposal does not require real health data or device identifiers to discuss.
+          required: true
+        - label: The proposal stays within the wellness/reference boundary.
+          required: true

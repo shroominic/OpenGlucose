@@ -17,13 +17,33 @@ dependencies:
   cgm_core:
     path: ../packages/cgm_core
   intl: ^0.20.2
+  path_provider: ^2.1.5
   shared_preferences: ^2.5.3
+  health: ^13.3.1
+  # Secure on-device storage (iOS Keychain / Android Keystore) for the optional
+  # BYO AI API key. The key is never written to SharedPreferences or logged.
+  flutter_secure_storage: ^9.2.4
+  # Local-first persistence for events / health-samples / AI insights.
+  # sqflite chosen over hive/isar: it's relational and query-friendly, so the
+  # repository's window/type filtered queries push down to SQL indexes instead
+  # of scanning in Dart, it scales to many imported sample rows, and it ships
+  # explicit schema-version migration hooks (onCreate/onUpgrade) we need here.
+  # It is the lowest-risk, most idiomatic on-device Flutter store and stays
+  # fully local (no cloud).
+  sqflite: ^2.4.1
+  path: ^1.9.0
 
 dev_dependencies:
-  flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.3
   flutter_test:
     sdk: flutter
+  very_good_analysis: ^10.2.0
+  # In-process SQLite (FFI) so the sqflite repository runs in `flutter test`
+  # on the host with no device/simulator. Keep the pre-build-hook release
+  # pinned so this test-only dependency cannot download or bundle native
+  # SQLite artifacts into production Android/iOS builds.
+  sqflite_common_ffi: 2.3.7+1
+  sqlite3: 2.9.4
 
 flutter:
   uses-material-design: true

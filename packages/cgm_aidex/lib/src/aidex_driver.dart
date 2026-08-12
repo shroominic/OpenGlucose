@@ -145,9 +145,7 @@ class AidexSession implements CgmSession {
          sensor: sensor,
          capabilities: sensor.capabilities,
          lastAdvertisement: sensor.advertisement,
-         sessionInfo: const CgmSessionInfo(
-           warmupMinutes: _aidexWarmupMinutes,
-         ),
+         sessionInfo: const CgmSessionInfo(warmupMinutes: _aidexWarmupMinutes),
          metadata: <String, String>{'deviceId': sensor.deviceId},
        ),
        _unsafeAdmin = AidexUnsafeAdmin._() {
@@ -323,7 +321,10 @@ class AidexSession implements CgmSession {
     try {
       await _connection?.disconnect();
     } catch (error) {
-      _emitLog(CgmLogLevel.warning, 'BLE disconnect failed: $error');
+      _emitLog(
+        CgmLogLevel.warning,
+        'BLE disconnect failed (${error.runtimeType})',
+      );
     }
     _connection = null;
     _connectionState = BleConnectionState.disconnected;
@@ -339,7 +340,7 @@ class AidexSession implements CgmSession {
 
   Future<void> _initializeInternal() async {
     try {
-      _emitLog(CgmLogLevel.info, 'Connecting to ${sensor.displayName}');
+      _emitLog(CgmLogLevel.info, 'Connecting to AiDEX sensor');
       _connection = await _transport.connect(sensor.deviceId);
       _connectionState = BleConnectionState.connected;
       _emitLog(CgmLogLevel.debug, 'BLE link connected');
@@ -454,7 +455,10 @@ class AidexSession implements CgmSession {
           try {
             await _refreshLiveDataInternal();
           } catch (error) {
-            _emitLog(CgmLogLevel.warning, 'Live refresh failed: $error');
+            _emitLog(
+              CgmLogLevel.warning,
+              'Live refresh failed (${error.runtimeType})',
+            );
             _queueCatchUpSyncIfStale(reason: 'Live refresh failed');
           } finally {
             if (!_disconnecting) {
@@ -830,7 +834,8 @@ class AidexSession implements CgmSession {
     } catch (error) {
       _emitLog(
         CgmLogLevel.warning,
-        'Could not ensure vendor auto-update is enabled: $error',
+        'Could not ensure vendor auto-update is enabled '
+        '(${error.runtimeType})',
       );
     }
   }
@@ -887,7 +892,10 @@ class AidexSession implements CgmSession {
       try {
         await _clearBondViaBms();
       } catch (error) {
-        _emitLog(CgmLogLevel.warning, 'BMS bond clear failed: $error');
+        _emitLog(
+          CgmLogLevel.warning,
+          'BMS bond clear failed (${error.runtimeType})',
+        );
       }
       return;
     }
@@ -896,13 +904,19 @@ class AidexSession implements CgmSession {
       await _sendVendorCommand(AidexVendorOpcode.unpair);
       _emitLog(CgmLogLevel.info, 'Vendor unpair command sent');
     } catch (error) {
-      _emitLog(CgmLogLevel.warning, 'Vendor unpair failed: $error');
+      _emitLog(
+        CgmLogLevel.warning,
+        'Vendor unpair failed (${error.runtimeType})',
+      );
     }
 
     try {
       await _clearBondViaBms();
     } catch (error) {
-      _emitLog(CgmLogLevel.warning, 'BMS bond clear failed: $error');
+      _emitLog(
+        CgmLogLevel.warning,
+        'BMS bond clear failed (${error.runtimeType})',
+      );
     }
   }
 
@@ -915,7 +929,10 @@ class AidexSession implements CgmSession {
       await connection.removeBond();
       _emitLog(CgmLogLevel.info, 'Removed local BLE bond');
     } catch (error) {
-      _emitLog(CgmLogLevel.warning, 'OS bond removal failed: $error');
+      _emitLog(
+        CgmLogLevel.warning,
+        'OS bond removal failed (${error.runtimeType})',
+      );
     }
   }
 
@@ -954,7 +971,7 @@ class AidexSession implements CgmSession {
     _emitLog(
       CgmLogLevel.warning,
       'Initialization failed while a local BLE bond exists; removing the '
-      'local bond and retrying once: $error',
+      'local bond and retrying once (${error.runtimeType})',
     );
     await _resetBleLinkForRetry(removeBond: true);
     _setSnapshot(
@@ -991,7 +1008,8 @@ class AidexSession implements CgmSession {
       } catch (bondError) {
         _emitLog(
           CgmLogLevel.warning,
-          'Could not remove stale Android bond before retry: $bondError',
+          'Could not remove stale Android bond before retry '
+          '(${bondError.runtimeType})',
         );
       }
     }
@@ -1074,7 +1092,10 @@ class AidexSession implements CgmSession {
         startOffset: resumeFrom,
         reason: 'Aidex history range timed out',
       );
-      _emitLog(CgmLogLevel.warning, 'Aidex history range timed out: $error');
+      _emitLog(
+        CgmLogLevel.warning,
+        'Aidex history range timed out (${error.runtimeType})',
+      );
       return;
     }
     final range = parseVendorRangePayload(rangeResponse.payload);
@@ -1109,7 +1130,7 @@ class AidexSession implements CgmSession {
           pageResponse = await _sendVendorCommandWithRetry(
             AidexVendorOpcode.getHistories,
             payload: littleEndian16(nextIndex),
-            context: 'Aidex history page $nextIndex',
+            context: 'Aidex history page',
           );
         } on TimeoutException catch (error) {
           _pauseHistorySync(
@@ -1122,7 +1143,8 @@ class AidexSession implements CgmSession {
           );
           _emitLog(
             CgmLogLevel.warning,
-            'Aidex history page $nextIndex timed out after retries: $error',
+            'Aidex history page timed out after retries '
+            '(${error.runtimeType})',
           );
           return;
         }
@@ -1305,10 +1327,7 @@ class AidexSession implements CgmSession {
         ...littleEndian16(effectiveMinute),
       ]),
     );
-    _emitLog(
-      CgmLogLevel.info,
-      'Submitted calibration $glucoseMgdl mg/dL at sensor minute $effectiveMinute',
-    );
+    _emitLog(CgmLogLevel.info, 'Submitted calibration to sensor');
   }
 
   Future<AidexCommunicationIntervalState>
@@ -1522,29 +1541,31 @@ class AidexSession implements CgmSession {
     Timer? timeout;
     _emitLog(
       CgmLogLevel.debug,
-      'vendor -> F002 ${opcode.title} op=0x${opcode.code.toRadixString(16).padLeft(2, '0')} '
-      'payload=${hexOf(commandPayload)}',
+      'vendor -> F002 ${opcode.title} '
+      'op=0x${opcode.code.toRadixString(16).padLeft(2, '0')} '
+      'payloadBytes=${commandPayload.length}',
     );
     subscription = _f002Notifications.stream.listen((bytes) {
       final encrypted = Uint8List.fromList(bytes);
       _emitLog(
         CgmLogLevel.debug,
-        'F002 ${encrypted.length}B ${hexOf(encrypted)}',
+        'F002 encrypted update (${encrypted.length} bytes)',
       );
       final response = decryptVendorResponse(encrypted, sessionKey, sessionIv);
       if (response == null) {
         _emitLog(
           CgmLogLevel.warning,
-          'Ignoring undecodable post-pair F002 update ${hexOf(encrypted)}',
+          'Ignoring undecodable post-pair F002 update '
+          '(${encrypted.length} bytes)',
         );
         return;
       }
       final responseOpcode = AidexVendorOpcode.fromCode(response.opcode);
       _emitLog(
         CgmLogLevel.debug,
-        'vendor <- F002 ${responseOpcode?.title ?? '0x${response.opcode.toRadixString(16).padLeft(2, '0')}'} '
+        'vendor <- F002 ${responseOpcode?.title ?? 'unknown opcode'} '
         'op=0x${response.opcode.toRadixString(16).padLeft(2, '0')} '
-        'payload=${hexOf(response.payload)} plain=${hexOf(response.plaintext)}',
+        'payloadBytes=${response.payload.length}',
       );
       if (response.opcode != opcode.code) {
         _emitLog(
@@ -1599,7 +1620,11 @@ class AidexSession implements CgmSession {
     List<int> value, {
     bool withoutResponse = false,
   }) async {
-    await _requireConnection.write(ref, value, withoutResponse: withoutResponse);
+    await _requireConnection.write(
+      ref,
+      value,
+      withoutResponse: withoutResponse,
+    );
     await Future<void>.delayed(_timings.gattGap);
   }
 
@@ -1698,11 +1723,7 @@ class AidexSession implements CgmSession {
         requestedStartOffset ??
         (latestStoredOffset == null ? null : latestStoredOffset + 1);
     _liveCatchUpQueued = true;
-    _emitLog(
-      CgmLogLevel.info,
-      '$reason; queuing catch-up history sync from '
-      '${effectiveStartOffset ?? 'start'}',
-    );
+    _emitLog(CgmLogLevel.info, '$reason; queuing catch-up history sync');
     unawaited(
       _runQueued<void>(
         () => _syncHistoryInternal(
@@ -1752,11 +1773,7 @@ class AidexSession implements CgmSession {
       return;
     }
     _historyResumeTimer?.cancel();
-    _emitLog(
-      CgmLogLevel.info,
-      '$reason; resuming from index $startOffset in '
-      '${_historyResumeDelay.inSeconds}s',
-    );
+    _emitLog(CgmLogLevel.info, '$reason; scheduling history sync resume');
     _historyResumeTimer = Timer(_historyResumeDelay, () {
       _historyResumeTimer = null;
       if (_disconnecting) {
@@ -1823,12 +1840,9 @@ class AidexSession implements CgmSession {
     required String source,
   }) {
     if (!_shouldAcceptSessionStartCandidate(absoluteStart)) {
-      final candidateLatest = _sessionStartCandidateLatestDate(absoluteStart);
       _emitLog(
         CgmLogLevel.warning,
-        'Rejected $source session start ${absoluteStart.toIso8601String()} '
-        'because latest reading would land at '
-        '${candidateLatest?.toIso8601String() ?? 'unknown'}',
+        'Rejected implausible $source session start',
       );
       return;
     }
@@ -1906,10 +1920,7 @@ class AidexSession implements CgmSession {
         rawHistory: rebasedRawHistory,
       ),
     );
-    _emitLog(
-      CgmLogLevel.info,
-      'Adopted $source session start ${absoluteStart.toIso8601String()}',
-    );
+    _emitLog(CgmLogLevel.info, 'Adopted $source session start');
   }
 
   void _hydrateRestoredHistory() {
@@ -1995,7 +2006,8 @@ class AidexSession implements CgmSession {
   }
 
   void _emitLog(CgmLogLevel level, String message) {
-    print('[Aidex][${level.name}] $message');
+    // Keep diagnostics local to the app. Process and OS logs can be collected
+    // outside OpenGlucose's retention controls.
     if (!_logController.isClosed) {
       _logController.add(
         CgmLogEntry(timestamp: _clock(), level: level, message: message),
@@ -2044,12 +2056,13 @@ class AidexSession implements CgmSession {
     _historyResumeTimer?.cancel();
     _historyResumeTimer = null;
     _liveCatchUpQueued = false;
-    _emitLog(CgmLogLevel.error, '$context failed: $error');
+    final safeError = '$context failed (${error.runtimeType})';
+    _emitLog(CgmLogLevel.error, safeError);
     _setSnapshot(
       _snapshot.copyWith(
         stage: CgmSyncStage.error,
         statusText: 'Error',
-        lastError: '$context: $error',
+        lastError: safeError,
       ),
     );
   }

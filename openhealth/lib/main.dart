@@ -2,11 +2,25 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:cgm_core/cgm_core.dart';
+import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/health_state_store_factory.dart';
+import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/metrics_section.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_context_builder.dart';
+import 'package:openglucose/src/messaging/message_controller.dart';
+import 'package:openglucose/src/messaging/message_host.dart';
+import 'package:openglucose/src/mock_scenarios.dart';
+import 'package:openglucose/src/onboarding/onboarding_flow.dart';
+import 'package:openglucose/src/onboarding/onboarding_store.dart';
+import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -16,26 +30,74 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('FlutterError: ${details.exception}\n${details.stack}');
+    if (kDebugMode) {
+      debugPrint('FlutterError (${details.exception.runtimeType})');
+    }
   };
 
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Unhandled error: $error\n$stack');
+  PlatformDispatcher.instance.onError = (error, _) {
+    if (kDebugMode) {
+      debugPrint('Unhandled error (${error.runtimeType})');
+    }
     return true;
   };
 
   runApp(const _BootstrapApp());
 }
 
-Future<CgmAppController> _bootstrap() async {
+Future<_BootstrapResult> _bootstrap() async {
   final preferences = await SharedPreferences.getInstance();
+  final healthStateStore = createHealthStateStore(preferences);
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
+    healthStateStore: healthStateStore,
   );
   await controller.initialize();
-  return controller;
+  final healthExport = HealthExportController(
+    preferences: preferences,
+    healthStateStore: healthStateStore,
+    writesAllowed: !controller.isMockDriver,
+  )..initialize();
+  final messages = MessageController(
+    preferences: preferences,
+    messages: defaultMessageCatalog,
+  );
+  if (controller.isMockDriver) {
+    // In demo mode (simulator/feature verification) the demo driver only
+    // surfaces its sensor after a scan, so auto-scan and auto-connect to land
+    // directly on the populated dashboard. Strictly gated behind OG_DEMO and
+    // skipped when a previous session was already restored from preferences.
+    unawaited(_autoConnectDemoSensor(controller));
+  }
+  return (
+    controller: controller,
+    preferences: preferences,
+    healthExport: healthExport,
+    messages: messages,
+  );
+}
+
+typedef _BootstrapResult = ({
+  CgmAppController controller,
+  HealthExportController healthExport,
+  MessageController messages,
+  SharedPreferences preferences,
+});
+
+/// Scans with the demo driver and connects to the first discovered sensor so
+/// OG_DEMO builds open straight onto the populated dashboard.
+Future<void> _autoConnectDemoSensor(CgmAppController controller) async {
+  if (controller.snapshot != null) {
+    // A persisted session is already (re)connecting; don't interfere.
+    return;
+  }
+  await controller.scan();
+  final sensors = controller.sensors;
+  if (sensors.isEmpty) {
+    return;
+  }
+  await controller.connect(sensors.first);
 }
 
 class _BootstrapApp extends StatefulWidget {
@@ -46,20 +108,30 @@ class _BootstrapApp extends StatefulWidget {
 }
 
 class _BootstrapAppState extends State<_BootstrapApp> {
-  late final Future<CgmAppController> _future = _bootstrap();
+  late final Future<_BootstrapResult> _future = _bootstrap();
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<CgmAppController>(
+    return FutureBuilder<_BootstrapResult>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const _SplashApp();
         }
         if (snapshot.hasError) {
-          return _SplashApp(error: snapshot.error);
+          return _SplashApp(
+            error:
+                'Secure local storage could not be initialized '
+                '(${snapshot.error.runtimeType})',
+          );
         }
-        return OpenGlucoseApp(controller: snapshot.data!);
+        final result = snapshot.data!;
+        return OpenGlucoseApp(
+          controller: result.controller,
+          healthExport: result.healthExport,
+          preferences: result.preferences,
+          messageController: result.messages,
+        );
       },
     );
   }
@@ -124,19 +196,45 @@ class _SpinningLogoState extends State<_SpinningLogo>
   Widget build(BuildContext context) {
     return RotationTransition(
       turns: _controller,
-      child: Image.asset(
-        'assets/icon/logo.png',
-        width: 140,
-        height: 140,
-      ),
+      child: Image.asset('assets/icon/logo.png', width: 140, height: 140),
     );
   }
 }
 
+/// Provides the [HealthExportController] to descendant widgets (notably the
+/// settings sheet's Integrations tab) without threading it through every
+/// constructor.
+class HealthExportScope extends InheritedNotifier<HealthExportController> {
+  const HealthExportScope({
+    super.key,
+    required HealthExportController controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static HealthExportController of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<HealthExportScope>();
+    assert(scope != null, 'No HealthExportScope found in context');
+    return scope!.notifier!;
+  }
+}
+
 class OpenGlucoseApp extends StatelessWidget {
-  const OpenGlucoseApp({super.key, required this.controller});
+  const OpenGlucoseApp({
+    super.key,
+    required this.controller,
+    required this.healthExport,
+    required this.preferences,
+    this.messageController,
+  });
 
   final CgmAppController controller;
+  final HealthExportController healthExport;
+  final SharedPreferences preferences;
+
+  /// Optional contextual-messaging engine. When null (e.g. in some tests) the
+  /// dashboard simply renders no message host.
+  final MessageController? messageController;
 
   @override
   Widget build(BuildContext context) {
@@ -177,15 +275,81 @@ class OpenGlucoseApp extends StatelessWidget {
           ),
         ),
       ),
-      home: CgmHomePage(controller: controller),
+      // --- TASK-007 onboarding gate ---
+      // First-run only: show the skippable onboarding flow, then hand off to
+      // the existing scan/connect home. Persisted via OnboardingStore; once
+      // completed/skipped the gate falls straight through on later launches.
+      home: HealthExportScope(
+        controller: healthExport,
+        child: _OnboardingGate(
+          store: OnboardingStore(preferences),
+          controller: controller,
+          unit: controller.displayPreferences.unit,
+          home: CgmHomePage(
+            controller: controller,
+            messageController: messageController,
+          ),
+        ),
+      ),
+      // --- end TASK-007 onboarding gate ---
     );
   }
 }
 
+// --- TASK-007 onboarding gate ---
+/// Chooses between first-run onboarding and the main app. Kept deliberately
+/// small and self-contained so it merges cleanly with other `main.dart` edits.
+class _OnboardingGate extends StatefulWidget {
+  const _OnboardingGate({
+    required this.store,
+    required this.controller,
+    required this.unit,
+    required this.home,
+  });
+
+  final OnboardingStore store;
+  final CgmAppController controller;
+  final GlucoseUnit unit;
+  final Widget home;
+
+  @override
+  State<_OnboardingGate> createState() => _OnboardingGateState();
+}
+
+class _OnboardingGateState extends State<_OnboardingGate> {
+  late bool _showOnboarding = !widget.store.isCompleted;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_showOnboarding) {
+      return widget.home;
+    }
+    return OnboardingFlow(
+      store: widget.store,
+      unit: widget.unit,
+      onFinished: () {
+        widget.controller.updateDisplayPreferences(
+          widget.controller.displayPreferences.copyWith(
+            targetLowMgdl: widget.store.targetLowMgdl,
+            targetHighMgdl: widget.store.targetHighMgdl,
+          ),
+        );
+        setState(() => _showOnboarding = false);
+      },
+    );
+  }
+}
+// --- end TASK-007 onboarding gate ---
+
 class CgmHomePage extends StatefulWidget {
-  const CgmHomePage({super.key, required this.controller});
+  const CgmHomePage({
+    super.key,
+    required this.controller,
+    this.messageController,
+  });
 
   final CgmAppController controller;
+  final MessageController? messageController;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -226,6 +390,17 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
       animation: widget.controller,
       builder: (context, _) {
         final snapshot = widget.controller.snapshot;
+        // Contextual-messaging bridge: recompute which messages are relevant
+        // from the latest app state on every controller change. Deferred to
+        // post-frame so it never triggers a rebuild during this build pass.
+        final messageController = widget.messageController;
+        if (messageController != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            messageController.updateContext(
+              buildMessageContext(widget.controller),
+            );
+          });
+        }
         return Scaffold(
           body: DecoratedBox(
             decoration: const BoxDecoration(
@@ -245,6 +420,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                   : _DashboardView(
                       controller: widget.controller,
                       snapshot: snapshot,
+                      messageController: widget.messageController,
                     ),
             ),
           ),
@@ -458,10 +634,15 @@ class _ScanView extends StatelessWidget {
 }
 
 class _DashboardView extends StatelessWidget {
-  const _DashboardView({required this.controller, required this.snapshot});
+  const _DashboardView({
+    required this.controller,
+    required this.snapshot,
+    this.messageController,
+  });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
+  final MessageController? messageController;
 
   @override
   Widget build(BuildContext context) {
@@ -486,6 +667,24 @@ class _DashboardView extends StatelessWidget {
           parent: BouncingScrollPhysics(),
         ),
         slivers: <Widget>[
+          if (controller.isMockDriver)
+            const SliverToBoxAdapter(
+              child: ColoredBox(
+                color: Color(0xFFFFD166),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  child: Text(
+                    'DEMO DATA — NOT REAL GLUCOSE',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFF4A2B00),
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
@@ -519,12 +718,28 @@ class _DashboardView extends StatelessWidget {
               ),
             ),
           ),
+          // Contextual messaging host (TASK-004). Self-contained; renders the
+          // current top tip/info/alert as a dismissible card, or nothing.
+          if (messageController != null)
+            SliverToBoxAdapter(
+              child: MessageHost(controller: messageController!),
+            ),
           SliverToBoxAdapter(
             child: _DashboardHeroCard(
               controller: controller,
               snapshot: snapshot,
             ),
           ),
+          // --- Sensor lifecycle center (TASK-008) -------------------------
+          // Self-contained widget; safe to relocate/remove as one block.
+          SliverToBoxAdapter(
+            child: SensorLifecycleCard(
+              snapshot: snapshot,
+              latestReading: controller.latestReading,
+              onReplaceSensor: () => unawaited(controller.disconnect()),
+            ),
+          ),
+          // --- end sensor lifecycle center --------------------------------
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
@@ -555,6 +770,39 @@ class _DashboardView extends StatelessWidget {
               ),
             ),
           ),
+          // --- TASK-012 metrics pack (explainable wellness patterns) ---
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: MetricsSection(
+                readings: history,
+                preferences: preferences,
+              ),
+            ),
+          ),
+          // --- end TASK-012 metrics pack ---
+          // --- TASK-028 weekly recap entry point ---
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: FilledButton.tonalIcon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => WeeklyRecapScreen(
+                      readings: history,
+                      preferences: preferences,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.insights_rounded),
+                label: const Text('Weekly recap'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            ),
+          ),
+          // --- end TASK-028 weekly recap entry point ---
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
@@ -860,6 +1108,7 @@ Future<void> _showSettings(
     unawaited(controller.refreshDiagnostics());
     unawaited(controller.loadCalibrations());
   }
+  final healthExport = HealthExportScope.of(context);
   var working = controller.displayPreferences;
   final scaleController = TextEditingController(
     text: working.calibrationScale.toStringAsFixed(2),
@@ -869,6 +1118,12 @@ Future<void> _showSettings(
   );
   final cropController = TextEditingController(
     text: working.cropFirstSamples.toString(),
+  );
+  final targetLowController = TextEditingController(
+    text: working.targetLowMgdl.toStringAsFixed(0),
+  );
+  final targetHighController = TextEditingController(
+    text: working.targetHighMgdl.toStringAsFixed(0),
   );
 
   await showModalBottomSheet<void>(
@@ -892,6 +1147,8 @@ Future<void> _showSettings(
             scaleController: scaleController,
             offsetController: offsetController,
             cropController: cropController,
+            targetLowController: targetLowController,
+            targetHighController: targetHighController,
             setState: setState,
             onWorkingChanged: (next) => working = next,
           );
@@ -915,13 +1172,17 @@ Future<void> _showSettings(
             child: SizedBox(
               height: MediaQuery.of(context).size.height * 0.84,
               child: DefaultTabController(
-                length: 3,
+                length: 5,
                 child: Column(
                   children: <Widget>[
                     const TabBar(
+                      isScrollable: true,
+                      tabAlignment: TabAlignment.center,
                       tabs: <Widget>[
                         Tab(text: 'Display'),
                         Tab(text: 'Sensor'),
+                        Tab(text: 'Integrations'),
+                        Tab(text: 'AI'),
                         Tab(text: 'Developer'),
                       ],
                     ),
@@ -934,12 +1195,31 @@ Future<void> _showSettings(
                             controller,
                             snapshot,
                           ),
+                          // --- BEGIN Integrations tab (TASK-016) ---
+                          IntegrationsSettingsPane(
+                            healthExport: healthExport,
+                            controller: controller,
+                          ),
+                          // --- END Integrations tab (TASK-016) ---
+                          // --- AI insights (optional) ----------------------
+                          // Self-contained pane; other settings agents should
+                          // not need to touch this block. See src/ai/.
+                          AiSettingsPane(
+                            recentReadings: controller.visibleHistory,
+                            unit: controller.displayPreferences.unit,
+                          ),
+                          // -------------------------------------------------
                           _buildDeveloperSettingsPane(
                             context: context,
+                            controller: controller,
                             snapshot: snapshot,
                             diagnostics: diagnostics,
                             calibrations: calibrations,
                             logs: logs,
+                            onScenarioChanged: (scenario) {
+                              controller.applyMockScenario(scenario);
+                              setState(() {});
+                            },
                           ),
                         ],
                       ),
@@ -953,6 +1233,11 @@ Future<void> _showSettings(
       );
     },
   );
+  scaleController.dispose();
+  offsetController.dispose();
+  cropController.dispose();
+  targetLowController.dispose();
+  targetHighController.dispose();
 }
 
 Widget _buildDisplaySettingsPane({
@@ -962,6 +1247,8 @@ Widget _buildDisplaySettingsPane({
   required TextEditingController scaleController,
   required TextEditingController offsetController,
   required TextEditingController cropController,
+  required TextEditingController targetLowController,
+  required TextEditingController targetHighController,
   required void Function(void Function()) setState,
   required void Function(DisplayPreferences) onWorkingChanged,
 }) {
@@ -1023,6 +1310,34 @@ Widget _buildDisplaySettingsPane({
         keyboardType: TextInputType.number,
         decoration: const InputDecoration(labelText: 'Crop first N samples'),
       ),
+      const SizedBox(height: 12),
+      Row(
+        children: <Widget>[
+          Expanded(
+            child: TextField(
+              controller: targetLowController,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Target low (mg/dL)',
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: TextField(
+              controller: targetHighController,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Target high (mg/dL)',
+              ),
+            ),
+          ),
+        ],
+      ),
       const SizedBox(height: 18),
       Wrap(
         spacing: 12,
@@ -1030,6 +1345,21 @@ Widget _buildDisplaySettingsPane({
         children: <Widget>[
           FilledButton(
             onPressed: () {
+              final targetLow = double.tryParse(targetLowController.text);
+              final targetHigh = double.tryParse(targetHighController.text);
+              if (targetLow == null ||
+                  targetHigh == null ||
+                  !targetLow.isFinite ||
+                  !targetHigh.isFinite ||
+                  targetLow <= 0 ||
+                  targetHigh <= targetLow) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Enter an increasing target glucose range.'),
+                  ),
+                );
+                return;
+              }
               controller.updateDisplayPreferences(
                 working.copyWith(
                   calibrationScale:
@@ -1041,6 +1371,8 @@ Widget _buildDisplaySettingsPane({
                   cropFirstSamples:
                       int.tryParse(cropController.text) ??
                       working.cropFirstSamples,
+                  targetLowMgdl: targetLow,
+                  targetHighMgdl: targetHigh,
                 ),
               );
               Navigator.of(context).pop();
@@ -1048,7 +1380,7 @@ Widget _buildDisplaySettingsPane({
             child: const Text('Save settings'),
           ),
           OutlinedButton(
-            onPressed: controller.clearPersistedHistory,
+            onPressed: () => unawaited(controller.clearPersistedHistory()),
             child: const Text('Clear cache'),
           ),
         ],
@@ -1113,10 +1445,12 @@ Widget _buildSensorSettingsPane(
 
 Widget _buildDeveloperSettingsPane({
   required BuildContext context,
+  required CgmAppController controller,
   required CgmSessionSnapshot snapshot,
   required List<CgmDiagnosticItem> diagnostics,
   required List<CgmCalibrationEntry> calibrations,
   required List<CgmLogEntry> logs,
+  required ValueChanged<MockScenario> onScenarioChanged,
 }) {
   final metadataEntries = <MapEntry<String, String>>[
     MapEntry('deviceId', snapshot.sensor.deviceId),
@@ -1138,6 +1472,44 @@ Widget _buildDeveloperSettingsPane({
         ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 16),
+      if (controller.isMockDriver) ...<Widget>[
+        Text(
+          'Mock scenario',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<MockScenario>(
+          key: const ValueKey<String>('mockScenarioPicker'),
+          initialValue: controller.mockScenario ?? MockScenario.activeNormal,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Simulated sensor state',
+          ),
+          items: MockScenario.values
+              .map(
+                (scenario) => DropdownMenuItem<MockScenario>(
+                  value: scenario,
+                  child: Text(scenario.label),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: (scenario) {
+            if (scenario != null) {
+              onScenarioChanged(scenario);
+            }
+          },
+        ),
+        const SizedBox(height: 6),
+        Text(
+          (controller.mockScenario ?? MockScenario.activeNormal).description,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: const Color(0xFF5B6E6A),
+          ),
+        ),
+        const Divider(height: 28),
+      ],
       Text(
         'Metadata',
         style: Theme.of(

@@ -1,28 +1,37 @@
-# This file configures the analyzer, which statically analyzes Dart code to
-# check for errors, warnings, and lints.
+# Static analysis configuration for the OpenGlucose app.
 #
-# The issues identified by the analyzer are surfaced in the UI of Dart-enabled
-# IDEs (https://dart.dev/tools#ides-and-editors). The analyzer can also be
-# invoked from the command line by running `flutter analyze`.
-
-# The following line activates a set of recommended lints for Flutter apps,
-# packages, and plugins designed to encourage good coding practices.
-include: package:flutter_lints/flutter.yaml
+# We extend `very_good_analysis` for a strong, opinionated lint set that catches
+# bugs and enforces consistent style. CI and the pre-commit hook both run
+# `flutter analyze`; run `dart fix --apply` to auto-fix most issues.
+# See CONTRIBUTING.md.
+include: package:very_good_analysis/analysis_options.yaml
 
 linter:
-  # The lint rules applied to this project can be customized in the
-  # section below to disable rules from the `package:flutter_lints/flutter.yaml`
-  # included above or to enable additional rules. A list of all available lints
-  # and their documentation is published at https://dart.dev/lints.
-  #
-  # Instead of disabling a lint rule for the entire project in the
-  # section below, it can also be suppressed for a single line of code
-  # or a specific dart file by using the `// ignore: name_of_lint` and
-  # `// ignore_for_file: name_of_lint` syntax on the line or in the file
-  # producing the lint.
   rules:
-    # avoid_print: false  # Uncomment to disable the `avoid_print` rule
-    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
+    # This is an application, not a published package, so we do not require a
+    # doc comment on every public member. Documentation is still encouraged for
+    # non-obvious APIs.
+    public_member_api_docs: false
 
-# Additional information about this file can be found at
-# https://dart.dev/guides/language/analysis-options
+    # --- Pre-existing-violation baseline (follow-ups) ---
+    # The rules below are valuable but each has pre-existing violations in the
+    # current codebase. They are disabled here so the strong lint set can land
+    # without a large, conflict-prone rewrite of feature code. Re-enable them
+    # one at a time and clean up (most are auto-fixable via `dart fix --apply`).
+    # Tracked as a follow-up; see CONTRIBUTING.md.
+    avoid_catches_without_on_clauses: false # 16 occurrences
+    always_use_package_imports: false # 12 occurrences (relative imports in lib/)
+    cascade_invocations: false # 5 occurrences
+    always_put_required_named_parameters_first: false # 5 occurrences
+    prefer_const_constructors: false # auto-fixable via `dart fix`
+    directives_ordering: false # auto-fixable via `dart fix`
+    avoid_redundant_argument_values: false # auto-fixable via `dart fix`
+    sort_constructors_first: false
+    sort_pub_dependencies: false
+    use_null_aware_elements: false
+    noop_primitive_operations: false
+
+    # `dart format` is the single source of truth for formatting and it leaves
+    # the few remaining long lines untouched (e.g. long string literals), so we
+    # disable the line-length lint to keep the analyzer and formatter in sync.
+    lines_longer_than_80_chars: false
