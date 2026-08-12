@@ -30,7 +30,7 @@ dependencies:
   # explicit schema-version migration hooks (onCreate/onUpgrade) we need here.
   # It is the lowest-risk, most idiomatic on-device Flutter store and stays
   # fully local (no cloud).
-  sqflite: ^2.4.1
+  sqflite: ^2.4.3
   path: ^1.9.0
 
 dev_dependencies:
