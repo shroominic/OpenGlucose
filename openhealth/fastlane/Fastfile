@@ -1,0 +1,460 @@
+require "json"
+require "logger"
+require "securerandom"
+require "time"
+
+default_platform(:ios)
+
+def required_option(options, key)
+  value = options[key].to_s.strip
+  UI.user_error!("Missing required option #{key}") if value.empty?
+  value
+end
+
+def optional_option(options, key)
+  value = options[key].to_s.strip
+  value.empty? ? nil : value
+end
+
+def connect_api_app(options)
+  api_key_path = required_option(options, :api_key_path)
+  bundle_id = required_option(options, :bundle_id)
+  Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(
+    filepath: api_key_path
+  )
+  # Spaceship otherwise persists full App Store Connect response bodies under
+  # /tmp, including beta-group public links and other audience metadata.
+  Spaceship::ConnectAPI.client.test_flight_request_client.logger = Logger.new(
+    File::NULL
+  )
+  app = Spaceship::ConnectAPI::App.find(bundle_id)
+  UI.user_error!("App Store Connect app not found for #{bundle_id}") unless app
+  app
+end
+
+def external_groups(app)
+  app.get_beta_groups.select { |group| group.is_internal_group == false }
+end
+
+def exact_external_group(app:, group_name:, group_id: nil)
+  all_groups = app.get_beta_groups
+  automatic_groups = all_groups.select(&:has_access_to_all_builds)
+  unless automatic_groups.empty?
+    UI.user_error!(
+      "TestFlight groups with automatic access to all builds are not allowed " \
+      "(found #{automatic_groups.length})"
+    )
+  end
+
+  groups = all_groups.select { |group| group.is_internal_group == false }
+  matches = groups.select do |group|
+    group.name == group_name && (group_id.nil? || group.id == group_id)
+  end
+  UI.user_error!(
+    "Expected exactly one non-automatic external TestFlight group named " \
+    "#{group_name}#{group_id ? " with ID #{group_id}" : ''}; found #{matches.length}"
+  ) unless matches.one?
+  matches.first
+end
+
+def exact_valid_build(app:, version:, build_number:)
+  builds = Spaceship::ConnectAPI::Build.all(
+    app_id: app.id,
+    version: version,
+    build_number: build_number,
+    platform: "IOS",
+    processing_states: "VALID"
+  ).uniq(&:id)
+  UI.user_error!(
+    "Expected exactly one valid TestFlight build #{version} (#{build_number}); " \
+    "found #{builds.length}"
+  ) unless builds.one?
+  Spaceship::ConnectAPI::Build.get(build_id: builds.first.id)
+end
+
+def disable_automatic_notification(build)
+  detail = build.build_beta_detail
+  UI.user_error!("TestFlight build has no beta detail") unless detail
+  Spaceship::ConnectAPI.patch_build_beta_details(
+    build_beta_details_id: detail.id,
+    attributes: { autoNotifyEnabled: false }
+  )
+  refreshed = Spaceship::ConnectAPI::Build.get(build_id: build.id)
+  UI.user_error!("Could not disable automatic tester notification") unless
+    refreshed.build_beta_detail&.auto_notify_enabled == false
+  refreshed
+end
+
+def associated_groups(app:, build:)
+  app.get_beta_groups.select do |group|
+    group.fetch_builds.any? { |candidate| candidate.id == build.id }
+  end
+end
+
+def require_exclusive_association(app:, build:, approved_group:, required:)
+  associated = associated_groups(app: app, build: build)
+  unexpected = associated.reject { |group| group.id == approved_group.id }
+  unless unexpected.empty?
+    UI.user_error!(
+      "Build is associated with #{unexpected.length} unapproved beta group(s)"
+    )
+  end
+  if required && associated.none? { |group| group.id == approved_group.id }
+    UI.user_error!("Build is not associated with the approved external group")
+  end
+  associated.any? { |group| group.id == approved_group.id }
+end
+
+def require_no_individual_testers(build)
+  # The relationship endpoint returns only linkage IDs, not tester names or
+  # email addresses. Count those resources without materializing identities.
+  responses = Spaceship::ConnectAPI.client.test_flight_request_client
+    .get(
+      "v1/builds/#{build.id}/relationships/individualTesters",
+      { limit: 200 }
+    )
+    .all_pages
+  count = responses.sum { |response| Array(response.body["data"]).length }
+  UI.user_error!(
+    "Build has #{count} unapproved individually assigned tester(s)"
+  ) unless count.zero?
+end
+
+def expected_notification_receipt(app:, build:, group:, bundle_id:, version:, build_number:, source_commit:)
+  {
+    "schemaVersion" => 1,
+    "appId" => app.id,
+    "bundleId" => bundle_id,
+    "buildId" => build.id,
+    "version" => version,
+    "buildNumber" => build_number,
+    "groupId" => group.id,
+    "sourceCommit" => source_commit
+  }
+end
+
+def fsync_parent_directory(path)
+  File.open(File.dirname(path), File::RDONLY) do |directory|
+    directory.fsync
+  end
+end
+
+def load_notification_receipt(path)
+  receipt_stat = File.lstat(path)
+  UI.user_error!("Notification receipt must be a regular non-symlink file") unless
+    receipt_stat.file? && !receipt_stat.symlink?
+
+  File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+    opened_stat = file.stat
+    UI.user_error!("Notification receipt changed during verification") unless
+      opened_stat.file? &&
+        opened_stat.dev == receipt_stat.dev &&
+        opened_stat.ino == receipt_stat.ino
+    mode = opened_stat.mode & 0o777
+    UI.user_error!("Notification receipt must have mode 400 or 600") unless
+      [0o400, 0o600].include?(mode)
+    JSON.parse(file.read)
+  end
+rescue JSON::ParserError
+  UI.user_error!("Notification receipt is not valid JSON")
+rescue Errno::ENOENT, Errno::ELOOP
+  UI.user_error!("Notification receipt changed during verification")
+end
+
+def notification_receipt_state(path:, expected:)
+  return :absent unless File.exist?(path) || File.symlink?(path)
+
+  receipt = load_notification_receipt(path)
+  matches = expected.all? { |key, value| receipt[key] == value }
+  UI.user_error!("Notification receipt does not match the exact release") unless matches
+
+  claim_id = receipt["claimId"].to_s.strip
+  claimed_at = receipt["claimedAtUtc"].to_s.strip
+  UI.user_error!("Notification receipt has incomplete claim metadata") if
+    claim_id.empty? || claimed_at.empty?
+
+  case receipt["status"]
+  when "complete"
+    notification_id = receipt["notificationId"].to_s.strip
+    notified_at = receipt["notifiedAtUtc"].to_s.strip
+    UI.user_error!("Completed notification receipt is incomplete") if
+      notification_id.empty? || notified_at.empty?
+    :complete
+  when "pending"
+    UI.user_error!(
+      "A durable notification claim is pending for this exact release. " \
+      "Do not run concurrently or retry until the release owner reconciles " \
+      "App Store Connect."
+    )
+  else
+    UI.user_error!("Notification receipt has an unknown status")
+  end
+end
+
+def create_notification_claim(path:, expected:)
+  claim_id = SecureRandom.uuid
+  claim = expected.merge(
+    "status" => "pending",
+    "claimId" => claim_id,
+    "claimedAtUtc" => Time.now.utc.iso8601
+  )
+  File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    file.chmod(0o600)
+    file.write("#{JSON.generate(claim)}\n")
+    file.flush
+    file.fsync
+  end
+  fsync_parent_directory(path)
+  claim_id
+rescue Errno::EEXIST
+  UI.user_error!(
+    "A notification claim already exists. Do not run concurrently or retry " \
+    "until the release owner reconciles App Store Connect."
+  )
+rescue SystemCallError => error
+  UI.user_error!(
+    "The durable notification claim could not be established " \
+    "(#{error.class}). No notification was attempted; do not retry until " \
+    "the release owner inspects the claim path."
+  )
+end
+
+def complete_notification_claim(path:, expected:, claim_id:, notification_id:)
+  completion_path = nil
+  begin
+    pending = load_notification_receipt(path)
+    matches = expected.all? { |key, value| pending[key] == value }
+    matches &&= pending["status"] == "pending"
+    matches &&= pending["claimId"] == claim_id
+    UI.user_error!("The durable notification claim changed after delivery") unless matches
+
+    complete = pending.merge(
+      "status" => "complete",
+      "notificationId" => notification_id,
+      "notifiedAtUtc" => Time.now.utc.iso8601
+    )
+    completion_path = "#{path}.complete.#{Process.pid}.#{SecureRandom.hex(16)}"
+    File.open(
+      completion_path,
+      File::WRONLY | File::CREAT | File::EXCL,
+      0o400
+    ) do |file|
+      file.chmod(0o400)
+      file.write("#{JSON.generate(complete)}\n")
+      file.flush
+      file.fsync
+    end
+    File.rename(completion_path, path)
+    fsync_parent_directory(path)
+  rescue StandardError => error
+    UI.user_error!(
+      "Notification may have been sent, but the durable claim could not be " \
+      "confirmed complete (#{error.class}). Do not retry until the release " \
+      "owner reconciles App Store Connect."
+    )
+  ensure
+    if completion_path && (File.exist?(completion_path) || File.symlink?(completion_path))
+      begin
+        File.unlink(completion_path)
+      rescue SystemCallError
+        # The enclosing mode-700 temporary release directory is removed by the
+        # release script. Never mask the fail-closed delivery error above.
+      end
+    end
+  end
+end
+
+def post_build_beta_notification_once(request_client:, build_id:)
+  body = {
+    data: {
+      type: "buildBetaNotifications",
+      relationships: {
+        build: { data: { type: "builds", id: build_id } }
+      }
+    }
+  }
+  response = request_client.client.run_request(
+    :post,
+    "v1/buildBetaNotifications",
+    JSON.generate(body),
+    {
+      "Content-Type" => "application/json",
+      "User-Agent" => Spaceship::Client::USER_AGENT
+    }
+  )
+  parsed_body = if response.body.is_a?(String)
+                  JSON.parse(response.body)
+                else
+                  response.body
+                end
+  {
+    status: response.status,
+    body: parsed_body
+  }
+end
+
+platform :ios do
+  desc "Require one existing non-automatic external group and record its immutable ID"
+  lane :verify_external_group do |options|
+    app = connect_api_app(options)
+    group_name = required_option(options, :group_name)
+    expected_group_id = optional_option(options, :group_id)
+    result_path = required_option(options, :result_path)
+    group = exact_external_group(
+      app: app,
+      group_name: group_name,
+      group_id: expected_group_id
+    )
+
+    File.open(result_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      file.write(group.id)
+    end
+    UI.success("Verified the approved external TestFlight group")
+  end
+
+  desc "Associate an exact build with only the approved immutable group ID"
+  lane :associate_external_build do |options|
+    app = connect_api_app(options)
+    group = exact_external_group(
+      app: app,
+      group_name: required_option(options, :group_name),
+      group_id: required_option(options, :group_id)
+    )
+    build = exact_valid_build(
+      app: app,
+      version: required_option(options, :version),
+      build_number: required_option(options, :build_number)
+    )
+    build = disable_automatic_notification(build)
+    require_no_individual_testers(build)
+
+    already_associated = require_exclusive_association(
+      app: app,
+      build: build,
+      approved_group: group,
+      required: false
+    )
+    if build.ready_for_beta_submission?
+      build.post_beta_app_review_submission
+      UI.important("Submitted the exact build for external beta review")
+    end
+    build.add_beta_groups(beta_groups: [group]) unless already_associated
+    require_exclusive_association(
+      app: app,
+      build: build,
+      approved_group: group,
+      required: true
+    )
+    require_no_individual_testers(build)
+    UI.success("Associated the exact build with only the approved group ID")
+  end
+
+  desc "Verify the immutable audience and notify it after external beta approval"
+  lane :notify_external_build do |options|
+    app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
+    group = exact_external_group(
+      app: app,
+      group_name: required_option(options, :group_name),
+      group_id: required_option(options, :group_id)
+    )
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    build = exact_valid_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    build = disable_automatic_notification(build)
+    require_exclusive_association(
+      app: app,
+      build: build,
+      approved_group: group,
+      required: true
+    )
+    require_no_individual_testers(build)
+
+    detail = build.build_beta_detail
+    receipt_path = required_option(options, :notification_receipt_path)
+    expected_receipt = expected_notification_receipt(
+      app: app,
+      build: build,
+      group: group,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: required_option(options, :source_commit)
+    )
+    if notification_receipt_state(
+      path: receipt_path,
+      expected: expected_receipt
+    ) == :complete
+      UI.success("Verified the durable notification receipt for the exact build")
+      next
+    end
+    if build.ready_for_beta_submission?
+      UI.user_error!(
+        "The exact build still requires beta-review submission. Run the " \
+        "association lane before using notify-only mode."
+      )
+    end
+    eligible_states = [
+      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::BETA_APPROVED,
+      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::IN_BETA_TESTING
+    ]
+    unless eligible_states.include?(detail.external_build_state)
+      UI.user_error!(
+        "The exact build is not ready to notify (external state: " \
+        "#{detail.external_build_state}). Re-run in notify-only mode after approval."
+      )
+    end
+
+    # Claim the exact release durably before the build-scoped, non-idempotent
+    # notification request. Existing pending or complete records prevent a
+    # concurrent runner from posting. The audience is then rechecked with the
+    # claim held immediately before the single request attempt.
+    claim_id = create_notification_claim(
+      path: receipt_path,
+      expected: expected_receipt
+    )
+    require_exclusive_association(
+      app: app,
+      build: build,
+      approved_group: group,
+      required: true
+    )
+    require_no_individual_testers(build)
+    begin
+      response = post_build_beta_notification_once(
+        request_client: Spaceship::ConnectAPI.client.test_flight_request_client,
+        build_id: build.id
+      )
+    rescue StandardError => error
+      UI.user_error!(
+        "The notification request had an ambiguous failure (#{error.class}); " \
+        "the durable claim remains pending. Do not retry until the release " \
+        "owner reconciles App Store Connect."
+      )
+    end
+    UI.user_error!(
+      "App Store Connect did not confirm tester notification; the durable " \
+      "claim remains pending. Do not retry until the release owner reconciles " \
+      "App Store Connect."
+    ) unless
+      response[:status] == 201 &&
+        response[:body].dig("data", "type") == "buildBetaNotifications"
+    notification_id = response[:body].dig("data", "id").to_s.strip
+    UI.user_error!(
+      "App Store Connect returned no notification ID; the durable claim " \
+      "remains pending. Do not retry until the release owner reconciles " \
+      "App Store Connect."
+    ) if notification_id.empty?
+    complete_notification_claim(
+      path: receipt_path,
+      expected: expected_receipt,
+      claim_id: claim_id,
+      notification_id: notification_id
+    )
+    UI.success("Notified testers assigned only to the approved group")
+  end
+end

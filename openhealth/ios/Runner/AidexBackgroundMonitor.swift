@@ -5,14 +5,9 @@ import UIKit
 final class AidexBackgroundMonitor: NSObject {
   static let shared = AidexBackgroundMonitor()
 
-  private enum DefaultsKey {
-    static let sensorName = "com.aidex.cgm.background.sensorName"
-    static let sensorSerial = "com.aidex.cgm.background.sensorSerial"
-  }
-
   private let aidexService = CBUUID(string: "181F")
   private let stateRestoreIdentifier = "com.aidex.cgm.background-monitor"
-  private let defaults = UserDefaults.standard
+  private let restrictedState = NativeRestrictedStateStore.shared
   private let bluetoothQueue = DispatchQueue(
     label: "com.aidex.cgm.background-monitor"
   )
@@ -28,10 +23,10 @@ final class AidexBackgroundMonitor: NSObject {
 
   private override init() {
     super.init()
-    loadStoredTarget()
   }
 
   func applicationDidFinishLaunching() {
+    loadStoredTarget()
     isAppActive = UIApplication.shared.applicationState == .active
     NotificationCenter.default.addObserver(
       self,
@@ -48,33 +43,43 @@ final class AidexBackgroundMonitor: NSObject {
     refreshScanState()
   }
 
-  func configureTarget(sensorName: String, serial: String?) {
+  func configureTarget(sensorName: String, serial: String?) throws {
     let normalizedName = sensorName.trimmingCharacters(in: .whitespacesAndNewlines)
     let normalizedSerial = serial?
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .uppercased()
 
-    targetSensorName = normalizedName.isEmpty ? nil : normalizedName
-    targetSerial = normalizedSerial?.isEmpty == true ? nil : normalizedSerial
+    let nextSensorName = normalizedName.isEmpty ? nil : normalizedName
+    let nextSerial = normalizedSerial?.isEmpty == true ? nil : normalizedSerial
+    try restrictedState.saveBackgroundTarget(
+      sensorName: nextSensorName,
+      serial: nextSerial
+    )
+    targetSensorName = nextSensorName
+    targetSerial = nextSerial
     lastCounter = nil
     lastPayloadHex = ""
     lastObservedAt = nil
 
-    defaults.set(targetSensorName, forKey: DefaultsKey.sensorName)
-    defaults.set(targetSerial, forKey: DefaultsKey.sensorSerial)
-
     refreshScanState()
   }
 
-  func clearTarget() {
+  func clearTarget() throws {
+    var persistenceError: Error?
+    do {
+      try restrictedState.clearBackgroundTarget()
+    } catch {
+      persistenceError = error
+    }
     targetSensorName = nil
     targetSerial = nil
     lastCounter = nil
     lastPayloadHex = ""
     lastObservedAt = nil
-    defaults.removeObject(forKey: DefaultsKey.sensorName)
-    defaults.removeObject(forKey: DefaultsKey.sensorSerial)
     stopScan()
+    if let persistenceError {
+      throw persistenceError
+    }
   }
 
   private func ensureCentralManager() {
@@ -92,11 +97,13 @@ final class AidexBackgroundMonitor: NSObject {
   }
 
   private func loadStoredTarget() {
-    targetSensorName = defaults.string(forKey: DefaultsKey.sensorName)?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    targetSerial = defaults.string(forKey: DefaultsKey.sensorSerial)?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .uppercased()
+    guard let target = try? restrictedState.backgroundTarget() else {
+      targetSensorName = nil
+      targetSerial = nil
+      return
+    }
+    targetSensorName = target.sensorName
+    targetSerial = target.serial
   }
 
   private var hasTarget: Bool {

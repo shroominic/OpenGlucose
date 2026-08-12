@@ -4,6 +4,30 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val releaseKeystoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
+val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseKeystoreFile,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { it.isPresent && it.get().isNotBlank() }
+
+gradle.taskGraph.whenReady {
+    val requestsReleaseArtifact = allTasks.any { task ->
+        task.project == project && task.name.contains("release", ignoreCase = true)
+    }
+    if (requestsReleaseArtifact && !releaseSigningConfigured) {
+        throw GradleException(
+            "Release signing is not configured. Set ANDROID_KEYSTORE_PATH, " +
+                "ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and " +
+                "ANDROID_KEY_PASSWORD. OpenGlucose never falls back to debug signing."
+        )
+    }
+}
+
 android {
     namespace = "com.aidex.aidex_flutter"
     compileSdk = flutter.compileSdkVersion
@@ -12,6 +36,17 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        create("release") {
+            if (releaseSigningConfigured) {
+                storeFile = file(releaseKeystoreFile.get())
+                storePassword = releaseKeystorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
+            }
+        }
     }
 
     defaultConfig {
@@ -27,9 +62,7 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

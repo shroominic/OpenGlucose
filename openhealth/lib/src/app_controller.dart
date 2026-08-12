@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'android_live_update_bridge.dart';
 import 'display_preferences.dart';
+import 'health_state_store.dart';
 import 'ios_live_activity_bridge.dart';
 import 'live_activity_payload.dart';
 
@@ -14,7 +15,10 @@ class CgmAppController extends ChangeNotifier {
   CgmAppController({
     required SharedPreferences preferences,
     required CgmDriver driver,
+    HealthStateStore? healthStateStore,
   }) : _preferences = preferences,
+       _healthStateStore =
+           healthStateStore ?? PreferencesHealthStateStore(preferences),
        _driver = driver;
 
   static const _displayPreferencesKey = 'openHealth.displayPreferences';
@@ -30,6 +34,7 @@ class CgmAppController extends ChangeNotifier {
   static const _resumeHistoryMetadataKey = 'resumeHistory';
 
   final SharedPreferences _preferences;
+  final HealthStateStore _healthStateStore;
   final CgmDriver _driver;
   final Map<String, DiscoveredSensor> _sensorsById =
       <String, DiscoveredSensor>{};
@@ -48,6 +53,7 @@ class CgmAppController extends ChangeNotifier {
   bool _connectInProgress = false;
   bool _freshnessInFlight = false;
   String? _lastError;
+  final Map<String, String> _persistenceErrors = <String, String>{};
 
   List<DiscoveredSensor> get sensors {
     final values = _sensorsById.values.toList(growable: false);
@@ -57,7 +63,13 @@ class CgmAppController extends ChangeNotifier {
 
   bool get scanning => _scanning;
 
-  String? get lastError => _lastError;
+  String? get lastError {
+    final persistenceError = _persistenceErrors.values.join('. ');
+    if (_lastError != null && persistenceError.isNotEmpty) {
+      return '$_lastError. $persistenceError';
+    }
+    return _lastError ?? (persistenceError.isEmpty ? null : persistenceError);
+  }
 
   DisplayPreferences get displayPreferences => _displayPreferences;
 
@@ -98,6 +110,7 @@ class CgmAppController extends ChangeNotifier {
   List<CgmLogEntry> get logs => List<CgmLogEntry>.unmodifiable(_logs.reversed);
 
   Future<void> initialize() async {
+    await _healthStateStore.initialize();
     final rawPreferences = _preferences.getString(_displayPreferencesKey);
     if (rawPreferences != null && rawPreferences.isNotEmpty) {
       final decoded = jsonDecode(rawPreferences);
@@ -126,7 +139,10 @@ class CgmAppController extends ChangeNotifier {
         ...restoredSensor.metadata,
       },
     );
-    unawaited(_pushLiveActivity());
+    _startPlatformTask(
+      _pushLiveActivity(),
+      'Updating private lock-screen state',
+    );
     notifyListeners();
     Timer(_restoredConnectDelay, () {
       if (_session != null ||
@@ -149,7 +165,7 @@ class CgmAppController extends ChangeNotifier {
         notifyListeners();
       }
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('Sensor scan', error);
     } finally {
       _scanning = false;
       notifyListeners();
@@ -184,7 +200,10 @@ class CgmAppController extends ChangeNotifier {
       );
       _logs.clear();
       _lastError = null;
-      unawaited(_pushLiveActivity());
+      _startPlatformTask(
+        _pushLiveActivity(),
+        'Updating private lock-screen state',
+      );
       notifyListeners();
 
       final session = await _driver.connect(
@@ -192,15 +211,21 @@ class CgmAppController extends ChangeNotifier {
       );
       _session = session;
       _snapshot = session.currentSnapshot;
-      unawaited(_setBackgroundSensorBridges(sensor));
-      unawaited(_pushLiveActivity());
+      _startPlatformTask(
+        _setBackgroundSensorBridges(sensor),
+        'Saving private background sensor state',
+      );
+      _startPlatformTask(
+        _pushLiveActivity(),
+        'Updating private lock-screen state',
+      );
       _snapshotSubscription = session.snapshots.listen((nextSnapshot) {
         _snapshot = nextSnapshot;
         final reconnectingStage =
             nextSnapshot.stage == CgmSyncStage.disconnected ||
             nextSnapshot.stage == CgmSyncStage.error;
         if (nextSnapshot.lastError != null && reconnectingStage) {
-          _lastError = nextSnapshot.lastError;
+          _lastError = 'Sensor connection reported an error';
         } else if (!reconnectingStage) {
           _lastError = null;
         }
@@ -218,7 +243,10 @@ class CgmAppController extends ChangeNotifier {
         } else {
           _cancelReconnect();
         }
-        unawaited(_pushLiveActivity());
+        _startPlatformTask(
+          _pushLiveActivity(),
+          'Updating private lock-screen state',
+        );
         notifyListeners();
       });
       _logSubscription = session.logs.listen((entry) {
@@ -230,13 +258,17 @@ class CgmAppController extends ChangeNotifier {
       });
       notifyListeners();
     } catch (error) {
-      _lastError = error.toString();
+      final safeError = _safeError('Connection', error);
+      _lastError = safeError;
       _snapshot = _snapshot?.copyWith(
         stage: CgmSyncStage.error,
         statusText: 'Connection failed',
-        lastError: error.toString(),
+        lastError: safeError,
       );
-      unawaited(_pushLiveActivity());
+      _startPlatformTask(
+        _pushLiveActivity(),
+        'Updating private lock-screen state',
+      );
       notifyListeners();
     } finally {
       _connectInProgress = false;
@@ -288,7 +320,7 @@ class CgmAppController extends ChangeNotifier {
         );
       }
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('Refresh', error);
     } finally {
       _freshnessInFlight = false;
       notifyListeners();
@@ -303,7 +335,7 @@ class CgmAppController extends ChangeNotifier {
     try {
       await session.refresh();
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('Refresh', error);
       notifyListeners();
     }
   }
@@ -325,7 +357,7 @@ class CgmAppController extends ChangeNotifier {
         requestedStartOffset: _resumeHistoryStartOffset(refreshedSnapshot),
       );
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('Sync', error);
       notifyListeners();
     }
   }
@@ -338,7 +370,7 @@ class CgmAppController extends ChangeNotifier {
     try {
       await session.syncHistory();
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('History refresh', error);
       notifyListeners();
     }
   }
@@ -351,7 +383,7 @@ class CgmAppController extends ChangeNotifier {
     try {
       await session.refreshDiagnostics();
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('Diagnostics refresh', error);
       notifyListeners();
     }
   }
@@ -364,7 +396,7 @@ class CgmAppController extends ChangeNotifier {
     try {
       await session.fetchCalibrations();
     } catch (error) {
-      _lastError = error.toString();
+      _lastError = _safeError('Calibration load', error);
       notifyListeners();
     }
   }
@@ -373,32 +405,59 @@ class CgmAppController extends ChangeNotifier {
     _cancelReconnect();
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
-    await _snapshotSubscription?.cancel();
-    await _logSubscription?.cancel();
+    final snapshotSubscription = _snapshotSubscription;
+    final logSubscription = _logSubscription;
     _snapshotSubscription = null;
     _logSubscription = null;
-
     final session = _session;
     _session = null;
-    if (session != null) {
-      await session.disconnect();
+
+    Object? teardownError;
+    for (final operation in <Future<void> Function()>[
+      if (snapshotSubscription != null) snapshotSubscription.cancel,
+      if (logSubscription != null) logSubscription.cancel,
+      if (session != null) session.disconnect,
+    ]) {
+      try {
+        await operation();
+      } catch (error) {
+        teardownError ??= error;
+      }
+    }
+    if (teardownError != null) {
+      _recordPersistenceFailure('Disconnecting sensor session', teardownError);
+    } else {
+      _clearPersistenceFailure('Disconnecting sensor session');
     }
 
     if (clearSelection) {
+      Object? selectionError;
+      try {
+        await _healthStateStore.remove(_lastSensorKey);
+      } catch (error) {
+        selectionError = error;
+      }
       _selectedSensor = null;
       _snapshot = null;
       _persistedHistory = const <CgmReading>[];
-      await _preferences.remove(_lastSensorKey);
-      await IosLiveActivityBridge.clearBackgroundSensor();
-      await IosLiveActivityBridge.end();
-      await AndroidLiveUpdateBridge.clearBackgroundSensor();
-      await AndroidLiveUpdateBridge.end();
+      if (selectionError != null) {
+        _recordPersistenceFailure(
+          'Clearing the selected sensor',
+          selectionError,
+        );
+      } else {
+        _clearPersistenceFailure('Clearing the selected sensor');
+      }
+      await _clearPlatformBackgroundState();
     } else {
       _snapshot = _snapshot?.copyWith(
         stage: CgmSyncStage.disconnected,
         statusText: 'Disconnected',
       );
-      unawaited(_pushLiveActivity());
+      _startPlatformTask(
+        _pushLiveActivity(),
+        'Updating private lock-screen state',
+      );
     }
     notifyListeners();
   }
@@ -421,24 +480,38 @@ class CgmAppController extends ChangeNotifier {
         jsonEncode(preferences.toJson()),
       ),
     );
-    unawaited(_pushLiveActivity());
+    _startPlatformTask(
+      _pushLiveActivity(),
+      'Updating private lock-screen state',
+    );
     notifyListeners();
   }
 
-  void clearPersistedHistory() {
+  Future<bool> clearPersistedHistory() async {
     final sensor = _selectedSensor;
     if (sensor == null) {
-      return;
+      return false;
+    }
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    try {
+      await _healthStateStore.remove(_historyKey(sensor.storageKey));
+    } catch (error) {
+      _recordPersistenceFailure('Clearing stored history', error);
+      notifyListeners();
+      return false;
     }
     _persistedHistory = const <CgmReading>[];
-    unawaited(_preferences.remove(_historyKey(sensor.storageKey)));
+    _clearPersistenceFailure('Clearing stored history');
+    _clearPersistenceFailure('Saving history');
     notifyListeners();
+    return true;
   }
 
   String _historyKey(String storageKey) => 'openHealth.history.$storageKey';
 
   List<CgmReading> _loadPersistedHistory(String storageKey) {
-    final raw = _preferences.getString(_historyKey(storageKey));
+    final raw = _healthStateStore.getString(_historyKey(storageKey));
     if (raw == null || raw.isEmpty) {
       return const <CgmReading>[];
     }
@@ -457,7 +530,7 @@ class CgmAppController extends ChangeNotifier {
     List<CgmReading> history,
   ) async {
     final trimmedHistory = _historyForPersistence(history);
-    await _preferences.setString(
+    await _healthStateStore.setString(
       _historyKey(storageKey),
       jsonEncode(
         trimmedHistory
@@ -513,8 +586,83 @@ class CgmAppController extends ChangeNotifier {
     final snapshot = _historyForPersistence(history);
     _historyPersistTimer?.cancel();
     _historyPersistTimer = Timer(_historyPersistDebounce, () {
-      unawaited(_persistHistory(storageKey, snapshot));
+      unawaited(
+        _persistHistory(storageKey, snapshot)
+            .then((_) {
+              if (_persistenceErrors.containsKey('Saving history')) {
+                _clearPersistenceFailure('Saving history');
+                notifyListeners();
+              }
+            })
+            .catchError((Object error, StackTrace _) {
+              _recordPersistenceFailure('Saving history', error);
+              notifyListeners();
+            }),
+      );
     });
+  }
+
+  void _recordPersistenceFailure(String context, Object error) {
+    final message = _safeError(context, error);
+    _persistenceErrors[context] = message;
+    _logs.add(
+      CgmLogEntry(
+        timestamp: DateTime.now(),
+        level: CgmLogLevel.error,
+        message: message,
+      ),
+    );
+    if (_logs.length > 250) {
+      _logs.removeRange(0, _logs.length - 250);
+    }
+  }
+
+  void _clearPersistenceFailure(String context) {
+    _persistenceErrors.remove(context);
+  }
+
+  String _safeError(String context, Object error) {
+    return '$context failed (${error.runtimeType})';
+  }
+
+  void _startPlatformTask(Future<void> task, String context) {
+    unawaited(() async {
+      try {
+        await task;
+        if (_persistenceErrors.containsKey(context)) {
+          _clearPersistenceFailure(context);
+          notifyListeners();
+        }
+      } catch (error) {
+        _recordPersistenceFailure(context, error);
+        notifyListeners();
+      }
+    }());
+  }
+
+  Future<void> _clearPlatformBackgroundState() async {
+    final operations = <Future<void> Function()>[
+      IosLiveActivityBridge.clearBackgroundSensor,
+      IosLiveActivityBridge.end,
+      AndroidLiveUpdateBridge.clearBackgroundSensor,
+      AndroidLiveUpdateBridge.end,
+    ];
+    Object? firstError;
+    for (final operation in operations) {
+      try {
+        await operation();
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (firstError != null) {
+      _recordPersistenceFailure(
+        'Clearing private background state',
+        firstError,
+      );
+    } else {
+      _clearPersistenceFailure('Clearing private background state');
+    }
   }
 
   List<CgmReading> _historyForPersistence(List<CgmReading> history) {
@@ -522,7 +670,7 @@ class CgmAppController extends ChangeNotifier {
   }
 
   DiscoveredSensor? _loadPersistedSensor() {
-    final raw = _preferences.getString(_lastSensorKey);
+    final raw = _healthStateStore.getString(_lastSensorKey);
     if (raw == null || raw.isEmpty) {
       return null;
     }
@@ -534,7 +682,10 @@ class CgmAppController extends ChangeNotifier {
   }
 
   Future<void> _persistSelectedSensor(DiscoveredSensor sensor) async {
-    await _preferences.setString(_lastSensorKey, jsonEncode(sensor.toJson()));
+    await _healthStateStore.setString(
+      _lastSensorKey,
+      jsonEncode(sensor.toJson()),
+    );
   }
 
   bool _isBusyStage(CgmSyncStage stage) {

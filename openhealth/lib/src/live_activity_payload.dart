@@ -44,7 +44,7 @@ class LiveActivityPayload {
     'trendSymbol': trendSymbol,
     'deltaText': deltaText,
     'isStale': isStale,
-    if (recordedAtIso8601 case final iso?) 'recordedAtIso8601': iso,
+    'recordedAtIso8601': ?recordedAtIso8601,
   };
 }
 

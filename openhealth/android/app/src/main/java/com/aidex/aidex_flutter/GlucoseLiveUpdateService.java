@@ -30,6 +30,8 @@ public final class GlucoseLiveUpdateService extends Service {
   static final String PREFS_NAME = "glucose_live_update";
   static final String PREF_BACKGROUND_SENSOR = "background_sensor_name";
   static final String PREF_BACKGROUND_SERIAL = "background_sensor_serial";
+  static final String PREF_SENSITIVE_LOCK_SCREEN_OPT_IN =
+      "sensitive_lock_screen_opt_in";
 
   private static final String CHANNEL_ID = "glucose_live_updates";
   private static final String CHANNEL_NAME = "Live glucose";
@@ -47,7 +49,7 @@ public final class GlucoseLiveUpdateService extends Service {
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
     if (intent != null && ACTION_END.equals(intent.getAction())) {
-      clearPersistedPayload();
+      clearPersistedPayload(this);
       stopForegroundCompat();
       stopSelf();
       return START_NOT_STICKY;
@@ -66,7 +68,11 @@ public final class GlucoseLiveUpdateService extends Service {
       return START_NOT_STICKY;
     }
 
-    persistPayload(payload);
+    if (!persistPayload(this, payload)) {
+      stopForegroundCompat();
+      stopSelf();
+      return START_NOT_STICKY;
+    }
     final Notification notification = buildNotification(payload);
     startForegroundCompat(notification);
     return START_STICKY;
@@ -120,6 +126,13 @@ public final class GlucoseLiveUpdateService extends Service {
     final String trendSymbol = stringValue(payload, "trendSymbol", "");
     final String deltaText = stringValue(payload, "deltaText", "");
 
+    // Fail closed: the app has no opt-in UI yet, so this preference is false
+    // unless a future reviewed settings flow deliberately records consent.
+    final SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    if (!preferences.getBoolean(PREF_SENSITIVE_LOCK_SCREEN_OPT_IN, false)) {
+      return buildRedactedNotification(stageLabel);
+    }
+
     final boolean hasValue = valueText != null && !"--".equals(valueText) && !valueText.isEmpty();
     final String title = hasValue ? valueText + " " + unitText : sensorName;
     final String text =
@@ -128,6 +141,7 @@ public final class GlucoseLiveUpdateService extends Service {
             : fallbackDetail(stageLabel, lastReadingText);
     final String subText = hasValue ? sensorName : stageLabel;
     final String bigText = buildBigText(sensorName, text, trendSymbol, deltaText);
+    final Notification publicVersion = buildRedactedNotification(stageLabel);
 
     final Notification.Builder builder;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -143,7 +157,8 @@ public final class GlucoseLiveUpdateService extends Service {
         .setStyle(new Notification.BigTextStyle().bigText(bigText))
         .setContentIntent(buildLaunchIntent())
         .setCategory(Notification.CATEGORY_STATUS)
-        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setVisibility(Notification.VISIBILITY_PRIVATE)
+        .setPublicVersion(publicVersion)
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setShowWhen(false)
@@ -156,6 +171,39 @@ public final class GlucoseLiveUpdateService extends Service {
     requestImmediateForeground(builder);
     requestPromotedOngoing(builder);
     return builder.build();
+  }
+
+  /**
+   * The lock-screen-safe version intentionally contains no glucose value,
+   * sensor name, serial, trend, timestamp, or diagnostic detail. Android uses
+   * it whenever notification content is hidden on the lock screen.
+   */
+  static Notification buildRedactedNotificationForTest(
+      Context context, String channelId, PendingIntent contentIntent, String stageLabel) {
+    final Notification.Builder builder;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      builder = new Notification.Builder(context, channelId);
+    } else {
+      builder = new Notification.Builder(context);
+    }
+    return builder
+        .setSmallIcon(R.drawable.ic_glucose_notification)
+        .setContentTitle("OpenGlucose")
+        .setContentText("Open the app to view your glucose")
+        .setSubText(stageLabel == null || stageLabel.isEmpty() ? "Sensor active" : stageLabel)
+        .setContentIntent(contentIntent)
+        .setCategory(Notification.CATEGORY_STATUS)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setShowWhen(false)
+        .setColor(COLOR_TEAL)
+        .build();
+  }
+
+  private Notification buildRedactedNotification(String stageLabel) {
+    return buildRedactedNotificationForTest(
+        this, CHANNEL_ID, buildLaunchIntent(), stageLabel);
   }
 
   private PendingIntent buildLaunchIntent() {
@@ -224,9 +272,13 @@ public final class GlucoseLiveUpdateService extends Service {
     return sanitizePayload((HashMap<?, ?>) extra);
   }
 
-  private void persistPayload(Map<String, Object> payload) {
-    final SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    preferences.edit().putString(PREF_LAST_PAYLOAD, new JSONObject(payload).toString()).apply();
+  static boolean persistPayload(Context context, Map<String, Object> payload) {
+    final SharedPreferences preferences =
+        context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    return preferences
+        .edit()
+        .putString(PREF_LAST_PAYLOAD, new JSONObject(payload).toString())
+        .commit();
   }
 
   private Map<String, Object> loadPersistedPayload() {
@@ -267,9 +319,10 @@ public final class GlucoseLiveUpdateService extends Service {
     return payload;
   }
 
-  private void clearPersistedPayload() {
-    final SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    preferences.edit().remove(PREF_LAST_PAYLOAD).apply();
+  static boolean clearPersistedPayload(Context context) {
+    final SharedPreferences preferences =
+        context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    return preferences.edit().remove(PREF_LAST_PAYLOAD).commit();
   }
 
   private String buildBigText(

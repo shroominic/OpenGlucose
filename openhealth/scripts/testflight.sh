@@ -1,95 +1,485 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 cd "$(dirname "$0")/.."
-ROOT="$(pwd)"
+ROOT="$(pwd -P)"
+REPOSITORY_ROOT="$(cd "$ROOT/.." && pwd -P)"
+RUNTIME_VERIFIER="$REPOSITORY_ROOT/scripts/flutter-workspace.sh"
+NATIVE_TOOLING_VERIFIER="$REPOSITORY_ROOT/scripts/verify-native-tooling.sh"
 
-if [[ -f "$ROOT/.env" ]]; then
-  set -a; source "$ROOT/.env"; set +a
+fail() {
+  echo "release blocked: $*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required; install and pin it before release"
+}
+
+assert_clean_source() {
+  local context="$1"
+  [[ -z "$(git status --porcelain --untracked-files=all)" ]] || \
+    fail "$context changed the release worktree; review changes in a new commit"
+  git diff --quiet || fail "$context left unstaged source changes"
+  git diff --cached --quiet || fail "$context left staged source changes"
+}
+
+assert_hermetic_fastlane_environment() {
+  local dotenv_path
+  for dotenv_path in \
+    "$ROOT/.env" \
+    "$ROOT/.env.default" \
+    "$ROOT/fastlane/.env" \
+    "$ROOT/fastlane/.env.default"; do
+    [[ ! -e "$dotenv_path" && ! -L "$dotenv_path" ]] || \
+      fail "remove $dotenv_path; Fastlane auto-loads ignored dotenv files"
+  done
+
+  # These inherited variables can change authentication, team selection,
+  # endpoints, TLS/proxy behavior, upload transport, or response logging in the
+  # pinned Fastlane/Spaceship implementation. Release configuration must come
+  # only from the explicit inputs validated by this script.
+  local variable
+  while IFS= read -r variable; do
+    case "$variable" in
+      PILOT_* | SPACESHIP_*)
+        fail "$variable must be unset for a hermetic release"
+        ;;
+    esac
+  done < <(compgen -e)
+
+  for variable in \
+    APP_STORE_CONNECT_API_KEY \
+    TESTFLIGHT_APPLE_ID \
+    RUBYOPT \
+    RUBYLIB \
+    RUBYGEMS_GEMDEPS \
+    FASTLANE_GEM_HOME \
+    BUNDLE_GEMFILE \
+    GEM_HOME \
+    GEM_PATH \
+    SSL_CERT_FILE \
+    SSL_CERT_DIR \
+    FASTLANE_SESSION \
+    FASTLANE_TEAM_ID \
+    FASTLANE_TEAM_NAME \
+    FASTLANE_ITC_TEAM_ID \
+    FASTLANE_ITC_TEAM_NAME \
+    FASTLANE_ITUNES_TRANSPORTER_PATH \
+    FASTLANE_ITUNES_TRANSPORTER_USE_SHELL_SCRIPT \
+    DELIVER_ALTOOL_ADDITIONAL_UPLOAD_PARAMETERS \
+    DELIVER_ITMSTRANSPORTER_ADDITIONAL_UPLOAD_PARAMETERS \
+    ITMSTRANSPORTER_FORCE_ITMS_PACKAGE_UPLOAD \
+    VERBOSE \
+    HTTP_PROXY \
+    HTTPS_PROXY \
+    ALL_PROXY \
+    http_proxy \
+    https_proxy \
+    all_proxy; do
+    [[ -z "${!variable+x}" ]] || \
+      fail "$variable must be unset for a hermetic release"
+  done
+}
+
+dependency_fingerprint() {
+  shasum -a 256 pubspec.yaml pubspec.lock ios/Podfile ios/Podfile.lock
+}
+
+plist_value() {
+  local plist="$1"
+  local key="$2"
+  /usr/libexec/PlistBuddy -c "Print :$key" "$plist" 2>/dev/null || \
+    fail "missing required plist value $key in $plist"
+}
+
+verify_signed_bundle() {
+  local bundle="$1"
+  local expected_bundle_id="$2"
+  local label="$3"
+  local entitlement_file="$4"
+
+  codesign --verify --strict --verbose=2 "$bundle"
+
+  local signed_bundle_id
+  signed_bundle_id=$(plist_value "$bundle/Info.plist" CFBundleIdentifier)
+  [[ "$signed_bundle_id" == "$expected_bundle_id" ]] || \
+    fail "$label bundle ID ($signed_bundle_id) does not match $expected_bundle_id"
+
+  local signed_version
+  signed_version=$(plist_value "$bundle/Info.plist" CFBundleShortVersionString)
+  [[ "$signed_version" == "$EXPECTED_MARKETING_VERSION" ]] || \
+    fail "$label version ($signed_version) does not match $EXPECTED_MARKETING_VERSION"
+
+  local signed_build
+  signed_build=$(plist_value "$bundle/Info.plist" CFBundleVersion)
+  [[ "$signed_build" == "$EXPECTED_BUILD_NUMBER" ]] || \
+    fail "$label build ($signed_build) does not match $EXPECTED_BUILD_NUMBER"
+
+  local team_identifier
+  team_identifier=$(
+    codesign -dv --verbose=4 "$bundle" 2>&1 |
+      sed -n 's/^TeamIdentifier=//p'
+  )
+  [[ "$team_identifier" == "$APPLE_TEAM_ID" ]] || \
+    fail "$label signing team ($team_identifier) does not match $APPLE_TEAM_ID"
+
+  codesign -d --entitlements :- "$bundle" >"$entitlement_file" 2>/dev/null || \
+    fail "could not extract $label signed entitlements"
+  [[ -s "$entitlement_file" ]] || fail "$label has no signed entitlements"
+
+  local entitlement_team
+  entitlement_team=$(
+    plist_value "$entitlement_file" com.apple.developer.team-identifier
+  )
+  [[ "$entitlement_team" == "$APPLE_TEAM_ID" ]] || \
+    fail "$label entitlement team ($entitlement_team) does not match $APPLE_TEAM_ID"
+
+  local application_identifier
+  application_identifier=$(plist_value "$entitlement_file" application-identifier)
+  [[ "$application_identifier" == "$APPLE_TEAM_ID.$expected_bundle_id" ]] || \
+    fail "$label application-identifier entitlement is $application_identifier"
+}
+
+verify_distribution_profile() {
+  local bundle="$1"
+  local expected_bundle_id="$2"
+  local label="$3"
+  local profile_plist="$4"
+  local embedded_profile="$bundle/embedded.mobileprovision"
+
+  [[ -f "$embedded_profile" ]] || \
+    fail "$label has no embedded.mobileprovision"
+  security cms -D -i "$embedded_profile" >"$profile_plist" || \
+    fail "could not decode $label embedded.mobileprovision"
+  [[ -s "$profile_plist" ]] || fail "$label provisioning profile is empty"
+
+  python3 - "$profile_plist" "$expected_bundle_id" "$APPLE_TEAM_ID" "$label" <<'PY'
+import datetime as dt
+import plistlib
+import sys
+
+profile_path, bundle_id, team_id, label = sys.argv[1:]
+with open(profile_path, "rb") as source:
+    profile = plistlib.load(source)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SystemExit(f"release blocked: {label} {message}")
+
+
+expiration = profile.get("ExpirationDate")
+require(isinstance(expiration, dt.datetime), "profile has no expiration date")
+if expiration.tzinfo is None:
+    expiration = expiration.replace(tzinfo=dt.timezone.utc)
+require(expiration > dt.datetime.now(dt.timezone.utc), "profile is expired")
+require("ProvisionedDevices" not in profile, "uses device provisioning")
+require(profile.get("ProvisionsAllDevices") is not True, "uses enterprise provisioning")
+
+teams = profile.get("TeamIdentifier")
+require(isinstance(teams, list) and teams == [team_id], "profile team is not exact")
+entitlements = profile.get("Entitlements")
+require(isinstance(entitlements, dict), "profile has no entitlements")
+require(entitlements.get("get-task-allow") is False, "allows debugger attachment")
+require(entitlements.get("beta-reports-active") is True, "is not App Store/TestFlight distribution")
+require(
+    entitlements.get("com.apple.developer.team-identifier") == team_id,
+    "entitlement team does not match",
+)
+require(
+    entitlements.get("application-identifier") == f"{team_id}.{bundle_id}",
+    "application identifier does not match",
+)
+PY
+}
+
+# This must run before even `fastlane --version`; the pinned Fastlane CLI loads
+# dotenv files before dispatching commands, including its version command.
+assert_hermetic_fastlane_environment
+
+require_command git
+require_command flutter
+require_command fastlane
+require_command python3
+require_command shasum
+require_command unzip
+require_command codesign
+require_command security
+require_command xcodebuild
+require_command pod
+[[ -x "$RUNTIME_VERIFIER" ]] || fail "repository runtime verifier is missing"
+[[ -x "$NATIVE_TOOLING_VERIFIER" ]] || \
+  fail "repository native-tooling verifier is missing"
+[[ -x /usr/libexec/PlistBuddy ]] || fail "/usr/libexec/PlistBuddy is required"
+
+: "${ASC_API_KEY_ID:?missing ASC_API_KEY_ID}"
+: "${ASC_API_ISSUER_ID:?missing ASC_API_ISSUER_ID}"
+: "${ASC_API_KEY_PATH:?missing ASC_API_KEY_PATH}"
+: "${APPLE_TEAM_ID:?missing APPLE_TEAM_ID}"
+: "${APP_BUNDLE_ID:?missing APP_BUNDLE_ID}"
+: "${LIVE_ACTIVITY_BUNDLE_ID:?missing LIVE_ACTIVITY_BUNDLE_ID}"
+: "${RELEASE_VERSION:?missing RELEASE_VERSION (must match pubspec.yaml)}"
+: "${RELEASE_COMMIT:?missing RELEASE_COMMIT (must match HEAD)}"
+: "${TESTFLIGHT_GROUP:?missing TESTFLIGHT_GROUP}"
+: "${TESTFLIGHT_NOTIFICATION_RECEIPT_PATH:?missing TESTFLIGHT_NOTIFICATION_RECEIPT_PATH}"
+
+TESTFLIGHT_NOTIFY_ONLY="${TESTFLIGHT_NOTIFY_ONLY:-no}"
+[[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+  fail "TESTFLIGHT_NOTIFY_ONLY must be yes or no"
+if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+  : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for notify-only mode}"
+else
+  : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
+fi
+if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
+  [[ "$TESTFLIGHT_GROUP_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
+    fail "TESTFLIGHT_GROUP_ID is malformed"
 fi
 
-: "${ASC_API_KEY_ID:?missing ASC_API_KEY_ID (see .env.example)}"
-: "${ASC_API_ISSUER_ID:?missing ASC_API_ISSUER_ID (see .env.example)}"
-: "${APP_BUNDLE_ID:?missing APP_BUNDLE_ID (see .env.example)}"
-ASC_API_KEY_PATH="${ASC_API_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8}"
-FASTLANE_KEY_JSON="$HOME/.appstoreconnect/fastlane_api_key.json"
+[[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" == /* ]] || \
+  fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must be absolute"
+[[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" != *:* ]] || \
+  fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH cannot contain a colon"
+receipt_parent_input=$(dirname -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
+receipt_name=$(basename -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
+[[ "$receipt_name" != "." && "$receipt_name" != ".." ]] || \
+  fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must name a file"
+[[ -d "$receipt_parent_input" ]] || \
+  fail "notification receipt parent directory does not exist"
+receipt_parent=$(cd "$receipt_parent_input" && pwd -P)
+case "$receipt_parent/" in
+  "$REPOSITORY_ROOT/"*)
+    fail "notification receipt must be stored outside the repository"
+    ;;
+esac
+receipt_parent_mode=$(/usr/bin/stat -f '%Lp' "$receipt_parent")
+[[ "$receipt_parent_mode" == "700" ]] || \
+  fail "notification receipt parent must have mode 700 (found $receipt_parent_mode)"
+NOTIFICATION_RECEIPT_PATH="$receipt_parent/$receipt_name"
+if [[ -e "$NOTIFICATION_RECEIPT_PATH" || -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
+  [[ -f "$NOTIFICATION_RECEIPT_PATH" && ! -L "$NOTIFICATION_RECEIPT_PATH" ]] || \
+    fail "notification receipt must be a regular non-symlink file"
+  notification_receipt_mode=$(/usr/bin/stat -f '%Lp' "$NOTIFICATION_RECEIPT_PATH")
+  [[ "$notification_receipt_mode" == "400" || "$notification_receipt_mode" == "600" ]] || \
+    fail "notification receipt must have mode 400 or 600 (found $notification_receipt_mode)"
+  [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
+    fail "notification receipt already exists; use notify-only mode to verify it"
+fi
 
-EXTERNAL_GROUP="${TESTFLIGHT_GROUP:-External Testers}"
-CHANGELOG="${TESTFLIGHT_CHANGELOG:-Latest build.}"
+[[ "${RELEASE_APPROVED:-}" == "yes" ]] || \
+  fail "set RELEASE_APPROVED=yes after the release checklist is approved"
+[[ "${DISTRIBUTE_EXTERNAL:-}" == "yes" ]] || \
+  fail "set DISTRIBUTE_EXTERNAL=yes to authorize external tester distribution"
+[[ -f "$ASC_API_KEY_PATH" ]] || fail "App Store Connect key not found"
 
-export PATH="$HOME/.local/flutter/bin:$PATH"
-command -v flutter >/dev/null || { echo "flutter not found in PATH"; exit 1; }
-[[ -f "$ASC_API_KEY_PATH" ]] || { echo "missing API key: $ASC_API_KEY_PATH"; exit 1; }
+key_mode=$(/usr/bin/stat -f '%Lp' "$ASC_API_KEY_PATH")
+[[ "$key_mode" == "400" || "$key_mode" == "600" ]] || \
+  fail "ASC_API_KEY_PATH must have mode 400 or 600 (found $key_mode)"
 
-ensure_fastlane() {
-  if ! command -v fastlane >/dev/null; then
-    echo "==> fastlane not found; installing via Homebrew"
-    if ! command -v brew >/dev/null; then
-      echo "Homebrew not found. Install fastlane manually: https://docs.fastlane.tools/" >&2
-      exit 1
-    fi
-    brew install fastlane
-  fi
+# This is the repository's single exact Flutter/Dart runtime verifier. The
+# build below must not have an independent, drifting version check.
+"$RUNTIME_VERIFIER" doctor
+"$NATIVE_TOOLING_VERIFIER" release
+
+head_commit=$(git rev-parse HEAD)
+[[ "$RELEASE_COMMIT" == "$head_commit" ]] || \
+  fail "RELEASE_COMMIT does not match HEAD ($head_commit)"
+assert_clean_source "release startup"
+
+pubspec_version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml)
+[[ -n "$pubspec_version" ]] || fail "pubspec.yaml has no version"
+[[ "$RELEASE_VERSION" == "$pubspec_version" ]] || \
+  fail "RELEASE_VERSION ($RELEASE_VERSION) does not match pubspec.yaml ($pubspec_version)"
+[[ "$RELEASE_VERSION" == *+* ]] || \
+  fail "RELEASE_VERSION must include a numeric build suffix (for example 1.2.3+45)"
+EXPECTED_MARKETING_VERSION="${RELEASE_VERSION%+*}"
+EXPECTED_BUILD_NUMBER="${RELEASE_VERSION##*+}"
+[[ "$EXPECTED_MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
+  fail "release marketing version must use major.minor.patch"
+[[ "$EXPECTED_BUILD_NUMBER" =~ ^[0-9]+$ ]] || \
+  fail "release build number must be numeric"
+export EXPECTED_MARKETING_VERSION EXPECTED_BUILD_NUMBER
+
+grep -Fq "PRODUCT_BUNDLE_IDENTIFIER = $APP_BUNDLE_ID;" \
+  ios/Runner.xcodeproj/project.pbxproj || \
+  fail "APP_BUNDLE_ID ($APP_BUNDLE_ID) is not configured for Runner"
+grep -Fq "PRODUCT_BUNDLE_IDENTIFIER = $LIVE_ACTIVITY_BUNDLE_ID;" \
+  ios/Runner.xcodeproj/project.pbxproj || \
+  fail "LIVE_ACTIVITY_BUNDLE_ID ($LIVE_ACTIVITY_BUNDLE_ID) is not configured"
+[[ "$LIVE_ACTIVITY_BUNDLE_ID" == "$APP_BUNDLE_ID."* ]] || \
+  fail "Live Activity bundle ID must be namespaced below the app bundle ID"
+
+release_temp=$(mktemp -d "${TMPDIR:-/tmp}/openglucose-release.XXXXXX")
+cleanup() {
+  case "${release_temp:-}" in
+    "${TMPDIR:-/tmp}"/openglucose-release.*)
+      rm -rf -- "$release_temp"
+      ;;
+  esac
 }
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-ensure_fastlane_key_json() {
-  if [[ ! -f "$FASTLANE_KEY_JSON" ]]; then
-    echo "==> Writing fastlane API key JSON to $FASTLANE_KEY_JSON"
-    local key_pem
-    key_pem=$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$ASC_API_KEY_PATH")
-    mkdir -p "$(dirname "$FASTLANE_KEY_JSON")"
-    cat > "$FASTLANE_KEY_JSON" <<EOF
-{
-  "key_id": "$ASC_API_KEY_ID",
-  "issuer_id": "$ASC_API_ISSUER_ID",
-  "key": $key_pem,
-  "in_house": false
-}
-EOF
-    chmod 600 "$FASTLANE_KEY_JSON"
-  fi
-}
+credential_json="$release_temp/app-store-connect.json"
 
-bump_build_number() {
-  local pubspec="$ROOT/pubspec.yaml"
-  local current new
-  current=$(grep -E '^version: ' "$pubspec" | sed -E 's/^version: (.*)$/\1/')
-  local name="${current%+*}" build="${current##*+}"
-  new="${name}+$((build + 1))"
-  /usr/bin/sed -i '' "s/^version: ${current}$/version: ${new}/" "$pubspec"
-  echo "$new"
-}
+python3 - "$ASC_API_KEY_PATH" "$ASC_API_KEY_ID" "$ASC_API_ISSUER_ID" "$credential_json" <<'PY'
+import json
+import os
+import sys
 
-echo "==> Bumping build number"
-VERSION=$(bump_build_number)
-MARKETING_VERSION="${VERSION%+*}"
-BUILD_NUMBER="${VERSION##*+}"
-echo "    new version: $VERSION (marketing=$MARKETING_VERSION build=$BUILD_NUMBER)"
+key_path, key_id, issuer_id, output_path = sys.argv[1:]
+with open(key_path, encoding="utf-8") as source:
+    key = source.read()
+descriptor = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+    json.dump(
+        {
+            "key_id": key_id,
+            "issuer_id": issuer_id,
+            "key": key,
+            "in_house": False,
+        },
+        output,
+    )
+PY
 
-echo "==> Building IPA (flutter build ipa)"
-flutter build ipa --release --export-method app-store
+group_id_file="$release_temp/testflight-group-id"
+group_options=(
+  "api_key_path:$credential_json"
+  "bundle_id:$APP_BUNDLE_ID"
+  "group_name:$TESTFLIGHT_GROUP"
+  "result_path:$group_id_file"
+)
+if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
+  group_options+=("group_id:$TESTFLIGHT_GROUP_ID")
+fi
+fastlane ios verify_external_group "${group_options[@]}"
+[[ -s "$group_id_file" ]] || fail "approved TestFlight group ID was not recorded"
+approved_group_id=$(<"$group_id_file")
+[[ "$approved_group_id" =~ ^[A-Za-z0-9-]+$ ]] || \
+  fail "approved TestFlight group ID is malformed"
+echo "==> Approved external group ID: $approved_group_id"
 
-IPA=$(ls "$ROOT"/build/ios/ipa/*.ipa | head -n 1)
-[[ -f "$IPA" ]] || { echo "IPA not found in build/ios/ipa/"; exit 1; }
-echo "    built: $IPA"
+if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+  echo "==> Verifying the exact build and sending the deferred tester notification"
+  fastlane ios notify_external_build \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID" \
+    "group_name:$TESTFLIGHT_GROUP" \
+    "group_id:$approved_group_id" \
+    "version:$EXPECTED_MARKETING_VERSION" \
+    "build_number:$EXPECTED_BUILD_NUMBER" \
+    "source_commit:$head_commit" \
+    "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
+  echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
+  exit 0
+fi
 
-ensure_fastlane
-ensure_fastlane_key_json
+echo "==> Restoring locked dependencies"
+flutter pub get --enforce-lockfile
+assert_clean_source "dependency restore"
+dependency_state_before=$(dependency_fingerprint)
 
-echo "==> Uploading to App Store Connect, waiting for processing, and submitting to '$EXTERNAL_GROUP'"
-echo "    changelog: $CHANGELOG"
+echo "==> Building committed version $RELEASE_VERSION from $head_commit"
+flutter build ipa --release --no-pub --export-method app-store
 
+# Builds and CocoaPods hooks can rewrite tracked dependency state. Verify both
+# the entire worktree and the dependency inputs again before trusting the IPA.
+assert_clean_source "release build"
+post_build_commit=$(git rev-parse HEAD)
+[[ "$post_build_commit" == "$head_commit" ]] || \
+  fail "HEAD changed during the release build ($head_commit -> $post_build_commit)"
+dependency_state_after=$(dependency_fingerprint)
+[[ "$dependency_state_after" == "$dependency_state_before" ]] || \
+  fail "release build changed locked dependency state"
+
+shopt -s nullglob
+ipas=("$ROOT"/build/ios/ipa/*.ipa)
+[[ ${#ipas[@]} -eq 1 ]] || fail "expected exactly one IPA, found ${#ipas[@]}"
+ipa="${ipas[0]}"
+artifact_sha256=$(shasum -a 256 "$ipa" | awk '{print $1}')
+echo "    IPA: $ipa"
+echo "    SHA-256: $artifact_sha256"
+
+verification_dir="$release_temp/verify"
+mkdir -m 700 "$verification_dir"
+unzip -qq "$ipa" -d "$verification_dir"
+apps=("$verification_dir"/Payload/*.app)
+[[ ${#apps[@]} -eq 1 ]] || fail "expected exactly one signed app in the IPA"
+app="${apps[0]}"
+
+extensions=("$app"/PlugIns/*.appex)
+[[ ${#extensions[@]} -eq 1 ]] || \
+  fail "expected exactly one signed app extension, found ${#extensions[@]}"
+live_activity_extension="${extensions[0]}"
+
+codesign --verify --deep --strict --verbose=2 "$app"
+verify_signed_bundle \
+  "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-entitlements.plist"
+verify_signed_bundle \
+  "$live_activity_extension" "$LIVE_ACTIVITY_BUNDLE_ID" \
+  "Live Activity extension" "$release_temp/extension-entitlements.plist"
+verify_distribution_profile \
+  "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-profile.plist"
+verify_distribution_profile \
+  "$live_activity_extension" "$LIVE_ACTIVITY_BUNDLE_ID" \
+  "Live Activity extension" "$release_temp/extension-profile.plist"
+
+extension_point=$(
+  plist_value \
+    "$live_activity_extension/Info.plist" \
+    NSExtension:NSExtensionPointIdentifier
+)
+[[ "$extension_point" == "com.apple.widgetkit-extension" ]] || \
+  fail "unexpected extension point $extension_point"
+
+echo "==> Uploading without distribution or tester notification"
+preupload_group_id_file="$release_temp/preupload-testflight-group-id"
+fastlane ios verify_external_group \
+  "api_key_path:$credential_json" \
+  "bundle_id:$APP_BUNDLE_ID" \
+  "group_name:$TESTFLIGHT_GROUP" \
+  "group_id:$approved_group_id" \
+  "result_path:$preupload_group_id_file"
+[[ "$(<"$preupload_group_id_file")" == "$approved_group_id" ]] || \
+  fail "approved TestFlight audience changed before upload"
 fastlane pilot upload \
-  --api_key_path "$FASTLANE_KEY_JSON" \
+  --api_key_path "$credential_json" \
   --app_identifier "$APP_BUNDLE_ID" \
   --app_platform ios \
-  --ipa "$IPA" \
+  --ipa "$ipa" \
   --skip_waiting_for_build_processing false \
-  --distribute_external true \
-  --groups "$EXTERNAL_GROUP" \
-  --notify_external_testers true \
-  --changelog "$CHANGELOG" \
+  --skip_submission true \
+  --app_version "$EXPECTED_MARKETING_VERSION" \
+  --build_number "$EXPECTED_BUILD_NUMBER" \
+  --notify_external_testers false \
+  --changelog "$TESTFLIGHT_CHANGELOG" \
   --wait_processing_interval 30
 
-echo "==> Done. Build $VERSION submitted to group '$EXTERNAL_GROUP'"
-echo "    https://appstoreconnect.apple.com/apps → TestFlight"
+echo "==> Associating the exact build with the approved immutable group ID"
+fastlane ios associate_external_build \
+  "api_key_path:$credential_json" \
+  "bundle_id:$APP_BUNDLE_ID" \
+  "group_name:$TESTFLIGHT_GROUP" \
+  "group_id:$approved_group_id" \
+  "version:$EXPECTED_MARKETING_VERSION" \
+  "build_number:$EXPECTED_BUILD_NUMBER"
+
+echo "==> Verifying the exclusive audience and notifying eligible testers"
+echo "    If beta review is pending, re-run with TESTFLIGHT_NOTIFY_ONLY=yes and TESTFLIGHT_GROUP_ID=$approved_group_id after approval."
+fastlane ios notify_external_build \
+  "api_key_path:$credential_json" \
+  "bundle_id:$APP_BUNDLE_ID" \
+  "group_name:$TESTFLIGHT_GROUP" \
+  "group_id:$approved_group_id" \
+  "version:$EXPECTED_MARKETING_VERSION" \
+  "build_number:$EXPECTED_BUILD_NUMBER" \
+  "source_commit:$head_commit" \
+  "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
+
+echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
+echo "    SHA-256: $artifact_sha256"

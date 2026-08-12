@@ -13,6 +13,15 @@ packages/cgm_aidex
 openhealth
 "
 
+# Git hooks export worktree-local variables such as GIT_INDEX_FILE. Flutter's
+# launcher runs Git inside its own SDK checkout; inheriting those values makes
+# it inspect this repository instead and can recursively rebuild the tool.
+if command -v git >/dev/null 2>&1; then
+  for git_local_variable in $(git rev-parse --local-env-vars 2>/dev/null); do
+    unset "$git_local_variable"
+  done
+fi
+
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1

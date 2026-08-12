@@ -5,6 +5,24 @@ import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('toMap omits an unavailable reading timestamp', () {
+    const payload = LiveActivityPayload(
+      sensorName: 'Demo sensor',
+      stageCode: 'pending',
+      stageLabel: 'Connecting',
+      valueText: '--',
+      unitText: 'mg/dL',
+      lastReadingText: '--',
+      lifeText: '',
+      detailText: 'Waiting for glucose update',
+      trendSymbol: '',
+      deltaText: '',
+      isStale: false,
+    );
+
+    expect(payload.toMap(), isNot(contains('recordedAtIso8601')));
+  });
+
   test('buildLiveActivityPayload clamps slightly-future reading times', () {
     final now = DateTime.utc(2026, 4, 13, 6, 58);
     final sensor = DiscoveredSensor(

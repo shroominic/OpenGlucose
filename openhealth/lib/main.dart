@@ -6,6 +6,7 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -16,12 +17,15 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('FlutterError: ${details.exception}\n${details.stack}');
+    if (kDebugMode) {
+      debugPrint('FlutterError (${details.exception.runtimeType})');
+    }
   };
 
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Unhandled error: $error\n$stack');
+  PlatformDispatcher.instance.onError = (error, _) {
+    if (kDebugMode) {
+      debugPrint('Unhandled error (${error.runtimeType})');
+    }
     return true;
   };
 
@@ -33,6 +37,7 @@ Future<CgmAppController> _bootstrap() async {
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
+    healthStateStore: createHealthStateStore(preferences),
   );
   await controller.initialize();
   return controller;
@@ -57,7 +62,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           return const _SplashApp();
         }
         if (snapshot.hasError) {
-          return _SplashApp(error: snapshot.error);
+          return _SplashApp(
+            error:
+                'Secure local storage could not be initialized '
+                '(${snapshot.error.runtimeType})',
+          );
         }
         return OpenGlucoseApp(controller: snapshot.data!);
       },
@@ -124,11 +133,7 @@ class _SpinningLogoState extends State<_SpinningLogo>
   Widget build(BuildContext context) {
     return RotationTransition(
       turns: _controller,
-      child: Image.asset(
-        'assets/icon/logo.png',
-        width: 140,
-        height: 140,
-      ),
+      child: Image.asset('assets/icon/logo.png', width: 140, height: 140),
     );
   }
 }
@@ -1048,7 +1053,7 @@ Widget _buildDisplaySettingsPane({
             child: const Text('Save settings'),
           ),
           OutlinedButton(
-            onPressed: controller.clearPersistedHistory,
+            onPressed: () => unawaited(controller.clearPersistedHistory()),
             child: const Text('Clear cache'),
           ),
         ],
