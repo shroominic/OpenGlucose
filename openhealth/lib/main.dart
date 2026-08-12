@@ -10,6 +10,10 @@ import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:openglucose/src/metrics_section.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_context_builder.dart';
+import 'package:openglucose/src/messaging/message_controller.dart';
+import 'package:openglucose/src/messaging/message_host.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
@@ -51,6 +55,10 @@ Future<_BootstrapResult> _bootstrap() async {
   await controller.initialize();
   final healthExport = HealthExportController(preferences: preferences)
     ..initialize();
+  final messages = MessageController(
+    preferences: preferences,
+    messages: defaultMessageCatalog,
+  );
   if (kOgDemo) {
     // In demo mode (simulator/feature verification) the demo driver only
     // surfaces its sensor after a scan, so auto-scan and auto-connect to land
@@ -62,12 +70,14 @@ Future<_BootstrapResult> _bootstrap() async {
     controller: controller,
     preferences: preferences,
     healthExport: healthExport,
+    messages: messages,
   );
 }
 
 typedef _BootstrapResult = ({
   CgmAppController controller,
   HealthExportController healthExport,
+  MessageController messages,
   SharedPreferences preferences,
 });
 
@@ -112,6 +122,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           controller: result.controller,
           healthExport: result.healthExport,
           preferences: result.preferences,
+          messageController: result.messages,
         );
       },
     );
@@ -206,11 +217,16 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.controller,
     required this.healthExport,
     required this.preferences,
+    this.messageController,
   });
 
   final CgmAppController controller;
   final HealthExportController healthExport;
   final SharedPreferences preferences;
+
+  /// Optional contextual-messaging engine. When null (e.g. in some tests) the
+  /// dashboard simply renders no message host.
+  final MessageController? messageController;
 
   @override
   Widget build(BuildContext context) {
@@ -260,7 +276,10 @@ class OpenGlucoseApp extends StatelessWidget {
         child: _OnboardingGate(
           store: OnboardingStore(preferences),
           unit: controller.displayPreferences.unit,
-          home: CgmHomePage(controller: controller),
+          home: CgmHomePage(
+            controller: controller,
+            messageController: messageController,
+          ),
         ),
       ),
       // --- end TASK-007 onboarding gate ---
@@ -304,9 +323,14 @@ class _OnboardingGateState extends State<_OnboardingGate> {
 // --- end TASK-007 onboarding gate ---
 
 class CgmHomePage extends StatefulWidget {
-  const CgmHomePage({super.key, required this.controller});
+  const CgmHomePage({
+    super.key,
+    required this.controller,
+    this.messageController,
+  });
 
   final CgmAppController controller;
+  final MessageController? messageController;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -347,6 +371,17 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
       animation: widget.controller,
       builder: (context, _) {
         final snapshot = widget.controller.snapshot;
+        // Contextual-messaging bridge: recompute which messages are relevant
+        // from the latest app state on every controller change. Deferred to
+        // post-frame so it never triggers a rebuild during this build pass.
+        final messageController = widget.messageController;
+        if (messageController != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            messageController.updateContext(
+              buildMessageContext(widget.controller),
+            );
+          });
+        }
         return Scaffold(
           body: DecoratedBox(
             decoration: const BoxDecoration(
@@ -366,6 +401,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                   : _DashboardView(
                       controller: widget.controller,
                       snapshot: snapshot,
+                      messageController: widget.messageController,
                     ),
             ),
           ),
@@ -579,10 +615,15 @@ class _ScanView extends StatelessWidget {
 }
 
 class _DashboardView extends StatelessWidget {
-  const _DashboardView({required this.controller, required this.snapshot});
+  const _DashboardView({
+    required this.controller,
+    required this.snapshot,
+    this.messageController,
+  });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
+  final MessageController? messageController;
 
   @override
   Widget build(BuildContext context) {
@@ -640,6 +681,12 @@ class _DashboardView extends StatelessWidget {
               ),
             ),
           ),
+          // Contextual messaging host (TASK-004). Self-contained; renders the
+          // current top tip/info/alert as a dismissible card, or nothing.
+          if (messageController != null)
+            SliverToBoxAdapter(
+              child: MessageHost(controller: messageController!),
+            ),
           SliverToBoxAdapter(
             child: _DashboardHeroCard(
               controller: controller,
