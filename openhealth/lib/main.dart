@@ -12,6 +12,12 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// When built with `--dart-define=OG_DEMO=true`, the app runs the in-memory
+/// demo driver (see [buildDefaultDriver]) and auto-connects on launch so it
+/// lands directly on the populated dashboard — used for simulator/feature
+/// verification. Defaults to false; production builds are unaffected.
+const bool kOgDemo = bool.fromEnvironment('OG_DEMO', defaultValue: false);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -35,7 +41,29 @@ Future<CgmAppController> _bootstrap() async {
     driver: buildDefaultDriver(),
   );
   await controller.initialize();
+  if (kOgDemo) {
+    // In demo mode (simulator/feature verification) the demo driver only
+    // surfaces its sensor after a scan, so auto-scan and auto-connect to land
+    // directly on the populated dashboard. Strictly gated behind OG_DEMO and
+    // skipped when a previous session was already restored from preferences.
+    unawaited(_autoConnectDemoSensor(controller));
+  }
   return controller;
+}
+
+/// Scans with the demo driver and connects to the first discovered sensor so
+/// OG_DEMO builds open straight onto the populated dashboard.
+Future<void> _autoConnectDemoSensor(CgmAppController controller) async {
+  if (controller.snapshot != null) {
+    // A persisted session is already (re)connecting; don't interfere.
+    return;
+  }
+  await controller.scan();
+  final sensors = controller.sensors;
+  if (sensors.isEmpty) {
+    return;
+  }
+  await controller.connect(sensors.first);
 }
 
 class _BootstrapApp extends StatefulWidget {
