@@ -36,9 +36,7 @@ class DailyRecap {
 /// that week). [delta] is `current - previous` when both exist, else null.
 class WeekDelta {
   const WeekDelta({required this.current, required this.previous})
-    : delta = (current != null && previous != null)
-          ? current - previous
-          : null;
+    : delta = (current != null && previous != null) ? current - previous : null;
 
   final double? current;
   final double? previous;
@@ -267,9 +265,7 @@ abstract final class WeeklyRecapAnalytics {
         bounds: bounds,
         preFiltered: true,
       );
-      days.add(
-        DailyRecap(date: day, weekday: day.weekday, stats: stats),
-      );
+      days.add(DailyRecap(date: day, weekday: day.weekday, stats: stats));
     }
     return days;
   }
@@ -297,9 +293,8 @@ abstract final class WeeklyRecapAnalytics {
     List<CgmReading> weekReadings,
     GlucoseRangeBounds bounds,
   ) {
-    final ordered =
-        weekReadings.where((r) => r.recordedAt != null).toList()
-          ..sort((a, b) => a.recordedAt!.compareTo(b.recordedAt!));
+    final ordered = weekReadings.where((r) => r.recordedAt != null).toList()
+      ..sort((a, b) => a.recordedAt!.compareTo(b.recordedAt!));
 
     final spikes = <RecapSpike>[];
     var inSpike = false;

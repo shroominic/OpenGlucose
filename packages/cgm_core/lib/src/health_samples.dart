@@ -129,6 +129,7 @@ enum SleepStage {
   light,
   deep,
   rem,
+
   /// Asleep without a specific stage breakdown.
   asleep,
   inBed;
@@ -229,7 +230,11 @@ class HeartRateSample implements TimelineEntry {
   @override
   TimelineEntryKind get timelineKind => TimelineEntryKind.heartRate;
 
-  HeartRateSample copyWith({DateTime? timestamp, double? bpm, DataSource? source}) {
+  HeartRateSample copyWith({
+    DateTime? timestamp,
+    double? bpm,
+    DataSource? source,
+  }) {
     return HeartRateSample(
       timestamp: timestamp ?? this.timestamp,
       bpm: bpm ?? this.bpm,

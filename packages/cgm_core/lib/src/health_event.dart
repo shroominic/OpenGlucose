@@ -189,7 +189,10 @@ class NotePayload extends HealthEventPayload {
   String get kind => 'note';
 
   @override
-  Map<String, Object?> toJson() => <String, Object?>{'kind': kind, 'text': text};
+  Map<String, Object?> toJson() => <String, Object?>{
+    'kind': kind,
+    'text': text,
+  };
 
   factory NotePayload.fromJson(Map<String, Object?> json) {
     return NotePayload(text: json['text'] as String? ?? '');

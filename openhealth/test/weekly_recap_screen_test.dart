@@ -7,8 +7,11 @@ import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 /// A Monday noon so day bucketing is deterministic.
 final DateTime _now = DateTime(2026, 6, 22, 12);
 
-CgmReading _reading(double mgdl, DateTime at) =>
-    CgmReading(valueMgdl: mgdl, source: CgmRecordSource.standard, recordedAt: at);
+CgmReading _reading(double mgdl, DateTime at) => CgmReading(
+  valueMgdl: mgdl,
+  source: CgmRecordSource.standard,
+  recordedAt: at,
+);
 
 List<CgmReading> _twoWeeks() {
   final readings = <CgmReading>[];

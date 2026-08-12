@@ -126,8 +126,9 @@ class GlucoseSummary {
         count;
     final stdDev = math.sqrt(variance);
 
-    final inRange =
-        values.where((v) => v >= targetLowMgdl && v <= targetHighMgdl).length;
+    final inRange = values
+        .where((v) => v >= targetLowMgdl && v <= targetHighMgdl)
+        .length;
     final below = values.where((v) => v < targetLowMgdl).length;
     final above = values.where((v) => v > targetHighMgdl).length;
 

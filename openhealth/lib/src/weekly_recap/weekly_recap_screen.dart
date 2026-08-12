@@ -252,7 +252,8 @@ class _TrendCard extends StatelessWidget {
             label: 'Variability (CV)',
             delta: recap.variabilityDelta,
             format: (v) => '${v.toStringAsFixed(0)}%',
-            formatDelta: (v) => '${v > 0 ? '+' : ''}${v.toStringAsFixed(0)} pts',
+            formatDelta: (v) =>
+                '${v > 0 ? '+' : ''}${v.toStringAsFixed(0)} pts',
             higherIsBetter: false,
             screen: screen,
             isLast: true,

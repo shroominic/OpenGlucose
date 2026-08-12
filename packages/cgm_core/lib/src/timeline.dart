@@ -99,8 +99,6 @@ extension TimelineSorting<T extends TimelineEntry> on Iterable<T> {
 ///
 /// Accepts entries of any [TimelineEntry] subtype, so CGM readings, events,
 /// and imported samples can be interleaved for correlation features.
-List<TimelineEntry> mergeTimelines(
-  Iterable<Iterable<TimelineEntry>> streams,
-) {
+List<TimelineEntry> mergeTimelines(Iterable<Iterable<TimelineEntry>> streams) {
   return streams.expand((stream) => stream).sortedByTime();
 }

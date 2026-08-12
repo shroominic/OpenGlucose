@@ -61,13 +61,11 @@ class InsightService {
       window: TimeWindow(start: windowStart, end: windowEnd),
     );
     final windowReadings = readings
-        .where(
-          (reading) {
-            final at = reading.recordedAt;
-            if (at == null) return false;
-            return !at.isBefore(windowStart) && at.isBefore(windowEnd);
-          },
-        )
+        .where((reading) {
+          final at = reading.recordedAt;
+          if (at == null) return false;
+          return !at.isBefore(windowStart) && at.isBefore(windowEnd);
+        })
         .toList(growable: false);
 
     final summary = GlucoseSummary.fromData(
@@ -127,9 +125,7 @@ class InsightService {
     String fmt(double? value, {int digits = 0}) =>
         value == null ? 'n/a' : value.toStringAsFixed(digits);
     final unit = summary.unit.label;
-    final hours = summary.windowEnd
-        .difference(summary.windowStart)
-        .inHours;
+    final hours = summary.windowEnd.difference(summary.windowStart).inHours;
 
     final buffer = StringBuffer()
       ..writeln(
@@ -137,9 +133,7 @@ class InsightService {
       )
       ..writeln('Window: about $hours hours, ${summary.readingCount} readings.')
       ..writeln('Average glucose: ${fmt(summary.average)} $unit')
-      ..writeln(
-        'Range: ${fmt(summary.minimum)}–${fmt(summary.maximum)} $unit',
-      )
+      ..writeln('Range: ${fmt(summary.minimum)}–${fmt(summary.maximum)} $unit')
       ..writeln('Variability (SD): ${fmt(summary.standardDeviation)} $unit')
       ..writeln(
         'Time in 70–180 mg/dL range: ${fmt(summary.timeInRangePercent, digits: 1)}% '

@@ -69,7 +69,9 @@ class InMemoryHealthRepository implements HealthRepository {
   }
 
   @override
-  Future<int> deleteActivitySamples({TimeWindow window = TimeWindow.all}) async {
+  Future<int> deleteActivitySamples({
+    TimeWindow window = TimeWindow.all,
+  }) async {
     return _removeWhere(_activity, (s) => window.contains(s.start));
   }
 

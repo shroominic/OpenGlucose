@@ -39,7 +39,9 @@ class HttpChatAiProvider implements AiProvider {
       final text = await transport(request, config);
       final trimmed = text.trim();
       if (trimmed.isEmpty) {
-        throw const AiGenerationException('Provider returned an empty response.');
+        throw const AiGenerationException(
+          'Provider returned an empty response.',
+        );
       }
       return trimmed;
     } on AiGenerationException {
@@ -113,9 +115,7 @@ class HttpChatAiProvider implements AiProvider {
     // Surface a provider-reported error if present.
     final error = decoded['error'];
     if (error is Map && error['message'] is String) {
-      throw AiGenerationException(
-        'Provider error: ${error['message']}',
-      );
+      throw AiGenerationException('Provider error: ${error['message']}');
     }
 
     throw const AiGenerationException(
