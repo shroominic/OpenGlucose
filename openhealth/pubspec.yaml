@@ -37,7 +37,7 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.3
   flutter_test:
     sdk: flutter
-  very_good_analysis: ^10.2.0
+  very_good_analysis: ^10.3.0
   # In-process SQLite (FFI) so the sqflite repository runs in `flutter test`
   # on the host with no device/simulator. Keep the pre-build-hook release
   # pinned so this test-only dependency cannot download or bundle native
