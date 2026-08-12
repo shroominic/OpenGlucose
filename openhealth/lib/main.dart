@@ -6,6 +6,8 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/onboarding/onboarding_flow.dart';
@@ -45,6 +47,8 @@ Future<_BootstrapResult> _bootstrap() async {
     driver: buildDefaultDriver(),
   );
   await controller.initialize();
+  final healthExport = HealthExportController(preferences: preferences)
+    ..initialize();
   if (kOgDemo) {
     // In demo mode (simulator/feature verification) the demo driver only
     // surfaces its sensor after a scan, so auto-scan and auto-connect to land
@@ -52,11 +56,16 @@ Future<_BootstrapResult> _bootstrap() async {
     // skipped when a previous session was already restored from preferences.
     unawaited(_autoConnectDemoSensor(controller));
   }
-  return (controller: controller, preferences: preferences);
+  return (
+    controller: controller,
+    preferences: preferences,
+    healthExport: healthExport,
+  );
 }
 
 typedef _BootstrapResult = ({
   CgmAppController controller,
+  HealthExportController healthExport,
   SharedPreferences preferences,
 });
 
@@ -99,6 +108,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         final result = snapshot.data!;
         return OpenGlucoseApp(
           controller: result.controller,
+          healthExport: result.healthExport,
           preferences: result.preferences,
         );
       },
@@ -170,14 +180,34 @@ class _SpinningLogoState extends State<_SpinningLogo>
   }
 }
 
+/// Provides the [HealthExportController] to descendant widgets (notably the
+/// settings sheet's Integrations tab) without threading it through every
+/// constructor.
+class HealthExportScope extends InheritedNotifier<HealthExportController> {
+  const HealthExportScope({
+    super.key,
+    required HealthExportController controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static HealthExportController of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<HealthExportScope>();
+    assert(scope != null, 'No HealthExportScope found in context');
+    return scope!.notifier!;
+  }
+}
+
 class OpenGlucoseApp extends StatelessWidget {
   const OpenGlucoseApp({
     super.key,
     required this.controller,
+    required this.healthExport,
     required this.preferences,
   });
 
   final CgmAppController controller;
+  final HealthExportController healthExport;
   final SharedPreferences preferences;
 
   @override
@@ -223,10 +253,13 @@ class OpenGlucoseApp extends StatelessWidget {
       // First-run only: show the skippable onboarding flow, then hand off to
       // the existing scan/connect home. Persisted via OnboardingStore; once
       // completed/skipped the gate falls straight through on later launches.
-      home: _OnboardingGate(
-        store: OnboardingStore(preferences),
-        unit: controller.displayPreferences.unit,
-        home: CgmHomePage(controller: controller),
+      home: HealthExportScope(
+        controller: healthExport,
+        child: _OnboardingGate(
+          store: OnboardingStore(preferences),
+          unit: controller.displayPreferences.unit,
+          home: CgmHomePage(controller: controller),
+        ),
       ),
       // --- end TASK-007 onboarding gate ---
     );
@@ -957,6 +990,7 @@ Future<void> _showSettings(
     unawaited(controller.refreshDiagnostics());
     unawaited(controller.loadCalibrations());
   }
+  final healthExport = HealthExportScope.of(context);
   var working = controller.displayPreferences;
   final scaleController = TextEditingController(
     text: working.calibrationScale.toStringAsFixed(2),
@@ -1012,13 +1046,16 @@ Future<void> _showSettings(
             child: SizedBox(
               height: MediaQuery.of(context).size.height * 0.84,
               child: DefaultTabController(
-                length: 3,
+                length: 4,
                 child: Column(
                   children: <Widget>[
                     const TabBar(
+                      isScrollable: true,
+                      tabAlignment: TabAlignment.center,
                       tabs: <Widget>[
                         Tab(text: 'Display'),
                         Tab(text: 'Sensor'),
+                        Tab(text: 'Integrations'),
                         Tab(text: 'Developer'),
                       ],
                     ),
@@ -1031,6 +1068,12 @@ Future<void> _showSettings(
                             controller,
                             snapshot,
                           ),
+                          // --- BEGIN Integrations tab (TASK-016) ---
+                          IntegrationsSettingsPane(
+                            healthExport: healthExport,
+                            controller: controller,
+                          ),
+                          // --- END Integrations tab (TASK-016) ---
                           _buildDeveloperSettingsPane(
                             context: context,
                             controller: controller,
@@ -1254,7 +1297,9 @@ Widget _buildDeveloperSettingsPane({
           key: const ValueKey<String>('mockScenarioPicker'),
           initialValue: controller.mockScenario ?? MockScenario.activeNormal,
           isExpanded: true,
-          decoration: const InputDecoration(labelText: 'Simulated sensor state'),
+          decoration: const InputDecoration(
+            labelText: 'Simulated sensor state',
+          ),
           items: MockScenario.values
               .map(
                 (scenario) => DropdownMenuItem<MockScenario>(

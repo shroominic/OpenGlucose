@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
+import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
@@ -21,7 +22,14 @@ void main() {
     );
     await controller.initialize();
 
-    await tester.pumpWidget(OpenGlucoseApp(controller: controller));
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(preferences: preferences)
+          ..initialize(),
+        preferences: preferences,
+      ),
+    );
     await tester.pumpAndSettle(const Duration(milliseconds: 500));
     await tester.tap(find.text('Find my sensor'));
     await tester.pumpAndSettle();
@@ -76,7 +84,12 @@ void main() {
     await controller.initialize();
 
     await tester.pumpWidget(
-      OpenGlucoseApp(controller: controller, preferences: preferences),
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(preferences: preferences)
+          ..initialize(),
+        preferences: preferences,
+      ),
     );
     await tester.pumpAndSettle(const Duration(milliseconds: 500));
 
@@ -133,7 +146,12 @@ void main() {
     await controller.initialize();
 
     await tester.pumpWidget(
-      OpenGlucoseApp(controller: controller, preferences: preferences),
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(preferences: preferences)
+          ..initialize(),
+        preferences: preferences,
+      ),
     );
     await tester.pumpAndSettle(const Duration(milliseconds: 1200));
 
