@@ -207,7 +207,7 @@ SensorLifecycle computeSensorLifecycle(
 }) {
   final effectiveNow = now ?? DateTime.now();
   final sessionStart = snapshot.sessionInfo.sessionStart;
-  final totalLife = kSensorLifeDuration;
+  const totalLife = kSensorLifeDuration;
 
   // A stopped session or an explicit expired health flag means the sensor is
   // done regardless of the exact clock math (covers the mock `expired`

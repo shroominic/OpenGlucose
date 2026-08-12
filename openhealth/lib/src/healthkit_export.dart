@@ -8,7 +8,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Outcome of an attempted Apple Health export so the UI can surface a clear
 /// success / failure / skipped state without throwing.
-enum HealthExportStatus { ok, notSupported, notAuthorized, noData, failed }
+enum HealthExportStatus {
+  ok,
+  partial,
+  notSupported,
+  notAuthorized,
+  noData,
+  failed,
+}
 
 class HealthExportResult {
   const HealthExportResult({
@@ -22,8 +29,11 @@ class HealthExportResult {
   final int written;
   final String? message;
 
-  /// Recorded time of the newest reading written, used as the watermark for
-  /// the next incremental sync. Null when nothing was written.
+  /// Recorded time through which every pending reading was written.
+  ///
+  /// This is deliberately a contiguous watermark rather than the newest
+  /// successful sample. On a partial write it never advances past a failed
+  /// timestamp, so the next sync cannot skip data.
   final DateTime? latestReadingAt;
 
   bool get isSuccess => status == HealthExportStatus.ok;
@@ -50,11 +60,13 @@ abstract class GlucoseExporter {
 /// the Android build is unaffected. The actual write is gated behind explicit
 /// user opt-in by the caller (see [HealthExportController]).
 class HealthKitExportService implements GlucoseExporter {
-  HealthKitExportService({Health? health})
+  HealthKitExportService({Health? health, bool Function()? supportCheck})
     : _health = health ?? Health(),
+      _supportCheck = supportCheck ?? _isRunningOnIOS,
       _configured = false;
 
   final Health _health;
+  final bool Function() _supportCheck;
   bool _configured;
 
   static const List<HealthDataType> _types = <HealthDataType>[
@@ -66,7 +78,9 @@ class HealthKitExportService implements GlucoseExporter {
   ];
 
   @override
-  bool get isSupported => Platform.isIOS;
+  bool get isSupported => _supportCheck();
+
+  static bool _isRunningOnIOS() => Platform.isIOS;
 
   Future<void> _ensureConfigured() async {
     if (_configured || !isSupported) {
@@ -99,7 +113,8 @@ class HealthKitExportService implements GlucoseExporter {
       return false;
     }
     await _ensureConfigured();
-    return (await _health.hasPermissions(_types, permissions: _access)) ?? false;
+    return (await _health.hasPermissions(_types, permissions: _access)) ??
+        false;
   }
 
   /// Writes [readings] recorded strictly after [since] (if provided) as blood
@@ -136,44 +151,73 @@ class HealthKitExportService implements GlucoseExporter {
         }
         pending.add(reading);
       }
+      pending.sort(
+        (left, right) => left.recordedAt!.compareTo(right.recordedAt!),
+      );
 
       if (pending.isEmpty) {
         return const HealthExportResult(status: HealthExportStatus.noData);
       }
 
       var written = 0;
-      DateTime? latestReadingAt;
-      for (final reading in pending) {
-        final recordedAt = reading.recordedAt!.toLocal();
-        // HealthKit blood glucose is stored in mg/dL; the app's canonical
-        // value is already mg/dL so no conversion is needed here.
-        final ok = await _health.writeHealthData(
-          value: reading.valueMgdl,
-          type: HealthDataType.BLOOD_GLUCOSE,
-          startTime: recordedAt,
-          endTime: recordedAt,
-          unit: HealthDataUnit.MILLIGRAM_PER_DECILITER,
-        );
-        if (ok) {
-          written += 1;
-          final at = reading.recordedAt!;
-          if (latestReadingAt == null || at.isAfter(latestReadingAt)) {
-            latestReadingAt = at;
+      DateTime? contiguousWatermark;
+      var index = 0;
+      while (index < pending.length) {
+        final timestamp = pending[index].recordedAt!;
+        var groupEnd = index + 1;
+        while (groupEnd < pending.length &&
+            pending[groupEnd].recordedAt!.isAtSameMomentAs(timestamp)) {
+          groupEnd += 1;
+        }
+
+        String? failureMessage;
+        for (var groupIndex = index; groupIndex < groupEnd; groupIndex += 1) {
+          final reading = pending[groupIndex];
+          final recordedAt = reading.recordedAt!.toLocal();
+          try {
+            // HealthKit blood glucose is stored in mg/dL; the app's canonical
+            // value is already mg/dL so no conversion is needed here.
+            final ok = await _health.writeHealthData(
+              value: reading.valueMgdl,
+              type: HealthDataType.BLOOD_GLUCOSE,
+              startTime: recordedAt,
+              endTime: recordedAt,
+              unit: HealthDataUnit.MILLIGRAM_PER_DECILITER,
+            );
+            if (!ok) {
+              failureMessage = 'HealthKit rejected a glucose sample.';
+              break;
+            }
+            written += 1;
+          } catch (error, stack) {
+            debugPrint('HealthKit export failed: $error\n$stack');
+            failureMessage = 'HealthKit write failed: $error';
+            break;
           }
         }
-      }
 
-      if (written == 0) {
-        return const HealthExportResult(
-          status: HealthExportStatus.failed,
-          message: 'No samples were accepted by HealthKit.',
-        );
+        if (failureMessage != null) {
+          return HealthExportResult(
+            status: written == 0
+                ? HealthExportStatus.failed
+                : HealthExportStatus.partial,
+            written: written,
+            latestReadingAt: contiguousWatermark,
+            message: failureMessage,
+          );
+        }
+
+        // Only advance after every reading at this timestamp has succeeded.
+        // The persisted cursor has timestamp precision, so advancing midway
+        // through a same-time group would silently skip its failed members.
+        contiguousWatermark = timestamp;
+        index = groupEnd;
       }
 
       return HealthExportResult(
         status: HealthExportStatus.ok,
         written: written,
-        latestReadingAt: latestReadingAt,
+        latestReadingAt: contiguousWatermark,
       );
     } catch (error, stack) {
       debugPrint('HealthKit export failed: $error\n$stack');
@@ -191,6 +235,7 @@ class HealthExportController extends ChangeNotifier {
   HealthExportController({
     required SharedPreferences preferences,
     GlucoseExporter? service,
+    this.writesAllowed = true,
   }) : _preferences = preferences,
        _service = service ?? HealthKitExportService();
 
@@ -200,6 +245,12 @@ class HealthExportController extends ChangeNotifier {
 
   final SharedPreferences _preferences;
   final GlucoseExporter _service;
+
+  /// Immutable environment gate for builds or drivers that must never write.
+  ///
+  /// Consent remains a separate, user-controlled gate. Both this flag and the
+  /// user's opt-in must be true before authorization or export can occur.
+  final bool writesAllowed;
 
   bool _enabled = false;
   bool _busy = false;
@@ -216,7 +267,7 @@ class HealthExportController extends ChangeNotifier {
   String? get statusMessage => _statusMessage;
 
   void initialize() {
-    _enabled = _preferences.getBool(_enabledKey) ?? false;
+    _enabled = writesAllowed && (_preferences.getBool(_enabledKey) ?? false);
     final lastMs = _preferences.getInt(_lastSyncedKey);
     if (lastMs != null) {
       _lastSyncedAt = DateTime.fromMillisecondsSinceEpoch(lastMs);
@@ -229,11 +280,17 @@ class HealthExportController extends ChangeNotifier {
 
   /// Toggles the opt-in. Enabling on iOS triggers the HealthKit auth sheet; if
   /// the user declines, the toggle stays off.
-  Future<void> setEnabled(bool value) async {
+  Future<void> setEnabled({required bool enabled}) async {
     if (_busy) {
       return;
     }
-    if (!value) {
+    if (!writesAllowed) {
+      _enabled = false;
+      _statusMessage = 'Apple Health export is unavailable in this mode.';
+      notifyListeners();
+      return;
+    }
+    if (!enabled) {
       _enabled = false;
       _statusMessage = null;
       await _preferences.setBool(_enabledKey, false);
@@ -254,9 +311,7 @@ class HealthExportController extends ChangeNotifier {
       final granted = await _service.requestAuthorization();
       _enabled = granted;
       await _preferences.setBool(_enabledKey, granted);
-      _statusMessage = granted
-          ? null
-          : 'Apple Health access was not granted.';
+      _statusMessage = granted ? null : 'Apple Health access was not granted.';
     } finally {
       _busy = false;
       notifyListeners();
@@ -269,10 +324,26 @@ class HealthExportController extends ChangeNotifier {
     if (_busy) {
       return const HealthExportResult(status: HealthExportStatus.failed);
     }
+    if (!writesAllowed) {
+      _statusMessage = 'Apple Health export is unavailable in this mode.';
+      notifyListeners();
+      return const HealthExportResult(
+        status: HealthExportStatus.notAuthorized,
+        message: 'Apple Health writes are disabled for this mode.',
+      );
+    }
     if (!_service.isSupported) {
       _statusMessage = 'Apple Health is only available on iOS.';
       notifyListeners();
       return const HealthExportResult(status: HealthExportStatus.notSupported);
+    }
+    if (!_enabled) {
+      _statusMessage = 'Turn on Apple Health export before syncing.';
+      notifyListeners();
+      return const HealthExportResult(
+        status: HealthExportStatus.notAuthorized,
+        message: 'Apple Health export is turned off.',
+      );
     }
 
     _busy = true;
@@ -282,21 +353,16 @@ class HealthExportController extends ChangeNotifier {
       final result = await _service.export(readings, since: _watermark);
       switch (result.status) {
         case HealthExportStatus.ok:
-          _enabled = true;
           _lastSyncedAt = DateTime.now();
-          if (result.latestReadingAt != null) {
-            _watermark = result.latestReadingAt;
-            await _preferences.setInt(
-              _watermarkKey,
-              _watermark!.millisecondsSinceEpoch,
-            );
-          }
-          await _preferences.setBool(_enabledKey, true);
-          await _preferences.setInt(
-            _lastSyncedKey,
-            _lastSyncedAt!.millisecondsSinceEpoch,
-          );
+          await _persistProgress(result.latestReadingAt);
           _statusMessage = 'Synced ${result.written} reading(s).';
+        case HealthExportStatus.partial:
+          _lastSyncedAt = DateTime.now();
+          await _persistProgress(result.latestReadingAt);
+          _statusMessage = result.message == null
+              ? 'Synced ${result.written} reading(s), then export stopped.'
+              : 'Synced ${result.written} reading(s), then export stopped: '
+                    '${result.message}';
         case HealthExportStatus.noData:
           // Nothing new to write counts as an up-to-date sync.
           _lastSyncedAt = DateTime.now();
@@ -319,5 +385,19 @@ class HealthExportController extends ChangeNotifier {
       _busy = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _persistProgress(DateTime? contiguousWatermark) async {
+    if (contiguousWatermark != null) {
+      _watermark = contiguousWatermark;
+      await _preferences.setInt(
+        _watermarkKey,
+        _watermark!.millisecondsSinceEpoch,
+      );
+    }
+    await _preferences.setInt(
+      _lastSyncedKey,
+      _lastSyncedAt!.millisecondsSinceEpoch,
+    );
   }
 }

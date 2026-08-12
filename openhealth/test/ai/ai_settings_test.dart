@@ -1,6 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:openglucose/src/ai/ai_controller.dart';
 import 'package:openglucose/src/ai/ai_settings.dart';
 import 'package:openglucose/src/ai/ai_settings_store.dart';
@@ -45,35 +46,37 @@ void main() {
     setUp(() {
       secureBox.clear();
       SharedPreferences.setMockInitialValues(<String, Object>{});
-      TestDefaultBinaryMessengerBinding
-          .instance
-          .defaultBinaryMessenger
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(
-        const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-        (call) async {
-          final args = (call.arguments as Map?) ?? const <Object?, Object?>{};
-          final key = args['key'] as String?;
-          switch (call.method) {
-            case 'write':
-              secureBox[key!] = args['value'] as String;
-              return null;
-            case 'read':
-              return secureBox[key];
-            case 'delete':
-              secureBox.remove(key);
-              return null;
-            case 'containsKey':
-              return secureBox.containsKey(key);
-            case 'readAll':
-              return Map<String, String>.from(secureBox);
-            case 'deleteAll':
-              secureBox.clear();
-              return null;
-            default:
-              return null;
-          }
-        },
-      );
+            const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+            (call) async {
+              final args =
+                  (call.arguments as Map?) ?? const <Object?, Object?>{};
+              final key = args['key'] as String?;
+              switch (call.method) {
+                case 'write':
+                  final value = args['value'];
+                  if (key != null && value is String) {
+                    secureBox[key] = value;
+                  }
+                  return null;
+                case 'read':
+                  return secureBox[key];
+                case 'delete':
+                  secureBox.remove(key);
+                  return null;
+                case 'containsKey':
+                  return secureBox.containsKey(key);
+                case 'readAll':
+                  return Map<String, String>.from(secureBox);
+                case 'deleteAll':
+                  secureBox.clear();
+                  return null;
+                default:
+                  return null;
+              }
+            },
+          );
     });
 
     Future<AiSettingsStore> newStore() async {
@@ -93,6 +96,16 @@ void main() {
       // The key must never appear in plain SharedPreferences.
       final dumped = prefs.getKeys().map(prefs.get).join();
       expect(dumped, isNot(contains('sk-secret')));
+    });
+
+    test('iOS keys stay on this device and never synchronize', () {
+      final options = AiSettingsStore.secureIOSOptions.toMap();
+
+      expect(
+        options['accessibility'],
+        KeychainAccessibility.unlocked_this_device.name,
+      );
+      expect(options['synchronizable'], 'false');
     });
 
     test('empty key write deletes the stored key', () async {
@@ -116,32 +129,38 @@ void main() {
       expect(provider.isEnabled, isFalse);
     });
 
-    test('AiController builds NullAiProvider when enabled but no key', () async {
-      final store = await newStore();
-      await store.saveSettings(const AiSettings(enabled: true));
-      final controller = AiController(
-        store: store,
-        repository: InMemoryHealthRepository(),
-      );
-      final provider = await controller.buildProvider();
-      expect(provider, isA<NullAiProvider>());
-    });
+    test(
+      'AiController builds NullAiProvider when enabled but no key',
+      () async {
+        final store = await newStore();
+        await store.saveSettings(const AiSettings(enabled: true));
+        final controller = AiController(
+          store: store,
+          repository: InMemoryHealthRepository(),
+        );
+        final provider = await controller.buildProvider();
+        expect(provider, isA<NullAiProvider>());
+      },
+    );
 
-    test('AiController builds an enabled HttpChatAiProvider with key', () async {
-      final store = await newStore();
-      await store.saveSettings(
-        const AiSettings(enabled: true, model: 'm-test'),
-      );
-      await store.writeApiKey('sk-secret');
-      final controller = AiController(
-        store: store,
-        repository: InMemoryHealthRepository(),
-      );
-      final provider = await controller.buildProvider();
-      expect(provider, isA<HttpChatAiProvider>());
-      expect(provider.isEnabled, isTrue);
-      expect(provider.modelId, 'm-test');
-    });
+    test(
+      'AiController builds an enabled HttpChatAiProvider with key',
+      () async {
+        final store = await newStore();
+        await store.saveSettings(
+          const AiSettings(enabled: true, model: 'm-test'),
+        );
+        await store.writeApiKey('sk-secret');
+        final controller = AiController(
+          store: store,
+          repository: InMemoryHealthRepository(),
+        );
+        final provider = await controller.buildProvider();
+        expect(provider, isA<HttpChatAiProvider>());
+        expect(provider.isEnabled, isTrue);
+        expect(provider.modelId, 'm-test');
+      },
+    );
 
     test('disabled controller generates nothing (no I/O)', () async {
       final store = await newStore();

@@ -163,6 +163,11 @@ void main() {
       expect(GlucoseAnalytics.spikeCount(readings), 1);
     });
 
+    test('an already-high first sample is not an upward crossing', () {
+      final readings = _series(<double>[200, 210, 220]);
+      expect(GlucoseAnalytics.spikeCount(readings), 0);
+    });
+
     test('no crossings yields zero', () {
       final readings = _series(<double>[100, 120, 140, 160]);
       expect(GlucoseAnalytics.spikeCount(readings), 0);

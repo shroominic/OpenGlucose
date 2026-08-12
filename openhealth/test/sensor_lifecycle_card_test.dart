@@ -77,6 +77,8 @@ void main() {
       find.textContaining('frozen at the last known values'),
       findsOneWidget,
     );
+    expect(find.textContaining('Last reading 2 hours ago'), findsOneWidget);
+    expect(find.textContaining('Last reading just now'), findsNothing);
     // Offboarding steps + replace flow.
     expect(find.text('Next steps'), findsOneWidget);
     expect(find.byKey(const ValueKey('replaceSensorButton')), findsOneWidget);

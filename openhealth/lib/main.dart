@@ -25,12 +25,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// When built with `--dart-define=OG_DEMO=true`, the app runs the in-memory
-/// demo driver (see [buildDefaultDriver]) and auto-connects on launch so it
-/// lands directly on the populated dashboard — used for simulator/feature
-/// verification. Defaults to false; production builds are unaffected.
-const bool kOgDemo = bool.fromEnvironment('OG_DEMO', defaultValue: false);
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -54,13 +48,15 @@ Future<_BootstrapResult> _bootstrap() async {
     driver: buildDefaultDriver(),
   );
   await controller.initialize();
-  final healthExport = HealthExportController(preferences: preferences)
-    ..initialize();
+  final healthExport = HealthExportController(
+    preferences: preferences,
+    writesAllowed: !controller.isMockDriver,
+  )..initialize();
   final messages = MessageController(
     preferences: preferences,
     messages: defaultMessageCatalog,
   );
-  if (kOgDemo) {
+  if (controller.isMockDriver) {
     // In demo mode (simulator/feature verification) the demo driver only
     // surfaces its sensor after a scan, so auto-scan and auto-connect to land
     // directly on the populated dashboard. Strictly gated behind OG_DEMO and
@@ -276,6 +272,7 @@ class OpenGlucoseApp extends StatelessWidget {
         controller: healthExport,
         child: _OnboardingGate(
           store: OnboardingStore(preferences),
+          controller: controller,
           unit: controller.displayPreferences.unit,
           home: CgmHomePage(
             controller: controller,
@@ -294,11 +291,13 @@ class OpenGlucoseApp extends StatelessWidget {
 class _OnboardingGate extends StatefulWidget {
   const _OnboardingGate({
     required this.store,
+    required this.controller,
     required this.unit,
     required this.home,
   });
 
   final OnboardingStore store;
+  final CgmAppController controller;
   final GlucoseUnit unit;
   final Widget home;
 
@@ -317,7 +316,15 @@ class _OnboardingGateState extends State<_OnboardingGate> {
     return OnboardingFlow(
       store: widget.store,
       unit: widget.unit,
-      onFinished: () => setState(() => _showOnboarding = false),
+      onFinished: () {
+        widget.controller.updateDisplayPreferences(
+          widget.controller.displayPreferences.copyWith(
+            targetLowMgdl: widget.store.targetLowMgdl,
+            targetHighMgdl: widget.store.targetHighMgdl,
+          ),
+        );
+        setState(() => _showOnboarding = false);
+      },
     );
   }
 }
@@ -649,6 +656,24 @@ class _DashboardView extends StatelessWidget {
           parent: BouncingScrollPhysics(),
         ),
         slivers: <Widget>[
+          if (controller.isMockDriver)
+            const SliverToBoxAdapter(
+              child: ColoredBox(
+                color: Color(0xFFFFD166),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  child: Text(
+                    'DEMO DATA — NOT REAL GLUCOSE',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFF4A2B00),
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
@@ -1083,6 +1108,12 @@ Future<void> _showSettings(
   final cropController = TextEditingController(
     text: working.cropFirstSamples.toString(),
   );
+  final targetLowController = TextEditingController(
+    text: working.targetLowMgdl.toStringAsFixed(0),
+  );
+  final targetHighController = TextEditingController(
+    text: working.targetHighMgdl.toStringAsFixed(0),
+  );
 
   await showModalBottomSheet<void>(
     context: context,
@@ -1105,6 +1136,8 @@ Future<void> _showSettings(
             scaleController: scaleController,
             offsetController: offsetController,
             cropController: cropController,
+            targetLowController: targetLowController,
+            targetHighController: targetHighController,
             setState: setState,
             onWorkingChanged: (next) => working = next,
           );
@@ -1189,6 +1222,11 @@ Future<void> _showSettings(
       );
     },
   );
+  scaleController.dispose();
+  offsetController.dispose();
+  cropController.dispose();
+  targetLowController.dispose();
+  targetHighController.dispose();
 }
 
 Widget _buildDisplaySettingsPane({
@@ -1198,6 +1236,8 @@ Widget _buildDisplaySettingsPane({
   required TextEditingController scaleController,
   required TextEditingController offsetController,
   required TextEditingController cropController,
+  required TextEditingController targetLowController,
+  required TextEditingController targetHighController,
   required void Function(void Function()) setState,
   required void Function(DisplayPreferences) onWorkingChanged,
 }) {
@@ -1259,6 +1299,34 @@ Widget _buildDisplaySettingsPane({
         keyboardType: TextInputType.number,
         decoration: const InputDecoration(labelText: 'Crop first N samples'),
       ),
+      const SizedBox(height: 12),
+      Row(
+        children: <Widget>[
+          Expanded(
+            child: TextField(
+              controller: targetLowController,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Target low (mg/dL)',
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: TextField(
+              controller: targetHighController,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Target high (mg/dL)',
+              ),
+            ),
+          ),
+        ],
+      ),
       const SizedBox(height: 18),
       Wrap(
         spacing: 12,
@@ -1266,6 +1334,21 @@ Widget _buildDisplaySettingsPane({
         children: <Widget>[
           FilledButton(
             onPressed: () {
+              final targetLow = double.tryParse(targetLowController.text);
+              final targetHigh = double.tryParse(targetHighController.text);
+              if (targetLow == null ||
+                  targetHigh == null ||
+                  !targetLow.isFinite ||
+                  !targetHigh.isFinite ||
+                  targetLow <= 0 ||
+                  targetHigh <= targetLow) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Enter an increasing target glucose range.'),
+                  ),
+                );
+                return;
+              }
               controller.updateDisplayPreferences(
                 working.copyWith(
                   calibrationScale:
@@ -1277,6 +1360,8 @@ Widget _buildDisplaySettingsPane({
                   cropFirstSamples:
                       int.tryParse(cropController.text) ??
                       working.cropFirstSamples,
+                  targetLowMgdl: targetLow,
+                  targetHighMgdl: targetHigh,
                 ),
               );
               Navigator.of(context).pop();

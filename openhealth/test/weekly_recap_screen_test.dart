@@ -52,11 +52,11 @@ void main() {
     // Lower cards are below the fold in a ListView; scroll them into view.
     final scrollable = find.byType(Scrollable).first;
     await tester.scrollUntilVisible(
-      find.text('Steadiest & bumpiest day'),
+      find.text('Days by time in range'),
       300,
       scrollable: scrollable,
     );
-    expect(find.text('Steadiest & bumpiest day'), findsOneWidget);
+    expect(find.text('Days by time in range'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Top spikes'),
       300,
@@ -64,11 +64,11 @@ void main() {
     );
     expect(find.text('Top spikes'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('Day-of-week pattern'),
+      find.text("This week's weekdays"),
       300,
       scrollable: scrollable,
     );
-    expect(find.text('Day-of-week pattern'), findsOneWidget);
+    expect(find.text("This week's weekdays"), findsOneWidget);
   });
 
   testWidgets('shows empty state when no readings', (tester) async {

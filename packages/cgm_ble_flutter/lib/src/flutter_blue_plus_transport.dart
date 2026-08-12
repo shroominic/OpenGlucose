@@ -121,7 +121,7 @@ class FlutterBluePlusTransport implements BleTransport {
     final device = fbp.BluetoothDevice.fromId(deviceId);
     try {
       await device.connect(
-        license: fbp.License.free,
+        license: fbp.License.nonprofit,
         timeout: timeout,
         mtu: null,
       );
@@ -131,7 +131,7 @@ class FlutterBluePlusTransport implements BleTransport {
       }
       await Future<void>.delayed(const Duration(milliseconds: 800));
       await device.connect(
-        license: fbp.License.free,
+        license: fbp.License.nonprofit,
         timeout: timeout,
         mtu: null,
       );

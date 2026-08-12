@@ -40,6 +40,7 @@ class _MetricsSectionState extends State<MetricsSection> {
     final stats = GlucoseAnalytics.summarize(
       widget.readings,
       timeframe: _timeframe,
+      bounds: widget.preferences.targetRange,
     );
 
     return Card(
@@ -102,11 +103,12 @@ class _MetricsSectionState extends State<MetricsSection> {
                   ),
                   _MetricRow(
                     label: 'Variability (CV)',
-                    value:
-                        '${stats.coefficientOfVariationPercent!.toStringAsFixed(0)}%',
+                    value: stats.coefficientOfVariationPercent == null
+                        ? 'Unavailable'
+                        : '${stats.coefficientOfVariationPercent!.toStringAsFixed(0)}%',
                     explanation:
                         'How spread out readings are around the average '
-                        '(SD ${_formatGlucose(stats.standardDeviationMgdl!)}). '
+                        '(SD ${stats.standardDeviationMgdl == null ? 'unavailable' : _formatGlucose(stats.standardDeviationMgdl!)}). '
                         'Lower looks steadier.',
                   ),
                   _MetricRow(

@@ -5,8 +5,16 @@ void main() {
   group('TimelineSorting', () {
     test('sortedByTime orders ascending and is stable on ties', () {
       final t = DateTime.utc(2026, 1, 1, 12);
-      final a = HeartRateSample(timestamp: t, bpm: 60, source: DataSource.manual);
-      final b = HeartRateSample(timestamp: t, bpm: 61, source: DataSource.manual);
+      final a = HeartRateSample(
+        timestamp: t,
+        bpm: 60,
+        source: DataSource.manual,
+      );
+      final b = HeartRateSample(
+        timestamp: t,
+        bpm: 61,
+        source: DataSource.manual,
+      );
       final earlier = HeartRateSample(
         timestamp: DateTime.utc(2026, 1, 1, 11),
         bpm: 59,
@@ -86,10 +94,7 @@ void main() {
         source: CgmRecordSource.standard,
         recordedAt: DateTime.utc(2026, 1, 1),
       );
-      const unanchored = CgmReading(
-        valueMgdl: 95,
-        source: CgmRecordSource.raw,
-      );
+      const unanchored = CgmReading(valueMgdl: 95, source: CgmRecordSource.raw);
 
       final merged = mergeTimelines(<List<TimelineEntry>>[
         <TimelineEntry>[anchored, unanchored],

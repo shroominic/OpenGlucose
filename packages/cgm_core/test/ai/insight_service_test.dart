@@ -84,11 +84,7 @@ void main() {
         windowEnd: start.add(const Duration(hours: 1)),
         readings: const <CgmReading>[],
         events: <HealthEvent>[
-          HealthEvent(
-            id: 'n1',
-            timestamp: start,
-            type: HealthEventType.note,
-          ),
+          HealthEvent(id: 'n1', timestamp: start, type: HealthEventType.note),
         ],
       );
       expect(summary.hasData, isFalse);

@@ -6,9 +6,7 @@ import 'package:test/test.dart';
 /// [factory] must return a fresh, empty repository each time it is called.
 /// The same suite runs against the in-memory fake here and against the
 /// sqflite-backed store in the Flutter app, guaranteeing they agree.
-void runHealthRepositoryContractTests(
-  HealthRepository Function() factory,
-) {
+void runHealthRepositoryContractTests(HealthRepository Function() factory) {
   late HealthRepository repo;
 
   setUp(() async {
@@ -41,8 +39,12 @@ void runHealthRepositoryContractTests(
     });
 
     test('upsert replaces by id', () async {
-      await repo.upsertEvent(meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 10));
-      await repo.upsertEvent(meal('e1', DateTime.utc(2026, 1, 1, 9), carbs: 99));
+      await repo.upsertEvent(
+        meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 10),
+      );
+      await repo.upsertEvent(
+        meal('e1', DateTime.utc(2026, 1, 1, 9), carbs: 99),
+      );
 
       final all = await repo.queryEvents();
       expect(all, hasLength(1));
@@ -50,23 +52,26 @@ void runHealthRepositoryContractTests(
       expect((all.single.payload as MealPayload).carbsGrams, 99);
     });
 
-    test('bulk insert and query-by-window (half-open) + chronological', () async {
-      await repo.upsertEvents([
-        meal('a', DateTime.utc(2026, 1, 1, 6)),
-        meal('b', DateTime.utc(2026, 1, 1, 8)),
-        meal('c', DateTime.utc(2026, 1, 1, 10)),
-        meal('d', DateTime.utc(2026, 1, 1, 12)),
-      ]);
+    test(
+      'bulk insert and query-by-window (half-open) + chronological',
+      () async {
+        await repo.upsertEvents([
+          meal('a', DateTime.utc(2026, 1, 1, 6)),
+          meal('b', DateTime.utc(2026, 1, 1, 8)),
+          meal('c', DateTime.utc(2026, 1, 1, 10)),
+          meal('d', DateTime.utc(2026, 1, 1, 12)),
+        ]);
 
-      final windowed = await repo.queryEvents(
-        window: TimeWindow(
-          start: DateTime.utc(2026, 1, 1, 8),
-          end: DateTime.utc(2026, 1, 1, 12),
-        ),
-      );
-      // start inclusive (b), end exclusive (d excluded).
-      expect(windowed.map((e) => e.id), ['b', 'c']);
-    });
+        final windowed = await repo.queryEvents(
+          window: TimeWindow(
+            start: DateTime.utc(2026, 1, 1, 8),
+            end: DateTime.utc(2026, 1, 1, 12),
+          ),
+        );
+        // start inclusive (b), end exclusive (d excluded).
+        expect(windowed.map((e) => e.id), ['b', 'c']);
+      },
+    );
 
     test('query filters by type', () async {
       await repo.upsertEvents([

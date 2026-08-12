@@ -20,10 +20,7 @@ void main() {
 
   group('AiProviderConfig', () {
     test('hasKey requires both key and base URL', () {
-      expect(
-        const AiProviderConfig(baseUrl: '', apiKey: '').hasKey,
-        isFalse,
-      );
+      expect(const AiProviderConfig(baseUrl: '', apiKey: '').hasKey, isFalse);
       expect(
         const AiProviderConfig(baseUrl: 'https://x', apiKey: '  ').hasKey,
         isFalse,
@@ -75,22 +72,25 @@ void main() {
       );
     });
 
-    test('wraps transport failure in AiGenerationException (no crash)', () async {
-      final provider = HttpChatAiProvider(
-        config: config(),
-        transport: (_, _) async => throw Exception('network down'),
-      );
-      await expectLater(
-        provider.generate(_req()),
-        throwsA(
-          isA<AiGenerationException>().having(
-            (e) => e.cause.toString(),
-            'cause',
-            contains('network down'),
+    test(
+      'wraps transport failure in AiGenerationException (no crash)',
+      () async {
+        final provider = HttpChatAiProvider(
+          config: config(),
+          transport: (_, _) async => throw Exception('network down'),
+        );
+        await expectLater(
+          provider.generate(_req()),
+          throwsA(
+            isA<AiGenerationException>().having(
+              (e) => e.cause.toString(),
+              'cause',
+              contains('network down'),
+            ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
 
     test('empty response is an error', () async {
       final provider = HttpChatAiProvider(
@@ -158,8 +158,5 @@ void main() {
 }
 
 AiRequest _req() => const AiRequest(
-  messages: <AiMessage>[
-    AiMessage.system('sys'),
-    AiMessage.user('hello'),
-  ],
+  messages: <AiMessage>[AiMessage.system('sys'), AiMessage.user('hello')],
 );

@@ -158,6 +158,9 @@ abstract final class WeeklyRecapAnalytics {
     return DateTime(local.year, local.month, local.day);
   }
 
+  static DateTime _calendarDay(DateTime day, int offset) =>
+      DateTime(day.year, day.month, day.day + offset);
+
   /// Builds the recap for the 7-day window ending at [now] (defaults to
   /// [DateTime.now]). The current week is `[weekStart, weekStart + 7d)` where
   /// [weekStart] is the local midnight 6 days before today, so "this week" is
@@ -171,9 +174,9 @@ abstract final class WeeklyRecapAnalytics {
     final reference = now ?? DateTime.now();
     final today = dayStart(reference);
     // Current week covers today and the previous six days → 7 calendar days.
-    final weekStart = today.subtract(const Duration(days: 6));
-    final weekEnd = weekStart.add(const Duration(days: 7));
-    final lastWeekStart = weekStart.subtract(const Duration(days: 7));
+    final weekStart = _calendarDay(today, -6);
+    final weekEnd = _calendarDay(weekStart, 7);
+    final lastWeekStart = _calendarDay(weekStart, -7);
 
     final thisWeekReadings = _inDayRange(readings, weekStart, weekEnd);
     final lastWeekReadings = _inDayRange(readings, lastWeekStart, weekStart);
@@ -256,7 +259,7 @@ abstract final class WeeklyRecapAnalytics {
     for (
       var day = weekStart;
       day.isBefore(weekEnd);
-      day = day.add(const Duration(days: 1))
+      day = _calendarDay(day, 1)
     ) {
       final dayReadings = byDay[day] ?? const <CgmReading>[];
       final stats = GlucoseAnalytics.summarize(
@@ -313,7 +316,15 @@ abstract final class WeeklyRecapAnalytics {
     }
 
     double lastBelowOrIn = double.nan;
+    DateTime? previousAt;
     for (final reading in ordered) {
+      final recordedAt = reading.recordedAt!;
+      if (previousAt != null &&
+          recordedAt.difference(previousAt) > const Duration(hours: 6)) {
+        flush();
+        lastBelowOrIn = double.nan;
+      }
+      previousAt = recordedAt;
       final value = reading.valueMgdl;
       final isAbove = value > bounds.highMgdl;
       if (isAbove) {

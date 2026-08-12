@@ -27,7 +27,7 @@ enum HealthEventType {
   String get key => name;
 
   /// Parses a [HealthEventType] from its [key], falling back to [custom] for
-  /// unknown or missing values so deserialization never throws.
+  /// callers that explicitly want a best-effort classification.
   static HealthEventType fromKey(String? key) {
     if (key == null) return HealthEventType.custom;
     for (final value in HealthEventType.values) {
@@ -53,8 +53,8 @@ sealed class HealthEventPayload {
 
   /// Reconstructs a payload from its tagged JSON [json].
   ///
-  /// Returns `null` for `null` or unrecognized payloads so an event with no
-  /// (or future/unknown) payload deserializes cleanly.
+  /// Returns `null` for a `null` payload and throws a [FormatException] for an
+  /// unrecognized or malformed payload.
   static HealthEventPayload? fromJson(Map<String, Object?>? json) {
     if (json == null) return null;
     return switch (json['kind']) {
@@ -62,7 +62,7 @@ sealed class HealthEventPayload {
       'exercise' => ExercisePayload.fromJson(json),
       'note' => NotePayload.fromJson(json),
       'dose' => DosePayload.fromJson(json),
-      _ => null,
+      _ => throw const FormatException('Unsupported health-event payload'),
     };
   }
 }
@@ -97,22 +97,28 @@ class MealPayload extends HealthEventPayload {
   String get kind => 'meal';
 
   @override
-  Map<String, Object?> toJson() => <String, Object?>{
-    'kind': kind,
-    'carbsGrams': carbsGrams,
-    'proteinGrams': proteinGrams,
-    'fatGrams': fatGrams,
-    'caloriesKcal': caloriesKcal,
-    'description': description,
-  };
+  Map<String, Object?> toJson() {
+    _validateOptionalNonNegativeDouble(carbsGrams, 'carbsGrams');
+    _validateOptionalNonNegativeDouble(proteinGrams, 'proteinGrams');
+    _validateOptionalNonNegativeDouble(fatGrams, 'fatGrams');
+    _validateOptionalNonNegativeDouble(caloriesKcal, 'caloriesKcal');
+    return <String, Object?>{
+      'kind': kind,
+      'carbsGrams': carbsGrams,
+      'proteinGrams': proteinGrams,
+      'fatGrams': fatGrams,
+      'caloriesKcal': caloriesKcal,
+      'description': description,
+    };
+  }
 
   factory MealPayload.fromJson(Map<String, Object?> json) {
     return MealPayload(
-      carbsGrams: (json['carbsGrams'] as num?)?.toDouble(),
-      proteinGrams: (json['proteinGrams'] as num?)?.toDouble(),
-      fatGrams: (json['fatGrams'] as num?)?.toDouble(),
-      caloriesKcal: (json['caloriesKcal'] as num?)?.toDouble(),
-      description: json['description'] as String?,
+      carbsGrams: _readOptionalNonNegativeDouble(json, 'carbsGrams'),
+      proteinGrams: _readOptionalNonNegativeDouble(json, 'proteinGrams'),
+      fatGrams: _readOptionalNonNegativeDouble(json, 'fatGrams'),
+      caloriesKcal: _readOptionalNonNegativeDouble(json, 'caloriesKcal'),
+      description: _readOptionalString(json, 'description'),
     );
   }
 }
@@ -159,21 +165,27 @@ class ExercisePayload extends HealthEventPayload {
   String get kind => 'exercise';
 
   @override
-  Map<String, Object?> toJson() => <String, Object?>{
-    'kind': kind,
-    'activity': activity,
-    'durationMs': duration?.inMilliseconds,
-    'intensity': intensity?.key,
-    'energyKcal': energyKcal,
-  };
+  Map<String, Object?> toJson() {
+    if (duration != null && duration!.isNegative) {
+      throw const FormatException('durationMs must not be negative');
+    }
+    _validateOptionalNonNegativeDouble(energyKcal, 'energyKcal');
+    return <String, Object?>{
+      'kind': kind,
+      'activity': activity,
+      'durationMs': duration?.inMilliseconds,
+      'intensity': intensity?.key,
+      'energyKcal': energyKcal,
+    };
+  }
 
   factory ExercisePayload.fromJson(Map<String, Object?> json) {
-    final durationMs = (json['durationMs'] as num?)?.toInt();
+    final durationMs = _readOptionalNonNegativeInt(json, 'durationMs');
     return ExercisePayload(
-      activity: json['activity'] as String?,
+      activity: _readOptionalString(json, 'activity'),
       duration: durationMs == null ? null : Duration(milliseconds: durationMs),
-      intensity: ExerciseIntensity.fromKey(json['intensity'] as String?),
-      energyKcal: (json['energyKcal'] as num?)?.toDouble(),
+      intensity: _readOptionalExerciseIntensity(json, 'intensity'),
+      energyKcal: _readOptionalNonNegativeDouble(json, 'energyKcal'),
     );
   }
 }
@@ -195,7 +207,7 @@ class NotePayload extends HealthEventPayload {
   };
 
   factory NotePayload.fromJson(Map<String, Object?> json) {
-    return NotePayload(text: json['text'] as String? ?? '');
+    return NotePayload(text: _readRequiredString(json, 'text'));
   }
 }
 
@@ -217,18 +229,21 @@ class DosePayload extends HealthEventPayload {
   String get kind => 'dose';
 
   @override
-  Map<String, Object?> toJson() => <String, Object?>{
-    'kind': kind,
-    'name': name,
-    'amount': amount,
-    'unit': unit,
-  };
+  Map<String, Object?> toJson() {
+    _validateOptionalNonNegativeDouble(amount, 'amount');
+    return <String, Object?>{
+      'kind': kind,
+      'name': name,
+      'amount': amount,
+      'unit': unit,
+    };
+  }
 
   factory DosePayload.fromJson(Map<String, Object?> json) {
     return DosePayload(
-      name: json['name'] as String?,
-      amount: (json['amount'] as num?)?.toDouble(),
-      unit: json['unit'] as String?,
+      name: _readOptionalString(json, 'name'),
+      amount: _readOptionalNonNegativeDouble(json, 'amount'),
+      unit: _readOptionalString(json, 'unit'),
     );
   }
 }
@@ -292,29 +307,210 @@ class HealthEvent implements TimelineEntry {
     );
   }
 
-  Map<String, Object?> toJson() => <String, Object?>{
-    'id': id,
-    'timestamp': timestamp.toIso8601String(),
-    'type': type.key,
-    'payload': payload?.toJson(),
-    'tags': tags,
-    'source': source.key,
-  };
+  Map<String, Object?> toJson() {
+    if (id.isEmpty) {
+      throw const FormatException('id must not be empty');
+    }
+    _validatePayloadCompatibility(type, payload);
+    return <String, Object?>{
+      'formatVersion': _healthEventFormatVersion,
+      'id': id,
+      'timestamp': timestamp.toUtc().toIso8601String(),
+      'type': type.key,
+      'payload': payload?.toJson(),
+      'tags': tags,
+      'source': source.key,
+    };
+  }
 
   factory HealthEvent.fromJson(Map<String, Object?> json) {
+    final formatVersion = _readHealthEventFormatVersion(json);
+    final type = _readHealthEventType(json);
+    final payload = _readPayload(json);
+    _validatePayloadCompatibility(type, payload);
     return HealthEvent(
-      id: json['id'] as String? ?? '',
-      timestamp:
-          DateTime.tryParse(json['timestamp'] as String? ?? '') ??
-          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
-      type: HealthEventType.fromKey(json['type'] as String?),
-      payload: HealthEventPayload.fromJson(
-        json['payload'] as Map<String, Object?>?,
+      id: _readRequiredString(json, 'id', nonEmpty: true),
+      timestamp: _readRequiredUtcDate(
+        json,
+        'timestamp',
+        formatVersion: formatVersion,
       ),
-      tags: ((json['tags'] as List<dynamic>?) ?? const <dynamic>[])
-          .map((value) => '$value')
-          .toList(growable: false),
-      source: DataSource.fromKey(json['source'] as String?),
+      type: type,
+      payload: payload,
+      tags: _readTags(json),
+      source: _readDataSource(json),
     );
   }
 }
+
+const int _healthEventFormatVersion = 1;
+
+int _readHealthEventFormatVersion(Map<String, Object?> json) {
+  if (!json.containsKey('formatVersion')) return 0;
+  final value = json['formatVersion'];
+  if (value is int && (value == 0 || value == _healthEventFormatVersion)) {
+    return value;
+  }
+  throw FormatException('Unsupported health-event formatVersion: $value');
+}
+
+String _readRequiredString(
+  Map<String, Object?> json,
+  String key, {
+  bool nonEmpty = false,
+}) {
+  final value = json[key];
+  if (value is! String || (nonEmpty && value.isEmpty)) {
+    throw FormatException(
+      '$key must be ${nonEmpty ? 'a non-empty ' : ''}String',
+    );
+  }
+  return value;
+}
+
+String? _readOptionalString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! String) throw FormatException('$key must be a String or null');
+  return value;
+}
+
+double? _readOptionalNonNegativeDouble(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! num) throw FormatException('$key must be numeric or null');
+  final result = value.toDouble();
+  _validateOptionalNonNegativeDouble(result, key);
+  return result;
+}
+
+void _validateOptionalNonNegativeDouble(double? value, String key) {
+  if (value != null && (!value.isFinite || value < 0)) {
+    throw FormatException('$key must be finite and non-negative');
+  }
+}
+
+int? _readOptionalNonNegativeInt(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! int || value < 0) {
+    throw FormatException('$key must be a non-negative integer or null');
+  }
+  return value;
+}
+
+ExerciseIntensity? _readOptionalExerciseIntensity(
+  Map<String, Object?> json,
+  String key,
+) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! String) throw FormatException('$key must be a String or null');
+  for (final intensity in ExerciseIntensity.values) {
+    if (intensity.key == value) return intensity;
+  }
+  throw FormatException('Unsupported exercise intensity: $value');
+}
+
+HealthEventType _readHealthEventType(Map<String, Object?> json) {
+  final value = _readRequiredString(json, 'type');
+  for (final type in HealthEventType.values) {
+    if (type.key == value) return type;
+  }
+  throw FormatException('Unsupported health-event type: $value');
+}
+
+DataSource _readDataSource(Map<String, Object?> json) {
+  final value = _readRequiredString(json, 'source');
+  for (final source in DataSource.values) {
+    if (source.key == value) return source;
+  }
+  throw FormatException('Unsupported data source: $value');
+}
+
+HealthEventPayload? _readPayload(Map<String, Object?> json) {
+  final value = json['payload'];
+  if (value == null) return null;
+  if (value is! Map<String, Object?>) {
+    throw const FormatException('payload must be an object or null');
+  }
+  return HealthEventPayload.fromJson(value);
+}
+
+List<String> _readTags(Map<String, Object?> json) {
+  final value = json['tags'];
+  if (value == null) return const <String>[];
+  if (value is! List<Object?> || value.any((tag) => tag is! String)) {
+    throw const FormatException('tags must be a list of strings');
+  }
+  return value.cast<String>().toList(growable: false);
+}
+
+void _validatePayloadCompatibility(
+  HealthEventType type,
+  HealthEventPayload? payload,
+) {
+  final isCompatible = switch (type) {
+    HealthEventType.meal => payload == null || payload is MealPayload,
+    HealthEventType.exercise => payload == null || payload is ExercisePayload,
+    HealthEventType.note => payload == null || payload is NotePayload,
+    HealthEventType.insulin ||
+    HealthEventType.medication => payload == null || payload is DosePayload,
+    HealthEventType.custom => payload == null,
+  };
+  if (!isCompatible) {
+    throw FormatException(
+      'Payload ${payload.runtimeType} is invalid for $type',
+    );
+  }
+}
+
+DateTime _readRequiredUtcDate(
+  Map<String, Object?> json,
+  String key, {
+  required int formatVersion,
+}) {
+  final value = _readRequiredString(json, key);
+  final match = RegExp(
+    r'^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})'
+    r'(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})?$',
+  ).firstMatch(value);
+  if (match == null || (formatVersion == 1 && match.group(8) == null)) {
+    throw FormatException('$key must be an ISO-8601 timestamp with a timezone');
+  }
+
+  final year = int.parse(match.group(1)!);
+  final month = int.parse(match.group(2)!);
+  final day = int.parse(match.group(3)!);
+  final hour = int.parse(match.group(4)!);
+  final minute = int.parse(match.group(5)!);
+  final second = int.parse(match.group(6)!);
+  final zone = match.group(8);
+  final zoneHour = zone == null || zone == 'Z'
+      ? 0
+      : int.parse(zone.substring(1, 3));
+  final zoneMinute = zone == null || zone == 'Z'
+      ? 0
+      : int.parse(zone.substring(4, 6));
+  final validDay =
+      month >= 1 && month <= 12 && day >= 1 && day <= _daysInMonth(year, month);
+  if (!validDay ||
+      hour > 23 ||
+      minute > 59 ||
+      second > 59 ||
+      zoneHour > 23 ||
+      zoneMinute > 59) {
+    throw FormatException('$key contains an invalid date or time');
+  }
+
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) throw FormatException('$key is not a valid timestamp');
+  return parsed.toUtc();
+}
+
+int _daysInMonth(int year, int month) => switch (month) {
+  2 when year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+  2 => 28,
+  4 || 6 || 9 || 11 => 30,
+  _ => 31,
+};

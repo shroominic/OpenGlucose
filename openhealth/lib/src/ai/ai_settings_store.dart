@@ -14,10 +14,19 @@ class AiSettingsStore {
     required SharedPreferences preferences,
     FlutterSecureStorage? secureStorage,
   }) : _preferences = preferences,
-       _secure = secureStorage ?? const FlutterSecureStorage();
+       _secure =
+           secureStorage ??
+           const FlutterSecureStorage(iOptions: secureIOSOptions);
 
   static const _settingsKey = 'openHealth.ai.settings';
   static const _apiKeyKey = 'openHealth.ai.apiKey';
+
+  /// Keeps API keys available only while the device is unlocked and prevents
+  /// them from migrating to a different device or synchronizing via iCloud.
+  static const IOSOptions secureIOSOptions = IOSOptions(
+    accessibility: KeychainAccessibility.unlocked_this_device,
+    synchronizable: false,
+  );
 
   final SharedPreferences _preferences;
   final FlutterSecureStorage _secure;

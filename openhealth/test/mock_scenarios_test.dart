@@ -174,8 +174,8 @@ void main() {
         initialScenario: MockScenario.activeNormal,
         clock: _clock,
       );
-      final session = await driver.connect(driver.scenarioSensor)
-          as DemoCgmSession;
+      final session =
+          await driver.connect(driver.scenarioSensor) as DemoCgmSession;
       addTearDown(session.disconnect);
 
       expect(session.scenario, MockScenario.activeNormal);
@@ -195,8 +195,8 @@ void main() {
 
     test('driver.applyScenario updates the live session', () async {
       final driver = DemoCgmDriver(clock: _clock);
-      final session = await driver.connect(driver.scenarioSensor)
-          as DemoCgmSession;
+      final session =
+          await driver.connect(driver.scenarioSensor) as DemoCgmSession;
       addTearDown(session.disconnect);
 
       final result = driver.applyScenario(MockScenario.error);
@@ -210,8 +210,8 @@ void main() {
         initialScenario: MockScenario.activeHigh,
         clock: _clock,
       );
-      final session = await driver.connect(driver.scenarioSensor)
-          as DemoCgmSession;
+      final session =
+          await driver.connect(driver.scenarioSensor) as DemoCgmSession;
       addTearDown(session.disconnect);
 
       await session.refresh();
@@ -220,5 +220,31 @@ void main() {
         greaterThan(kMockHighThresholdMgdl),
       );
     });
+
+    for (final scenario in <MockScenario>[
+      MockScenario.expired,
+      MockScenario.signalLoss,
+      MockScenario.disconnected,
+      MockScenario.error,
+    ]) {
+      test('refresh preserves the frozen ${scenario.name} scenario', () async {
+        final driver = DemoCgmDriver(initialScenario: scenario, clock: _clock);
+        final session =
+            await driver.connect(driver.scenarioSensor) as DemoCgmSession;
+        addTearDown(session.disconnect);
+        final before = session.currentSnapshot;
+
+        await session.refresh();
+
+        final after = session.currentSnapshot;
+        expect(after.stage, before.stage);
+        expect(after.history, before.history);
+        expect(
+          after.latestReading?.recordedAt,
+          before.latestReading?.recordedAt,
+        );
+        expect(after.metadata['scenario'], scenario.id);
+      });
+    }
   });
 }

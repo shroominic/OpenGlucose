@@ -14,7 +14,7 @@ import 'message_context.dart';
 /// [AppMessage.persistence] / dismissal state. Dismissals persist across
 /// launches via `shared_preferences`.
 ///
-/// It is a [ChangeNotifier] to match the app's [CgmAppController] style; the
+/// It is a [ChangeNotifier] to match the app controller's style; the
 /// UI host listens to it. Selection logic is pure (see [_select]) so it is
 /// directly unit-testable without a context.
 ///

@@ -26,9 +26,10 @@ class HttpAiTransport {
 
     final client = HttpClient()..connectionTimeout = _timeout;
     try {
-      final httpRequest = await client
-          .postUrl(uri)
-          .timeout(_timeout);
+      final httpRequest = await client.postUrl(uri).timeout(_timeout);
+      // A redirect could forward the API key and health summary to a different
+      // origin. Provider endpoints are therefore required to answer directly.
+      httpRequest.followRedirects = false;
       httpRequest.headers.set(
         HttpHeaders.contentTypeHeader,
         'application/json',
@@ -46,18 +47,15 @@ class HttpAiTransport {
       httpRequest.add(utf8.encode(jsonEncode(body)));
 
       final response = await httpRequest.close().timeout(_timeout);
-      final responseBody =
-          await response.transform(utf8.decoder).join().timeout(_timeout);
+      final responseBody = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(_timeout);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        // Try to surface the provider's error message, else the status.
-        try {
-          return HttpChatAiProvider.parseResponseBody(responseBody);
-        } catch (_) {
-          throw AiGenerationException(
-            'Provider returned HTTP ${response.statusCode}.',
-          );
-        }
+        throw AiGenerationException(
+          _providerErrorMessage(response.statusCode, responseBody),
+        );
       }
       return HttpChatAiProvider.parseResponseBody(responseBody);
     } on AiGenerationException {
@@ -71,15 +69,45 @@ class HttpAiTransport {
     }
   }
 
-  static Uri _resolveEndpoint(String baseUrl) {
-    var normalized = baseUrl.trim();
-    while (normalized.endsWith('/')) {
-      normalized = normalized.substring(0, normalized.length - 1);
+  static String _providerErrorMessage(int statusCode, String responseBody) {
+    try {
+      final decoded = jsonDecode(responseBody);
+      if (decoded is Map<String, Object?>) {
+        final error = decoded['error'];
+        if (error is Map && error['message'] is String) {
+          return 'Provider returned HTTP $statusCode: ${error['message']}';
+        }
+      }
+    } catch (_) {
+      // Fall back to the status without exposing an arbitrary response body.
     }
+    return 'Provider returned HTTP $statusCode.';
+  }
+
+  static Uri _resolveEndpoint(String baseUrl) {
+    final uri = Uri.tryParse(baseUrl.trim());
+    if (uri == null ||
+        !uri.isAbsolute ||
+        uri.scheme.toLowerCase() != 'https' ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.query.isNotEmpty ||
+        uri.fragment.isNotEmpty) {
+      throw const AiGenerationException(
+        'AI base URL must be an absolute HTTPS URL without credentials, '
+        'query parameters, or a fragment.',
+      );
+    }
+
+    var normalizedPath = uri.path;
+    while (normalizedPath.endsWith('/')) {
+      normalizedPath = normalizedPath.substring(0, normalizedPath.length - 1);
+    }
+
     // Allow callers to pass either a base (…/v1) or the full path.
-    final path = normalized.endsWith('/chat/completions')
-        ? normalized
-        : '$normalized/chat/completions';
-    return Uri.parse(path);
+    final endpointPath = normalizedPath.endsWith('/chat/completions')
+        ? normalizedPath
+        : '$normalizedPath/chat/completions';
+    return uri.replace(path: endpointPath, query: null, fragment: null);
   }
 }

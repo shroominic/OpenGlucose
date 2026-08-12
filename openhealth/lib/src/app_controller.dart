@@ -68,7 +68,7 @@ class CgmAppController extends ChangeNotifier {
     if (raw == null) {
       return null;
     }
-    final mergedHistory = raw.history.isNotEmpty
+    final mergedHistory = raw.history.isNotEmpty || isMockDriver
         ? raw.history
         : _persistedHistory;
     return raw.copyWith(
@@ -108,8 +108,12 @@ class CgmAppController extends ChangeNotifier {
       }
     }
 
+    if (isMockDriver) {
+      return;
+    }
+
     final restoredSensor = _loadPersistedSensor();
-    if (restoredSensor == null) {
+    if (restoredSensor == null || restoredSensor.driverId != _driver.driverId) {
       return;
     }
 
@@ -165,10 +169,21 @@ class CgmAppController extends ChangeNotifier {
     _connectInProgress = true;
     _cancelReconnect();
     try {
+      if (sensor.driverId != _driver.driverId) {
+        _lastError =
+            'Sensor driver ${sensor.driverId} does not match '
+            '${_driver.driverId}.';
+        notifyListeners();
+        return;
+      }
       await disconnect(clearSelection: false);
       _selectedSensor = sensor;
-      _persistedHistory = _loadPersistedHistory(sensor.storageKey);
-      await _persistSelectedSensor(sensor);
+      _persistedHistory = isMockDriver
+          ? const <CgmReading>[]
+          : _loadPersistedHistory(sensor.storageKey);
+      if (!isMockDriver) {
+        await _persistSelectedSensor(sensor);
+      }
       _snapshot = CgmSessionSnapshot(
         stage: CgmSyncStage.connecting,
         statusText: 'Connecting',
@@ -206,7 +221,9 @@ class CgmAppController extends ChangeNotifier {
         } else if (!reconnectingStage) {
           _lastError = null;
         }
-        if (_selectedSensor != null && nextSnapshot.history.isNotEmpty) {
+        if (!isMockDriver &&
+            _selectedSensor != null &&
+            nextSnapshot.history.isNotEmpty) {
           _persistedHistory = nextSnapshot.history;
           if (!nextSnapshot.historySync.inProgress) {
             _schedulePersistHistory(
@@ -215,7 +232,7 @@ class CgmAppController extends ChangeNotifier {
             );
           }
         }
-        if (reconnectingStage) {
+        if (reconnectingStage && !isMockDriver) {
           _scheduleReconnect();
         } else {
           _cancelReconnect();
@@ -390,11 +407,13 @@ class CgmAppController extends ChangeNotifier {
       _selectedSensor = null;
       _snapshot = null;
       _persistedHistory = const <CgmReading>[];
-      await _preferences.remove(_lastSensorKey);
-      await IosLiveActivityBridge.clearBackgroundSensor();
-      await IosLiveActivityBridge.end();
-      await AndroidLiveUpdateBridge.clearBackgroundSensor();
-      await AndroidLiveUpdateBridge.end();
+      if (!isMockDriver) {
+        await _preferences.remove(_lastSensorKey);
+        await IosLiveActivityBridge.clearBackgroundSensor();
+        await IosLiveActivityBridge.end();
+        await AndroidLiveUpdateBridge.clearBackgroundSensor();
+        await AndroidLiveUpdateBridge.end();
+      }
     } else {
       _snapshot = _snapshot?.copyWith(
         stage: CgmSyncStage.disconnected,
@@ -460,6 +479,9 @@ class CgmAppController extends ChangeNotifier {
   }
 
   void clearPersistedHistory() {
+    if (isMockDriver) {
+      return;
+    }
     final sensor = _selectedSensor;
     if (sensor == null) {
       return;
@@ -472,6 +494,9 @@ class CgmAppController extends ChangeNotifier {
   String _historyKey(String storageKey) => 'openHealth.history.$storageKey';
 
   List<CgmReading> _loadPersistedHistory(String storageKey) {
+    if (isMockDriver) {
+      return const <CgmReading>[];
+    }
     final raw = _preferences.getString(_historyKey(storageKey));
     if (raw == null || raw.isEmpty) {
       return const <CgmReading>[];
@@ -490,6 +515,9 @@ class CgmAppController extends ChangeNotifier {
     String storageKey,
     List<CgmReading> history,
   ) async {
+    if (isMockDriver) {
+      return;
+    }
     final trimmedHistory = _historyForPersistence(history);
     await _preferences.setString(
       _historyKey(storageKey),
@@ -502,6 +530,11 @@ class CgmAppController extends ChangeNotifier {
   }
 
   Future<void> _pushLiveActivity() async {
+    if (isMockDriver) {
+      await IosLiveActivityBridge.end();
+      await AndroidLiveUpdateBridge.end();
+      return;
+    }
     final snapshot = this.snapshot;
     if (snapshot == null) {
       await IosLiveActivityBridge.end();
@@ -522,6 +555,9 @@ class CgmAppController extends ChangeNotifier {
   }
 
   Future<void> _setBackgroundSensorBridges(DiscoveredSensor sensor) async {
+    if (isMockDriver) {
+      return;
+    }
     await IosLiveActivityBridge.setBackgroundSensor(
       sensorName: sensor.displayName,
       serial: sensor.metadata['serial'],
@@ -544,6 +580,9 @@ class CgmAppController extends ChangeNotifier {
   }
 
   void _schedulePersistHistory(String storageKey, List<CgmReading> history) {
+    if (isMockDriver) {
+      return;
+    }
     final snapshot = _historyForPersistence(history);
     _historyPersistTimer?.cancel();
     _historyPersistTimer = Timer(_historyPersistDebounce, () {
@@ -647,6 +686,9 @@ class CgmAppController extends ChangeNotifier {
   }
 
   void _scheduleReconnect() {
+    if (isMockDriver) {
+      return;
+    }
     if (_selectedSensor == null ||
         _connectInProgress ||
         _reconnectTimer != null) {

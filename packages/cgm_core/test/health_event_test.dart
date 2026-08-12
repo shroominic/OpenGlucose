@@ -70,6 +70,8 @@ void main() {
       expect(payload.fatGrams, 10);
       expect(payload.caloriesKcal, 400);
       expect(payload.description, 'lunch');
+      expect(event.toJson()['formatVersion'], 1);
+      expect(event.toJson()['timestamp'], '2026-02-03T12:30:00.000Z');
     });
 
     test('exercise payload round-trips with duration & intensity', () {
@@ -99,7 +101,10 @@ void main() {
         type: HealthEventType.note,
         payload: const NotePayload(text: 'felt great today'),
       );
-      expect((roundTrip(event).payload as NotePayload).text, 'felt great today');
+      expect(
+        (roundTrip(event).payload as NotePayload).text,
+        'felt great today',
+      );
     });
 
     test('dose payload round-trips for insulin and medication', () {
@@ -117,40 +122,139 @@ void main() {
   });
 
   group('HealthEvent edge cases', () {
-    test('unknown type falls back to custom', () {
-      final out = HealthEvent.fromJson({
-        'id': 'x',
-        'timestamp': '2026-01-01T00:00:00.000Z',
-        'type': 'something-new',
-      });
-      expect(out.type, HealthEventType.custom);
+    Map<String, Object?> validJson({int? formatVersion = 1}) =>
+        <String, Object?>{
+          'formatVersion': ?formatVersion,
+          'id': 'event-1',
+          'timestamp': '2026-01-01T00:00:00.000Z',
+          'type': 'meal',
+          'payload': <String, Object?>{'kind': 'meal', 'carbsGrams': 12},
+          'tags': <String>['breakfast'],
+          'source': 'manual',
+        };
+
+    test('accepts unversioned and explicit v0 legacy records', () {
+      for (final formatVersion in <int?>[null, 0]) {
+        final out = HealthEvent.fromJson(
+          validJson(formatVersion: formatVersion),
+        );
+        expect(out.id, 'event-1');
+        expect(out.timestamp, DateTime.utc(2026));
+      }
     });
 
-    test('missing / malformed fields deserialize without throwing', () {
-      final out = HealthEvent.fromJson(const <String, Object?>{});
-      expect(out.id, '');
-      expect(out.type, HealthEventType.custom);
-      expect(out.payload, isNull);
-      expect(out.tags, isEmpty);
-      expect(out.source, DataSource.manual);
+    test('normalizes offset timestamps to UTC', () {
+      final out = HealthEvent.fromJson(<String, Object?>{
+        ...validJson(),
+        'timestamp': '2026-01-01T07:30:00.000+07:00',
+      });
+      expect(out.timestamp, DateTime.utc(2026, 1, 1, 0, 30));
+      expect(out.timestamp.isUtc, isTrue);
+      expect(out.toJson()['timestamp'], '2026-01-01T00:30:00.000Z');
+    });
+
+    test('v1 requires an explicit timestamp timezone', () {
       expect(
-        out.timestamp,
-        DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        () => HealthEvent.fromJson(<String, Object?>{
+          ...validJson(),
+          'timestamp': '2026-01-01T00:00:00.000',
+        }),
+        throwsA(isA<FormatException>()),
       );
+
+      final legacy = HealthEvent.fromJson(<String, Object?>{
+        ...validJson(formatVersion: 0),
+        'timestamp': '2026-01-01T00:00:00.000',
+      });
+      expect(legacy.timestamp.isUtc, isTrue);
     });
 
-    test('unknown payload kind deserializes to null payload', () {
-      final out = HealthEvent.fromJson({
-        'id': 'x',
-        'timestamp': '2026-01-01T00:00:00.000Z',
-        'type': 'custom',
-        'payload': {'kind': 'future-thing', 'foo': 1},
-      });
-      expect(out.payload, isNull);
+    test('rejects unsupported format versions', () {
+      for (final version in <Object?>[-1, 2, 1.0, '1', null]) {
+        expect(
+          () => HealthEvent.fromJson(<String, Object?>{
+            ...validJson(),
+            'formatVersion': version,
+          }),
+          throwsA(isA<FormatException>()),
+          reason: 'version $version',
+        );
+      }
+    });
+
+    test('rejects malformed required fields instead of fabricating data', () {
+      final cases = <({String name, Map<String, Object?> json})>[
+        (
+          name: 'missing id',
+          json: <String, Object?>{...validJson()}..remove('id'),
+        ),
+        (name: 'empty id', json: <String, Object?>{...validJson(), 'id': ''}),
+        (name: 'id type', json: <String, Object?>{...validJson(), 'id': 7}),
+        (
+          name: 'missing timestamp',
+          json: <String, Object?>{...validJson()}..remove('timestamp'),
+        ),
+        (
+          name: 'timestamp type',
+          json: <String, Object?>{...validJson(), 'timestamp': 7},
+        ),
+        (
+          name: 'timestamp text',
+          json: <String, Object?>{...validJson(), 'timestamp': 'not-a-date'},
+        ),
+        (
+          name: 'timestamp range',
+          json: <String, Object?>{
+            ...validJson(),
+            'timestamp': '2026-02-31T00:00:00.000Z',
+          },
+        ),
+        (
+          name: 'unknown event type',
+          json: <String, Object?>{...validJson(), 'type': 'something-new'},
+        ),
+        (
+          name: 'unknown source',
+          json: <String, Object?>{...validJson(), 'source': 'mystery'},
+        ),
+        (
+          name: 'missing source',
+          json: <String, Object?>{...validJson()}..remove('source'),
+        ),
+        (
+          name: 'non-string tag',
+          json: <String, Object?>{
+            ...validJson(),
+            'tags': <Object?>['valid', 3],
+          },
+        ),
+        (
+          name: 'payload type',
+          json: <String, Object?>{...validJson(), 'payload': 'meal'},
+        ),
+        (
+          name: 'unknown payload',
+          json: <String, Object?>{
+            ...validJson(),
+            'payload': <String, Object?>{'kind': 'future-thing'},
+          },
+        ),
+      ];
+
+      for (final testCase in cases) {
+        expect(
+          () => HealthEvent.fromJson(testCase.json),
+          throwsA(isA<FormatException>()),
+          reason: testCase.name,
+        );
+      }
     });
 
     test('partial meal payload keeps nulls', () {
-      final out = MealPayload.fromJson(const {'kind': 'meal', 'carbsGrams': 12});
+      final out = MealPayload.fromJson(const {
+        'kind': 'meal',
+        'carbsGrams': 12,
+      });
       expect(out.carbsGrams, 12);
       expect(out.proteinGrams, isNull);
       expect(out.description, isNull);
@@ -160,6 +264,99 @@ void main() {
       final out = ExercisePayload.fromJson(const {'kind': 'exercise'});
       expect(out.duration, isNull);
       expect(out.intensity, isNull);
+    });
+
+    test('rejects malformed and invalid payload values', () {
+      final cases = <({String name, void Function() decode})>[
+        (
+          name: 'negative carbs',
+          decode: () =>
+              MealPayload.fromJson(const <String, Object?>{'carbsGrams': -0.1}),
+        ),
+        (
+          name: 'non-finite calories',
+          decode: () => MealPayload.fromJson(const <String, Object?>{
+            'caloriesKcal': double.infinity,
+          }),
+        ),
+        (
+          name: 'numeric type',
+          decode: () => MealPayload.fromJson(const <String, Object?>{
+            'proteinGrams': '12',
+          }),
+        ),
+        (
+          name: 'fractional duration',
+          decode: () => ExercisePayload.fromJson(const <String, Object?>{
+            'durationMs': 2.5,
+          }),
+        ),
+        (
+          name: 'negative duration',
+          decode: () => ExercisePayload.fromJson(const <String, Object?>{
+            'durationMs': -1,
+          }),
+        ),
+        (
+          name: 'unknown intensity',
+          decode: () => ExercisePayload.fromJson(const <String, Object?>{
+            'intensity': 'extreme',
+          }),
+        ),
+        (
+          name: 'missing note text',
+          decode: () => NotePayload.fromJson(const <String, Object?>{}),
+        ),
+        (
+          name: 'negative dose',
+          decode: () =>
+              DosePayload.fromJson(const <String, Object?>{'amount': -1}),
+        ),
+      ];
+
+      for (final testCase in cases) {
+        expect(
+          testCase.decode,
+          throwsA(isA<FormatException>()),
+          reason: testCase.name,
+        );
+      }
+    });
+
+    test('rejects event/payload mismatches on decode and encode', () {
+      final mismatches = <({String type, String kind})>[
+        (type: 'meal', kind: 'exercise'),
+        (type: 'exercise', kind: 'note'),
+        (type: 'note', kind: 'dose'),
+        (type: 'insulin', kind: 'meal'),
+        (type: 'medication', kind: 'exercise'),
+        (type: 'custom', kind: 'note'),
+      ];
+      for (final mismatch in mismatches) {
+        final payload = switch (mismatch.kind) {
+          'meal' => <String, Object?>{'kind': 'meal'},
+          'exercise' => <String, Object?>{'kind': 'exercise'},
+          'note' => <String, Object?>{'kind': 'note', 'text': 'x'},
+          _ => <String, Object?>{'kind': 'dose'},
+        };
+        expect(
+          () => HealthEvent.fromJson(<String, Object?>{
+            ...validJson(),
+            'type': mismatch.type,
+            'payload': payload,
+          }),
+          throwsA(isA<FormatException>()),
+          reason: '${mismatch.type}/${mismatch.kind}',
+        );
+      }
+
+      final event = HealthEvent(
+        id: 'bad',
+        timestamp: DateTime.utc(2026),
+        type: HealthEventType.note,
+        payload: const MealPayload(carbsGrams: 5),
+      );
+      expect(event.toJson, throwsA(isA<FormatException>()));
     });
   });
 }

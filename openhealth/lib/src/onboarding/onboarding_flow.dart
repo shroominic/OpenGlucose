@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
@@ -55,12 +57,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
   void _next() {
     if (_page >= _lastPage) {
-      _finish(targetRange: true);
+      unawaited(_finish(targetRange: true));
       return;
     }
-    _pageController.nextPage(
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.easeInOutCubic,
+    unawaited(
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeInOutCubic,
+      ),
     );
   }
 
@@ -113,8 +117,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                     _TargetRangeStep(
                       unit: widget.unit,
                       rangeMgdl: _rangeMgdl,
-                      onChanged: (value) =>
-                          setState(() => _rangeMgdl = value),
+                      onChanged: (value) => setState(() => _rangeMgdl = value),
                     ),
                     const _ConnectStep(),
                   ],
@@ -226,7 +229,11 @@ class _Footer extends StatelessWidget {
 }
 
 class _Dots extends StatelessWidget {
-  const _Dots({required this.count, required this.active, required this.accent});
+  const _Dots({
+    required this.count,
+    required this.active,
+    required this.accent,
+  });
 
   final int count;
   final int active;

@@ -141,8 +141,10 @@ class DemoCgmSession implements CgmSession {
   @override
   Future<void> refresh() async {
     _ensureOpen();
-    // Warmup / error / expired sessions have no live readings to refresh.
-    if (_history.isEmpty) {
+    // Frozen/error lifecycle scenarios must stay authoritative. In particular,
+    // freshness polling must not turn stale, expired, or disconnected demo
+    // readings into new glucose values.
+    if (!_scenario.supportsLiveRefresh) {
       _emitSnapshot(_snapshot);
       return;
     }
@@ -291,4 +293,21 @@ class DemoCgmSession implements CgmSession {
       throw StateError('Demo session is disconnected.');
     }
   }
+}
+
+extension on MockScenario {
+  bool get supportsLiveRefresh => switch (this) {
+    MockScenario.activeNormal ||
+    MockScenario.activeHigh ||
+    MockScenario.activeLow ||
+    MockScenario.rapidRise ||
+    MockScenario.rapidFall ||
+    MockScenario.expiringSoon ||
+    MockScenario.multiSensorHistory => true,
+    MockScenario.warmup ||
+    MockScenario.expired ||
+    MockScenario.signalLoss ||
+    MockScenario.disconnected ||
+    MockScenario.error => false,
+  };
 }

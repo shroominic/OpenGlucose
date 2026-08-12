@@ -46,10 +46,14 @@ class WeeklyRecapScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final recap = WeeklyRecapAnalytics.recap(readings, now: now);
+    final recap = WeeklyRecapAnalytics.recap(
+      readings,
+      now: now,
+      bounds: preferences.targetRange,
+    );
     final dateRange =
         '${DateFormat('MMM d').format(recap.weekStart)} – '
-        '${DateFormat('MMM d').format(recap.weekEnd.subtract(const Duration(days: 1)))}';
+        '${DateFormat('MMM d').format(recap.days.last.date)}';
 
     return Scaffold(
       appBar: AppBar(
@@ -243,7 +247,7 @@ class _TrendCard extends StatelessWidget {
           _DeltaRow(
             label: 'Average',
             delta: recap.averageDelta,
-            format: (v) => screen._formatGlucose(v),
+            format: screen._formatGlucose,
             formatDelta: screen._formatGlucoseDelta,
             higherIsBetter: false,
             screen: screen,
@@ -286,17 +290,17 @@ class _BestWorstCard extends StatelessWidget {
     final best = recap.bestDay;
     final worst = recap.worstDay;
     return _SectionCard(
-      title: 'Steadiest & bumpiest day',
+      title: 'Days by time in range',
       subtitle: 'Ranked by time spent in range.',
       child: Column(
         children: <Widget>[
           _StatRow(
-            label: 'Steadiest',
+            label: 'Most in range',
             value: '${best!.stats.timeInRangePercent.round()}%',
             explanation: _dayLine(best),
           ),
           _StatRow(
-            label: 'Bumpiest',
+            label: 'Least in range',
             value: '${worst!.stats.timeInRangePercent.round()}%',
             explanation: _dayLine(worst),
             isLast: true,
@@ -341,7 +345,7 @@ class _SpikesCard extends StatelessWidget {
           for (var i = 0; i < recap.topSpikes.length; i++)
             _StatRow(
               label: DateFormat('EEE, MMM d · HH:mm').format(
-                recap.topSpikes[i].at,
+                recap.topSpikes[i].at.toLocal(),
               ),
               value: screen._formatGlucose(recap.topSpikes[i].peakMgdl),
               explanation:
@@ -388,8 +392,8 @@ class _DayPatternCard extends StatelessWidget {
         .reduce((a, b) => a > b ? a : b);
 
     return _SectionCard(
-      title: 'Day-of-week pattern',
-      subtitle: 'Average reading by weekday — spot recurring days.',
+      title: "This week's weekdays",
+      subtitle: 'Average reading for each day in this seven-day window.',
       child: Column(
         children: <Widget>[
           for (var i = 0; i < entries.length; i++)

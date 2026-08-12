@@ -36,7 +36,7 @@ typedef MessageTrigger = bool Function(MessageContext context);
 ///
 /// This is the shared substrate that tips (TASK-005) and temporary info boxes
 /// (TASK-006) both build on: they are just [AppMessage]s with a particular
-/// [kind], [trigger], and [persistence]. The engine ([MessageController]) is
+/// its kind, trigger, and persistence. The engine is
 /// content-agnostic — new messages are added by appending [AppMessage]s, no
 /// controller changes required.
 @immutable

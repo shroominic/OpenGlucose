@@ -11,7 +11,7 @@ import 'package:sqflite/sqflite.dart';
 /// every record in Dart, and it scales comfortably to the many activity /
 /// heart-rate rows a HealthKit import produces. sqflite is the most mature,
 /// lowest-risk idiomatic on-device store for Flutter and exposes the
-/// schema-version migration hooks ([onCreate]/[onUpgrade]) this layer needs.
+/// schema-version migration hooks (`onCreate`/`onUpgrade`) this layer needs.
 ///
 /// Everything stays on the device — there is no cloud sync. CGM reading
 /// history keeps its existing `shared_preferences` persistence and is out of
@@ -26,10 +26,10 @@ class SqfliteHealthRepository implements HealthRepository {
   SqfliteHealthRepository({
     required String path,
     DatabaseFactory? databaseFactory,
-  })  : _path = path,
-        // Defaults to the on-device sqflite plugin factory; tests inject
-        // `databaseFactoryFfi` for an on-host, in-memory database.
-        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
+  }) : _path = path,
+       // Defaults to the on-device sqflite plugin factory; tests inject
+       // `databaseFactoryFfi` for an on-host, in-memory database.
+       _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
   static const int schemaVersion = 1;
@@ -268,7 +268,9 @@ class SqfliteHealthRepository implements HealthRepository {
   }
 
   @override
-  Future<int> deleteActivitySamples({TimeWindow window = TimeWindow.all}) async {
+  Future<int> deleteActivitySamples({
+    TimeWindow window = TimeWindow.all,
+  }) async {
     final (clause, args) = _windowClause('start_ms', window);
     return _database.delete(
       tableActivity,
@@ -427,15 +429,13 @@ class SqfliteHealthRepository implements HealthRepository {
   @override
   Future<void> clear() async {
     final batch = _database.batch();
-    for (final table in const [
+    const [
       tableEvents,
       tableActivity,
       tableSleep,
       tableHeartRate,
       tableInsights,
-    ]) {
-      batch.delete(table);
-    }
+    ].forEach(batch.delete);
     await batch.commit(noResult: true);
   }
 

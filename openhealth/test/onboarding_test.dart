@@ -66,7 +66,10 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('onboardingPrimaryButton')));
       await tester.pumpAndSettle();
       expect(find.text('Set your target range'), findsOneWidget);
-      expect(find.byKey(const ValueKey('onboardingRangeSlider')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('onboardingRangeSlider')),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byKey(const ValueKey('onboardingPrimaryButton')));
       await tester.pumpAndSettle();

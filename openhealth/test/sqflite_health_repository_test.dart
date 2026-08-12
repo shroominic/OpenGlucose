@@ -32,20 +32,34 @@ void main() {
 
   group('events', () {
     test('round-trips a single event with payload', () async {
-      await repo.upsertEvent(meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 42));
+      await repo.upsertEvent(
+        meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 42),
+      );
       final loaded = await repo.getEvent('e1');
       expect(loaded, isNotNull);
       expect(loaded!.type, HealthEventType.meal);
-      expect((loaded.payload as MealPayload).carbsGrams, 42);
+      final payload = loaded.payload;
+      expect(payload, isA<MealPayload>());
+      if (payload is MealPayload) {
+        expect(payload.carbsGrams, 42);
+      }
       expect(loaded.timestamp, DateTime.utc(2026, 1, 1, 8));
     });
 
     test('upsert replaces by id', () async {
-      await repo.upsertEvent(meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 10));
-      await repo.upsertEvent(meal('e1', DateTime.utc(2026, 1, 1, 9), carbs: 99));
+      await repo.upsertEvent(
+        meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 10),
+      );
+      await repo.upsertEvent(
+        meal('e1', DateTime.utc(2026, 1, 1, 9), carbs: 99),
+      );
       final all = await repo.queryEvents();
       expect(all, hasLength(1));
-      expect((all.single.payload as MealPayload).carbsGrams, 99);
+      final payload = all.single.payload;
+      expect(payload, isA<MealPayload>());
+      if (payload is MealPayload) {
+        expect(payload.carbsGrams, 99);
+      }
     });
 
     test('bulk insert + half-open window query, sorted ascending', () async {
@@ -238,7 +252,9 @@ void main() {
     test('opens at the current schema version', () async {
       final db = await databaseFactoryFfi.openDatabase(
         inMemoryDatabasePath,
-        options: OpenDatabaseOptions(version: SqfliteHealthRepository.schemaVersion),
+        options: OpenDatabaseOptions(
+          version: SqfliteHealthRepository.schemaVersion,
+        ),
       );
       expect(
         await db.getVersion(),

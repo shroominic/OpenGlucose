@@ -1,6 +1,7 @@
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble_flutter/cgm_ble_flutter.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:flutter/foundation.dart';
 
 import 'demo_driver.dart';
 import 'mock_scenarios.dart';
@@ -18,6 +19,9 @@ const bool kOgDemo = bool.fromEnvironment('OG_DEMO', defaultValue: false);
 const String kOgScenario = String.fromEnvironment('OG_SCENARIO');
 
 CgmDriver buildPlatformDriver() {
+  if (kOgDemo && kReleaseMode) {
+    throw UnsupportedError('OG_DEMO is disabled in release builds.');
+  }
   if (kOgDemo) {
     return DemoCgmDriver(initialScenario: MockScenario.fromId(kOgScenario));
   }

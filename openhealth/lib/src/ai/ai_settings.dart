@@ -5,7 +5,7 @@ import 'package:cgm_core/cgm_core.dart';
 /// Non-secret AI configuration persisted in SharedPreferences.
 ///
 /// The API key is deliberately NOT part of this model — it lives only in
-/// secure storage ([AiSettingsStore]). This object is safe to serialize to
+/// secure storage. This object is safe to serialize to
 /// plain preferences because it contains no secret.
 class AiSettings {
   const AiSettings({
@@ -63,7 +63,7 @@ class AiSettings {
     );
   }
 
-  static AiSettings decode(String? raw) {
+  factory AiSettings.decode(String? raw) {
     if (raw == null || raw.isEmpty) return const AiSettings();
     try {
       final decoded = jsonDecode(raw);

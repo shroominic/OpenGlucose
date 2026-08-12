@@ -120,7 +120,7 @@ class MockScenarioCatalog {
   static const _warmupMinutes = 60;
   // Single source of truth lives in session_presentation.dart (kSensorLife
   // Duration) so the mock harness and the lifecycle UI never drift.
-  static const _sensorLife = kSensorLifeDuration;
+  static const Duration _sensorLife = kSensorLifeDuration;
 
   /// The simulated sensor advertised by the demo driver.
   static const DiscoveredSensor sensor = DiscoveredSensor(

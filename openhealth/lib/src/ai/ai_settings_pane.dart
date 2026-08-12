@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -46,7 +48,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
   @override
   void initState() {
     super.initState();
-    _load();
+    unawaited(_load());
   }
 
   Future<void> _load() async {
@@ -178,8 +180,9 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
           value: _settings.enabled,
           onChanged: _busy
               ? null
-              : (value) =>
-                    setState(() => _settings = _settings.copyWith(enabled: value)),
+              : (value) => setState(
+                  () => _settings = _settings.copyWith(enabled: value),
+                ),
         ),
         const SizedBox(height: 8),
         TextField(
@@ -216,8 +219,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
           onChanged: _busy
               ? null
               : (value) => setState(
-                  () => _settings =
-                      _settings.copyWith(authScheme: value),
+                  () => _settings = _settings.copyWith(authScheme: value),
                 ),
         ),
         const SizedBox(height: 12),

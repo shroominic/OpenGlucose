@@ -127,22 +127,35 @@ class _AppleHealthCard extends StatelessWidget {
                 ),
               )
             else ...<Widget>[
+              if (!healthExport.writesAllowed) ...<Widget>[
+                Text(
+                  'Apple Health export is disabled while using simulated or '
+                  'mock sensor data.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF8A6D3B),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Export to Apple Health'),
                 subtitle: Text(_lastSyncedText),
                 value: healthExport.enabled,
-                onChanged: healthExport.busy
+                onChanged: healthExport.busy || !healthExport.writesAllowed
                     ? null
-                    : (value) => healthExport.setEnabled(value),
+                    : (value) => healthExport.setEnabled(enabled: value),
               ),
               const SizedBox(height: 4),
               Row(
                 children: <Widget>[
                   FilledButton.icon(
-                    onPressed: healthExport.busy
+                    onPressed:
+                        healthExport.busy ||
+                            !healthExport.writesAllowed ||
+                            !healthExport.enabled
                         ? null
-                        : () => onSyncNow(),
+                        : onSyncNow,
                     icon: healthExport.busy
                         ? const SizedBox(
                             width: 16,

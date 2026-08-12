@@ -62,7 +62,7 @@ class SensorLifecycleCard extends StatelessWidget {
           child: lifecycle.isExpired
               ? _ExpiredOffboarding(
                   lifecycle: lifecycle,
-                  lastSyncAt: snapshot.historySync.lastSyncAt,
+                  lastReadingAt: latestReading?.recordedAt,
                   now: now,
                   onReplaceSensor: onReplaceSensor,
                 )
@@ -190,7 +190,7 @@ class _ActiveLifecycle extends StatelessWidget {
             icon: Icons.notifications_active_rounded,
             text:
                 'This sensor expires in ${compactDurationText(lifecycle.remaining)}. '
-                'Have a replacement ready so you don\'t miss readings.',
+                "Have a replacement ready so you don't miss readings.",
           ),
         ],
       ],
@@ -201,13 +201,13 @@ class _ActiveLifecycle extends StatelessWidget {
 class _ExpiredOffboarding extends StatelessWidget {
   const _ExpiredOffboarding({
     required this.lifecycle,
-    required this.lastSyncAt,
+    required this.lastReadingAt,
     required this.now,
     required this.onReplaceSensor,
   });
 
   final SensorLifecycle lifecycle;
-  final DateTime? lastSyncAt;
+  final DateTime? lastReadingAt;
   final DateTime now;
   final VoidCallback? onReplaceSensor;
 
@@ -253,9 +253,9 @@ class _ExpiredOffboarding extends StatelessWidget {
         _InfoBanner(
           color: expiredColor,
           icon: Icons.history_toggle_off_rounded,
-          text: lastSyncAt == null
+          text: lastReadingAt == null
               ? 'Last reading is preserved below.'
-              : 'Last reading ${lastSyncText(lastSyncAt, now: now).replaceFirst('Synced ', '')}. Your history is preserved.',
+              : 'Last reading ${lastSyncText(lastReadingAt, now: now).replaceFirst('Synced ', '')}. Your history is preserved.',
         ),
         const SizedBox(height: 16),
         Text(

@@ -193,9 +193,12 @@ abstract final class GlucoseAnalytics {
     GlucoseRangeBounds bounds = GlucoseRangeBounds.standard,
   }) {
     final ordered = _orderedByTime(readings);
+    if (ordered.length < 2) {
+      return 0;
+    }
     var count = 0;
-    var wasAbove = false;
-    for (final reading in ordered) {
+    var wasAbove = ordered.first.valueMgdl > bounds.highMgdl;
+    for (final reading in ordered.skip(1)) {
       final isAbove = reading.valueMgdl > bounds.highMgdl;
       if (isAbove && !wasAbove) count++;
       wasAbove = isAbove;

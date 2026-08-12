@@ -97,28 +97,58 @@ class ActivitySample implements TimelineEntry {
     );
   }
 
-  Map<String, Object?> toJson() => <String, Object?>{
-    'start': start.toIso8601String(),
-    'end': end.toIso8601String(),
-    'type': type.key,
-    'source': source.key,
-    'steps': steps,
-    'energyKcal': energyKcal,
-    'distanceMeters': distanceMeters,
-    'workoutLabel': workoutLabel,
-  };
+  Map<String, Object?> toJson() {
+    _validateInterval(start, end);
+    _validateActivityValues(
+      type: type,
+      steps: steps,
+      energyKcal: energyKcal,
+      distanceMeters: distanceMeters,
+    );
+    return <String, Object?>{
+      'formatVersion': _healthSampleFormatVersion,
+      'start': start.toUtc().toIso8601String(),
+      'end': end.toUtc().toIso8601String(),
+      'type': type.key,
+      'source': source.key,
+      'steps': steps,
+      'energyKcal': energyKcal,
+      'distanceMeters': distanceMeters,
+      'workoutLabel': workoutLabel,
+    };
+  }
 
   factory ActivitySample.fromJson(Map<String, Object?> json) {
-    final start = _parseDate(json['start']);
+    final formatVersion = _readHealthSampleFormatVersion(json);
+    final start = _readRequiredUtcDate(
+      json,
+      'start',
+      formatVersion: formatVersion,
+    );
+    final end = _readRequiredUtcDate(json, 'end', formatVersion: formatVersion);
+    final type = _readActivityType(json);
+    final steps = _readOptionalNonNegativeInt(json, 'steps');
+    final energyKcal = _readOptionalNonNegativeDouble(json, 'energyKcal');
+    final distanceMeters = _readOptionalNonNegativeDouble(
+      json,
+      'distanceMeters',
+    );
+    _validateInterval(start, end);
+    _validateActivityValues(
+      type: type,
+      steps: steps,
+      energyKcal: energyKcal,
+      distanceMeters: distanceMeters,
+    );
     return ActivitySample(
       start: start,
-      end: _parseDate(json['end'], fallback: start),
-      type: ActivityType.fromKey(json['type'] as String?),
-      source: DataSource.fromKey(json['source'] as String?),
-      steps: (json['steps'] as num?)?.toInt(),
-      energyKcal: (json['energyKcal'] as num?)?.toDouble(),
-      distanceMeters: (json['distanceMeters'] as num?)?.toDouble(),
-      workoutLabel: json['workoutLabel'] as String?,
+      end: end,
+      type: type,
+      source: _readDataSource(json),
+      steps: steps,
+      energyKcal: energyKcal,
+      distanceMeters: distanceMeters,
+      workoutLabel: _readOptionalString(json, 'workoutLabel'),
     );
   }
 }
@@ -189,20 +219,31 @@ class SleepSample implements TimelineEntry {
     );
   }
 
-  Map<String, Object?> toJson() => <String, Object?>{
-    'start': start.toIso8601String(),
-    'end': end.toIso8601String(),
-    'stage': stage.key,
-    'source': source.key,
-  };
+  Map<String, Object?> toJson() {
+    _validateInterval(start, end);
+    return <String, Object?>{
+      'formatVersion': _healthSampleFormatVersion,
+      'start': start.toUtc().toIso8601String(),
+      'end': end.toUtc().toIso8601String(),
+      'stage': stage.key,
+      'source': source.key,
+    };
+  }
 
   factory SleepSample.fromJson(Map<String, Object?> json) {
-    final start = _parseDate(json['start']);
+    final formatVersion = _readHealthSampleFormatVersion(json);
+    final start = _readRequiredUtcDate(
+      json,
+      'start',
+      formatVersion: formatVersion,
+    );
+    final end = _readRequiredUtcDate(json, 'end', formatVersion: formatVersion);
+    _validateInterval(start, end);
     return SleepSample(
       start: start,
-      end: _parseDate(json['end'], fallback: start),
-      stage: SleepStage.fromKey(json['stage'] as String?),
-      source: DataSource.fromKey(json['source'] as String?),
+      end: end,
+      stage: _readSleepStage(json),
+      source: _readDataSource(json),
     );
   }
 }
@@ -242,27 +283,193 @@ class HeartRateSample implements TimelineEntry {
     );
   }
 
-  Map<String, Object?> toJson() => <String, Object?>{
-    'timestamp': timestamp.toIso8601String(),
-    'bpm': bpm,
-    'source': source.key,
-  };
+  Map<String, Object?> toJson() {
+    _validatePositiveFiniteDouble(bpm, 'bpm');
+    return <String, Object?>{
+      'formatVersion': _healthSampleFormatVersion,
+      'timestamp': timestamp.toUtc().toIso8601String(),
+      'bpm': bpm,
+      'source': source.key,
+    };
+  }
 
   factory HeartRateSample.fromJson(Map<String, Object?> json) {
     return HeartRateSample(
-      timestamp: _parseDate(json['timestamp']),
-      bpm: (json['bpm'] as num?)?.toDouble() ?? 0,
-      source: DataSource.fromKey(json['source'] as String?),
+      timestamp: _readRequiredUtcDate(
+        json,
+        'timestamp',
+        formatVersion: _readHealthSampleFormatVersion(json),
+      ),
+      bpm: _readRequiredPositiveDouble(json, 'bpm'),
+      source: _readDataSource(json),
     );
   }
 }
 
-/// Parses an ISO-8601 date value, falling back to [fallback] (or the Unix
-/// epoch in UTC) so deserialization never throws on bad/missing input.
-DateTime _parseDate(Object? value, {DateTime? fallback}) {
-  if (value is String) {
-    final parsed = DateTime.tryParse(value);
-    if (parsed != null) return parsed;
+const int _healthSampleFormatVersion = 1;
+
+int _readHealthSampleFormatVersion(Map<String, Object?> json) {
+  if (!json.containsKey('formatVersion')) return 0;
+  final value = json['formatVersion'];
+  if (value is int && (value == 0 || value == _healthSampleFormatVersion)) {
+    return value;
   }
-  return fallback ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+  throw FormatException('Unsupported health-sample formatVersion: $value');
 }
+
+String _readRequiredString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is! String) throw FormatException('$key must be a String');
+  return value;
+}
+
+String? _readOptionalString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! String) throw FormatException('$key must be a String or null');
+  return value;
+}
+
+int? _readOptionalNonNegativeInt(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! int || value < 0) {
+    throw FormatException('$key must be a non-negative integer or null');
+  }
+  return value;
+}
+
+double? _readOptionalNonNegativeDouble(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! num) throw FormatException('$key must be numeric or null');
+  final result = value.toDouble();
+  _validateOptionalNonNegativeDouble(result, key);
+  return result;
+}
+
+void _validateOptionalNonNegativeDouble(double? value, String key) {
+  if (value != null && (!value.isFinite || value < 0)) {
+    throw FormatException('$key must be finite and non-negative');
+  }
+}
+
+double _readRequiredPositiveDouble(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is! num) throw FormatException('$key must be numeric');
+  final result = value.toDouble();
+  _validatePositiveFiniteDouble(result, key);
+  return result;
+}
+
+void _validatePositiveFiniteDouble(double value, String key) {
+  if (!value.isFinite || value <= 0) {
+    throw FormatException('$key must be finite and greater than zero');
+  }
+}
+
+ActivityType _readActivityType(Map<String, Object?> json) {
+  final value = _readRequiredString(json, 'type');
+  for (final type in ActivityType.values) {
+    if (type.key == value) return type;
+  }
+  throw FormatException('Unsupported activity type: $value');
+}
+
+SleepStage _readSleepStage(Map<String, Object?> json) {
+  final value = _readRequiredString(json, 'stage');
+  for (final stage in SleepStage.values) {
+    if (stage.key == value) return stage;
+  }
+  throw FormatException('Unsupported sleep stage: $value');
+}
+
+DataSource _readDataSource(Map<String, Object?> json) {
+  final value = _readRequiredString(json, 'source');
+  for (final source in DataSource.values) {
+    if (source.key == value) return source;
+  }
+  throw FormatException('Unsupported data source: $value');
+}
+
+void _validateInterval(DateTime start, DateTime end) {
+  if (end.isBefore(start)) {
+    throw const FormatException('end must be at or after start');
+  }
+}
+
+void _validateActivityValues({
+  required ActivityType type,
+  required int? steps,
+  required double? energyKcal,
+  required double? distanceMeters,
+}) {
+  if (steps != null && steps < 0) {
+    throw const FormatException('steps must be non-negative');
+  }
+  _validateOptionalNonNegativeDouble(energyKcal, 'energyKcal');
+  _validateOptionalNonNegativeDouble(distanceMeters, 'distanceMeters');
+  if (type == ActivityType.steps && steps == null) {
+    throw const FormatException('steps are required for a steps sample');
+  }
+  if (type == ActivityType.distance && distanceMeters == null) {
+    throw const FormatException(
+      'distanceMeters is required for a distance sample',
+    );
+  }
+  if (type == ActivityType.activeEnergy && energyKcal == null) {
+    throw const FormatException(
+      'energyKcal is required for an active-energy sample',
+    );
+  }
+}
+
+DateTime _readRequiredUtcDate(
+  Map<String, Object?> json,
+  String key, {
+  required int formatVersion,
+}) {
+  final value = _readRequiredString(json, key);
+  final match = RegExp(
+    r'^([+-]?\d{4,6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})'
+    r'(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})?$',
+  ).firstMatch(value);
+  if (match == null || (formatVersion == 1 && match.group(8) == null)) {
+    throw FormatException('$key must be an ISO-8601 timestamp with a timezone');
+  }
+
+  final year = int.parse(match.group(1)!);
+  final month = int.parse(match.group(2)!);
+  final day = int.parse(match.group(3)!);
+  final hour = int.parse(match.group(4)!);
+  final minute = int.parse(match.group(5)!);
+  final second = int.parse(match.group(6)!);
+  final zone = match.group(8);
+  final zoneHour = zone == null || zone == 'Z'
+      ? 0
+      : int.parse(zone.substring(1, 3));
+  final zoneMinute = zone == null || zone == 'Z'
+      ? 0
+      : int.parse(zone.substring(4, 6));
+  final validDay =
+      month >= 1 && month <= 12 && day >= 1 && day <= _daysInMonth(year, month);
+  if (!validDay ||
+      hour > 23 ||
+      minute > 59 ||
+      second > 59 ||
+      zoneHour > 23 ||
+      zoneMinute > 59) {
+    throw FormatException('$key contains an invalid date or time');
+  }
+
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) throw FormatException('$key is not a valid timestamp');
+  return parsed.toUtc();
+}
+
+int _daysInMonth(int year, int month) => switch (month) {
+  2 when year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+  2 => 28,
+  4 || 6 || 9 || 11 => 30,
+  _ => 31,
+};

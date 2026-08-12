@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 /// triggers are allowed to read.
 ///
 /// Keeping triggers dependent only on this (rather than on the whole
-/// [CgmAppController]) makes message selection a pure function — trivial to
+/// app controller makes message selection a pure function — trivial to
 /// unit-test and impossible to accidentally mutate. The controller builds one
 /// of these from the live session on every change; tips/info-boxes added later
 /// just add fields here if they need new signals.

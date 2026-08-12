@@ -145,9 +145,7 @@ class AidexSession implements CgmSession {
          sensor: sensor,
          capabilities: sensor.capabilities,
          lastAdvertisement: sensor.advertisement,
-         sessionInfo: const CgmSessionInfo(
-           warmupMinutes: _aidexWarmupMinutes,
-         ),
+         sessionInfo: const CgmSessionInfo(warmupMinutes: _aidexWarmupMinutes),
          metadata: <String, String>{'deviceId': sensor.deviceId},
        ),
        _unsafeAdmin = AidexUnsafeAdmin._() {
@@ -1599,7 +1597,11 @@ class AidexSession implements CgmSession {
     List<int> value, {
     bool withoutResponse = false,
   }) async {
-    await _requireConnection.write(ref, value, withoutResponse: withoutResponse);
+    await _requireConnection.write(
+      ref,
+      value,
+      withoutResponse: withoutResponse,
+    );
     await Future<void>.delayed(_timings.gattGap);
   }
 
