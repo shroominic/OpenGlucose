@@ -1,0 +1,38 @@
+# Git hooks for OpenGlucose (https://lefthook.dev)
+#
+# Install the hooks once after cloning:
+#
+#   ./scripts/install-hooks.sh      (or: make setup)
+#
+# The Flutter app lives in `openhealth/`, so the Dart commands below cd into it.
+# Hooks are intentionally fast on commit (format + analyze on staged files only)
+# and run the full test suite on push.
+
+pre-commit:
+  parallel: true
+  commands:
+    # Reject staged Dart files that are not formatted. Run `dart format .` to fix.
+    # `root` scopes the hook to the app and makes {staged_files} relative to it.
+    format:
+      root: "openhealth/"
+      glob: "*.dart"
+      run: dart format --set-exit-if-changed {staged_files}
+    # Static analysis (lints + errors) over the app. Runs whenever any Dart file
+    # under openhealth/ is staged (analyze covers the whole package, not just
+    # the changed files, so we do not pass {staged_files}).
+    analyze:
+      root: "openhealth/"
+      glob: "*.dart"
+      run: flutter analyze
+
+commit-msg:
+  commands:
+    # Enforce Conventional Commits (see commitlint.config.mjs).
+    commitlint:
+      run: npx --yes --package @commitlint/cli --package @commitlint/config-conventional commitlint --edit {1}
+
+pre-push:
+  commands:
+    # Full test suite must pass before pushing.
+    test:
+      run: cd openhealth && flutter test
