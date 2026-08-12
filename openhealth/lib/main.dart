@@ -6,6 +6,7 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -152,11 +153,7 @@ class _SpinningLogoState extends State<_SpinningLogo>
   Widget build(BuildContext context) {
     return RotationTransition(
       turns: _controller,
-      child: Image.asset(
-        'assets/icon/logo.png',
-        width: 140,
-        height: 140,
-      ),
+      child: Image.asset('assets/icon/logo.png', width: 140, height: 140),
     );
   }
 }
@@ -583,6 +580,17 @@ class _DashboardView extends StatelessWidget {
               ),
             ),
           ),
+          // --- TASK-012 metrics pack (explainable wellness patterns) ---
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: MetricsSection(
+                readings: history,
+                preferences: preferences,
+              ),
+            ),
+          ),
+          // --- end TASK-012 metrics pack ---
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
