@@ -11,6 +11,7 @@ import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 
+import java.util.Collections;
 import java.util.Map;
 
 public final class MainActivity extends FlutterActivity {
@@ -30,34 +31,69 @@ public final class MainActivity extends FlutterActivity {
   private void handleLiveUpdateCall(MethodCall call, MethodChannel.Result result) {
     switch (call.method) {
       case "upsert":
-        maybeRequestNotificationPermission();
-        startLiveUpdateService(call.arguments);
-        result.success(null);
+        final Map<String, Object> payload =
+            call.arguments instanceof Map<?, ?>
+                ? GlucoseLiveUpdateService.sanitizePayload((Map<?, ?>) call.arguments)
+                : Collections.emptyMap();
+        if (payload.isEmpty()) {
+          result.error("bad_args", "Expected a non-empty live-update payload.", null);
+          return;
+        }
+        if (!GlucoseLiveUpdateService.persistPayload(this, payload)) {
+          result.error(
+              "restricted_storage_failed",
+              "Could not save private Android live-update state.",
+              null);
+          return;
+        }
+        try {
+          maybeRequestNotificationPermission();
+          startLiveUpdateService(payload);
+          result.success(null);
+        } catch (RuntimeException error) {
+          GlucoseLiveUpdateService.clearPersistedPayload(this);
+          result.error("live_update_failed", "Could not start the live update.", null);
+        }
         return;
       case "end":
-        stopLiveUpdateService();
-        result.success(null);
+        if (stopLiveUpdateService()) {
+          result.success(null);
+        } else {
+          result.error(
+              "restricted_storage_failed",
+              "Could not clear private Android live-update state.",
+              null);
+        }
         return;
       case "setBackgroundSensor":
-        persistBackgroundSensor(call.arguments);
-        result.success(null);
+        if (persistBackgroundSensor(call.arguments)) {
+          result.success(null);
+        } else {
+          result.error(
+              "restricted_storage_failed",
+              "Could not save private Android background state.",
+              null);
+        }
         return;
       case "clearBackgroundSensor":
-        clearBackgroundSensor();
-        result.success(null);
+        if (clearBackgroundSensor()) {
+          result.success(null);
+        } else {
+          result.error(
+              "restricted_storage_failed",
+              "Could not clear private Android background state.",
+              null);
+        }
         return;
       default:
         result.notImplemented();
     }
   }
 
-  private void startLiveUpdateService(Object arguments) {
+  private void startLiveUpdateService(Map<String, Object> payload) {
     final Intent intent = new Intent(this, GlucoseLiveUpdateService.class);
     intent.setAction(GlucoseLiveUpdateService.ACTION_UPSERT);
-    if (arguments instanceof Map<?, ?>) {
-      intent.putExtra(
-          "payload", GlucoseLiveUpdateService.sanitizePayload((Map<?, ?>) arguments));
-    }
+    intent.putExtra("payload", new java.util.HashMap<>(payload));
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       startForegroundService(intent);
       return;
@@ -65,11 +101,10 @@ public final class MainActivity extends FlutterActivity {
     startService(intent);
   }
 
-  private void stopLiveUpdateService() {
-    final SharedPreferences preferences =
-        getSharedPreferences(GlucoseLiveUpdateService.PREFS_NAME, MODE_PRIVATE);
-    preferences.edit().remove(GlucoseLiveUpdateService.PREF_LAST_PAYLOAD).apply();
+  private boolean stopLiveUpdateService() {
+    final boolean cleared = GlucoseLiveUpdateService.clearPersistedPayload(this);
     stopService(new Intent(this, GlucoseLiveUpdateService.class));
+    return cleared;
   }
 
   private void maybeRequestNotificationPermission() {
@@ -89,30 +124,31 @@ public final class MainActivity extends FlutterActivity {
         NOTIFICATION_PERMISSION_REQUEST_CODE);
   }
 
-  private void persistBackgroundSensor(Object arguments) {
+  private boolean persistBackgroundSensor(Object arguments) {
+    if (!(arguments instanceof Map<?, ?>)) {
+      return false;
+    }
     final SharedPreferences preferences =
         getSharedPreferences(GlucoseLiveUpdateService.PREFS_NAME, MODE_PRIVATE);
     final SharedPreferences.Editor editor = preferences.edit();
-    if (arguments instanceof Map<?, ?>) {
-      final Map<?, ?> rawArguments = (Map<?, ?>) arguments;
-      editor.putString(
-          GlucoseLiveUpdateService.PREF_BACKGROUND_SENSOR,
-          stringArgument(rawArguments.get("sensorName")));
-      editor.putString(
-          GlucoseLiveUpdateService.PREF_BACKGROUND_SERIAL,
-          stringArgument(rawArguments.get("serial")));
-    }
-    editor.apply();
+    final Map<?, ?> rawArguments = (Map<?, ?>) arguments;
+    editor.putString(
+        GlucoseLiveUpdateService.PREF_BACKGROUND_SENSOR,
+        stringArgument(rawArguments.get("sensorName")));
+    editor.putString(
+        GlucoseLiveUpdateService.PREF_BACKGROUND_SERIAL,
+        stringArgument(rawArguments.get("serial")));
+    return editor.commit();
   }
 
-  private void clearBackgroundSensor() {
+  private boolean clearBackgroundSensor() {
     final SharedPreferences preferences =
         getSharedPreferences(GlucoseLiveUpdateService.PREFS_NAME, MODE_PRIVATE);
-    preferences
+    return preferences
         .edit()
         .remove(GlucoseLiveUpdateService.PREF_BACKGROUND_SENSOR)
         .remove(GlucoseLiveUpdateService.PREF_BACKGROUND_SERIAL)
-        .apply();
+        .commit();
   }
 
   private String stringArgument(Object value) {

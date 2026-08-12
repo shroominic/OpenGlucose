@@ -13,11 +13,11 @@
 
 include: package:lints/recommended.yaml
 
-# Uncomment the following section to specify additional rules.
-
-# linter:
-#   rules:
-#     - camel_case_types
+linter:
+  rules:
+    # Protocol logs may contain restricted health or device material. Keep
+    # diagnostics inside the app's reviewed, redacted log stream.
+    avoid_print: true
 
 # analyzer:
 #   exclude:

@@ -7,8 +7,12 @@ import 'package:health/health.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+const _lastSyncedKey = 'openHealth.healthExport.lastSyncedMs';
+const _watermarkKey = 'openHealth.healthExport.watermarkMs';
 
 /// In-memory exporter so the opt-in / sync-state logic can be exercised on the
 /// test host (HealthKit itself is iOS-only).
@@ -74,6 +78,26 @@ class _FakeExporter implements GlucoseExporter {
   }
 }
 
+class _MemoryHealthStateStore implements HealthStateStore {
+  final Map<String, String> values = <String, String>{};
+
+  @override
+  String? getString(String key) => values[key];
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<void> remove(String key) async {
+    values.remove(key);
+  }
+
+  @override
+  Future<void> setString(String key, String value) async {
+    values[key] = value;
+  }
+}
+
 class _FakeHealth extends Health {
   _FakeHealth({required List<bool> writeOutcomes})
     : _writeOutcomes = Queue<bool>.of(writeOutcomes);
@@ -126,10 +150,15 @@ void main() {
 
   Future<SharedPreferences> prefs() => SharedPreferences.getInstance();
 
+  HealthStateStore stateStore(SharedPreferences preferences) =>
+      PreferencesHealthStateStore(preferences);
+
   test('enabling triggers authorization and persists opt-in', () async {
     final exporter = _FakeExporter();
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: exporter,
     )..initialize();
 
@@ -140,16 +169,20 @@ void main() {
     expect(controller.enabled, isTrue);
 
     // A fresh controller over the same prefs restores the opt-in.
+    final restoredPreferences = await prefs();
     final restored = HealthExportController(
-      preferences: await prefs(),
+      preferences: restoredPreferences,
+      healthStateStore: stateStore(restoredPreferences),
       service: _FakeExporter(),
     )..initialize();
     expect(restored.enabled, isTrue);
   });
 
   test('declined authorization leaves opt-in off', () async {
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: _FakeExporter(authorized: false),
     )..initialize();
 
@@ -161,8 +194,10 @@ void main() {
 
   test('syncNow writes readings and records last-synced time', () async {
     final exporter = _FakeExporter();
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: exporter,
     )..initialize();
 
@@ -182,10 +217,69 @@ void main() {
     expect(controller.enabled, isTrue);
   });
 
+  test(
+    'sync progress stays in the restricted store and restores from it',
+    () async {
+      final preferences = await prefs();
+      final restrictedStore = _MemoryHealthStateStore();
+      final firstExporter = _FakeExporter();
+      final firstController = HealthExportController(
+        preferences: preferences,
+        healthStateStore: restrictedStore,
+        service: firstExporter,
+      )..initialize();
+      final firstReadingAt = DateTime.utc(2026, 6, 22, 12);
+
+      await firstController.setEnabled(enabled: true);
+      final firstResult = await firstController.syncNow(<CgmReading>[
+        _reading(100, firstReadingAt),
+      ]);
+
+      expect(firstResult.status, HealthExportStatus.ok);
+      expect(
+        restrictedStore.values[_watermarkKey],
+        firstReadingAt.millisecondsSinceEpoch.toString(),
+      );
+      final persistedLastSync = restrictedStore.values[_lastSyncedKey];
+      expect(persistedLastSync, isNotNull);
+      expect(preferences.containsKey(_watermarkKey), isFalse);
+      expect(preferences.containsKey(_lastSyncedKey), isFalse);
+
+      final restoredExporter = _FakeExporter();
+      final restoredController = HealthExportController(
+        preferences: preferences,
+        healthStateStore: restrictedStore,
+        service: restoredExporter,
+      )..initialize();
+      expect(
+        restoredController.lastSyncedAt?.millisecondsSinceEpoch.toString(),
+        persistedLastSync,
+      );
+
+      final secondReadingAt = firstReadingAt.add(const Duration(minutes: 1));
+      final restoredResult = await restoredController.syncNow(<CgmReading>[
+        _reading(100, firstReadingAt),
+        _reading(110, secondReadingAt),
+      ]);
+
+      expect(restoredResult.status, HealthExportStatus.ok);
+      expect(restoredResult.written, 1);
+      expect(restoredExporter.sinceValues, hasLength(1));
+      expect(
+        restoredExporter.sinceValues.single!.isAtSameMomentAs(firstReadingAt),
+        isTrue,
+      );
+      expect(preferences.containsKey(_watermarkKey), isFalse);
+      expect(preferences.containsKey(_lastSyncedKey), isFalse);
+    },
+  );
+
   test('syncNow only exports readings newer than the last sync', () async {
     final exporter = _FakeExporter();
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: exporter,
     )..initialize();
 
@@ -206,8 +300,10 @@ void main() {
   });
 
   test('unsupported platform reports gracefully and stays off', () async {
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: _FakeExporter(supported: false),
     )..initialize();
 
@@ -222,8 +318,10 @@ void main() {
 
   test('syncNow requires opt-in and performs no export while off', () async {
     final exporter = _FakeExporter();
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: exporter,
     )..initialize();
 
@@ -242,8 +340,10 @@ void main() {
       'openHealth.healthExport.enabled': true,
     });
     final exporter = _FakeExporter();
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: exporter,
       writesAllowed: false,
     )..initialize();
@@ -271,8 +371,10 @@ void main() {
           latestReadingAt: first,
         ),
       );
+    final preferences = await prefs();
     final controller = HealthExportController(
-      preferences: await prefs(),
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: exporter,
     )..initialize();
     await controller.setEnabled(enabled: true);
@@ -344,6 +446,7 @@ void main() {
     final preferences = await prefs();
     final healthExport = HealthExportController(
       preferences: preferences,
+      healthStateStore: stateStore(preferences),
       service: _FakeExporter(),
     )..initialize();
     final appController = CgmAppController(

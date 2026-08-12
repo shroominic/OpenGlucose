@@ -1,0 +1,3 @@
+tags:
+  integration:
+    description: Deterministic cross-component tests run in the integration lane.

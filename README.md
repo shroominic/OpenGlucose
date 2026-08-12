@@ -1,127 +1,119 @@
 # OpenGlucose
 
-Your open-source health and wellness app focused on local data and privacy.
+OpenGlucose is an open-source, local-first Flutter workspace for exploring
+continuous glucose monitor (CGM) data. It includes a reference mobile app, a
+sensor-agnostic domain API, reusable Bluetooth Low Energy (BLE) contracts, and
+an AiDEX/LinX protocol driver.
 
-OpenGlucose is MIT-licensed, local-first, and privacy-first. Your data stays on
-your device — nothing is sent to the sensor manufacturer, and any optional AI is
-opt-in and bring-your-own-key / on-device. This is a **wellness and
-self-experimentation** app, **not** a medical device and **not** a substitute
-for medical advice. It does not diagnose, treat, or manage any condition.
+> [!CAUTION]
+> OpenGlucose is early-stage wellness and reference software. It is not a
+> medical device and must not be used for diagnosis, medication or insulin
+> dosing, treatment decisions, or emergency monitoring. Confirm important
+> readings with the sensor manufacturer's supported product and seek qualified
+> medical help when appropriate.
 
-## Vision
+## Workspace
 
-The long-term direction is an open, local-first, privacy-first health platform
-in the spirit of Whoop / Oura — one place where you own and reason about your
-sleep, activity, recovery, heart rate, glucose, and journaling, with explainable
-insights and optional on-device AI.
+| Path                                                     | Responsibility                                                          | Runtime |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- | ------- |
+| [`openhealth/`](openhealth/)                             | OpenGlucose reference app and demo experience                           | Flutter |
+| [`packages/cgm_core/`](packages/cgm_core/)               | Sensor-neutral readings, capabilities, snapshots, and session contracts | Dart    |
+| [`packages/cgm_ble/`](packages/cgm_ble/)                 | Platform-neutral BLE transport interfaces                               | Dart    |
+| [`packages/cgm_aidex/`](packages/cgm_aidex/)             | AiDEX/LinX protocol, session, history, calibration, and diagnostics     | Dart    |
+| [`packages/cgm_ble_flutter/`](packages/cgm_ble_flutter/) | `flutter_blue_plus` adapter for the BLE contracts                       | Flutter |
 
-**Today it is OpenGlucose: focused on glucose.** It reads continuous glucose
-monitor (CGM) data over Bluetooth and shows it on a live dashboard. The broader
-platform (multi-signal health data, journaling, correlation, AI insights) is on
-the roadmap below, not yet built. We would rather under-promise here than
-overstate what exists — most of the platform vision is still ahead of us.
+The package dependency direction and extension rules are documented in the
+[architecture overview](docs/architecture/README.md). Mobile builds use the
+real BLE-backed driver. Web and widget tests use a deterministic demo driver;
+the web build is not evidence of hardware compatibility.
 
-## Sensor integrations roadmap
+## Development
 
-OpenGlucose is built on a vendor-agnostic driver stack (`cgm_core` /
-`cgm_ble` / per-vendor `cgm_*` drivers), so adding sensors is a matter of
-writing a driver, not rewriting the app. The architecture is moving toward a
-**pluggable multi-sensor / multi-analyte** abstraction — not glucose-only, but
-**glucose *and* ketone** (and, longer term, other continuous-biosensor signals),
-in the spirit of a Whoop/Oura-style always-on wellness layer.
+The approved toolchain is Flutter 3.41.6, Dart 3.11.4, and Java 17. From a
+clean checkout:
 
-| Sensor | Maker | Analyte | Status |
-| --- | --- | --- | --- |
-| **Aidex X** (15-day, BLE, all-in-one) | Microtech | Glucose | ✅ Supported |
-| **FreeStyle Libre** family — Libre 1, Libre 2, Libre 2 Plus, Libre 3, Libre 3 Plus, Libre Sense, **Lingo** | Abbott | Glucose | 🟡 Wanted / planned (all FreeStyle Libre sensors) |
-| **G6, G7, ONE / ONE+, Stelo** | Dexcom | Glucose | 🟡 Wanted / planned |
-| **GS1 CGM** | SiBionics (SiBio) | Glucose | 🟡 Wanted / planned |
-| **CKM** (continuous **ketone** monitor) | SiBionics (SiBio) | **Ketone** | 🟡 Wanted / planned — drives the multi-analyte vision |
-| **Guardian** | Medtronic | Glucose | ⚪ Wanted (exploratory) |
-| **Eversense** | Senseonics | Glucose | ⚪ Wanted (exploratory) |
+```sh
+make bootstrap
+make hooks
+make check
+```
 
-"Wanted / planned" means we'd like to support it and the architecture is ready
-for a driver — **not** that support exists today. Commercial-sensor protocols
-can be technically and legally constrained, so each is tracked as its own piece
-of work. See the in-app sensor compatibility center (planned) and the backlog
-for status. Today, only **Aidex X** is actually supported.
+`make hooks` installs the pinned repository hooks in the current worktree.
+Hooks are fast local feedback; `make check` and CI remain authoritative.
 
-OpenGlucose is a **wellness / self-experimentation** tool, not an FDA-cleared or
-CE-marked medical device — none of the above is for diabetes management.
+Useful focused commands include:
 
-## Roadmap / TODO
+```sh
+make format
+make format-check
+make lint
+make typecheck
+make test-unit
+make test-integration
+make test-e2e
+make test
+make build
+```
 
-Planned work is tracked in [`.backlog/`](.backlog/) (Backlog.md). It is grouped
-into epics and three phases (`1-foundation` → `2-build` → `3-polish`):
+The device end-to-end lane is explicitly deferred and currently reports that
+status instead of claiming hardware coverage. `make check` runs tooling,
+formatting, analysis, Dart/Flutter tests, Android and web builds, the negative
+Android release-signing gate, and—on macOS—the unsigned iOS build plus native
+Runner tests. Focused build targets remain available for iteration. The controls
+register assigns the physical-device gap to `@shroominic`; the baseline-default
+approval records a time-bounded exception through 2026-11-30, with redacted
+manual device evidence still required for affected R2/R3 changes.
 
-- **core** — sensor lifecycle UX, alerts, local persistence, data export &
-  backup, PDF reports.
-- **health-data** — normalized event/health-data models, event journaling,
-  explainable glucose metrics, meal logging & response, weekly recap,
-  HR/activity/sleep correlation, optional athlete mode.
-- **integrations** — Apple Health (HealthKit) export + import, Android Health
-  Connect import, read-only share/follower mode, additional CGM drivers.
-- **ai** — privacy-first, opt-in on-device / BYO-key AI foundation, insights &
-  chat over your *local* data, voice & photo meal capture. AI surfaces
-  **patterns and observations, never medical advice**.
-- **ux** — navigation/IA & theming, dashboard redesign, annotated chart
-  overlays, contextual tips & info boxes, empty/loading/error states, home
-  widgets.
-- **onboarding** — light first-run flow (connect sensor, set range, privacy
-  explainer, wellness disclaimer).
-- **docs / dev-ex** — metric definitions, contributor & architecture docs, CI,
-  developer mode & diagnostics.
+Run the demo UI without BLE hardware:
 
-**Pending rename:** the app module is being renamed from the legacy
-`openhealth` to **`openglucose`** (directory, Android namespace/package). The
-`cgm_aidex` driver keeps its name — "Aidex" is the sensor vendor. Tracked as
-TASK-001.
+```sh
+cd openhealth
+flutter run -d chrome
+```
 
-## Flutter CGM SDK Workspace
+Mobile development requires the platform Bluetooth permissions and a supported
+sensor. See the [app README](openhealth/README.md) and
+[compatibility policy](docs/compatibility.md) before interpreting hardware
+results.
 
-This workspace splits the CGM stack into a pure Dart protocol layer and a very
-thin Flutter transport layer:
+## Product boundaries
 
-- `packages/cgm_core`
-  Sensor-agnostic domain models, session contracts, logs, diagnostics, and
-  capabilities.
-- `packages/cgm_ble`
-  BLE transport abstractions used by CGM drivers.
-- `packages/cgm_aidex`
-  Pure Dart AiDEX driver and protocol implementation. This package owns the
-  encrypted vendor handshake, CGM characteristic orchestration, history sync,
-  calibration flow, diagnostics, and unsafe admin commands.
-- `packages/cgm_ble_flutter`
-  Flutter transport bridge built on `flutter_blue_plus`. It only translates
-  scan/connect/read/write/notify operations into the `cgm_ble` interfaces.
-- `openhealth`
-  Reference UI. On Flutter IO platforms it uses the real AiDEX driver; on web
-  and in widget tests it falls back to a demo driver so the UI remains
-  verifiable without native BLE.
+OpenGlucose is designed around these constraints:
 
-## Why the BLE split exists
+- core use remains available without an account or mandatory cloud service;
+- normalized domain models do not depend on a particular sensor vendor;
+- protocol logic stays separate from the native BLE plugin boundary;
+- portable file/data export and complete deletion are required product goals,
+  but neither is a verified complete capability in the current app (the Apple
+  Health integration is a separate opt-in write-only path);
+- analytics must remain explainable, and optional AI must not become a dosing
+  or emergency-decision path.
 
-The AiDEX protocol itself is now Dart. The remaining platform boundary is BLE
-transport. There is no practical fully pure-Dart way to talk to Bluetooth LE on
-iOS and Android without crossing into the operating system's native BLE APIs.
+On native platforms, the baseline moves restricted sensor state to a dedicated
+application-support file. The web demo continues to persist its
+`shared_preferences` values in the browser's origin-scoped `localStorage`; it is
+not a private, encrypted, backup-excluded, or supported health-data store.
 
-The chosen compromise is:
+The current implementation is not yet a production-readiness claim. Consult
+the [architecture decisions](docs/architecture/adr/README.md) for accepted
+direction and explicit implementation gaps.
 
-- keep all protocol logic in Dart
-- keep only the BLE transport in a Flutter package
-- keep that transport minimal so future CGM drivers can reuse it
+## Contributing and support
 
-## BLE options considered
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use the
+[issue tracker](https://github.com/shroominic/OpenGlucose/issues) for
+reproducible bugs and feature proposals, but never attach glucose history,
+sensor identifiers, credentials, or other private health information.
 
-- `flutter_blue_plus`
-  Broad platform coverage, straightforward scan/connect/read/write/notify API,
-  explicit Android bonding support.
-- `flutter_reactive_ble`
-  Good reactive API, but the driver still needs a platform plugin boundary and
-  the characteristic orchestration would not get any more "pure Dart".
-- `universal_ble`
-  Wide platform coverage, but the same underlying constraint remains: BLE still
-  depends on platform integrations.
+The project-wide risk classes, Definition of Done, and controls register are in
+[the engineering standards](docs/engineering/standards.md).
 
-For this workspace, `flutter_blue_plus` is used because it gives the smallest
-adapter surface for the needs in `cgm_ble`.
+Security vulnerabilities should follow [SECURITY.md](SECURITY.md). General
+support expectations are in [SUPPORT.md](SUPPORT.md). This community project
+cannot provide medical, emergency, or sensor-manufacturer support.
+
+## License
+
+OpenGlucose source is available under the [MIT License](LICENSE). Dependencies
+and platform components retain their own licenses; see [NOTICE.md](NOTICE.md)
+and the [dependency policy](docs/dependencies.md).

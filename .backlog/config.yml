@@ -12,7 +12,7 @@ remote_operations: true
 auto_commit: false
 filesystem_only: false
 zero_padded_ids: 3
-bypass_git_hooks: true
+bypass_git_hooks: false
 check_active_branches: true
 active_branch_days: 10
 task_prefix: "task"

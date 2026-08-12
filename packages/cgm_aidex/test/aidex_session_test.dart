@@ -38,6 +38,8 @@ void main() {
     );
 
     final session = await driver.connect(sensor) as AidexSession;
+    final logs = <CgmLogEntry>[];
+    final logSubscription = session.logs.listen(logs.add);
     await session.initialize();
     final snapshots = <CgmSessionSnapshot>[];
     final snapshotSubscription = session.snapshots.listen(snapshots.add);
@@ -69,6 +71,10 @@ void main() {
 
     final calibrations = await session.fetchCalibrations();
     expect(calibrations.length, 2);
+    await session.submitCalibration(
+      glucoseMgdl: 123,
+      recordedAt: DateTime.parse('2026-04-02T04:20:00Z'),
+    );
 
     final interval = await session.getCommunicationInterval();
     expect(interval.current, 1);
@@ -76,7 +82,17 @@ void main() {
     final autoUpdate = await session.getAutoUpdateStatus();
     expect(autoUpdate, isTrue);
 
+    await Future<void>.delayed(Duration.zero);
+    final diagnosticText = logs.map((entry) => entry.message).join('\n');
+    expect(diagnosticText, isNot(contains(sensor.displayName)));
+    expect(diagnosticText, isNot(contains(sensor.deviceId)));
+    expect(diagnosticText, isNot(contains('123 mg/dL')));
+    expect(diagnosticText, isNot(contains('2026-04-02')));
+    expect(diagnosticText, isNot(contains('caf41e38a00ab44dd1ce341c')));
+    expect(diagnosticText, isNot(contains('55805684')));
+
     await snapshotSubscription.cancel();
+    await logSubscription.cancel();
     await session.disconnect();
     expect(transport.lastConnection.didVendorUnpair, isFalse);
     expect(transport.lastConnection.didClearBondViaBms, isFalse);

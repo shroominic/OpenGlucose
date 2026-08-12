@@ -1,0 +1,86 @@
+name: Bug report
+description: Report a reproducible OpenGlucose defect using synthetic or redacted data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        OpenGlucose is wellness/reference software, not a medical device. Do not use this form for an emergency or for diagnosis, dosing, or treatment advice. Follow SECURITY.md and send vulnerability details only through a verified private intake. Never attach glucose history, sensor identifiers, credentials, or other personal data.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - OpenGlucose app or demo
+        - cgm_core
+        - cgm_ble
+        - cgm_ble_flutter
+        - cgm_aidex
+        - Build, tooling, or documentation
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the app version, tag, or full commit SHA.
+      placeholder: v0.0.1+10 or abc1234
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, device type, Flutter version, and demo versus physical-sensor path. Redact device and sensor identifiers.
+      placeholder: Android 16, physical phone, Flutter 3.41.6, demo driver
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic values and the smallest deterministic sequence.
+      placeholder: |
+        1. Start the app with ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe freshness, units, timezone, connection state, and errors when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Paste the minimum synthetic/redacted log or test output. Dragging an unreviewed diagnostic bundle here is unsafe.
+      render: shell
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression and additional context
+      description: Did this work in an earlier version? Include the last known good version and any safe workaround.
+  - type: checkboxes
+    id: declarations
+    attributes:
+      label: Safety checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This report contains no real health data, sensor/device identifiers, credentials, or other personal information.
+          required: true
+        - label: This is not an emergency, request for medical advice, or undisclosed security vulnerability.
+          required: true

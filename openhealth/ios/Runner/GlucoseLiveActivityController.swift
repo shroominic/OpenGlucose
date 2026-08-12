@@ -9,9 +9,11 @@ final class GlucoseLiveActivityController {
   static let shared = GlucoseLiveActivityController()
 
   private let channelName = "com.aidex.cgm/live_activity"
-  private let backgroundPayloadKey = "com.aidex.cgm.live_activity.basePayload"
+  private let sensitiveLockScreenOptInKey =
+    "com.aidex.cgm.live_activity.sensitiveLockScreenOptIn"
   private let iso8601 = ISO8601DateFormatter()
   private let defaults = UserDefaults.standard
+  private let restrictedState = NativeRestrictedStateStore.shared
   private let timeFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateStyle = .none
@@ -54,6 +56,25 @@ final class GlucoseLiveActivityController {
     channel = methodChannel
   }
 
+  /// A pre-upgrade Live Activity can outlive the process that created it and
+  /// still contain raw glucose. End it at launch unless the explicit sensitive
+  /// lock-screen opt-in is present; the normal redacted payload then recreates
+  /// an activity only after current app state is restored.
+  func enforceLaunchPrivacy() {
+    guard !defaults.bool(forKey: sensitiveLockScreenOptInKey) else {
+      return
+    }
+    try? clearPersistedBackgroundPayload()
+    guard #available(iOS 16.1, *) else {
+      return
+    }
+    serializeActivityWork {
+      for activity in Activity<GlucoseLiveActivityAttributes>.activities {
+        await self.end(activity, immediately: true)
+      }
+    }
+  }
+
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "upsert":
@@ -81,14 +102,32 @@ final class GlucoseLiveActivityController {
       }
       let sensorName = payload["sensorName"] as? String ?? ""
       let serial = payload["serial"] as? String
-      AidexBackgroundMonitor.shared.configureTarget(
-        sensorName: sensorName,
-        serial: serial
-      )
-      result(true)
+      do {
+        try AidexBackgroundMonitor.shared.configureTarget(
+          sensorName: sensorName,
+          serial: serial
+        )
+        result(true)
+      } catch {
+        result(storageError())
+      }
     case "clearBackgroundSensor":
-      AidexBackgroundMonitor.shared.clearTarget()
-      result(true)
+      var persistenceFailed = false
+      do {
+        try AidexBackgroundMonitor.shared.clearTarget()
+      } catch {
+        persistenceFailed = true
+      }
+      do {
+        try clearPersistedBackgroundPayload()
+      } catch {
+        persistenceFailed = true
+      }
+      if persistenceFailed {
+        result(storageError())
+      } else {
+        result(true)
+      }
     case "end":
       end(result: result)
     default:
@@ -97,13 +136,19 @@ final class GlucoseLiveActivityController {
   }
 
   private func upsert(payload: [String: Any], result: @escaping FlutterResult) {
-    persistBackgroundPayload(payload)
+    let displayPayload = lockScreenPayload(from: payload)
+    do {
+      try persistBackgroundPayload(displayPayload)
+    } catch {
+      result(storageError())
+      return
+    }
     guard #available(iOS 16.1, *) else {
       result(false)
       return
     }
 
-    guard let sensorName = payload["sensorName"] as? String, !sensorName.isEmpty else {
+    guard let sensorName = displayPayload["sensorName"] as? String, !sensorName.isEmpty else {
       result(
         FlutterError(
           code: "bad_payload",
@@ -113,13 +158,8 @@ final class GlucoseLiveActivityController {
       )
       return
     }
-
     serializeActivityWork {
-      guard #available(iOS 16.1, *) else {
-        result(false)
-        return
-      }
-      let state = self.contentState(from: payload)
+      let state = self.contentState(from: displayPayload)
       do {
         let activity = try await self.upsertActivity(
           sensorName: sensorName,
@@ -130,7 +170,7 @@ final class GlucoseLiveActivityController {
         result(
           FlutterError(
             code: "request_failed",
-            message: error.localizedDescription,
+            message: "Could not update the private Live Activity.",
             details: nil
           )
         )
@@ -148,8 +188,12 @@ final class GlucoseLiveActivityController {
     }
 
     serializeActivityWork {
-      guard #available(iOS 16.1, *) else { return }
-      var payload = self.defaults.dictionary(forKey: self.backgroundPayloadKey) ?? [:]
+      var payload: [String: Any]
+      do {
+        payload = try self.restrictedState.liveActivityPayload() ?? [:]
+      } catch {
+        return
+      }
       payload["sensorName"] = sensorName
       payload["stageCode"] = "live"
       payload["stageLabel"] = "LIVE"
@@ -164,11 +208,20 @@ final class GlucoseLiveActivityController {
       payload["deltaText"] = ""
       payload["isStale"] = false
       payload["recordedAtIso8601"] = self.iso8601.string(from: observedAt)
-      self.persistBackgroundPayload(payload)
+      payload = self.lockScreenPayload(from: payload)
+      do {
+        try self.persistBackgroundPayload(payload)
+      } catch {
+        return
+      }
 
       let state = self.contentState(from: payload)
+      let displaySensorName = payload["sensorName"] as? String ?? "OpenGlucose"
       do {
-        _ = try await self.upsertActivity(sensorName: sensorName, state: state)
+        _ = try await self.upsertActivity(
+          sensorName: displaySensorName,
+          state: state
+        )
       } catch {
         return
       }
@@ -176,20 +229,31 @@ final class GlucoseLiveActivityController {
   }
 
   private func end(result: @escaping FlutterResult) {
+    var persistenceFailed = false
+    do {
+      try clearPersistedBackgroundPayload()
+    } catch {
+      persistenceFailed = true
+    }
     guard #available(iOS 16.1, *) else {
-      result(false)
+      if persistenceFailed {
+        result(storageError())
+      } else {
+        result(false)
+      }
       return
     }
+    let didPersistenceFail = persistenceFailed
 
     serializeActivityWork {
-      guard #available(iOS 16.1, *) else {
-        result(false)
-        return
-      }
       for activity in Activity<GlucoseLiveActivityAttributes>.activities {
         await self.end(activity, immediately: true)
       }
-      result(true)
+      if didPersistenceFail {
+        result(self.storageError())
+      } else {
+        result(true)
+      }
     }
   }
 
@@ -210,9 +274,45 @@ final class GlucoseLiveActivityController {
     )
   }
 
-  private func persistBackgroundPayload(_ payload: [String: Any]) {
+  private func persistBackgroundPayload(_ payload: [String: Any]) throws {
     let sanitized = payload.filter { !($0.value is NSNull) }
-    defaults.set(sanitized, forKey: backgroundPayloadKey)
+    try restrictedState.saveLiveActivityPayload(sanitized)
+  }
+
+  /// Glucose is sensitive health data. Until a future settings surface records
+  /// an explicit user opt-in, Live Activities show only a generic sensor state.
+  /// The opt-in key deliberately defaults to false.
+  private func lockScreenPayload(from payload: [String: Any]) -> [String: Any] {
+    guard defaults.bool(forKey: sensitiveLockScreenOptInKey) else {
+      let stageCode = payload["stageCode"] as? String ?? "pending"
+      let stageLabel = payload["stageLabel"] as? String ?? "SENSOR ACTIVE"
+      return [
+        "sensorName": "OpenGlucose",
+        "stageCode": stageCode,
+        "stageLabel": stageLabel,
+        "valueText": "--",
+        "unitText": "",
+        "lastReadingText": "--",
+        "lifeText": "",
+        "detailText": "Open the app to view your glucose",
+        "trendSymbol": "",
+        "deltaText": "",
+        "isStale": payload["isStale"] as? Bool ?? false,
+      ]
+    }
+    return payload
+  }
+
+  private func clearPersistedBackgroundPayload() throws {
+    try restrictedState.clearLiveActivityPayload()
+  }
+
+  private func storageError() -> FlutterError {
+    FlutterError(
+      code: "restricted_storage_failed",
+      message: "Could not update backup-excluded health state.",
+      details: nil
+    )
   }
 
   @available(iOS 16.1, *)

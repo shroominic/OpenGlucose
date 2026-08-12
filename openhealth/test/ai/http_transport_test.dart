@@ -191,4 +191,23 @@ void main() {
     expect(client.postedUris, hasLength(1));
     expect(client.lastRequest!.followRedirects, isFalse);
   });
+
+  test('provider error details are never exposed to the caller', () async {
+    final client = _FakeClient(
+      statusCode: HttpStatus.badRequest,
+      responseBody:
+          '{"error":{"message":"private glucose summary was rejected"}}',
+    );
+
+    await expectLater(
+      _sendWithClient(client, _config('https://api.example.com/v1')),
+      throwsA(
+        isA<AiGenerationException>().having(
+          (error) => error.message,
+          'message',
+          'Provider returned HTTP 400.',
+        ),
+      ),
+    );
+  });
 }

@@ -412,8 +412,10 @@ class _WelcomeStep extends StatelessWidget {
       bullets: <_Bullet>[
         _Bullet(
           icon: Icons.lock_outline_rounded,
-          title: 'Your data stays on your phone',
-          body: 'Nothing is sent to the sensor maker or to us. You own it.',
+          title: 'Stored locally by default',
+          body:
+              'History stays on this device. Optional HealthKit or AI features '
+              'share data only when you enable them.',
         ),
         _Bullet(
           icon: Icons.code_rounded,

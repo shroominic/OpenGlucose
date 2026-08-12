@@ -1,0 +1,3 @@
+// Share only Flutter's generated version/build variables with the native
+// extension. Runner's CocoaPods linker settings must not leak into the appex.
+#include "Generated.xcconfig"

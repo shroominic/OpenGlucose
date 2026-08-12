@@ -33,7 +33,7 @@
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Aidex CGM connects directly to nearby sensors over Bluetooth.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>OpenGlucose can read your glucose data to keep Apple Health in sync. Your data stays on your device.</string>
+	<string>OpenGlucose requests write-only glucose access and does not read your HealthKit data. Apple requires this description for HealthKit access.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>OpenGlucose can write your sensor readings to Apple Health as blood glucose samples when you turn on the Apple Health integration.</string>
 	<key>NSSupportsLiveActivities</key>

@@ -8,6 +8,7 @@ import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
@@ -29,12 +30,15 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    debugPrint('FlutterError: ${details.exception}\n${details.stack}');
+    if (kDebugMode) {
+      debugPrint('FlutterError (${details.exception.runtimeType})');
+    }
   };
 
-  PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Unhandled error: $error\n$stack');
+  PlatformDispatcher.instance.onError = (error, _) {
+    if (kDebugMode) {
+      debugPrint('Unhandled error (${error.runtimeType})');
+    }
     return true;
   };
 
@@ -43,13 +47,16 @@ Future<void> main() async {
 
 Future<_BootstrapResult> _bootstrap() async {
   final preferences = await SharedPreferences.getInstance();
+  final healthStateStore = createHealthStateStore(preferences);
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
+    healthStateStore: healthStateStore,
   );
   await controller.initialize();
   final healthExport = HealthExportController(
     preferences: preferences,
+    healthStateStore: healthStateStore,
     writesAllowed: !controller.isMockDriver,
   )..initialize();
   final messages = MessageController(
@@ -112,7 +119,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           return const _SplashApp();
         }
         if (snapshot.hasError) {
-          return _SplashApp(error: snapshot.error);
+          return _SplashApp(
+            error:
+                'Secure local storage could not be initialized '
+                '(${snapshot.error.runtimeType})',
+          );
         }
         final result = snapshot.data!;
         return OpenGlucoseApp(
@@ -1369,7 +1380,7 @@ Widget _buildDisplaySettingsPane({
             child: const Text('Save settings'),
           ),
           OutlinedButton(
-            onPressed: controller.clearPersistedHistory,
+            onPressed: () => unawaited(controller.clearPersistedHistory()),
             child: const Text('Clear cache'),
           ),
         ],

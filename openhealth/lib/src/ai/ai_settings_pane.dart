@@ -13,8 +13,8 @@ import 'ai_settings_store.dart';
 ///
 /// Privacy-first by design: AI is OFF by default; the user must opt in and
 /// supply their own API key (stored only in the platform secure store). The
-/// pane states plainly that turning this on is the *only* time their summarized
-/// data leaves the device, and carries the wellness disclaimer.
+/// pane states plainly which aggregate data is sent when generation is
+/// requested, and carries the wellness disclaimer.
 ///
 /// Includes a tiny "Generate insights now" dev action to exercise the
 /// foundation end-to-end (the real insight UI lands in a later task).
@@ -133,9 +133,9 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     } on AiGenerationException catch (error) {
       if (!mounted) return;
       setState(() => _status = 'Could not generate: ${error.message}');
-    } catch (error) {
+    } catch (_) {
       if (!mounted) return;
-      setState(() => _status = 'Could not generate: $error');
+      setState(() => _status = 'Could not generate the AI insight.');
     } finally {
       await repo?.close();
       if (mounted) setState(() => _busy = false);
@@ -166,9 +166,12 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
           ),
           child: Text(
             'Wellness & self-experimentation only — not medical advice, '
-            'diagnosis, or dosing. AI runs on YOUR own API key: enabling it is '
-            'the only time a privacy-conscious summary of your data leaves '
-            'this device. Your key is stored in the device secure store.',
+            'diagnosis, or dosing. When you tap Generate, the app sends a '
+            '24-hour aggregate—reading count, average, range, variability, '
+            'time in/below/above range, estimated A1c, event counts, and total '
+            'logged carbohydrates—to the HTTPS provider shown below. Raw '
+            "readings and note text are not sent. That provider's retention "
+            'terms apply. Your API key is stored in the device secure store.',
             style: theme.textTheme.bodySmall,
           ),
         ),

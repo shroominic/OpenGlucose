@@ -15,9 +15,7 @@ class IosLiveActivityBridge {
     if (!Platform.isIOS) {
       return;
     }
-    try {
-      await _channel.invokeMethod<void>('upsert', payload.toMap());
-    } catch (_) {}
+    await _channel.invokeMethod<void>('upsert', payload.toMap());
   }
 
   static Future<void> setBackgroundSensor({
@@ -27,29 +25,23 @@ class IosLiveActivityBridge {
     if (!Platform.isIOS) {
       return;
     }
-    try {
-      await _channel.invokeMethod<void>(
-        'setBackgroundSensor',
-        <String, Object?>{'sensorName': sensorName, 'serial': serial},
-      );
-    } catch (_) {}
+    await _channel.invokeMethod<void>('setBackgroundSensor', <String, Object?>{
+      'sensorName': sensorName,
+      'serial': serial,
+    });
   }
 
   static Future<void> clearBackgroundSensor() async {
     if (!Platform.isIOS) {
       return;
     }
-    try {
-      await _channel.invokeMethod<void>('clearBackgroundSensor');
-    } catch (_) {}
+    await _channel.invokeMethod<void>('clearBackgroundSensor');
   }
 
   static Future<void> end() async {
     if (!Platform.isIOS) {
       return;
     }
-    try {
-      await _channel.invokeMethod<void>('end');
-    } catch (_) {}
+    await _channel.invokeMethod<void>('end');
   }
 }

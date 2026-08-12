@@ -1,39 +1,55 @@
-<!-- 
-This README describes the package. If you publish this package to pub.dev,
-this README's contents appear on the landing page for your package.
+# cgm_ble_flutter
 
-For information about how to write a good package README, see the guide for
-[writing package pages](https://dart.dev/tools/pub/writing-package-pages). 
+Flutter implementation of the `cgm_ble` transport contracts, backed by
+`flutter_blue_plus`. It translates platform scan, connect, bond, discovery,
+read, write, and notification operations; it does not contain sensor protocol
+logic.
 
-For general information about developing packages, see the Dart guide for
-[creating packages](https://dart.dev/guides/libraries/create-packages)
-and the Flutter guide for
-[developing packages and plugins](https://flutter.dev/to/develop-packages). 
--->
+## Workspace use
 
-TODO: Put a short description of the package here that helps potential users
-know whether this package might be useful for them.
-
-## Features
-
-TODO: List what your package can do. Maybe include images, gifs, or videos.
-
-## Getting started
-
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
-
-## Usage
-
-TODO: Include short and useful examples for package users. Add longer examples
-to `/example` folder. 
-
-```dart
-const like = 'sample';
+```yaml
+dependencies:
+  cgm_ble_flutter:
+    path: ../packages/cgm_ble_flutter
 ```
 
-## Additional information
+```dart
+import 'package:cgm_ble_flutter/cgm_ble_flutter.dart';
 
-TODO: Tell users more about the package: where to find more information, how to 
-contribute to the package, how to file issues, what response they can expect 
-from the package authors, and more.
+const transport = FlutterBluePlusTransport(
+  adapterReadyTimeout: Duration(seconds: 10),
+  operationTimeout: Duration(seconds: 12),
+);
+```
+
+Pass the transport to a compatible protocol driver, such as
+`AidexSensorDriver` from `cgm_aidex`. Applications remain responsible for
+platform Bluetooth declarations, runtime permission UX, lifecycle behavior,
+and clearly communicating stale or disconnected data.
+
+## Platform behavior
+
+- Android supports explicit bond lifecycle operations through the adapter.
+- iOS and macOS configure `flutter_blue_plus` power alerts and optional state
+  restoration.
+- Web is not the OpenGlucose hardware path; the reference app uses its demo
+  driver there.
+
+Consult the `flutter_blue_plus` documentation when changing native permission
+or build configuration. Verify adapter changes on the affected physical
+platform; unit or web tests cannot establish BLE compatibility.
+
+## Development
+
+From the repository root, run `make check`. To exercise this package alone:
+
+```sh
+cd packages/cgm_ble_flutter
+flutter pub get
+flutter analyze
+flutter test
+```
+
+Transport changes require deterministic adapter tests where practical, native
+smoke evidence, and the compatibility process in
+[`docs/compatibility.md`](../../docs/compatibility.md).

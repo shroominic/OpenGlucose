@@ -182,7 +182,7 @@ class DemoCgmSession implements CgmSession {
         },
       ),
     );
-    _log(CgmLogLevel.info, 'Demo refresh produced ${latest.valueMgdl}');
+    _log(CgmLogLevel.info, 'Demo refresh completed');
   }
 
   @override
@@ -251,7 +251,7 @@ class DemoCgmSession implements CgmSession {
       ),
     ];
     _emitSnapshot(_snapshot.copyWith(calibrations: _calibrations));
-    _log(CgmLogLevel.info, 'Demo calibration submitted: $glucoseMgdl mg/dL');
+    _log(CgmLogLevel.info, 'Demo calibration submitted');
   }
 
   @override

@@ -54,7 +54,7 @@ class HttpAiTransport {
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw AiGenerationException(
-          _providerErrorMessage(response.statusCode, responseBody),
+          _providerErrorMessage(response.statusCode),
         );
       }
       return HttpChatAiProvider.parseResponseBody(responseBody);
@@ -69,20 +69,8 @@ class HttpAiTransport {
     }
   }
 
-  static String _providerErrorMessage(int statusCode, String responseBody) {
-    try {
-      final decoded = jsonDecode(responseBody);
-      if (decoded is Map<String, Object?>) {
-        final error = decoded['error'];
-        if (error is Map && error['message'] is String) {
-          return 'Provider returned HTTP $statusCode: ${error['message']}';
-        }
-      }
-    } catch (_) {
-      // Fall back to the status without exposing an arbitrary response body.
-    }
-    return 'Provider returned HTTP $statusCode.';
-  }
+  static String _providerErrorMessage(int statusCode) =>
+      'Provider returned HTTP $statusCode.';
 
   static Uri _resolveEndpoint(String baseUrl) {
     final uri = Uri.tryParse(baseUrl.trim());

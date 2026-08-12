@@ -3,120 +3,158 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
 
-# Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 env:
-  # Keep this in sync with openhealth/pubspec.yaml `environment.flutter`
-  # and the version used by developers locally.
   FLUTTER_VERSION: "3.41.6"
 
 jobs:
-  # Static analysis, formatting and unit tests. This is the PR quality gate.
-  analyze-and-test:
-    name: Analyze & Test
+  quality:
+    name: Quality
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: openhealth
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2.22.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Restore locked app and resolve package dependencies
+        run: make bootstrap
 
-      - name: Verify formatting
-        run: dart format --output=none --set-exit-if-changed .
+      - name: Check tooling, formatting, and static analysis
+        run: make tooling-check format-check lint
 
-      - name: Analyze
-        run: flutter analyze
-
-      - name: Run tests with coverage
-        run: flutter test --coverage
-
-      - name: Upload coverage artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: openhealth/coverage/lcov.info
-          if-no-files-found: ignore
-
-  # Android debug build sanity check.
-  build-android:
-    name: Build Android (debug)
+  unit-tests:
+    name: Unit Tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: openhealth
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2.22.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Restore locked app and resolve package dependencies
+        run: make bootstrap
+
+      - name: Run unit and widget tests
+        run: make test-unit
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2.22.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Restore locked app and resolve package dependencies
+        run: make bootstrap
+
+      - name: Run discovered integration tests
+        run: make test-integration
+
+  android-build:
+    name: Android Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2.22.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('openhealth/android/**/*.gradle*', 'openhealth/android/**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Restore locked app and resolve package dependencies
+        run: make bootstrap
 
       - name: Build debug APK
-        run: flutter build apk --debug
+        run: make build-android
 
-  # iOS build sanity check (no code signing).
-  build-ios:
-    name: Build iOS (no codesign)
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: openhealth
+      - name: Verify release signing fails closed
+        run: make verify-android-release-signing
+
+  web-build:
+    name: Web Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2.22.0
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Restore locked app and resolve package dependencies
+        run: make bootstrap
 
-      - name: Build iOS (no codesign)
-        run: flutter build ios --no-codesign
+      - name: Build web demo
+        run: make build-web
+
+  ios-build:
+    name: iOS Build and Native Tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2.22.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install pinned CocoaPods
+        run: |
+          gem install --user-install cocoapods -v "$(cat .cocoapods-version)" --no-document
+          echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+
+      - name: Restore locked app and resolve package dependencies
+        run: make bootstrap
+
+      - name: Build iOS and run native privacy tests
+        run: make build-ios test-ios-native

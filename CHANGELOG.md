@@ -1,0 +1,68 @@
+# Changelog
+
+Notable repository-level changes are recorded here. Package-specific public API
+changes must also be recorded in the package's own `CHANGELOG.md`.
+
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for package
+contracts. The pre-1.0 application may still change rapidly; compatibility
+expectations are defined in [docs/compatibility.md](docs/compatibility.md).
+
+## [Unreleased]
+
+### Added
+
+- Reproducible engineering baseline documentation, ownership, contribution,
+  security, support, architecture-decision, compatibility, and dependency
+  policies.
+- MIT license for OpenGlucose-owned source.
+- Dedicated native restricted-health-state storage with migration tests for
+  legacy sensor selection and glucose-history preferences.
+- Repository-wide command, hook, CI, dependency-reporting, and secret-scanning
+  configuration.
+- Isolated demo mode with staged sensor scenarios, first-run onboarding, sensor
+  lifecycle guidance, and contextual in-app messaging.
+- Strict health-event/sample models, local journal and insight persistence,
+  explainable glucose metrics, and weekly recap views.
+- Explicit, write-only Apple Health glucose export with protected progress
+  state, plus optional BYO-key AI insights over disclosed 24-hour aggregates.
+
+### Changed
+
+- Dart-owned sensor selection and glucose history move from ordinary platform
+  preferences into an application-support file; those legacy values are removed
+  only after the replacement is durable. iOS native lock-screen payloads are
+  purged before migration, and background targets are purged on migration
+  failure, preferring a recoverable rescan over backup exposure.
+- Android backup and device-transfer configuration excludes application data.
+  iOS code requests and checks the backup-exclusion resource attribute for the
+  restricted file; physical-platform verification remains outstanding.
+- Lock-screen surfaces redact glucose values by default; final native-platform
+  verification remains a release prerequisite.
+- Android release builds now require explicit release-signing environment
+  variables instead of falling back to debug signing.
+- TestFlight automation now requires an explicit source commit and release
+  approval inputs, and uses temporary credential material.
+
+### Known limitations
+
+- Complete portable file/data export and delete-all flows are not implemented;
+  the Apple Health integration is a separate opt-in write-only path.
+- The web demo stores `shared_preferences` data in origin-scoped browser
+  `localStorage`; it is not a supported private health-data store.
+- Automated physical-device end-to-end coverage is deferred and must not be
+  inferred from demo integration or platform build checks.
+
+## [0.0.1+10] - 2026-06-05
+
+### Added
+
+- Initial tagged development snapshot of the OpenGlucose Flutter app and CGM
+  package workspace.
+
+The historical Git tag is named `v0.0.1+10`, while the tagged
+`openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
+published history; do not infer an app artifact build number of 10 from the tag.
+
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.0.1%2B10...HEAD
+[0.0.1+10]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.0.1%2B10

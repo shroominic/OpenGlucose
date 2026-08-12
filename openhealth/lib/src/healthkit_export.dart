@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:health/health.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'health_state_store.dart';
+
 /// Outcome of an attempted Apple Health export so the UI can surface a clear
 /// success / failure / skipped state without throwing.
 enum HealthExportStatus {
@@ -189,9 +191,11 @@ class HealthKitExportService implements GlucoseExporter {
               break;
             }
             written += 1;
-          } catch (error, stack) {
-            debugPrint('HealthKit export failed: $error\n$stack');
-            failureMessage = 'HealthKit write failed: $error';
+          } catch (error) {
+            debugPrint(
+              'HealthKit export failed (${error.runtimeType}).',
+            );
+            failureMessage = 'Apple Health could not save a glucose sample.';
             break;
           }
         }
@@ -219,11 +223,11 @@ class HealthKitExportService implements GlucoseExporter {
         written: written,
         latestReadingAt: contiguousWatermark,
       );
-    } catch (error, stack) {
-      debugPrint('HealthKit export failed: $error\n$stack');
-      return HealthExportResult(
+    } catch (error) {
+      debugPrint('HealthKit export failed (${error.runtimeType}).');
+      return const HealthExportResult(
         status: HealthExportStatus.failed,
-        message: '$error',
+        message: 'Apple Health export could not be completed.',
       );
     }
   }
@@ -234,9 +238,15 @@ class HealthKitExportService implements GlucoseExporter {
 class HealthExportController extends ChangeNotifier {
   HealthExportController({
     required SharedPreferences preferences,
+    HealthStateStore? healthStateStore,
     GlucoseExporter? service,
     this.writesAllowed = true,
   }) : _preferences = preferences,
+       _healthStateStore =
+           healthStateStore ??
+           (writesAllowed
+               ? throw ArgumentError.notNull('healthStateStore')
+               : PreferencesHealthStateStore(preferences)),
        _service = service ?? HealthKitExportService();
 
   static const _enabledKey = 'openHealth.healthExport.enabled';
@@ -244,6 +254,7 @@ class HealthExportController extends ChangeNotifier {
   static const _watermarkKey = 'openHealth.healthExport.watermarkMs';
 
   final SharedPreferences _preferences;
+  final HealthStateStore _healthStateStore;
   final GlucoseExporter _service;
 
   /// Immutable environment gate for builds or drivers that must never write.
@@ -268,14 +279,11 @@ class HealthExportController extends ChangeNotifier {
 
   void initialize() {
     _enabled = writesAllowed && (_preferences.getBool(_enabledKey) ?? false);
-    final lastMs = _preferences.getInt(_lastSyncedKey);
-    if (lastMs != null) {
-      _lastSyncedAt = DateTime.fromMillisecondsSinceEpoch(lastMs);
+    if (!writesAllowed) {
+      return;
     }
-    final watermarkMs = _preferences.getInt(_watermarkKey);
-    if (watermarkMs != null) {
-      _watermark = DateTime.fromMillisecondsSinceEpoch(watermarkMs);
-    }
+    _lastSyncedAt = _readRestrictedTimestamp(_lastSyncedKey);
+    _watermark = _readRestrictedTimestamp(_watermarkKey);
   }
 
   /// Toggles the opt-in. Enabling on iOS triggers the HealthKit auth sheet; if
@@ -319,7 +327,9 @@ class HealthExportController extends ChangeNotifier {
   }
 
   /// Runs an export of [readings]. Only writes readings newer than the last
-  /// successful sync so repeated taps don't duplicate samples.
+  /// durable contiguous watermark. A process interruption after HealthKit
+  /// accepts a sample but before the watermark commits can cause that sample
+  /// to be written again on retry; the UI discloses this at-least-once edge.
   Future<HealthExportResult> syncNow(List<CgmReading> readings) async {
     if (_busy) {
       return const HealthExportResult(status: HealthExportStatus.failed);
@@ -366,9 +376,9 @@ class HealthExportController extends ChangeNotifier {
         case HealthExportStatus.noData:
           // Nothing new to write counts as an up-to-date sync.
           _lastSyncedAt = DateTime.now();
-          await _preferences.setInt(
+          await _healthStateStore.setString(
             _lastSyncedKey,
-            _lastSyncedAt!.millisecondsSinceEpoch,
+            _lastSyncedAt!.millisecondsSinceEpoch.toString(),
           );
           _statusMessage = 'Already up to date.';
         case HealthExportStatus.notAuthorized:
@@ -390,14 +400,26 @@ class HealthExportController extends ChangeNotifier {
   Future<void> _persistProgress(DateTime? contiguousWatermark) async {
     if (contiguousWatermark != null) {
       _watermark = contiguousWatermark;
-      await _preferences.setInt(
+      await _healthStateStore.setString(
         _watermarkKey,
-        _watermark!.millisecondsSinceEpoch,
+        _watermark!.millisecondsSinceEpoch.toString(),
       );
     }
-    await _preferences.setInt(
+    await _healthStateStore.setString(
       _lastSyncedKey,
-      _lastSyncedAt!.millisecondsSinceEpoch,
+      _lastSyncedAt!.millisecondsSinceEpoch.toString(),
     );
+  }
+
+  DateTime? _readRestrictedTimestamp(String key) {
+    final encoded = _healthStateStore.getString(key);
+    if (encoded == null) {
+      return null;
+    }
+    final milliseconds = int.tryParse(encoded);
+    if (milliseconds == null || milliseconds < 0) {
+      throw const FormatException('Restricted export timestamp is invalid.');
+    }
+    return DateTime.fromMillisecondsSinceEpoch(milliseconds);
   }
 }

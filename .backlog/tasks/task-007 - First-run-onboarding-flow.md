@@ -20,7 +20,7 @@ Steps (keep it short — skippable where reasonable):
 1. Welcome + one-line value prop (open-source, local-first, wellness — not a medical device).
 2. Connect sensor: scan, select, pair, activate, warmup expectation (~1h) — hand off to the sensor lifecycle UX (TASK-008) for the heavy lifting.
 3. Set target/display range (the user's preferred glucose range and units).
-4. Privacy explainer: data stays on device, nothing goes to the manufacturer, BYO-key for any optional AI.
+4. Privacy explainer: data is stored locally by default; optional HealthKit and BYO-key AI features share data only after explicit opt-in.
 5. Wellness disclaimer acknowledgment (self-experimentation framing; not for diabetes management/medical decisions).
 
 Persist that onboarding is complete so it only shows on first run (re-runnable from settings).

@@ -1,5 +1,6 @@
 name: cgm_core
 description: Sensor-agnostic CGM domain models and session interfaces.
+publish_to: none
 version: 1.0.0
 
 environment:

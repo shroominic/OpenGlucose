@@ -108,7 +108,9 @@ class _AppleHealthCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Write your readings to Apple Health as blood glucose samples.',
+              'When you opt in and tap Sync now, glucose values and timestamps '
+              'are written to Apple Health as blood glucose samples. An '
+              'interrupted sync may write a duplicate when retried.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: const Color(0xFF5B6E6A),
               ),
