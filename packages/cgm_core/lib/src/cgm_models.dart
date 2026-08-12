@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'timeline.dart';
+
 enum CgmSyncStage {
   disconnected,
   scanning,
@@ -231,7 +233,7 @@ class DiscoveredSensor {
   }
 }
 
-class CgmReading {
+class CgmReading implements TimelineEntry {
   const CgmReading({
     required this.valueMgdl,
     required this.source,
@@ -249,6 +251,18 @@ class CgmReading {
   final int? rawValue;
   final int? qualifier;
   final bool isDisplayProvisional;
+
+  /// Position on the shared health timeline.
+  ///
+  /// Uses [recordedAt] when known; readings without a wall-clock time (e.g.
+  /// raw history not yet anchored to a session start) fall back to the Unix
+  /// epoch so they sort before timestamped data rather than throwing.
+  @override
+  DateTime get timelineTimestamp =>
+      recordedAt ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+  @override
+  TimelineEntryKind get timelineKind => TimelineEntryKind.cgmReading;
 
   CgmReading copyWith({
     double? valueMgdl,
