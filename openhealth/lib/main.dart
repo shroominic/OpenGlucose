@@ -17,6 +17,7 @@ import 'package:openglucose/src/messaging/message_host.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
+import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
@@ -693,6 +694,16 @@ class _DashboardView extends StatelessWidget {
               snapshot: snapshot,
             ),
           ),
+          // --- Sensor lifecycle center (TASK-008) -------------------------
+          // Self-contained widget; safe to relocate/remove as one block.
+          SliverToBoxAdapter(
+            child: SensorLifecycleCard(
+              snapshot: snapshot,
+              latestReading: controller.latestReading,
+              onReplaceSensor: () => unawaited(controller.disconnect()),
+            ),
+          ),
+          // --- end sensor lifecycle center --------------------------------
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),

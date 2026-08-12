@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:cgm_core/cgm_core.dart';
 
+import 'session_presentation.dart';
+
 /// Selectable mock sensor scenarios for the OG_DEMO harness.
 ///
 /// Each scenario maps to a fully-formed [CgmSessionSnapshot] (via
@@ -44,7 +46,8 @@ enum MockScenario {
   multiSensorHistory,
 
   /// Hard error state with no usable data.
-  error;
+  error
+  ;
 
   /// Stable identifier used for `--dart-define=OG_SCENARIO=<id>` and as the
   /// persisted runtime selection.
@@ -115,7 +118,9 @@ class MockScenarioCatalog {
   final DateTime Function() _clock;
 
   static const _warmupMinutes = 60;
-  static const _sensorLife = Duration(days: 15);
+  // Single source of truth lives in session_presentation.dart (kSensorLife
+  // Duration) so the mock harness and the lifecycle UI never drift.
+  static const _sensorLife = kSensorLifeDuration;
 
   /// The simulated sensor advertised by the demo driver.
   static const DiscoveredSensor sensor = DiscoveredSensor(
