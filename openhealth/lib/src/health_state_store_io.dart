@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -28,12 +29,16 @@ class FileHealthStateStore implements HealthStateStore {
            backupExclusionMarker ?? _markExcludedFromBackup,
        _requiresBackupExclusion = requiresBackupExclusion ?? Platform.isIOS;
 
-  static const _schemaVersion = 2;
-  static const _legacySchemaVersion = 1;
+  static const _schemaVersion = 3;
+  static const _embeddedHistorySchemaVersion = 1;
+  static const _reversibleHistoryFilenameSchemaVersion = 2;
   static const _fileName = 'restricted-health-state.json';
   static const _storageDirectoryName = 'RestrictedHealthState';
   static const _historyDirectoryName = 'HistoryBlobs';
   static const _historyBlobExtension = '.blob';
+  static final _historyBlobFileNamePattern = RegExp(
+    r'^history-[0-9a-f]{64}\.blob$',
+  );
   static const _lastSensorKey = 'openHealth.lastSensor';
   static const _sensorArchiveKey = 'openHealth.sensorArchive';
   static const _historyPrefix = 'openHealth.history.';
@@ -97,7 +102,6 @@ class FileHealthStateStore implements HealthStateStore {
     _file = file;
 
     await _restoreInterruptedCommit(file);
-    await _recoverHistoryTransactions(historyDirectory);
 
     var metadataValues = <String, String>{};
     var needsRewrite = false;
@@ -112,15 +116,21 @@ class FileHealthStateStore implements HealthStateStore {
       needsRewrite = true;
     }
 
-    final historyKeys = await _discoverHistoryBlobs(historyDirectory);
+    // Validate the metadata schema before recovering history transactions or
+    // changing the persisted blob naming format. Future app versions must
+    // remain untouched rather than being partially downgraded by an older
+    // binary.
+    await _recoverHistoryTransactions(historyDirectory);
+    await _migrateLegacyHistoryBlobNames(historyDirectory);
+    await _verifyHistoryBlobs(historyDirectory);
+
     final embeddedHistoryKeys = metadataValues.keys
         .where(_isHistoryKey)
         .toList(growable: false);
     for (final key in embeddedHistoryKeys) {
       final embeddedValue = metadataValues.remove(key)!;
-      if (!historyKeys.contains(key)) {
+      if (!_historyBlobExists(key)) {
         await _persistHistoryBlob(key, embeddedValue);
-        historyKeys.add(key);
       }
       needsRewrite = true;
     }
@@ -134,9 +144,8 @@ class FileHealthStateStore implements HealthStateStore {
     for (final key in migratedKeys) {
       final legacyValue = _legacyRestrictedValue(key);
       if (_isHistoryKey(key)) {
-        if (!historyKeys.contains(key)) {
+        if (!_historyBlobExists(key)) {
           await _persistHistoryBlob(key, legacyValue);
-          historyKeys.add(key);
         }
       } else if (!metadataValues.containsKey(key)) {
         metadataValues[key] = legacyValue;
@@ -295,7 +304,7 @@ class FileHealthStateStore implements HealthStateStore {
     }
   }
 
-  Future<Set<String>> _discoverHistoryBlobs(Directory directory) async {
+  Future<void> _migrateLegacyHistoryBlobNames(Directory directory) async {
     final files = <File>[];
     await for (final entity in directory.list(followLinks: false)) {
       if (entity is File && entity.path.endsWith(_historyBlobExtension)) {
@@ -304,13 +313,70 @@ class FileHealthStateStore implements HealthStateStore {
     }
     files.sort((left, right) => left.path.compareTo(right.path));
 
-    final keys = <String>{};
     for (final file in files) {
-      final key = _historyKeyFromBlob(file);
-      await _excludeFromBackup(file.path);
-      keys.add(key);
+      final fileName = _basename(file.path);
+      if (_historyBlobFileNamePattern.hasMatch(fileName)) {
+        continue;
+      }
+
+      final key = _historyKeyFromLegacyBlob(file);
+      final migrated = _historyBlobFile(directory, key);
+      if (migrated.existsSync()) {
+        await _excludeFromBackup(migrated.path);
+        if (!await _filesHaveEqualContents(file, migrated)) {
+          throw StateError(
+            'Conflicting restricted history files cannot be migrated safely.',
+          );
+        }
+        try {
+          await file.delete();
+        } on FileSystemException catch (error) {
+          throw StateError(
+            'Could not remove the redundant restricted history filename: '
+            '$error',
+          );
+        }
+        continue;
+      }
+
+      await file.rename(migrated.path);
+      // A crash before this check leaves the authoritative bytes at the new
+      // deterministic path. Initialization retries the exclusion check and
+      // schema rewrite on the next launch without recreating the old name.
+      await _excludeFromBackup(migrated.path);
     }
-    return keys;
+  }
+
+  Future<void> _verifyHistoryBlobs(Directory directory) async {
+    final files = <File>[];
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is File && entity.path.endsWith(_historyBlobExtension)) {
+        files.add(entity);
+      }
+    }
+    files.sort((left, right) => left.path.compareTo(right.path));
+
+    for (final file in files) {
+      if (!_historyBlobFileNamePattern.hasMatch(_basename(file.path))) {
+        throw const FormatException('Restricted history filename is invalid.');
+      }
+      await _excludeFromBackup(file.path);
+    }
+  }
+
+  Future<bool> _filesHaveEqualContents(File left, File right) async {
+    final leftLength = await left.length();
+    if (leftLength != await right.length()) {
+      return false;
+    }
+    final leftBytes = await left.readAsBytes();
+    final rightBytes = await right.readAsBytes();
+    for (var index = 0; index < leftBytes.length; index += 1) {
+      if (leftBytes[index] != rightBytes[index]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   Future<void> _discardIfPresent(File file) async {
@@ -474,7 +540,9 @@ class FileHealthStateStore implements HealthStateStore {
           'Restricted health-state schema version is invalid.',
         );
       }
-      if (version != _schemaVersion && version != _legacySchemaVersion) {
+      if (version != _schemaVersion &&
+          version != _embeddedHistorySchemaVersion &&
+          version != _reversibleHistoryFilenameSchemaVersion) {
         throw UnsupportedError(
           'Restricted health-state schema version $version is unsupported.',
         );
@@ -510,16 +578,14 @@ class FileHealthStateStore implements HealthStateStore {
   }
 
   File _historyBlobFile(Directory directory, String key) {
-    final encodedKey = base64Url.encode(utf8.encode(key));
     return File(
       '${directory.path}${Platform.pathSeparator}'
-      '$encodedKey$_historyBlobExtension',
+      '${_historyBlobFileName(key)}',
     );
   }
 
-  String _historyKeyFromBlob(File file) {
-    final separatorIndex = file.path.lastIndexOf(Platform.pathSeparator);
-    final fileName = file.path.substring(separatorIndex + 1);
+  String _historyKeyFromLegacyBlob(File file) {
+    final fileName = _basename(file.path);
     final encodedKey = fileName.substring(
       0,
       fileName.length - _historyBlobExtension.length,
@@ -530,14 +596,23 @@ class FileHealthStateStore implements HealthStateStore {
     } on FormatException {
       throw const FormatException('Restricted history filename is invalid.');
     }
-    if (!_isHistoryKey(key) || _historyBlobFileName(key) != fileName) {
+    if (!_isHistoryKey(key) || _legacyHistoryBlobFileName(key) != fileName) {
       throw const FormatException('Restricted history filename is invalid.');
     }
     return key;
   }
 
   String _historyBlobFileName(String key) {
-    return '${base64Url.encode(utf8.encode(key))}$_historyBlobExtension';
+    final digest = crypto.sha256.convert(utf8.encode(key));
+    return 'history-$digest$_historyBlobExtension';
+  }
+
+  String _legacyHistoryBlobFileName(String key) =>
+      '${base64Url.encode(utf8.encode(key))}$_historyBlobExtension';
+
+  String _basename(String filePath) {
+    final separatorIndex = filePath.lastIndexOf(Platform.pathSeparator);
+    return filePath.substring(separatorIndex + 1);
   }
 
   Future<void> _excludeFromBackup(String path) async {

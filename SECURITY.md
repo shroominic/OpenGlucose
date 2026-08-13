@@ -9,16 +9,16 @@ vulnerability details.
 
 The intended channel is GitHub
 [private vulnerability reporting](https://github.com/shroominic/OpenGlucose/security/advisories/new).
-This depends on an external repository setting and has not been verified as
-enabled. Before sending details, confirm that GitHub presents a private report
-form for this repository.
+The GitHub repository API reported the setting enabled on 2026-08-14. Because
+that external setting can change, confirm that GitHub still presents a private
+report form before sending details.
 
 There is currently no second verified private reporting address. If the GitHub
 form is unavailable, do not send vulnerability details through a public issue,
 discussion, unsolicited direct message, or guessed address. Retain the details
 privately until the repository publishes and verifies a secure fallback. The
-repository owner must enable and verify private reporting before an external
-release or production-readiness claim.
+repository owner must keep private reporting enabled and reverify it before a
+production-readiness claim.
 
 Do not open a public issue for an undisclosed vulnerability. Do not attach:
 

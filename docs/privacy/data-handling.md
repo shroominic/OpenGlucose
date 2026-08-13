@@ -18,8 +18,12 @@ Native persistence is implemented to keep sensor identity and glucose history
 in versioned, dedicated application-support files. Dart writes use serialized,
 transactional snapshots with interrupted-commit recovery. On first launch they
 migrate restricted legacy preference keys and remove them only after the new
-file is durable. iOS-native background sensor state and the redacted Live
-Activity payload use a separate excluded directory/file instead of
+file is durable. Schema-three history blobs use deterministic SHA-256 filenames
+instead of reversible base64 storage keys. Startup atomically renames
+schema-two blobs, resumes mixed pre/post-rename states, and preserves both
+copies while failing closed if an unexpected conflict prevents safe migration.
+iOS-native background sensor state and the redacted Live Activity payload use
+a separate excluded directory/file instead of
 `UserDefaults`. The upgrade purges an old raw Live Activity payload before
 loading native state; it migrates the target transactionally, and purges the
 target even on failure so a recoverable rescan is preferred to backup exposure.
@@ -27,9 +31,10 @@ Android configuration disables backup/device transfer and excludes app domains;
 final device verification remains release evidence. On iOS, the implementation
 requests `NSURLIsExcludedFromBackupKey`, reads the attribute back, and fails the
 restricted-store startup if it is not confirmed. Local tests exercise the
-storage behavior, but physical iOS backup/restore verification is still
-outstanding. These are checked-in implementation claims, not proof of platform
-or store enforcement.
+storage behavior. Physical app-container inspection on `Shroominic` confirmed
+the current restricted directory and files were backup-excluded in build 17 on
+2026-08-14; a full backup/restore rehearsal remains separate evidence. These are
+implementation and device-check claims, not proof of store enforcement.
 
 The dedicated file is JSON and is not encrypted by OpenGlucose itself. It
 relies on the application sandbox and operating-system at-rest protections;
@@ -90,10 +95,13 @@ Stable session IDs, storage keys, serials, device IDs, display names, model,
 firmware, and driver IDs are omitted. The filename is neutral. Native exports
 use one scoped temporary directory, delete their source file after the share
 sheet completes, and remove stale OpenGlucose/share-plugin cache copies at the
-next launch. Cleanup is best effort because platform share targets and operating
-systems may retain copies under their own terms. Export never starts
-automatically; the destination is user-controlled and its privacy and retention
-terms apply.
+next launch. Startup also removes the exact legacy
+`openhealth_<sensor-id>_<timestamp>.csv` regular-file shape that older builds
+wrote into the platform cache; near-matches, other extensions, directories,
+and unrelated cache entries are left untouched. Cleanup is best effort because
+platform share targets and operating systems may retain copies under their own
+terms. Export never starts automatically; the destination is user-controlled
+and its privacy and retention terms apply.
 
 These files are user-readable data exports, not recovery/restore backups.
 Recovery exports remain planned: they must be encrypted, versioned, integrity
@@ -102,9 +110,13 @@ checked, and restored only after an explicit preview.
 ## Logs, analytics, and incidents
 
 Policy requires production logs to omit health values, sensor identity, BLE
-payloads, notes, prompts/responses, API keys, and signing credentials. Current
-console and in-app diagnostic paths still require a complete production/device
-audit; do not treat them as redacted or safe to share. No hosted crash/analytics
+payloads, notes, prompts/responses, API keys, and signing credentials. Release
+startup makes its first BLE-plugin call a fail-closed request for
+`flutter_blue_plus` log level `none`, before storage initialization or any BLE
+operation. This suppresses the plugin's Dart and native runtime BLE logs; debug
+and profile builds retain local diagnostics. Other console and in-app
+diagnostic paths still require a complete production/device audit; do not treat
+them as redacted or safe to share. No hosted crash/analytics
 processor is approved by this baseline. Any such collection remains off until
 its fields, processor, retention, consent, and deletion path receive privacy
 review. Follow
