@@ -58,7 +58,7 @@ Custom cloud AI configuration is nested inside `AI & models` under an
 
 ## Durable sensor archive
 
-The first corrective tranche uses immutable, backup-excluded per-session
+The first corrective tranche uses durable, session-keyed, backup-excluded
 history snapshots plus an archive manifest. Its session identity combines
 driver, hardware storage key, and inferred/confirmed session start so repeated
 hardware keys cannot overwrite older sessions.
@@ -167,7 +167,7 @@ but never fills gaps in a selected recent window.
 
 ## Delivery order
 
-1. Sensor truth, immutable archive snapshots, window sufficiency, richer weekly
+1. Sensor truth, durable session-keyed archives, window sufficiency, richer weekly
    recap, full-page Settings, and sample dashboard.
 2. SQLite v2 archive/readings migration and archive management/export.
 3. HealthKit source-aware schema, bounded import, and sleep/workout overlays.
