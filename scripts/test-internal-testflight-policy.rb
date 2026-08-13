@@ -52,7 +52,7 @@ TesterClient = Struct.new(:ids_by_group) do
     group_id = path.split("/")[2]
     ids = ids_by_group.fetch(group_id)
     data = ids.map { |id| { "type" => "betaTesters", "id" => id } }
-    TesterResponses.new([TesterPage.new("data" => data)])
+    TesterResponses.new([TesterPage.new({ "data" => data })])
   end
 end
 
@@ -113,6 +113,27 @@ assert(
     external_tester_ids_sha256: external_tester_digest
   ).equal?(approved_external),
   "external group was not selected alongside the automatic internal group"
+)
+
+# App Store Connect omits hasAccessToAllBuilds for non-automatic external
+# groups; Fastlane 2.232.2 deserializes that omission as nil.
+omitted_automatic_access = approved_external.dup
+omitted_automatic_access.has_access_to_all_builds = nil
+Spaceship::ConnectAPI.client.test_flight_request_client.ids_by_group[
+  omitted_automatic_access.id
+] = external_tester_ids
+assert(
+  exact_external_group(
+    app: App.new([approved, omitted_automatic_access]),
+    group_name: "NS",
+    group_id: "approved-external-group",
+    internal_group_name: "team",
+    internal_group_id: "approved-group",
+    internal_tester_id: "approved-internal-tester",
+    external_tester_count: external_tester_ids.length.to_s,
+    external_tester_ids_sha256: external_tester_digest
+  ).equal?(omitted_automatic_access),
+  "omitted external automatic-access attribute must mean non-automatic"
 )
 
 assert_rejected("automatic external group") do

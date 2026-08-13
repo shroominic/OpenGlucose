@@ -295,23 +295,16 @@ TESTFLIGHT_MODE="${TESTFLIGHT_MODE:-external}"
 TESTFLIGHT_NOTIFY_ONLY="${TESTFLIGHT_NOTIFY_ONLY:-no}"
 [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
   fail "TESTFLIGHT_NOTIFY_ONLY must be yes or no"
-TESTFLIGHT_RECOVER_UPLOAD="${TESTFLIGHT_RECOVER_UPLOAD:-no}"
-[[ "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" == "no" ]] || \
-  fail "TESTFLIGHT_RECOVER_UPLOAD must be yes or no"
-[[ "$TESTFLIGHT_NOTIFY_ONLY" != "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" != "yes" ]] || \
-  fail "notify-only and upload-recovery modes are mutually exclusive"
 if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
     fail "internal TestFlight mode does not support notify-only runs"
-  [[ "$TESTFLIGHT_RECOVER_UPLOAD" == "no" ]] || \
-    fail "internal TestFlight mode does not support upload recovery"
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for internal mode}"
   : "${TESTFLIGHT_TESTER_ID:?missing immutable TESTFLIGHT_TESTER_ID for internal mode}"
   : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for internal mode}"
   : "${LIVE_ACTIVITY_APP_STORE_PROFILE_UUID:?missing LIVE_ACTIVITY_APP_STORE_PROFILE_UUID for internal mode}"
   : "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:?missing IOS_DISTRIBUTION_CERTIFICATE_SHA1 for internal mode}"
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
-elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]; then
+elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for notify-only mode}"
   : "${TESTFLIGHT_INTERNAL_GROUP:?missing TESTFLIGHT_INTERNAL_GROUP for notify-only mode}"
   : "${TESTFLIGHT_INTERNAL_GROUP_ID:?missing TESTFLIGHT_INTERNAL_GROUP_ID for notify-only mode}"
@@ -342,7 +335,7 @@ if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
   [[ "$TESTFLIGHT_GROUP_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
     fail "TESTFLIGHT_GROUP_ID is malformed"
 fi
-if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" && "$TESTFLIGHT_RECOVER_UPLOAD" == "no" ]]; then
+if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]]; then
   [[ "$APP_STORE_PROFILE_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
     fail "APP_STORE_PROFILE_UUID must be a canonical UUID"
   [[ "$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
@@ -419,6 +412,8 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   provenance_name=$(basename -- "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH")
   [[ "$provenance_name" != "." && "$provenance_name" != ".." ]] || \
     fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH must name a file"
+  [[ "$provenance_name" != *.tmp.* ]] || \
+    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH collides with the private temporary namespace"
   [[ -d "$provenance_parent_input" ]] || \
     fail "upload provenance parent directory does not exist"
   provenance_parent=$(cd "$provenance_parent_input" && pwd -P)
@@ -431,36 +426,23 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   [[ "$provenance_parent_mode" == "700" ]] || \
     fail "upload provenance parent must have mode 700 (found $provenance_parent_mode)"
   UPLOAD_PROVENANCE_PATH="$provenance_parent/$provenance_name"
-  UPLOAD_INTENT_PATH="$UPLOAD_PROVENANCE_PATH.pending"
   [[ "$UPLOAD_PROVENANCE_PATH" != "$NOTIFICATION_RECEIPT_PATH" ]] || \
     fail "upload provenance and notification receipt paths must be different"
-  upload_provenance_exists=no
-  upload_intent_exists=no
+  [[ "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_PROVENANCE_PATH".tmp.* ]] || \
+    fail "notification receipt collides with the upload temporary namespace"
+  [[ "$UPLOAD_PROVENANCE_PATH" != "$NOTIFICATION_RECEIPT_PATH".complete.* ]] || \
+    fail "upload provenance collides with the notification temporary namespace"
   if [[ -e "$UPLOAD_PROVENANCE_PATH" || -L "$UPLOAD_PROVENANCE_PATH" ]]; then
     [[ -f "$UPLOAD_PROVENANCE_PATH" && ! -L "$UPLOAD_PROVENANCE_PATH" ]] || \
       fail "upload provenance must be a regular non-symlink file"
     upload_provenance_mode=$(/usr/bin/stat -f '%Lp' "$UPLOAD_PROVENANCE_PATH")
     [[ "$upload_provenance_mode" == "400" ]] || \
       fail "upload provenance must have mode 400 (found $upload_provenance_mode)"
-    upload_provenance_exists=yes
-  fi
-  if [[ -e "$UPLOAD_INTENT_PATH" || -L "$UPLOAD_INTENT_PATH" ]]; then
-    [[ -f "$UPLOAD_INTENT_PATH" && ! -L "$UPLOAD_INTENT_PATH" ]] || \
-      fail "upload intent must be a regular non-symlink file"
-    upload_intent_mode=$(/usr/bin/stat -f '%Lp' "$UPLOAD_INTENT_PATH")
-    [[ "$upload_intent_mode" == "400" ]] || \
-      fail "upload intent must have mode 400 (found $upload_intent_mode)"
-    upload_intent_exists=yes
-  fi
-  if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
-    [[ "$upload_intent_exists" == yes && "$upload_provenance_exists" == yes ]] || \
-      fail "notify-only mode requires upload intent and finalized provenance"
-  elif [[ "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]; then
-    [[ "$upload_intent_exists" == yes && "$upload_provenance_exists" == no ]] || \
-      fail "upload recovery requires pending intent without finalized provenance"
+    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
+      fail "upload provenance already exists; use notify-only mode"
   else
-    [[ "$upload_intent_exists" == no && "$upload_provenance_exists" == no ]] || \
-      fail "new upload requires no existing intent or provenance"
+    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+      fail "notify-only mode requires immutable upload provenance"
   fi
 fi
 
@@ -597,19 +579,22 @@ if [[ "$TESTFLIGHT_MODE" == "external" && "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]]; 
     "bundle_id:$APP_BUNDLE_ID"
 fi
 
-if [[ "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]; then
-  echo "==> Recovering provenance for the exact already-uploaded build"
-  fastlane ios finalize_external_upload_provenance \
+if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+  echo "==> Resuming idempotent association for the finalized external build"
+  fastlane ios associate_external_build \
     "api_key_path:$credential_json" \
     "bundle_id:$APP_BUNDLE_ID" \
+    "group_name:$TESTFLIGHT_GROUP" \
+    "group_id:$approved_group_id" \
+    "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+    "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+    "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+    "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+    "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
     "version:$EXPECTED_MARKETING_VERSION" \
     "build_number:$EXPECTED_BUILD_NUMBER" \
     "source_commit:$head_commit" \
-    "upload_intent_path:$UPLOAD_INTENT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
-fi
-
-if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   echo "==> Verifying the exact build and sending the deferred tester notification"
   fastlane ios notify_external_build \
     "api_key_path:$credential_json" \
@@ -624,16 +609,11 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "version:$EXPECTED_MARKETING_VERSION" \
     "build_number:$EXPECTED_BUILD_NUMBER" \
     "source_commit:$head_commit" \
-    "upload_intent_path:$UPLOAD_INTENT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
     "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
   echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
   exit 0
 fi
-
-if [[ "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]; then
-  artifact_sha256=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV[0])).fetch("ipaSha256")' "$UPLOAD_INTENT_PATH")
-else
 
 echo "==> Restoring locked dependencies"
 flutter pub get --enforce-lockfile
@@ -766,18 +746,6 @@ verify_distribution_profile \
   "${LIVE_ACTIVITY_APP_STORE_PROFILE_UUID:-}" \
   "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:-}"
 
-if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
-  echo "==> Recording immutable intent before upload"
-  fastlane ios record_external_upload_intent \
-    "api_key_path:$credential_json" \
-    "bundle_id:$APP_BUNDLE_ID" \
-    "version:$EXPECTED_MARKETING_VERSION" \
-    "build_number:$EXPECTED_BUILD_NUMBER" \
-    "source_commit:$head_commit" \
-    "ipa_sha256:$artifact_sha256" \
-    "upload_intent_path:$UPLOAD_INTENT_PATH"
-fi
-
 extension_point=$(
   plist_value \
     "$live_activity_extension/Info.plist" \
@@ -825,8 +793,6 @@ fastlane pilot upload \
   --changelog "$TESTFLIGHT_CHANGELOG" \
   --wait_processing_interval 30
 
-fi
-
 if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   echo "==> Verifying the exact internal-only TestFlight audience"
   fastlane ios verify_internal_build \
@@ -842,17 +808,15 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   exit 0
 fi
 
-if [[ "$TESTFLIGHT_RECOVER_UPLOAD" == "no" ]]; then
-  echo "==> Finalizing provenance for the processed external build"
-  fastlane ios finalize_external_upload_provenance \
+echo "==> Recording immutable provenance for the processed external build"
+fastlane ios record_external_upload_provenance \
   "api_key_path:$credential_json" \
   "bundle_id:$APP_BUNDLE_ID" \
   "version:$EXPECTED_MARKETING_VERSION" \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
-  "upload_intent_path:$UPLOAD_INTENT_PATH" \
+  "ipa_sha256:$artifact_sha256" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
-fi
 
 echo "==> Associating the exact build with the approved immutable group ID"
 fastlane ios associate_external_build \
@@ -869,7 +833,6 @@ fastlane ios associate_external_build \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
   "ipa_sha256:$artifact_sha256" \
-  "upload_intent_path:$UPLOAD_INTENT_PATH" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
 
 echo "==> Verifying the exclusive audience and notifying eligible testers"
@@ -887,7 +850,6 @@ fastlane ios notify_external_build \
   "version:$EXPECTED_MARKETING_VERSION" \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
-  "upload_intent_path:$UPLOAD_INTENT_PATH" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
   "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
 

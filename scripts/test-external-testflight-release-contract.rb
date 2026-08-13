@@ -216,36 +216,22 @@ provenance_app = ProvenanceApp.new("app-resource-id")
 provenance_build = ProvenanceBuild.new("build-resource-id")
 source_commit = "a" * 40
 ipa_sha256 = "b" * 64
+expected = expected_upload_provenance(
+  app: provenance_app,
+  build: provenance_build,
+  bundle_id: "com.example.app",
+  version: "1.2.3",
+  build_number: "45",
+  source_commit: source_commit,
+  ipa_sha256: ipa_sha256
+)
 
 Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   File.chmod(0o700, directory)
   path = File.join(directory, "upload.json")
-  intent_path = "#{path}.pending"
-  intent = normalized_upload_identity(
-    app: provenance_app,
-    bundle_id: "com.example.app",
-    version: "1.2.3",
-    build_number: "45",
-    source_commit: source_commit,
-    ipa_sha256: ipa_sha256
-  ).merge(
-    "kind" => "testflightUploadIntent",
-    "recordedAtUtc" => Time.now.utc.iso8601
-  )
-  atomic_create_immutable_json(intent_path, intent, "Upload intent")
-  finalize_upload_provenance(
-    path: path,
-    intent_path: intent_path,
-    app: provenance_app,
-    build: provenance_build,
-    bundle_id: "com.example.app",
-    version: "1.2.3",
-    build_number: "45",
-    source_commit: source_commit
-  )
+  create_upload_provenance(path: path, expected: expected)
   receipt = require_upload_provenance(
     path: path,
-    intent_path: intent_path,
     app: provenance_app,
     build: provenance_build,
     bundle_id: "com.example.app",
@@ -261,11 +247,15 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   )
   assert(receipt["ipaSha256"] == ipa_sha256, "IPA digest must be recorded")
   assert((File.stat(path).mode & 0o777) == 0o400, "provenance must be immutable")
+  assert(
+    Dir.children(directory).sort == ["upload.json"],
+    "successful publication must clean its private temporary file"
+  )
+  original_bytes = File.binread(path)
 
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
       path: path,
-      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -277,7 +267,6 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
       path: path,
-      intent_path: intent_path,
       app: provenance_app,
       build: ProvenanceBuild.new("different-build-id"),
       bundle_id: "com.example.app",
@@ -289,7 +278,6 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
       path: path,
-      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -300,17 +288,40 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
     )
   end
   assert_user_error("already exists") do
-    finalize_upload_provenance(
-      path: path,
-      intent_path: intent_path,
-      app: provenance_app,
-      build: provenance_build,
-      bundle_id: "com.example.app",
-      version: "1.2.3",
-      build_number: "45",
-      source_commit: source_commit
-    )
+    create_upload_provenance(path: path, expected: expected)
   end
+  assert(
+    File.binread(path) == original_bytes,
+    "no-overwrite publication must preserve the existing receipt"
+  )
+  assert(
+    Dir.children(directory).grep(/\.tmp\./).empty?,
+    "failed no-overwrite publication must clean only its own temporary file"
+  )
+
+  collision_path = File.join(directory, "collision.json")
+  collision_suffix = "c" * 32
+  private_collision = "#{collision_path}.tmp.#{Process.pid}.#{collision_suffix}"
+  File.write(private_collision, "operator-owned collision\n")
+  original_hex = SecureRandom.method(:hex)
+  SecureRandom.define_singleton_method(:hex) { |_length| collision_suffix }
+  begin
+    assert_user_error("temporary-path collision") do
+      create_upload_provenance(path: collision_path, expected: expected)
+    end
+  ensure
+    SecureRandom.define_singleton_method(:hex) do |*arguments|
+      original_hex.call(*arguments)
+    end
+  end
+  assert(
+    !File.exist?(collision_path),
+    "a temporary collision must not publish final provenance"
+  )
+  assert(
+    File.read(private_collision) == "operator-owned collision\n",
+    "a temporary collision must not delete an inode it does not own"
+  )
 
   extra_field_path = File.join(directory, "extra-field.json")
   extra_field_receipt = receipt.merge("unreviewedField" => "must fail")
@@ -319,7 +330,6 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("unexpected schema") do
     require_upload_provenance(
       path: extra_field_path,
-      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -333,7 +343,6 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("must have mode 400") do
     require_upload_provenance(
       path: path,
-      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",

@@ -9,7 +9,7 @@ end
 
 internal_input_start = script.index('if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then')
 internal_input_end = script.index(
-  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]',
+  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]',
   internal_input_start
 )
 unless internal_input_start && internal_input_end
@@ -31,7 +31,7 @@ internal_inputs = script[internal_input_start...internal_input_end]
 end
 
 notify_input_start = script.index(
-  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]',
+  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]',
   internal_input_end
 )
 external_input_start = script.index("\nelse\n", notify_input_start)
@@ -66,14 +66,43 @@ external_inputs = script[external_input_start...external_input_end]
 end
 
 record_index = script.index(
-  'fastlane ios record_external_upload_intent'
+  'fastlane ios record_external_upload_provenance'
 )
 upload_index = script.index('fastlane pilot upload')
-finalize_index = script.index('fastlane ios finalize_external_upload_provenance')
-associate_index = script.index('fastlane ios associate_external_build')
-unless record_index && upload_index && finalize_index && associate_index &&
-       record_index < upload_index && finalize_index < associate_index
-  raise "TestFlight signing contract failed: intent/finalization order is unsafe"
+associate_index = script.rindex('fastlane ios associate_external_build')
+unless upload_index && record_index && associate_index &&
+       upload_index < record_index && record_index < associate_index
+  raise "TestFlight signing contract failed: successful upload must precede provenance and association"
+end
+
+notify_only_start = script.index(
+  'if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then',
+  script.index('echo "==> Approved $TESTFLIGHT_MODE group ID')
+)
+notify_only_end = script.index("\nfi\n", notify_only_start)
+unless notify_only_start && notify_only_end
+  raise "TestFlight signing contract failed: notify-only execution block is missing"
+end
+notify_only = script[notify_only_start...notify_only_end]
+resume_associate = notify_only.index('fastlane ios associate_external_build')
+resume_notify = notify_only.index('fastlane ios notify_external_build')
+unless resume_associate && resume_notify && resume_associate < resume_notify
+  raise "TestFlight signing contract failed: notify-only must associate before notifying"
+end
+%w[
+  version:$EXPECTED_MARKETING_VERSION
+  build_number:$EXPECTED_BUILD_NUMBER
+  source_commit:$head_commit
+  upload_provenance_path:$UPLOAD_PROVENANCE_PATH
+].each do |binding|
+  occurrences = notify_only.scan(%r{"#{Regexp.escape(binding)}"}).length
+  unless occurrences == 2
+    raise "TestFlight signing contract failed: notify-only association and notification must both bind #{binding}"
+  end
+end
+if notify_only.include?('fastlane pilot upload') ||
+   notify_only.include?('flutter build ipa')
+  raise "TestFlight signing contract failed: notify-only must not build or upload"
 end
 require_match(
   script,
