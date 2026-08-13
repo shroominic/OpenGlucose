@@ -94,4 +94,10 @@ require_match(
   "the exact Live Activity bundle ID must map to LIVE_ACTIVITY_APP_STORE_PROFILE_UUID"
 )
 
+require_match(
+  script,
+  /codesign\s+-d\s+--extract-certificates="\$certificate_prefix"\s+"\$bundle"/,
+  "the signed leaf certificate must use codesign's attached-value extraction syntax"
+)
+
 puts "Internal TestFlight manual-signing contract checks passed."
