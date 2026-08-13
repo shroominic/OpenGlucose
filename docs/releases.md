@@ -71,6 +71,17 @@ signed application/team entitlements, and embedded App Store provisioning
 profiles. It also rejects any IPA containing `Runner.debug.dylib`, preventing
 the untethered debug-engine crash seen in earlier test packages.
 
+The iOS app intentionally omits `ITSAppUsesNonExemptEncryption`; the bundle
+must not self-declare an exemption that has not been reviewed. Before approving
+an external TestFlight build, the Account Holder must answer Apple's export-
+compliance questions in App Store Connect from a current review of the
+cryptography shipped by the app and its dependencies. The release owner must
+record the export-compliance determination, responder, date, supporting
+evidence, and any classification or authorization identifiers in the private
+release record. An unresolved or unrecorded determination blocks external beta
+approval and tester notification. Do not add the Info.plist key merely to
+suppress the classification step.
+
 Internal mode requires `TESTFLIGHT_MODE=internal`, an immutable
 `TESTFLIGHT_GROUP_ID`, and `DISTRIBUTE_INTERNAL=yes`. It requires exactly one
 automatic internal group with the approved name and ID, exactly one tester in

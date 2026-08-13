@@ -10,7 +10,12 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- External TestFlight builds no longer self-declare an unreviewed export-
+  compliance exemption. The Account Holder must explicitly classify the build,
+  and the release owner must record that determination before external beta
+  approval and tester notification.
 
 ## [0.1.0] - 2026-08-13
 
