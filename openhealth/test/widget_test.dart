@@ -11,7 +11,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  testWidgets('developer tab exposes the scenario picker', (tester) async {
+  testWidgets('advanced settings route exposes the scenario picker', (
+    tester,
+  ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       // This test exercises the connected dashboard, not first-run setup.
       'openHealth.onboarding.completed': true,
@@ -42,22 +44,70 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     expect(controller.mockScenario, MockScenario.activeNormal);
 
-    // Open settings -> Developer tab.
+    // Open settings -> Advanced route.
     await tester.tap(find.byIcon(Icons.tune_rounded));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.tap(find.text('Developer'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey<String>('settingsOverview')),
+      findsOneWidget,
+    );
+    expect(find.byType(TabBar), findsNothing);
+    expect(find.byType(BottomSheet), findsNothing);
+    await tester.drag(
+      find.byType(CustomScrollView),
+      const Offset(0, -700),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Advanced'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Advanced'));
+    await tester.pumpAndSettle();
 
     // The scenario picker is present (only shown for the mock driver).
     final picker = find.byKey(const ValueKey<String>('mockScenarioPicker'));
     expect(picker, findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('advancedCalibrationScale')),
+      findsOneWidget,
+    );
 
-    // Dismiss the settings sheet, then unmount the tree so the dashboard's
-    // periodic hero-card ticker is disposed before teardown.
+    // Return to Settings, then prove it reacts to a sensor change that occurs
+    // inside a nested destination without requiring the route to be reopened.
     Navigator.of(tester.element(picker)).pop();
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byType(CustomScrollView),
+      const Offset(0, 900),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Glucose & display'));
+    await tester.tap(find.text('Glucose & display'));
+    await tester.pumpAndSettle();
+    expect(find.text('Calibration scale'), findsNothing);
+    expect(find.text('Crop first N samples'), findsNothing);
+    expect(find.text('Clear cache'), findsNothing);
+    Navigator.of(tester.element(find.text('Display settings'))).pop();
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byType(CustomScrollView),
+      const Offset(0, 900),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+    await tester.runAsync(controller.disconnect);
+    await tester.pumpAndSettle();
+    expect(find.text('This sensor is no longer active'), findsOneWidget);
+    await tester.tap(find.text('Back to Settings'));
+    await tester.pumpAndSettle();
+    expect(controller.snapshot, isNull);
+    expect(find.text('No active sensor'), findsOneWidget);
+    expect(find.text('Connect a sensor'), findsOneWidget);
+
+    // Unmount the tree so the dashboard's periodic hero-card ticker is
+    // disposed before teardown.
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
   });

@@ -15,10 +15,12 @@ class WeeklyRecapScreen extends StatelessWidget {
     required this.readings,
     required this.preferences,
     this.now,
+    this.isSampleData = false,
   });
 
   final List<CgmReading> readings;
   final DisplayPreferences preferences;
+  final bool isSampleData;
 
   /// Injectable clock for deterministic tests; defaults to [DateTime.now].
   final DateTime? now;
@@ -51,47 +53,63 @@ class WeeklyRecapScreen extends StatelessWidget {
       now: now,
       bounds: preferences.targetRange,
     );
+    final coverage = recap.thisWeekCoverage;
+    final previousCoverage = recap.lastWeekCoverage;
     final dateRange =
         '${DateFormat('MMM d').format(recap.weekStart)} – '
         '${DateFormat('MMM d').format(recap.days.last.date)}';
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Weekly recap'),
+        title: Text(isSampleData ? 'Sample weekly recap' : 'Weekly recap'),
         centerTitle: false,
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+      body: Column(
         children: <Widget>[
-          Text(
-            dateRange,
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w800,
-              color: _accent,
+          if (isSampleData) const _SampleDataBanner(),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+              children: <Widget>[
+                Text(
+                  dateRange,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: _accent,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Patterns and observations from your last 7 days — for '
+                  'self-experimentation, not medical advice.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: _muted),
+                ),
+                const SizedBox(height: 16),
+                if (!coverage.isSufficient)
+                  _EmptyState(theme: theme, coverage: coverage)
+                else ...<Widget>[
+                  _CoverageCard(coverage: coverage),
+                  const SizedBox(height: 14),
+                  _OverviewCard(recap: recap, screen: this, theme: theme),
+                  const SizedBox(height: 14),
+                  _TrendCard(
+                    recap: recap,
+                    screen: this,
+                    theme: theme,
+                    previousCoverage: previousCoverage,
+                  ),
+                  const SizedBox(height: 14),
+                  _BestWorstCard(recap: recap, screen: this, theme: theme),
+                  const SizedBox(height: 14),
+                  _SpikesCard(recap: recap, screen: this, theme: theme),
+                  const SizedBox(height: 14),
+                  _DayPatternCard(recap: recap, screen: this, theme: theme),
+                  const SizedBox(height: 14),
+                ],
+                _DisclaimerCard(theme: theme),
+              ],
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            'Patterns and observations from your last 7 days — for '
-            'self-experimentation, not medical advice.',
-            style: theme.textTheme.bodySmall?.copyWith(color: _muted),
-          ),
-          const SizedBox(height: 16),
-          if (!recap.hasData)
-            _EmptyState(theme: theme)
-          else ...<Widget>[
-            _OverviewCard(recap: recap, screen: this, theme: theme),
-            const SizedBox(height: 14),
-            _TrendCard(recap: recap, screen: this, theme: theme),
-            const SizedBox(height: 14),
-            _BestWorstCard(recap: recap, screen: this, theme: theme),
-            const SizedBox(height: 14),
-            _SpikesCard(recap: recap, screen: this, theme: theme),
-            const SizedBox(height: 14),
-            _DayPatternCard(recap: recap, screen: this, theme: theme),
-            const SizedBox(height: 14),
-          ],
-          _DisclaimerCard(theme: theme),
         ],
       ),
     );
@@ -103,6 +121,42 @@ class WeeklyRecapScreen extends StatelessWidget {
     if (delta == 0) return _muted;
     final good = higherIsBetter ? delta > 0 : delta < 0;
     return good ? _up : _down;
+  }
+}
+
+class _SampleDataBanner extends StatelessWidget {
+  const _SampleDataBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Material(
+      key: ValueKey<String>('sampleWeeklyRecapBanner'),
+      color: Color(0xFFFFD166),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Icon(Icons.visibility_outlined, size: 19),
+              SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'SAMPLE DATA — NOT FROM A SENSOR',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF4A2B00),
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.35,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -179,9 +233,23 @@ class _OverviewCard extends StatelessWidget {
                 '${screen._formatGlucose(stats.bounds.highMgdl)}.',
           ),
           _StatRow(
+            label: 'Below / above range',
+            value:
+                '${stats.timeBelowRangePercent.round()}% / '
+                '${stats.timeAboveRangePercent.round()}%',
+            explanation: 'Share below your low mark and above your high mark.',
+          ),
+          _StatRow(
             label: 'Average',
             value: screen._formatGlucose(stats.averageMgdl!),
             explanation: 'Mean of every reading this week.',
+          ),
+          _StatRow(
+            label: 'Lowest / highest',
+            value:
+                '${screen._formatGlucose(stats.minMgdl!, withUnit: false)} / '
+                '${screen._formatGlucose(stats.maxMgdl!)}',
+            explanation: 'Observed range inside this seven-day window.',
           ),
           _StatRow(
             label: 'Variability (CV)',
@@ -205,26 +273,67 @@ class _OverviewCard extends StatelessWidget {
   }
 }
 
+class _CoverageCard extends StatelessWidget {
+  const _CoverageCard({required this.coverage});
+
+  final AnalyticsCoverage coverage;
+
+  @override
+  Widget build(BuildContext context) {
+    final hours = coverage.observedSpan.inHours;
+    final spanText = hours >= 24
+        ? '${(hours / 24).toStringAsFixed(1)} days'
+        : '$hours hours';
+    return _SectionCard(
+      title: 'Data coverage',
+      subtitle: 'How much information this recap is based on.',
+      child: Column(
+        children: <Widget>[
+          _StatRow(
+            label: 'Readings',
+            value: '${coverage.readingCount}',
+            explanation: 'Timestamped readings inside this seven-day window.',
+          ),
+          _StatRow(
+            label: 'Days represented',
+            value: '${coverage.activeDays} of 7',
+            explanation: 'Calendar days containing at least one reading.',
+          ),
+          _StatRow(
+            label: 'Observed span',
+            value: spanText,
+            explanation: 'Time between the first and last included reading.',
+            isLast: true,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TrendCard extends StatelessWidget {
   const _TrendCard({
     required this.recap,
     required this.screen,
     required this.theme,
+    required this.previousCoverage,
   });
 
   final WeeklyRecap recap;
   final WeeklyRecapScreen screen;
   final ThemeData theme;
+  final AnalyticsCoverage previousCoverage;
 
   @override
   Widget build(BuildContext context) {
-    if (!recap.lastWeek.hasData) {
+    if (!previousCoverage.isSufficient) {
       return _SectionCard(
         title: 'Versus last week',
         subtitle: 'Week-over-week change.',
         child: Text(
-          'No readings from the previous week yet — comparisons appear once '
-          'you have two weeks of history.',
+          'The previous week has ${previousCoverage.readingCount} readings '
+          'across ${previousCoverage.activeDays} days. Comparisons appear only '
+          'when both weeks have enough coverage.',
           style: theme.textTheme.bodyMedium?.copyWith(
             color: WeeklyRecapScreen._muted,
           ),
@@ -344,9 +453,9 @@ class _SpikesCard extends StatelessWidget {
         children: <Widget>[
           for (var i = 0; i < recap.topSpikes.length; i++)
             _StatRow(
-              label: DateFormat('EEE, MMM d · HH:mm').format(
-                recap.topSpikes[i].at.toLocal(),
-              ),
+              label: DateFormat(
+                'EEE, MMM d · HH:mm',
+              ).format(recap.topSpikes[i].at.toLocal()),
               value: screen._formatGlucose(recap.topSpikes[i].peakMgdl),
               explanation:
                   'Rose ${screen._formatGlucose(recap.topSpikes[i].amplitudeMgdl)} '
@@ -607,9 +716,10 @@ class _DeltaRow extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.theme});
+  const _EmptyState({required this.theme, required this.coverage});
 
   final ThemeData theme;
+  final AnalyticsCoverage coverage;
 
   @override
   Widget build(BuildContext context) {
@@ -633,8 +743,12 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              'Once you have a few days of readings this week, your recap '
-              'will show time-in-range, trends, your steadiest day and more.',
+              'This seven-day window currently has ${coverage.readingCount} '
+              'readings across ${coverage.activeDays} '
+              '${coverage.activeDays == 1 ? 'day' : 'days'}. Patterns appear '
+              'after at least ${coverage.minimumReadings} readings across '
+              '${coverage.minimumActiveDays} days, so sparse history is not '
+              'presented as a reliable trend.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: WeeklyRecapScreen._muted,
               ),

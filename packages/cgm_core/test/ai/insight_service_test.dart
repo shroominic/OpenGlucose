@@ -106,6 +106,7 @@ void main() {
       expect(prompt, contains('Average glucose'));
       expect(prompt, contains('Time in 70'));
       expect(prompt, contains('No medical advice'));
+      expect(prompt, isNot(contains('Estimated A1c')));
     });
 
     test('system message carries the wellness guardrail', () {
@@ -125,7 +126,7 @@ void main() {
   group('InsightService.generateSummaryInsight', () {
     late InMemoryHealthRepository repo;
     final start = DateTime.utc(2026, 6, 1, 8);
-    final end = start.add(const Duration(hours: 2));
+    final end = start.add(const Duration(hours: 24));
 
     setUp(() async {
       repo = InMemoryHealthRepository();
@@ -142,7 +143,7 @@ void main() {
       );
 
       final insight = await service.generateSummaryInsight(
-        readings: _synthReadings(start, 24),
+        readings: _synthReadings(start, 145),
         windowStart: start,
         windowEnd: end,
       );
@@ -182,7 +183,7 @@ void main() {
       final provider = _FakeProvider();
       final service = InsightService(repository: repo, provider: provider);
       await service.generateSummaryInsight(
-        readings: _synthReadings(start, 24),
+        readings: _synthReadings(start, 145),
         windowStart: start,
         windowEnd: end,
       );
@@ -196,7 +197,7 @@ void main() {
       final provider = _FakeProvider(enabled: false);
       final service = InsightService(repository: repo, provider: provider);
       final result = await service.generateSummaryInsight(
-        readings: _synthReadings(start, 24),
+        readings: _synthReadings(start, 145),
         windowStart: start,
         windowEnd: end,
       );
@@ -219,6 +220,24 @@ void main() {
       expect(await repo.queryInsights(), isEmpty);
     });
 
+    test(
+      'sparse nonempty window throws without calling the provider',
+      () async {
+        final provider = _FakeProvider();
+        final service = InsightService(repository: repo, provider: provider);
+        await expectLater(
+          service.generateSummaryInsight(
+            readings: _synthReadings(start, 3),
+            windowStart: start,
+            windowEnd: end,
+          ),
+          throwsA(isA<AiGenerationException>()),
+        );
+        expect(provider.calls, 0);
+        expect(await repo.queryInsights(), isEmpty);
+      },
+    );
+
     test('provider error propagates and nothing is persisted', () async {
       final provider = _FakeProvider(
         error: const AiGenerationException('network failure'),
@@ -226,7 +245,7 @@ void main() {
       final service = InsightService(repository: repo, provider: provider);
       await expectLater(
         service.generateSummaryInsight(
-          readings: _synthReadings(start, 24),
+          readings: _synthReadings(start, 145),
           windowStart: start,
           windowEnd: end,
         ),

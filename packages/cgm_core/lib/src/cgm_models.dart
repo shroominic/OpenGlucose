@@ -2,6 +2,16 @@ import 'dart:convert';
 
 import 'timeline.dart';
 
+/// Ephemeral connection metadata used to distinguish a user-confirmed new
+/// sensor activation from a background restore or reconnect.
+///
+/// Drivers must treat a value of `false` as a hard prohibition on starting a
+/// stopped or uninitialised sensor session. Callers should attach this only to
+/// the in-memory sensor passed to a driver connection, never persist it with the
+/// discovered sensor record.
+const cgmAllowSessionActivationMetadataKey =
+    'cgm.connect.allowSessionActivation';
+
 enum CgmSyncStage {
   disconnected,
   scanning,

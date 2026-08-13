@@ -281,6 +281,125 @@ void main() {
     },
   );
 
+  test(
+    'explicit connection may activate an uninitialised stopped sensor',
+    () async {
+      final transport = _FakeBleTransport(uninitialized: true);
+      final driver = _activationTestDriver(transport);
+      final session =
+          await driver.connect(
+                _activationTestSensor(allowSessionActivation: true),
+              )
+              as AidexSession;
+      final emitted = <CgmSessionSnapshot>[];
+      final subscription = session.snapshots.listen(emitted.add);
+
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      expect(
+        emitted.where(
+          (snapshot) =>
+              snapshot.health.expired || snapshot.sessionInfo.sessionStopped,
+        ),
+        isEmpty,
+        reason:
+            'An activation-ready all-zero sensor must never look expired '
+            'while its explicit start exchange is still in progress.',
+      );
+      expect(transport.lastConnection.didRequestStartSession, isTrue);
+      expect(transport.lastConnection.didWriteSessionStart, isTrue);
+
+      await subscription.cancel();
+      await session.disconnect();
+    },
+  );
+
+  test(
+    'restored connection never activates an uninitialised stopped sensor',
+    () async {
+      final transport = _FakeBleTransport(uninitialized: true);
+      final driver = _activationTestDriver(transport);
+      final session =
+          await driver.connect(
+                _activationTestSensor(allowSessionActivation: false),
+              )
+              as AidexSession;
+
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      expect(session.currentSnapshot.sessionInfo.sessionStopped, isFalse);
+      expect(session.currentSnapshot.health.expired, isFalse);
+      expect(session.currentSnapshot.metadata['activationRequired'], 'true');
+      expect(transport.lastConnection.didRequestStartSession, isFalse);
+      expect(transport.lastConnection.didWriteSessionStart, isFalse);
+
+      await session.disconnect();
+    },
+  );
+
+  test('activation fails closed without explicit intent metadata', () async {
+    final transport = _FakeBleTransport(uninitialized: true);
+    final session =
+        await _activationTestDriver(transport).connect(_activationTestSensor())
+            as AidexSession;
+
+    await session.initialize();
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(session.currentSnapshot.health.expired, isFalse);
+    expect(session.currentSnapshot.metadata['activationRequired'], 'true');
+    expect(transport.lastConnection.didRequestStartSession, isFalse);
+    expect(transport.lastConnection.didWriteSessionStart, isFalse);
+    await session.disconnect();
+  });
+
+  test('malformed session start can never trigger activation', () async {
+    final transport = _FakeBleTransport(
+      uninitialized: true,
+      malformedSessionStart: true,
+    );
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+
+    await session.initialize();
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(transport.lastConnection.didRequestStartSession, isFalse);
+    expect(transport.lastConnection.didWriteSessionStart, isFalse);
+    await session.disconnect();
+  });
+
+  test(
+    'ended prior session is never restarted even with explicit activation',
+    () async {
+      final transport = _FakeBleTransport(
+        initialSessionStart: DateTime.parse('2026-03-20T04:28:10Z'),
+        initialSessionStopped: true,
+      );
+      final driver = _activationTestDriver(transport);
+      final session =
+          await driver.connect(
+                _activationTestSensor(allowSessionActivation: true),
+              )
+              as AidexSession;
+
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      expect(session.currentSnapshot.sessionInfo.sessionStopped, isTrue);
+      expect(session.currentSnapshot.health.expired, isTrue);
+      expect(transport.lastConnection.didRequestStartSession, isFalse);
+      expect(transport.lastConnection.didWriteSessionStart, isFalse);
+
+      await session.disconnect();
+    },
+  );
+
   test('session retries once after clearing a stale bond', () async {
     final transport = _FakeBleTransport(failDiscoverServicesOnce: true);
     final driver = AidexSensorDriver(
@@ -321,14 +440,59 @@ void main() {
   });
 }
 
+AidexSensorDriver _activationTestDriver(_FakeBleTransport transport) {
+  return AidexSensorDriver(
+    transport,
+    clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+    timingProfile: const AidexTimingProfile(
+      gattGap: Duration.zero,
+      postStartSession: Duration.zero,
+      postSessionStartWrite: Duration.zero,
+      vendorPairTimeout: Duration(seconds: 1),
+      vendorCommandTimeout: Duration(seconds: 1),
+    ),
+  );
+}
+
+DiscoveredSensor _activationTestSensor({bool? allowSessionActivation}) {
+  return DiscoveredSensor(
+    driverId: 'aidex',
+    deviceId: 'AA:BB:CC:DD:EE:FF',
+    displayName: 'AiDEX-2222293Q2E',
+    storageKey: 'serial:2222293Q2E',
+    rssi: -40,
+    capabilities: const CgmCapabilities(
+      supportsDirectBle: true,
+      supportsVendorPairing: true,
+      supportsHistory: true,
+      supportsDiagnostics: true,
+      supportsCalibration: true,
+      supportsAutoUpdateControl: true,
+    ),
+    metadata: <String, String>{
+      'serial': '2222293Q2E',
+      if (allowSessionActivation != null)
+        cgmAllowSessionActivationMetadataKey: allowSessionActivation.toString(),
+    },
+  );
+}
+
 class _FakeBleTransport implements BleTransport {
   _FakeBleTransport({
     this.failDiscoverServicesOnce = false,
     this.autoUpdateEnabled = true,
+    this.initialSessionStart,
+    this.initialSessionStopped,
+    this.uninitialized = false,
+    this.malformedSessionStart = false,
   });
 
   final bool failDiscoverServicesOnce;
   final bool autoUpdateEnabled;
+  final DateTime? initialSessionStart;
+  final bool? initialSessionStopped;
+  final bool uninitialized;
+  final bool malformedSessionStart;
   final List<_FakeBleConnection> connections = <_FakeBleConnection>[];
   late _FakeBleConnection lastConnection;
 
@@ -341,6 +505,10 @@ class _FakeBleTransport implements BleTransport {
       deviceId,
       failDiscoverServices: failDiscoverServicesOnce && connections.isEmpty,
       autoUpdateEnabled: autoUpdateEnabled,
+      initialSessionStart: initialSessionStart,
+      initialSessionStopped: initialSessionStopped,
+      uninitialized: uninitialized,
+      malformedSessionStart: malformedSessionStart,
     );
     connections.add(lastConnection);
     return lastConnection;
@@ -387,6 +555,10 @@ class _FakeBleConnection implements BleConnection {
     this.deviceId, {
     bool failDiscoverServices = false,
     bool autoUpdateEnabled = true,
+    DateTime? initialSessionStart,
+    bool? initialSessionStopped,
+    bool uninitialized = false,
+    bool malformedSessionStart = false,
   }) : _failDiscoverServices = failDiscoverServices,
        _autoUpdateEnabled = autoUpdateEnabled {
     _services = <BleService>[
@@ -488,8 +660,21 @@ class _FakeBleConnection implements BleConnection {
     ]);
     _pairResponse = aesCfb128Encrypt(pairPlaintext, _rawSeed, _serialIv);
 
-    final zeroStart = Uint8List(9);
-    final zeroStartCrc = crc16CcittFalse(zeroStart);
+    final effectiveInitialStart =
+        initialSessionStart ??
+        (uninitialized ? null : DateTime.parse('2026-04-02T03:27:10Z'));
+    final initialStart = effectiveInitialStart == null
+        ? () {
+            final zeroStart = Uint8List(9);
+            final zeroStartCrc = crc16CcittFalse(zeroStart);
+            return Uint8List.fromList(<int>[
+              ...zeroStart,
+              zeroStartCrc & 0xFF,
+              (zeroStartCrc >> 8) & 0xFF,
+            ]);
+          }()
+        : buildAidexSessionStartPayload(effectiveInitialStart);
+    final initialElapsedMinute = effectiveInitialStart == null ? 0 : 61;
     _reads[AidexUuids.manufacturerName] = Uint8List.fromList(
       'Microtech Medical'.codeUnits,
     );
@@ -499,12 +684,14 @@ class _FakeBleConnection implements BleConnection {
     );
     _reads[AidexUuids.softwareRevision] = Uint8List.fromList('1.8.1'.codeUnits);
     _reads[AidexUuids.feature] = bytesFromHex('419101590c2b');
-    _reads[AidexUuids.status] = _statusPayload(0);
-    _reads[AidexUuids.sessionStart] = Uint8List.fromList(<int>[
-      ...zeroStart,
-      zeroStartCrc & 0xFF,
-      (zeroStartCrc >> 8) & 0xFF,
-    ]);
+    _reads[AidexUuids.status] = _statusPayload(
+      initialElapsedMinute,
+      sessionStopped: initialSessionStopped,
+    );
+    _reads[AidexUuids.sessionStart] = initialStart;
+    if (malformedSessionStart) {
+      _reads[AidexUuids.sessionStart] = Uint8List.fromList(<int>[0x01, 0x02]);
+    }
     _reads[AidexUuids.sessionRunTime] = bytesFromHex('6801ad8f');
     _reads[AidexUuids.f002] = _pairResponse;
     _reads[AidexUuids.f005] = Uint8List.fromList(<int>[0x00]);
@@ -536,6 +723,8 @@ class _FakeBleConnection implements BleConnection {
   bool didClearBondViaBms = false;
   bool didRemoveBond = false;
   bool didSetAutoUpdate = false;
+  bool didRequestStartSession = false;
+  bool didWriteSessionStart = false;
   final List<int> requestedHistoryIndices = <int>[];
   final List<String> operations = <String>[];
 
@@ -631,6 +820,7 @@ class _FakeBleConnection implements BleConnection {
     if (uuid == AidexUuids.specificOps) {
       final opcode = value.first;
       if (opcode == 0x1A) {
+        didRequestStartSession = true;
         _reads[AidexUuids.sessionStart] = buildAidexSessionStartPayload(
           DateTime.parse('2026-04-02T04:28:10Z'),
         );
@@ -659,6 +849,12 @@ class _FakeBleConnection implements BleConnection {
         });
         return;
       }
+    }
+
+    if (uuid == AidexUuids.sessionStart) {
+      didWriteSessionStart = true;
+      _reads[AidexUuids.sessionStart] = Uint8List.fromList(value);
+      return;
     }
 
     if (uuid != AidexUuids.f002) {
@@ -776,11 +972,11 @@ class _FakeBleConnection implements BleConnection {
     ]);
   }
 
-  Uint8List _statusPayload(int minute) {
+  Uint8List _statusPayload(int minute, {bool? sessionStopped}) {
     final body = <int>[
       minute & 0xFF,
       (minute >> 8) & 0xFF,
-      minute == 0 ? 0x01 : 0x00,
+      (sessionStopped ?? minute == 0) ? 0x01 : 0x00,
       0x02,
       0x00,
     ];

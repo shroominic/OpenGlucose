@@ -1,6 +1,10 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Minimal key/value store for restricted sensor identity and glucose history.
+///
+/// Implementations may store different key families independently. Callers
+/// must therefore treat a completed mutation as the durability boundary and
+/// must not depend on unrelated keys being rewritten in the same transaction.
 abstract interface class HealthStateStore {
   Future<void> initialize();
 
@@ -13,8 +17,8 @@ abstract interface class HealthStateStore {
 
 /// Preference-backed implementation for web and deterministic tests.
 ///
-/// Native production builds use the backup-excluded file implementation
-/// selected by `createHealthStateStore`.
+/// Native production builds use the backup-excluded, per-history-blob file
+/// implementation selected by `createHealthStateStore`.
 class PreferencesHealthStateStore implements HealthStateStore {
   PreferencesHealthStateStore(this._preferences);
 

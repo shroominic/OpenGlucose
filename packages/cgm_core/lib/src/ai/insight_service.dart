@@ -1,5 +1,6 @@
 import '../ai_insight.dart';
 import '../cgm_models.dart';
+import '../glucose_analytics.dart';
 import '../health_event.dart';
 import '../health_repository.dart';
 import 'ai_disclaimer.dart';
@@ -76,7 +77,18 @@ class InsightService {
       unit: unit,
     );
 
-    if (!summary.hasData) {
+    final windowDuration = windowEnd.difference(windowStart);
+    final coverageTimeframe = windowDuration <= const Duration(days: 1)
+        ? AnalyticsTimeframe.last24h
+        : windowDuration <= const Duration(days: 7)
+        ? AnalyticsTimeframe.last7d
+        : AnalyticsTimeframe.last14d;
+    final coverage = GlucoseAnalytics.assessCoverage(
+      windowReadings,
+      coverageTimeframe,
+      now: windowEnd,
+    );
+    if (!summary.hasData || !coverage.isSufficient) {
       throw const AiGenerationException(
         'Not enough glucose data in this window to generate an insight.',
       );
@@ -139,10 +151,6 @@ class InsightService {
         'Time in 70–180 mg/dL range: ${fmt(summary.timeInRangePercent, digits: 1)}% '
         '(below ${fmt(summary.timeBelowRangePercent, digits: 1)}%, '
         'above ${fmt(summary.timeAboveRangePercent, digits: 1)}%)',
-      )
-      ..writeln(
-        'Estimated A1c (context only, not a lab value): '
-        '${fmt(summary.estimatedA1c, digits: 1)}%',
       )
       ..writeln(
         'Logged events: ${summary.mealCount} meals, '

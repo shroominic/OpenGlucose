@@ -14,10 +14,12 @@ class MetricsSection extends StatefulWidget {
     super.key,
     required this.readings,
     required this.preferences,
+    this.now,
   });
 
   final List<CgmReading> readings;
   final DisplayPreferences preferences;
+  final DateTime? now;
 
   @override
   State<MetricsSection> createState() => _MetricsSectionState();
@@ -41,6 +43,12 @@ class _MetricsSectionState extends State<MetricsSection> {
       widget.readings,
       timeframe: _timeframe,
       bounds: widget.preferences.targetRange,
+      now: widget.now,
+    );
+    final coverage = GlucoseAnalytics.assessCoverage(
+      widget.readings,
+      _timeframe,
+      now: widget.now,
     );
 
     return Card(
@@ -71,11 +79,8 @@ class _MetricsSectionState extends State<MetricsSection> {
               style: theme.textTheme.bodySmall?.copyWith(color: _muted),
             ),
             const SizedBox(height: 14),
-            if (!stats.hasData)
-              Text(
-                'Not enough readings in this window yet.',
-                style: theme.textTheme.bodyMedium?.copyWith(color: _muted),
-              )
+            if (!coverage.isSufficient)
+              _InsufficientCoverage(coverage: coverage)
             else
               Column(
                 children: <Widget>[
@@ -111,13 +116,15 @@ class _MetricsSectionState extends State<MetricsSection> {
                         '(SD ${stats.standardDeviationMgdl == null ? 'unavailable' : _formatGlucose(stats.standardDeviationMgdl!)}). '
                         'Lower looks steadier.',
                   ),
-                  _MetricRow(
-                    label: 'Estimated GMI',
-                    value: '~${stats.estimatedGmiPercent!.toStringAsFixed(1)}%',
-                    explanation:
-                        'A rough indicator derived from your average. Not a '
-                        'lab result.',
-                  ),
+                  if (_timeframe == AnalyticsTimeframe.last14d)
+                    _MetricRow(
+                      label: 'Estimated GMI',
+                      value:
+                          '~${stats.estimatedGmiPercent!.toStringAsFixed(1)}%',
+                      explanation:
+                          'A rough indicator derived from 14-day average '
+                          'glucose. Not a lab result.',
+                    ),
                   _MetricRow(
                     label: 'Spikes',
                     value: '${stats.spikeCount}',
@@ -130,6 +137,50 @@ class _MetricsSectionState extends State<MetricsSection> {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _InsufficientCoverage extends StatelessWidget {
+  const _InsufficientCoverage({required this.coverage});
+
+  final AnalyticsCoverage coverage;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const ValueKey<String>('patternsInsufficientData'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F5F4),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Icon(
+            Icons.hourglass_empty_rounded,
+            size: 20,
+            color: _MetricsSectionState._muted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Not enough readings in this ${coverage.timeframe.label} '
+              'window yet. ${coverage.readingCount} readings across '
+              '${coverage.activeDays} ${coverage.activeDays == 1 ? 'day' : 'days'}; '
+              'patterns appear after at least ${coverage.minimumReadings} '
+              'readings across ${coverage.minimumActiveDays} '
+              '${coverage.minimumActiveDays == 1 ? 'day' : 'days'}.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: _MetricsSectionState._muted,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
