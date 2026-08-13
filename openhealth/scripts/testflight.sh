@@ -143,7 +143,7 @@ verify_signed_bundle() {
     fail "$label application-identifier entitlement is $application_identifier"
 
   if [[ -n "$certificate_prefix" ]]; then
-    codesign -d --extract-certificates "$certificate_prefix" "$bundle" \
+    codesign -d --extract-certificates="$certificate_prefix" "$bundle" \
       >/dev/null 2>&1 || fail "could not extract $label signing certificate"
     [[ -f "${certificate_prefix}0" ]] || \
       fail "$label has no leaf signing certificate"
