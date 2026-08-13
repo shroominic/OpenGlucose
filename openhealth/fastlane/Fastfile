@@ -328,6 +328,177 @@ def require_no_individual_testers(build)
   ) unless count.zero?
 end
 
+def require_external_beta_review_metadata(app:)
+  localizations = app.get_beta_app_localizations
+  UI.user_error!("External beta review has no app localization") if
+    localizations.empty?
+
+  locale_keys = localizations.map { |localization| localization.locale.to_s.strip }
+  UI.user_error!("External beta review localization has no locale") if
+    locale_keys.any?(&:empty?)
+  UI.user_error!("External beta review localizations contain duplicates") unless
+    locale_keys.uniq.length == locale_keys.length
+  localizations.each do |localization|
+    UI.user_error!("External beta review description is missing") if
+      localization.description.to_s.strip.empty?
+    UI.user_error!("External beta review feedback email is missing") if
+      localization.feedback_email.to_s.strip.empty?
+  end
+
+  responses = Spaceship::ConnectAPI.get_beta_app_review_detail(
+    filter: { app: app.id },
+    limit: 200
+  ).all_pages
+  details = responses.flat_map(&:to_models)
+  UI.user_error!(
+    "Expected exactly one external beta review detail; found #{details.length}"
+  ) unless details.one?
+  detail = details.first
+  {
+    "contact first name" => detail.contact_first_name,
+    "contact last name" => detail.contact_last_name,
+    "contact email" => detail.contact_email,
+    "contact phone" => detail.contact_phone,
+    "review notes" => detail.notes
+  }.each do |label, value|
+    UI.user_error!("External beta review #{label} is missing") if
+      value.to_s.strip.empty?
+  end
+  UI.user_error!("External beta review demo-account flag is unknown") unless
+    [true, false].include?(detail.demo_account_required)
+  if detail.demo_account_required
+    UI.user_error!("External beta review demo account name is missing") if
+      detail.demo_account_name.to_s.strip.empty?
+    UI.user_error!("External beta review demo account password is missing") if
+      detail.demo_account_password.to_s.strip.empty?
+  end
+  true
+end
+
+def require_external_beta_review_submission(build:)
+  refreshed = Spaceship::ConnectAPI::Build.get(
+    build_id: build.id,
+    includes: "betaAppReviewSubmission"
+  )
+  UI.user_error!("Could not refetch the exact external beta build") unless refreshed
+  submission = refreshed.beta_app_review_submission
+  UI.user_error!("Exact build has no external beta review submission") unless
+    submission
+  eligible_states = %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED]
+  UI.user_error!(
+    "Exact build beta review submission has an ineligible state"
+  ) unless eligible_states.include?(submission.beta_review_state)
+  submission
+end
+
+def expected_upload_provenance(
+  app:,
+  build:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256:
+)
+  commit = source_commit.to_s.downcase
+  digest = ipa_sha256.to_s.downcase
+  UI.user_error!("Upload provenance source commit is malformed") unless
+    commit.match?(/\A[0-9a-f]{40,64}\z/)
+  UI.user_error!("Upload provenance IPA SHA-256 is malformed") unless
+    digest.match?(/\A[0-9a-f]{64}\z/)
+  {
+    "schemaVersion" => 1,
+    "kind" => "testflightUploadProvenance",
+    "appId" => app.id,
+    "bundleId" => bundle_id,
+    "buildId" => build.id,
+    "version" => version,
+    "buildNumber" => build_number,
+    "sourceCommit" => commit,
+    "ipaSha256" => digest
+  }
+end
+
+def load_upload_provenance(path)
+  receipt_stat = File.lstat(path)
+  UI.user_error!("Upload provenance must be a regular non-symlink file") unless
+    receipt_stat.file? && !receipt_stat.symlink?
+
+  File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+    opened_stat = file.stat
+    UI.user_error!("Upload provenance changed during verification") unless
+      opened_stat.file? &&
+        opened_stat.dev == receipt_stat.dev &&
+        opened_stat.ino == receipt_stat.ino
+    UI.user_error!("Upload provenance must have mode 400") unless
+      (opened_stat.mode & 0o777) == 0o400
+    JSON.parse(file.read)
+  end
+rescue JSON::ParserError
+  UI.user_error!("Upload provenance is not valid JSON")
+rescue Errno::ENOENT, Errno::ELOOP
+  UI.user_error!("Upload provenance changed during verification")
+end
+
+def require_upload_provenance(
+  path:,
+  app:,
+  build:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256: nil
+)
+  receipt = load_upload_provenance(path)
+  expected_keys = %w[
+    appId buildId buildNumber bundleId ipaSha256 kind recordedAtUtc
+    schemaVersion sourceCommit version
+  ]
+  UI.user_error!("Upload provenance has an unexpected schema") unless
+    receipt.keys.sort == expected_keys.sort
+  UI.user_error!("Upload provenance IPA SHA-256 is malformed") unless
+    receipt["ipaSha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+  begin
+    recorded_at = Time.iso8601(receipt["recordedAtUtc"].to_s)
+  rescue ArgumentError
+    UI.user_error!("Upload provenance timestamp is malformed")
+  end
+  UI.user_error!("Upload provenance timestamp is not UTC") unless
+    recorded_at.utc_offset.zero? && receipt["recordedAtUtc"].to_s.end_with?("Z")
+  expected = expected_upload_provenance(
+    app: app,
+    build: build,
+    bundle_id: bundle_id,
+    version: version,
+    build_number: build_number,
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256 || receipt["ipaSha256"]
+  )
+  UI.user_error!("Upload provenance does not match the exact release") unless
+    expected.all? { |key, value| receipt[key] == value }
+  receipt
+end
+
+def create_upload_provenance(path:, expected:)
+  receipt = expected.merge("recordedAtUtc" => Time.now.utc.iso8601)
+  File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o400) do |file|
+    file.chmod(0o400)
+    file.write("#{JSON.generate(receipt)}\n")
+    file.flush
+    file.fsync
+  end
+  fsync_parent_directory(path)
+  receipt
+rescue Errno::EEXIST
+  UI.user_error!("Upload provenance already exists")
+rescue SystemCallError => error
+  UI.user_error!(
+    "Upload provenance could not be recorded (#{error.class}); do not " \
+    "associate or notify this build"
+  )
+end
+
 def expected_notification_receipt(
   app:,
   build:,
@@ -339,10 +510,11 @@ def expected_notification_receipt(
   bundle_id:,
   version:,
   build_number:,
-  source_commit:
+  source_commit:,
+  ipa_sha256:
 )
   {
-    "schemaVersion" => 2,
+    "schemaVersion" => 3,
     "appId" => app.id,
     "bundleId" => bundle_id,
     "buildId" => build.id,
@@ -353,7 +525,8 @@ def expected_notification_receipt(
     "associatedGroupIds" => associated_group_ids.sort,
     "externalTesterCount" => Integer(external_tester_count, 10),
     "externalTesterIdsSha256" => external_tester_ids_sha256.downcase,
-    "sourceCommit" => source_commit
+    "sourceCommit" => source_commit,
+    "ipaSha256" => ipa_sha256
   }
 end
 
@@ -614,9 +787,55 @@ platform :ios do
     UI.success("Verified the approved external TestFlight group")
   end
 
+  desc "Fail closed unless external beta-review metadata is complete"
+  lane :verify_external_review_metadata do |options|
+    app = connect_api_app(options)
+    require_external_beta_review_metadata(app: app)
+    UI.success("Verified complete external beta-review metadata")
+  end
+
+  desc "Record immutable provenance for the exact processed external build"
+  lane :record_external_upload_provenance do |options|
+    app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+    ipa_sha256 = required_option(options, :ipa_sha256)
+    build = exact_valid_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    require_app_store_eligible_build(build)
+    expected = expected_upload_provenance(
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256
+    )
+    path = required_option(options, :upload_provenance_path)
+    create_upload_provenance(path: path, expected: expected)
+    require_upload_provenance(
+      path: path,
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256
+    )
+    UI.success("Recorded immutable provenance for the exact external build")
+  end
+
   desc "Associate an exact build with only the approved immutable group ID"
   lane :associate_external_build do |options|
     app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
     group = exact_external_group(
       app: app,
       group_name: required_option(options, :group_name),
@@ -634,12 +853,27 @@ platform :ios do
       options,
       :approved_internal_group_id
     )
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+    ipa_sha256 = required_option(options, :ipa_sha256)
     build = exact_valid_build(
       app: app,
-      version: required_option(options, :version),
-      build_number: required_option(options, :build_number)
+      version: version,
+      build_number: build_number
     )
     require_app_store_eligible_build(build)
+    require_upload_provenance(
+      path: required_option(options, :upload_provenance_path),
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256
+    )
+    require_external_beta_review_metadata(app: app)
     build = disable_automatic_notification(build)
     require_no_individual_testers(build)
 
@@ -655,6 +889,7 @@ platform :ios do
       build.post_beta_app_review_submission
       UI.important("Submitted the exact build for external beta review")
     end
+    require_external_beta_review_submission(build: build)
     build.add_beta_groups(beta_groups: [group]) unless already_associated
     associated = require_exact_external_association(
       app: app,
@@ -697,6 +932,15 @@ platform :ios do
       build_number: build_number
     )
     require_app_store_eligible_build(build)
+    upload_provenance = require_upload_provenance(
+      path: required_option(options, :upload_provenance_path),
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: required_option(options, :source_commit)
+    )
     build = disable_automatic_notification(build)
     associated = require_exact_external_association(
       app: app,
@@ -724,7 +968,8 @@ platform :ios do
       bundle_id: bundle_id,
       version: version,
       build_number: build_number,
-      source_commit: required_option(options, :source_commit)
+      source_commit: required_option(options, :source_commit),
+      ipa_sha256: upload_provenance["ipaSha256"]
     )
     if notification_receipt_state(
       path: receipt_path,

@@ -105,12 +105,28 @@ exact processed build through the external ID, proves that the exact associated
 group set is the approved automatic internal group plus the approved external
 group, rejects individually assigned testers, and pins the external group's
 exact tester relationship set using an approved count plus SHA-256 digest. It
-rechecks both group memberships and the closed public-link state after taking
-the durable notification claim and immediately before sending one build-scoped
-tester notification. Before that non-idempotent request, it durably creates a
-mode-600 `pending` claim containing the exact source commit, build, both
+requires every beta app localization to have a nonblank description and
+feedback email, and requires one exact beta review detail with contact name,
+email, phone, review notes, and an explicit demo-account flag (plus credentials
+when the flag is true). These metadata checks run before upload and again before
+submission. After submission, the lane refetches the exact build with its beta
+review submission and accepts only Apple's pending, in-review, or approved
+states. It rechecks both group memberships and the closed public-link state
+after taking the durable notification claim and immediately before sending one
+build-scoped tester notification.
+
+After Apple processes an external upload, the lane resolves the exact App Store
+Connect app/build resource IDs and creates a mode-400 upload-provenance receipt
+at `TESTFLIGHT_UPLOAD_PROVENANCE_PATH`. The receipt contains only the exact app
+and build IDs, bundle ID, version/build, source commit, IPA SHA-256, and UTC
+recording time. Its mode-700 parent must be outside the repository. Association
+requires that receipt to match the same artifact bytes and source; deferred
+notify-only runs require and revalidate it against the exact remote build. They
+therefore cannot relabel an unrelated existing version/build as the reviewed
+commit. Before the non-idempotent notification request, the lane durably
+creates a mode-600 `pending` claim containing the exact source commit, build, both
 authorized group IDs, the associated group-ID set, and the approved external
-tester count/digest at
+tester count/digest plus the provenance-bound IPA SHA-256 at
 `TESTFLIGHT_NOTIFICATION_RECEIPT_PATH` outside the repository. A second process
 cannot create the same claim. Only a confirmed response atomically transitions
 it to a mode-400 `complete` receipt with the returned notification ID. The
@@ -133,7 +149,8 @@ approved ID association. After approval, rerun with
 `TESTFLIGHT_NOTIFY_ONLY=yes` and the printed immutable
 `TESTFLIGHT_GROUP_ID` plus the exact automatic internal group/tester IDs; this
 mode verifies the same clean commit, exact build, closed public-link state,
-exact two-group association, and notification state without uploading again.
+exact two-group association, immutable upload provenance, and notification state
+without uploading again.
 Concurrent notification runs are prohibited. A `pending`
 claim, interrupted run, or ambiguous App Store Connect response blocks every
 retry until the release owner reconciles the exact build. If the owner can prove

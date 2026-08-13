@@ -99,7 +99,7 @@ assert(
 )
 
 expected = {
-  "schemaVersion" => 2,
+  "schemaVersion" => 3,
   "appId" => "app-id",
   "bundleId" => "com.example.app",
   "buildId" => "build-id",
@@ -110,7 +110,8 @@ expected = {
   "associatedGroupIds" => ["external-group-id", "internal-group-id"],
   "externalTesterCount" => 23,
   "externalTesterIdsSha256" => "0" * 64,
-  "sourceCommit" => "0123456789abcdef"
+  "sourceCommit" => "0123456789abcdef",
+  "ipaSha256" => "1" * 64
 }
 
 Dir.mktmpdir("openglucose-receipt-test") do |directory|

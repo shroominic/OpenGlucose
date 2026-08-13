@@ -39,6 +39,12 @@ external_input_end = script.index("\nfi\n", external_input_start)
 unless notify_input_start && external_input_start && external_input_end
   raise "TestFlight signing contract failed: external input gate is missing"
 end
+notify_inputs = script[notify_input_start...external_input_start]
+require_match(
+  notify_inputs,
+  /:\s+"\$\{TESTFLIGHT_UPLOAD_PROVENANCE_PATH:\?missing [^"]+\}"/,
+  "notify-only mode must require immutable upload provenance"
+)
 external_inputs = script[external_input_start...external_input_end]
 %w[
   TESTFLIGHT_GROUP_ID
@@ -50,6 +56,7 @@ external_inputs = script[external_input_start...external_input_end]
   TESTFLIGHT_INTERNAL_TESTER_ID
   TESTFLIGHT_EXTERNAL_TESTER_COUNT
   TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256
+  TESTFLIGHT_UPLOAD_PROVENANCE_PATH
 ].each do |variable|
   require_match(
     external_inputs,
@@ -57,6 +64,19 @@ external_inputs = script[external_input_start...external_input_end]
     "external upload mode must require #{variable}"
   )
 end
+
+record_index = script.index(
+  'fastlane ios record_external_upload_provenance'
+)
+associate_index = script.index('fastlane ios associate_external_build')
+unless record_index && associate_index && record_index < associate_index
+  raise "TestFlight signing contract failed: upload provenance must be recorded before association"
+end
+require_match(
+  script,
+  /fastlane ios notify_external_build \\\n+(?:.*\\\n)*?\s+"upload_provenance_path:\$UPLOAD_PROVENANCE_PATH"/,
+  "external notification must validate immutable upload provenance"
+)
 
 uuid_validator = Regexp.escape(
   "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"

@@ -95,10 +95,10 @@ external_tester_digest = Digest::SHA256.hexdigest(
   external_tester_ids.sort.join("\n")
 )
 Spaceship::ConnectAPI.client = Struct.new(:test_flight_request_client).new(
-  TesterClient.new(
+  TesterClient.new({
     approved.id => ["approved-internal-tester"],
     approved_external.id => external_tester_ids
-  )
+  })
 )
 
 assert(

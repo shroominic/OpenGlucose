@@ -311,6 +311,7 @@ elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   : "${TESTFLIGHT_INTERNAL_TESTER_ID:?missing TESTFLIGHT_INTERNAL_TESTER_ID for notify-only mode}"
   : "${TESTFLIGHT_EXTERNAL_TESTER_COUNT:?missing TESTFLIGHT_EXTERNAL_TESTER_COUNT for notify-only mode}"
   : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for notify-only mode}"
+  : "${TESTFLIGHT_UPLOAD_PROVENANCE_PATH:?missing TESTFLIGHT_UPLOAD_PROVENANCE_PATH for notify-only mode}"
 else
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for external mode}"
   : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for external mode}"
@@ -321,6 +322,7 @@ else
   : "${TESTFLIGHT_INTERNAL_TESTER_ID:?missing TESTFLIGHT_INTERNAL_TESTER_ID for external mode}"
   : "${TESTFLIGHT_EXTERNAL_TESTER_COUNT:?missing TESTFLIGHT_EXTERNAL_TESTER_COUNT for external mode}"
   : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for external mode}"
+  : "${TESTFLIGHT_UPLOAD_PROVENANCE_PATH:?missing TESTFLIGHT_UPLOAD_PROVENANCE_PATH for external mode}"
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
 fi
 [[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || \
@@ -400,6 +402,41 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
       fail "notification receipt must have mode 400 or 600 (found $notification_receipt_mode)"
     [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
       fail "notification receipt already exists; use notify-only mode to verify it"
+  fi
+
+  [[ "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH" == /* ]] || \
+    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH must be absolute"
+  [[ "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH" != *:* ]] || \
+    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH cannot contain a colon"
+  provenance_parent_input=$(dirname -- "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH")
+  provenance_name=$(basename -- "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH")
+  [[ "$provenance_name" != "." && "$provenance_name" != ".." ]] || \
+    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH must name a file"
+  [[ -d "$provenance_parent_input" ]] || \
+    fail "upload provenance parent directory does not exist"
+  provenance_parent=$(cd "$provenance_parent_input" && pwd -P)
+  case "$provenance_parent/" in
+    "$REPOSITORY_ROOT/"*)
+      fail "upload provenance must be stored outside the repository"
+      ;;
+  esac
+  provenance_parent_mode=$(/usr/bin/stat -f '%Lp' "$provenance_parent")
+  [[ "$provenance_parent_mode" == "700" ]] || \
+    fail "upload provenance parent must have mode 700 (found $provenance_parent_mode)"
+  UPLOAD_PROVENANCE_PATH="$provenance_parent/$provenance_name"
+  [[ "$UPLOAD_PROVENANCE_PATH" != "$NOTIFICATION_RECEIPT_PATH" ]] || \
+    fail "upload provenance and notification receipt paths must be different"
+  if [[ -e "$UPLOAD_PROVENANCE_PATH" || -L "$UPLOAD_PROVENANCE_PATH" ]]; then
+    [[ -f "$UPLOAD_PROVENANCE_PATH" && ! -L "$UPLOAD_PROVENANCE_PATH" ]] || \
+      fail "upload provenance must be a regular non-symlink file"
+    upload_provenance_mode=$(/usr/bin/stat -f '%Lp' "$UPLOAD_PROVENANCE_PATH")
+    [[ "$upload_provenance_mode" == "400" ]] || \
+      fail "upload provenance must have mode 400 (found $upload_provenance_mode)"
+    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
+      fail "upload provenance already exists; use notify-only mode"
+  else
+    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+      fail "notify-only mode requires immutable upload provenance"
   fi
 fi
 
@@ -529,6 +566,13 @@ approved_group_id=$(<"$group_id_file")
   fail "approved TestFlight group ID is malformed"
 echo "==> Approved $TESTFLIGHT_MODE group ID: $approved_group_id"
 
+if [[ "$TESTFLIGHT_MODE" == "external" && "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]]; then
+  echo "==> Verifying external beta-review metadata before upload"
+  fastlane ios verify_external_review_metadata \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID"
+fi
+
 if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   echo "==> Verifying the exact build and sending the deferred tester notification"
   fastlane ios notify_external_build \
@@ -544,6 +588,7 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "version:$EXPECTED_MARKETING_VERSION" \
     "build_number:$EXPECTED_BUILD_NUMBER" \
     "source_commit:$head_commit" \
+    "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
     "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
   echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
   exit 0
@@ -742,6 +787,16 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   exit 0
 fi
 
+echo "==> Recording immutable provenance for the processed external build"
+fastlane ios record_external_upload_provenance \
+  "api_key_path:$credential_json" \
+  "bundle_id:$APP_BUNDLE_ID" \
+  "version:$EXPECTED_MARKETING_VERSION" \
+  "build_number:$EXPECTED_BUILD_NUMBER" \
+  "source_commit:$head_commit" \
+  "ipa_sha256:$artifact_sha256" \
+  "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
+
 echo "==> Associating the exact build with the approved immutable group ID"
 fastlane ios associate_external_build \
   "api_key_path:$credential_json" \
@@ -754,7 +809,10 @@ fastlane ios associate_external_build \
   "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
   "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
   "version:$EXPECTED_MARKETING_VERSION" \
-  "build_number:$EXPECTED_BUILD_NUMBER"
+  "build_number:$EXPECTED_BUILD_NUMBER" \
+  "source_commit:$head_commit" \
+  "ipa_sha256:$artifact_sha256" \
+  "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
 
 echo "==> Verifying the exclusive audience and notifying eligible testers"
 echo "    If beta review is pending, re-run with TESTFLIGHT_NOTIFY_ONLY=yes and TESTFLIGHT_GROUP_ID=$approved_group_id after approval."
@@ -771,6 +829,7 @@ fastlane ios notify_external_build \
   "version:$EXPECTED_MARKETING_VERSION" \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
+  "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
   "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
 
 echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
