@@ -1,9 +1,11 @@
 import 'package:cgm_core/cgm_core.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:openglucose/src/ai/ai_controller.dart';
 import 'package:openglucose/src/ai/ai_settings.dart';
+import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/ai/ai_settings_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -114,6 +116,72 @@ void main() {
       expect(await store.hasApiKey(), isTrue);
       await store.writeApiKey('   ');
       expect(await store.hasApiKey(), isFalse);
+    });
+
+    testWidgets('cloud controls stay hidden until Advanced is expanded', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Custom cloud provider'), findsOneWidget);
+      expect(find.byType(Chip), findsNothing);
+      final semantics = tester.ensureSemantics();
+      expect(
+        tester
+            .getSemantics(
+              find.byKey(const ValueKey<String>('comingSoonStatus')),
+            )
+            .label,
+        contains('On-device model status: coming soon'),
+      );
+      semantics.dispose();
+      expect(find.text('API base URL'), findsNothing);
+      expect(find.text('Auth scheme'), findsNothing);
+      expect(find.text('API key (stored securely)'), findsNothing);
+
+      await tester.tap(find.text('Custom cloud provider'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('API base URL'), findsOneWidget);
+      expect(find.text('Auth scheme'), findsOneWidget);
+      expect(find.text('API key (stored securely)'), findsOneWidget);
+    });
+
+    testWidgets('testing first saves the unsaved cloud draft', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Custom cloud provider'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Enable cloud AI'));
+      await tester.enterText(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is TextField &&
+              widget.decoration?.labelText == 'API key (stored securely)',
+        ),
+        'sk-unsaved',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Test with aggregates'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Test with aggregates'));
+      await tester.pumpAndSettle();
+
+      final store = await newStore();
+      expect(store.loadSettings().enabled, isTrue);
+      expect(await store.hasApiKey(), isTrue);
+      expect(secureBox.values, contains('sk-unsaved'));
     });
 
     test('AiController builds NullAiProvider when disabled', () async {

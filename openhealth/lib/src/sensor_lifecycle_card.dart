@@ -4,7 +4,7 @@ import 'package:intl/intl.dart';
 
 import 'session_presentation.dart';
 
-/// Self-contained "sensor lifecycle center" card for the dashboard.
+/// Self-contained sensor lifecycle details card for Current sensor settings.
 ///
 /// Renders, from the session timing alone (no extra wiring):
 ///  - sensor age + % of the 15-day life used + time remaining (progress arc),
@@ -13,14 +13,11 @@ import 'session_presentation.dart';
 ///  - a full offboarding state (replace prompt) when the sensor has expired,
 ///  - the last-sync time.
 ///
-/// Kept deliberately decoupled from `main.dart` (only a single small insert
-/// references it) so concurrent branches touching the dashboard merge cleanly.
-///
 /// Stateless: it recomputes the lifecycle on every parent rebuild. The
-/// dashboard already rebuilds on each controller notification and the hero
-/// card's per-second ticker, so the countdown/age stay fresh without this
-/// widget owning a perpetual timer (which would break `pumpAndSettle` in
-/// widget tests). [clock] is injectable for deterministic tests.
+/// parent rebuilds on each controller notification, so the countdown/age stay
+/// fresh without this widget owning a perpetual timer (which would break
+/// `pumpAndSettle` in widget tests). [clock] is injectable for deterministic
+/// tests.
 class SensorLifecycleCard extends StatelessWidget {
   const SensorLifecycleCard({
     super.key,
@@ -28,6 +25,7 @@ class SensorLifecycleCard extends StatelessWidget {
     this.latestReading,
     this.onReplaceSensor,
     this.clock,
+    this.outerPadding = const EdgeInsets.fromLTRB(20, 16, 20, 0),
   });
 
   final CgmSessionSnapshot snapshot;
@@ -40,6 +38,10 @@ class SensorLifecycleCard extends StatelessWidget {
   /// Injectable clock for tests; defaults to [DateTime.now].
   final DateTime Function()? clock;
 
+  /// Space around the lifecycle card. Settings can place it flush inside an
+  /// already padded page.
+  final EdgeInsetsGeometry outerPadding;
+
   @override
   Widget build(BuildContext context) {
     final now = (clock ?? DateTime.now)();
@@ -50,11 +52,44 @@ class SensorLifecycleCard extends StatelessWidget {
     );
 
     if (lifecycle.phase == SensorLifecyclePhase.unknown) {
-      return const SizedBox.shrink();
+      return Padding(
+        padding: outerPadding,
+        child: const Card(
+          key: ValueKey<String>('sensorLifecycleCard'),
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Row(
+              children: <Widget>[
+                Icon(Icons.schedule_rounded, color: Color(0xFF0B6E69)),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        'Sensor lifecycle',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        'Life remaining unavailable while the sensor session '
+                        'is being verified.',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      padding: outerPadding,
       child: Card(
         key: const ValueKey<String>('sensorLifecycleCard'),
         child: Padding(

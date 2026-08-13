@@ -12,6 +12,8 @@ import 'health_state_store.dart';
 import 'ios_live_activity_bridge.dart';
 import 'live_activity_payload.dart';
 import 'mock_scenarios.dart';
+import 'sensor_archive.dart';
+import 'session_presentation.dart';
 
 class CgmAppController extends ChangeNotifier {
   CgmAppController({
@@ -25,6 +27,7 @@ class CgmAppController extends ChangeNotifier {
 
   static const _displayPreferencesKey = 'openHealth.displayPreferences';
   static const _lastSensorKey = 'openHealth.lastSensor';
+  static const _sensorArchiveKey = 'openHealth.sensorArchive';
   static const _scanTimeout = Duration(seconds: 6);
   static const _historyPersistDebounce = Duration(milliseconds: 900);
   static const _restoredConnectDelay = Duration(milliseconds: 700);
@@ -50,10 +53,18 @@ class CgmAppController extends ChangeNotifier {
   CgmSessionSnapshot? _snapshot;
   DiscoveredSensor? _selectedSensor;
   List<CgmReading> _persistedHistory = const <CgmReading>[];
+  List<ArchivedSensorSession> _archivedSensors =
+      const <ArchivedSensorSession>[];
   DisplayPreferences _displayPreferences = const DisplayPreferences();
   bool _scanning = false;
   bool _connectInProgress = false;
   bool _freshnessInFlight = false;
+  bool _retiringExpiredSensor = false;
+  bool _clearingActivationRequiredSensor = false;
+  bool _allowSessionActivation = false;
+  bool _selectionPersisted = false;
+  Future<void>? _selectionPromotion;
+  String? _backgroundSensorStorageKey;
   String? _lastError;
   final Map<String, String> _persistenceErrors = <String, String>{};
 
@@ -75,14 +86,58 @@ class CgmAppController extends ChangeNotifier {
 
   DisplayPreferences get displayPreferences => _displayPreferences;
 
+  List<ArchivedSensorSession> get archivedSensors {
+    final sessions = List<ArchivedSensorSession>.of(_archivedSensors);
+    sessions.sort((left, right) {
+      final leftAt = left.endedAt ?? left.lastReadingAt ?? left.startedAt;
+      final rightAt = right.endedAt ?? right.lastReadingAt ?? right.startedAt;
+      if (leftAt == null && rightAt == null) return 0;
+      if (leftAt == null) return 1;
+      if (rightAt == null) return -1;
+      return rightAt.compareTo(leftAt);
+    });
+    return List<ArchivedSensorSession>.unmodifiable(sessions);
+  }
+
+  List<CgmReading> readingsForArchivedSensor(ArchivedSensorSession session) {
+    return List<CgmReading>.unmodifiable(_loadHistoryAtKey(session.historyKey));
+  }
+
+  /// All retained readings across previous sensors plus the active sensor.
+  /// Duplicate records are collapsed so an archive hand-off cannot inflate
+  /// long-range summaries.
+  List<CgmReading> get allHistoricalReadings {
+    final byIdentity = <String, CgmReading>{};
+    void addAll(Iterable<CgmReading> readings) {
+      for (final reading in readings) {
+        final recordedAt = reading.recordedAt?.toUtc().toIso8601String() ?? '';
+        final key =
+            '$recordedAt|${reading.sensorMinute ?? ''}|'
+            '${reading.valueMgdl}|${reading.source.name}';
+        byIdentity[key] = reading;
+      }
+    }
+
+    for (final session in _archivedSensors) {
+      addAll(_loadHistoryAtKey(session.historyKey));
+    }
+    addAll(snapshot?.history ?? _persistedHistory);
+    final readings = byIdentity.values.toList(growable: false)
+      ..sort(
+        (left, right) =>
+            left.timelineTimestamp.compareTo(right.timelineTimestamp),
+      );
+    return List<CgmReading>.unmodifiable(readings);
+  }
+
   CgmSessionSnapshot? get snapshot {
     final raw = _snapshot;
     if (raw == null) {
       return null;
     }
-    final mergedHistory = raw.history.isNotEmpty || isMockDriver
+    final mergedHistory = isMockDriver
         ? raw.history
-        : _persistedHistory;
+        : _mergeHistory(_persistedHistory, raw.history);
     return raw.copyWith(
       history: mergedHistory,
       latestReading:
@@ -127,13 +182,36 @@ class CgmAppController extends ChangeNotifier {
       return;
     }
 
+    _archivedSensors = _loadSensorArchive();
+
     final restoredSensor = _loadPersistedSensor();
     if (restoredSensor == null || restoredSensor.driverId != _driver.driverId) {
       return;
     }
 
     _selectedSensor = restoredSensor;
+    _selectionPersisted = true;
     _persistedHistory = _loadPersistedHistory(restoredSensor.storageKey);
+    final inferredStart = inferSensorStart(_persistedHistory);
+    if (_persistedSensorHasExpired(
+      history: _persistedHistory,
+      inferredStart: inferredStart,
+    )) {
+      await _archiveSensor(
+        sensor: restoredSensor,
+        history: _persistedHistory,
+        reason: SensorArchiveReason.expired,
+        startedAt: inferredStart,
+      );
+      await _healthStateStore.remove(_lastSensorKey);
+      await _healthStateStore.remove(_historyKey(restoredSensor.storageKey));
+      _selectionPersisted = false;
+      _selectedSensor = null;
+      _persistedHistory = const <CgmReading>[];
+      await _clearPlatformBackgroundState();
+      notifyListeners();
+      return;
+    }
     _snapshot = CgmSessionSnapshot(
       stage: CgmSyncStage.connecting,
       statusText: 'Reconnecting',
@@ -142,6 +220,7 @@ class CgmAppController extends ChangeNotifier {
       lastAdvertisement: restoredSensor.advertisement,
       history: _persistedHistory,
       latestReading: _persistedHistory.isEmpty ? null : _persistedHistory.last,
+      sessionInfo: CgmSessionInfo(sessionStart: inferredStart),
       metadata: <String, String>{
         'deviceId': restoredSensor.deviceId,
         ...restoredSensor.metadata,
@@ -157,7 +236,9 @@ class CgmAppController extends ChangeNotifier {
           _selectedSensor?.deviceId != restoredSensor.deviceId) {
         return;
       }
-      unawaited(connect(restoredSensor));
+      unawaited(
+        connect(restoredSensor, allowSessionActivation: false),
+      );
     });
   }
 
@@ -180,7 +261,10 @@ class CgmAppController extends ChangeNotifier {
     }
   }
 
-  Future<void> connect(DiscoveredSensor sensor) async {
+  Future<void> connect(
+    DiscoveredSensor sensor, {
+    bool allowSessionActivation = true,
+  }) async {
     if (_connectInProgress) {
       return;
     }
@@ -194,14 +278,16 @@ class CgmAppController extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      final resumeVerifiedSelection =
+          _selectionPersisted &&
+          _selectedSensor?.storageKey == sensor.storageKey;
       await disconnect(clearSelection: false);
+      _allowSessionActivation = allowSessionActivation;
       _selectedSensor = sensor;
-      _persistedHistory = isMockDriver
+      _selectionPersisted = resumeVerifiedSelection;
+      _persistedHistory = isMockDriver || !resumeVerifiedSelection
           ? const <CgmReading>[]
           : _loadPersistedHistory(sensor.storageKey);
-      if (!isMockDriver) {
-        await _persistSelectedSensor(sensor);
-      }
       _snapshot = CgmSessionSnapshot(
         stage: CgmSyncStage.connecting,
         statusText: 'Connecting',
@@ -226,20 +312,31 @@ class CgmAppController extends ChangeNotifier {
       notifyListeners();
 
       final session = await _driver.connect(
-        _connectionSensorFor(sensor, _persistedHistory),
+        _connectionSensorFor(
+          sensor,
+          _persistedHistory,
+          allowSessionActivation: allowSessionActivation,
+        ),
       );
       _session = session;
       _snapshot = session.currentSnapshot;
-      _startPlatformTask(
-        _setBackgroundSensorBridges(sensor),
-        'Saving private background sensor state',
-      );
+      if (_snapshot?.stage == CgmSyncStage.ready) {
+        _promoteVerifiedSelection(sensor);
+      }
       _startPlatformTask(
         _pushLiveActivity(),
         'Updating private lock-screen state',
       );
       _snapshotSubscription = session.snapshots.listen((nextSnapshot) {
-        _snapshot = nextSnapshot;
+        final nextHistory = isMockDriver
+            ? nextSnapshot.history
+            : _mergeHistory(_persistedHistory, nextSnapshot.history);
+        _snapshot = nextSnapshot.copyWith(
+          history: nextHistory,
+          latestReading:
+              nextSnapshot.latestReading ??
+              (nextHistory.isEmpty ? null : nextHistory.last),
+        );
         final reconnectingStage =
             nextSnapshot.stage == CgmSyncStage.disconnected ||
             nextSnapshot.stage == CgmSyncStage.error;
@@ -250,14 +347,32 @@ class CgmAppController extends ChangeNotifier {
         }
         if (!isMockDriver &&
             _selectedSensor != null &&
-            nextSnapshot.history.isNotEmpty) {
-          _persistedHistory = nextSnapshot.history;
+            nextHistory.isNotEmpty) {
+          _persistedHistory = nextHistory;
           if (!nextSnapshot.historySync.inProgress) {
-            _schedulePersistHistory(
-              _selectedSensor!.storageKey,
-              nextSnapshot.history,
-            );
+            _schedulePersistHistory(_selectedSensor!.storageKey, nextHistory);
           }
+        }
+        if (!isMockDriver && _snapshotHasExpired(nextSnapshot)) {
+          unawaited(_retireExpiredSensor());
+          return;
+        }
+        if (!isMockDriver &&
+            nextSnapshot.metadata['activationRequired'] == 'true') {
+          unawaited(_clearActivationRequiredSelection());
+          return;
+        }
+        if (nextSnapshot.stage == CgmSyncStage.activating) {
+          // Starting a sensor is irreversible. Once the driver begins that
+          // exchange, any automatic retry must fail closed and require a new
+          // explicit scan selection rather than attempting activation again.
+          _allowSessionActivation = false;
+        }
+        if (nextSnapshot.stage == CgmSyncStage.ready) {
+          // Once the sensor has proven that an active session exists, future
+          // background reconnects must never be allowed to start a new one.
+          _allowSessionActivation = false;
+          _promoteVerifiedSelection(sensor);
         }
         if (reconnectingStage && !isMockDriver) {
           _scheduleReconnect();
@@ -277,6 +392,17 @@ class CgmAppController extends ChangeNotifier {
         }
         notifyListeners();
       });
+      final initialSnapshot = _snapshot;
+      if (!isMockDriver && initialSnapshot != null) {
+        if (initialSnapshot.stage == CgmSyncStage.activating) {
+          _allowSessionActivation = false;
+        }
+        if (initialSnapshot.metadata['activationRequired'] == 'true') {
+          unawaited(_clearActivationRequiredSelection());
+        } else if (_snapshotHasExpired(initialSnapshot)) {
+          unawaited(_retireExpiredSensor());
+        }
+      }
       notifyListeners();
     } catch (error) {
       final safeError = _safeError('Connection', error);
@@ -307,7 +433,10 @@ class CgmAppController extends ChangeNotifier {
     final session = _session;
     final currentSnapshot = snapshot;
     if (session == null || currentSnapshot == null) {
-      await connect(sensor);
+      await connect(
+        sensor,
+        allowSessionActivation: _allowSessionActivation,
+      );
       return;
     }
     if (currentSnapshot.stage == CgmSyncStage.disconnected) {
@@ -422,10 +551,22 @@ class CgmAppController extends ChangeNotifier {
     }
   }
 
-  Future<void> disconnect({bool clearSelection = true}) async {
+  Future<void> disconnect({
+    bool clearSelection = true,
+    SensorArchiveReason archiveReason = SensorArchiveReason.disconnected,
+    bool archiveWhenClearing = true,
+  }) async {
     _cancelReconnect();
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
+    final sensorToArchive = clearSelection ? _selectedSensor : null;
+    final snapshotToArchive = clearSelection ? snapshot : null;
+    final historyToArchive = clearSelection
+        ? List<CgmReading>.of(
+            snapshotToArchive?.history ?? _persistedHistory,
+            growable: false,
+          )
+        : const <CgmReading>[];
     final snapshotSubscription = _snapshotSubscription;
     final logSubscription = _logSubscription;
     _snapshotSubscription = null;
@@ -452,17 +593,57 @@ class CgmAppController extends ChangeNotifier {
     }
 
     if (clearSelection) {
+      final selectionPromotion = _selectionPromotion;
+      if (selectionPromotion != null) {
+        await selectionPromotion;
+      }
       Object? selectionError;
       if (!isMockDriver) {
         try {
+          if (sensorToArchive != null && archiveWhenClearing) {
+            if (historyToArchive.isNotEmpty) {
+              await _persistHistory(
+                sensorToArchive.storageKey,
+                historyToArchive,
+              );
+            }
+            await _archiveSensor(
+              sensor: sensorToArchive,
+              history: historyToArchive,
+              reason: archiveReason,
+              snapshot: snapshotToArchive,
+            );
+          }
           await _healthStateStore.remove(_lastSensorKey);
+          if (sensorToArchive != null) {
+            try {
+              await _healthStateStore.remove(
+                _historyKey(sensorToArchive.storageKey),
+              );
+            } catch (error) {
+              // The durable active pointer is already gone, so retaining an
+              // orphaned mutable cache is safer than making the completed
+              // archive hand-off appear to fail.
+              _recordPersistenceFailure('Cleaning active history', error);
+            }
+          }
         } catch (error) {
           selectionError = error;
         }
       }
-      _selectedSensor = null;
-      _snapshot = null;
-      _persistedHistory = const <CgmReading>[];
+      if (selectionError == null || isMockDriver) {
+        _selectedSensor = null;
+        _snapshot = null;
+        _persistedHistory = const <CgmReading>[];
+        _allowSessionActivation = false;
+        _selectionPersisted = false;
+        _backgroundSensorStorageKey = null;
+      } else {
+        _snapshot = _snapshot?.copyWith(
+          stage: CgmSyncStage.disconnected,
+          statusText: 'Disconnected — could not archive sensor',
+        );
+      }
       if (!isMockDriver) {
         if (selectionError != null) {
           _recordPersistenceFailure(
@@ -472,7 +653,9 @@ class CgmAppController extends ChangeNotifier {
         } else {
           _clearPersistenceFailure('Clearing the selected sensor');
         }
-        await _clearPlatformBackgroundState();
+        if (selectionError == null) {
+          await _clearPlatformBackgroundState();
+        }
       }
     } else {
       _snapshot = _snapshot?.copyWith(
@@ -568,13 +751,237 @@ class CgmAppController extends ChangeNotifier {
     return true;
   }
 
+  /// Ends the current session while retaining its sensor metadata and readings
+  /// in the archive. Expired sessions are labelled truthfully; an in-life
+  /// sensor explicitly replaced by the user is labelled as replaced.
+  Future<void> replaceCurrentSensor() {
+    final current = snapshot;
+    final reason = current != null && _snapshotHasExpired(current)
+        ? SensorArchiveReason.expired
+        : SensorArchiveReason.replaced;
+    return disconnect(archiveReason: reason);
+  }
+
   String _historyKey(String storageKey) => 'openHealth.history.$storageKey';
 
+  List<ArchivedSensorSession> _loadSensorArchive() {
+    final raw = _healthStateStore.getString(_sensorArchiveKey);
+    if (raw == null || raw.isEmpty) {
+      return const <ArchivedSensorSession>[];
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List<dynamic>) {
+        return const <ArchivedSensorSession>[];
+      }
+      return decoded
+          .whereType<Map<dynamic, dynamic>>()
+          .map(
+            (value) => ArchivedSensorSession.fromJson(
+              Map<String, Object?>.from(value),
+            ),
+          )
+          .where((session) => session.storageKey.isNotEmpty)
+          .toList(growable: false);
+    } on FormatException {
+      return const <ArchivedSensorSession>[];
+    }
+  }
+
+  Future<void> _persistSensorArchive() {
+    return _healthStateStore.setString(
+      _sensorArchiveKey,
+      jsonEncode(
+        _archivedSensors
+            .map((session) => session.toJson())
+            .toList(growable: false),
+      ),
+    );
+  }
+
+  Future<void> _archiveSensor({
+    required DiscoveredSensor sensor,
+    required List<CgmReading> history,
+    required SensorArchiveReason reason,
+    CgmSessionSnapshot? snapshot,
+    DateTime? startedAt,
+  }) async {
+    final sessionInfo = snapshot?.sessionInfo;
+    final start =
+        sessionInfo?.sessionStart ?? startedAt ?? inferSensorStart(history);
+    final incomingLastReadingAt = latestReadingTime(history);
+    final now = DateTime.now();
+    final naturalEnd = start?.add(kSensorLifeDuration);
+    final endedAt =
+        reason == SensorArchiveReason.expired &&
+            naturalEnd != null &&
+            naturalEnd.isBefore(now)
+        ? naturalEnd
+        : now;
+    final identityTime = start ?? incomingLastReadingAt ?? endedAt;
+    final archiveId = base64Url
+        .encode(
+          utf8.encode(
+            '${sensor.driverId}|${sensor.storageKey}|'
+            '${identityTime.toUtc().millisecondsSinceEpoch}',
+          ),
+        )
+        .replaceAll('=', '');
+    final archiveHistoryKey = 'openHealth.history.archive.$archiveId';
+    ArchivedSensorSession? existingEntry;
+    for (final entry in _archivedSensors) {
+      if (entry.id == archiveId) {
+        existingEntry = entry;
+        break;
+      }
+    }
+    final existingHistory = existingEntry == null
+        ? const <CgmReading>[]
+        : _loadHistoryAtKey(existingEntry.historyKey);
+    final archivedHistory = _mergeHistory(existingHistory, history);
+    final lastReadingAt =
+        latestReadingTime(archivedHistory) ??
+        existingEntry?.lastReadingAt ??
+        incomingLastReadingAt;
+    if (archivedHistory.isNotEmpty) {
+      await _persistHistoryAtKey(archiveHistoryKey, archivedHistory);
+    }
+    final entry = ArchivedSensorSession(
+      id: archiveId,
+      historyKey: archiveHistoryKey,
+      storageKey: sensor.storageKey,
+      driverId: sensor.driverId,
+      deviceId: sensor.deviceId,
+      displayName: sensor.displayName,
+      serial: _firstNonEmpty(<String?>[
+        sessionInfo?.serial,
+        sensor.metadata['serial'],
+        existingEntry?.serial,
+      ]),
+      model: _firstNonEmpty(<String?>[
+        sessionInfo?.model,
+        sensor.metadata['model'],
+        existingEntry?.model,
+      ]),
+      firmware: _firstNonEmpty(<String?>[
+        sessionInfo?.firmware,
+        sensor.metadata['firmware'],
+        existingEntry?.firmware,
+      ]),
+      reason: existingEntry?.reason ?? reason,
+      readingCount: archivedHistory.length,
+      startedAt: start ?? existingEntry?.startedAt,
+      endedAt: existingEntry?.endedAt ?? endedAt,
+      lastReadingAt: lastReadingAt,
+    );
+    final previousArchive = _archivedSensors;
+    _archivedSensors = <ArchivedSensorSession>[
+      for (final existing in _archivedSensors)
+        if (existing.id != archiveId) existing,
+      entry,
+    ];
+    try {
+      await _persistSensorArchive();
+    } catch (_) {
+      _archivedSensors = previousArchive;
+      rethrow;
+    }
+  }
+
+  bool _persistedSensorHasExpired({
+    required List<CgmReading> history,
+    required DateTime? inferredStart,
+    DateTime? now,
+  }) {
+    final reference = now ?? DateTime.now();
+    if (inferredStart != null &&
+        !inferredStart.add(kSensorLifeDuration).isAfter(reference)) {
+      return true;
+    }
+    final lastReadingAt = latestReadingTime(history);
+    return lastReadingAt != null &&
+        !lastReadingAt.add(kSensorLifeDuration).isAfter(reference);
+  }
+
+  bool _snapshotHasExpired(CgmSessionSnapshot value) {
+    return computeSensorLifecycle(
+      value,
+      latestReading:
+          value.latestReading ??
+          (value.history.isEmpty ? null : value.history.last),
+    ).isExpired;
+  }
+
+  Future<void> _retireExpiredSensor() async {
+    if (_retiringExpiredSensor || _selectedSensor == null) {
+      return;
+    }
+    _retiringExpiredSensor = true;
+    try {
+      await disconnect(archiveReason: SensorArchiveReason.expired);
+    } finally {
+      _retiringExpiredSensor = false;
+    }
+  }
+
+  void _promoteVerifiedSelection(DiscoveredSensor sensor) {
+    if (isMockDriver ||
+        _selectionPromotion != null ||
+        _selectedSensor?.deviceId != sensor.deviceId ||
+        (_selectionPersisted &&
+            _backgroundSensorStorageKey == sensor.storageKey)) {
+      return;
+    }
+    _selectionPromotion = () async {
+      try {
+        if (!_selectionPersisted) {
+          await _persistSelectedSensor(sensor);
+          _selectionPersisted = true;
+        }
+        if (_backgroundSensorStorageKey != sensor.storageKey) {
+          await _setBackgroundSensorBridges(sensor);
+          _backgroundSensorStorageKey = sensor.storageKey;
+        }
+        _clearPersistenceFailure('Saving verified sensor selection');
+      } catch (error) {
+        _recordPersistenceFailure('Saving verified sensor selection', error);
+      } finally {
+        _selectionPromotion = null;
+        notifyListeners();
+      }
+    }();
+  }
+
+  Future<void> _clearActivationRequiredSelection() async {
+    if (_clearingActivationRequiredSensor || _selectedSensor == null) {
+      return;
+    }
+    _clearingActivationRequiredSensor = true;
+    try {
+      await disconnect(clearSelection: true, archiveWhenClearing: false);
+    } finally {
+      _clearingActivationRequiredSensor = false;
+    }
+  }
+
+  String _firstNonEmpty(Iterable<String?> values) {
+    for (final value in values) {
+      if (value != null && value.trim().isNotEmpty) {
+        return value.trim();
+      }
+    }
+    return '';
+  }
+
   List<CgmReading> _loadPersistedHistory(String storageKey) {
+    return _loadHistoryAtKey(_historyKey(storageKey));
+  }
+
+  List<CgmReading> _loadHistoryAtKey(String key) {
     if (isMockDriver) {
       return const <CgmReading>[];
     }
-    final raw = _healthStateStore.getString(_historyKey(storageKey));
+    final raw = _healthStateStore.getString(key);
     if (raw == null || raw.isEmpty) {
       return const <CgmReading>[];
     }
@@ -592,12 +999,19 @@ class CgmAppController extends ChangeNotifier {
     String storageKey,
     List<CgmReading> history,
   ) async {
+    return _persistHistoryAtKey(_historyKey(storageKey), history);
+  }
+
+  Future<void> _persistHistoryAtKey(
+    String key,
+    List<CgmReading> history,
+  ) async {
     if (isMockDriver) {
       return;
     }
     final trimmedHistory = _historyForPersistence(history);
     await _healthStateStore.setString(
-      _historyKey(storageKey),
+      key,
       jsonEncode(
         trimmedHistory
             .map((reading) => reading.toJson())
@@ -625,10 +1039,11 @@ class CgmAppController extends ChangeNotifier {
     );
     if (_shouldPublishIosLiveActivity(snapshot)) {
       await IosLiveActivityBridge.upsert(payload);
+      await AndroidLiveUpdateBridge.upsert(payload);
     } else {
       await IosLiveActivityBridge.end();
+      await AndroidLiveUpdateBridge.end();
     }
-    await AndroidLiveUpdateBridge.upsert(payload);
   }
 
   Future<void> _setBackgroundSensorBridges(DiscoveredSensor sensor) async {
@@ -646,14 +1061,16 @@ class CgmAppController extends ChangeNotifier {
   }
 
   bool _shouldPublishIosLiveActivity(CgmSessionSnapshot snapshot) {
-    if (snapshot.history.isNotEmpty) {
-      return true;
+    if (snapshot.stage != CgmSyncStage.ready) {
+      return false;
     }
     final reading = latestReading;
-    if (reading != null) {
-      return true;
+    final recordedAt = reading?.recordedAt;
+    if (reading == null || recordedAt == null) {
+      return false;
     }
-    return snapshot.stage == CgmSyncStage.ready;
+    final age = DateTime.now().difference(recordedAt.toLocal());
+    return !age.isNegative && age <= const Duration(minutes: 15);
   }
 
   void _schedulePersistHistory(String storageKey, List<CgmReading> history) {
@@ -744,6 +1161,38 @@ class CgmAppController extends ChangeNotifier {
 
   List<CgmReading> _historyForPersistence(List<CgmReading> history) {
     return List<CgmReading>.from(history, growable: false);
+  }
+
+  List<CgmReading> _mergeHistory(
+    Iterable<CgmReading> persisted,
+    Iterable<CgmReading> incoming,
+  ) {
+    final readingsByKey = <String, CgmReading>{};
+    void add(Iterable<CgmReading> readings) {
+      for (final reading in readings) {
+        final timestamp = reading.recordedAt?.toUtc().toIso8601String() ?? '';
+        final minute = reading.sensorMinute;
+        final key = minute == null
+            ? 'time|$timestamp|${reading.source.name}'
+            : 'minute|$minute|${reading.source.name}';
+        readingsByKey[key] = reading;
+      }
+    }
+
+    add(persisted);
+    add(incoming);
+    final merged = readingsByKey.values.toList(growable: false)
+      ..sort((left, right) {
+        final leftAt = left.recordedAt;
+        final rightAt = right.recordedAt;
+        if (leftAt != null && rightAt != null) {
+          return leftAt.compareTo(rightAt);
+        }
+        if (leftAt != null) return 1;
+        if (rightAt != null) return -1;
+        return (left.sensorMinute ?? -1).compareTo(right.sensorMinute ?? -1);
+      });
+    return merged;
   }
 
   DiscoveredSensor? _loadPersistedSensor() {
@@ -875,7 +1324,12 @@ class CgmAppController extends ChangeNotifier {
           nextSnapshot.stage != CgmSyncStage.connecting) {
         return;
       }
-      unawaited(connect(sensor));
+      unawaited(
+        connect(
+          sensor,
+          allowSessionActivation: _allowSessionActivation,
+        ),
+      );
     });
   }
 
@@ -886,27 +1340,22 @@ class CgmAppController extends ChangeNotifier {
 
   DiscoveredSensor _connectionSensorFor(
     DiscoveredSensor sensor,
-    List<CgmReading> history,
-  ) {
+    List<CgmReading> history, {
+    required bool allowSessionActivation,
+  }) {
     final resumableHistory = history
         .where((reading) => reading.sensorMinute != null)
         .toList(growable: false);
-    if (resumableHistory.isEmpty) {
-      return sensor;
-    }
-
-    final latestOffset = resumableHistory.last.sensorMinute;
-    if (latestOffset == null) {
-      return sensor;
-    }
-
-    final oldestOffset = resumableHistory.first.sensorMinute;
+    final latestOffset = resumableHistory.isEmpty
+        ? null
+        : resumableHistory.last.sensorMinute;
+    final oldestOffset = resumableHistory.isEmpty
+        ? null
+        : resumableHistory.first.sensorMinute;
     final hasFullEnoughPrefix =
+        latestOffset != null &&
         oldestOffset != null &&
         (oldestOffset <= 10 || resumableHistory.length >= 2000);
-    if (!hasFullEnoughPrefix) {
-      return sensor;
-    }
 
     return DiscoveredSensor(
       driverId: sensor.driverId,
@@ -919,13 +1368,16 @@ class CgmAppController extends ChangeNotifier {
       notes: sensor.notes,
       metadata: <String, String>{
         ...sensor.metadata,
-        _resumeOffsetMetadataKey: latestOffset.toString(),
-        _resumeCountMetadataKey: resumableHistory.length.toString(),
-        _resumeHistoryMetadataKey: jsonEncode(
-          resumableHistory
-              .map((reading) => reading.toJson())
-              .toList(growable: false),
-        ),
+        cgmAllowSessionActivationMetadataKey: allowSessionActivation.toString(),
+        if (hasFullEnoughPrefix) ...<String, String>{
+          _resumeOffsetMetadataKey: latestOffset.toString(),
+          _resumeCountMetadataKey: resumableHistory.length.toString(),
+          _resumeHistoryMetadataKey: jsonEncode(
+            resumableHistory
+                .map((reading) => reading.toJson())
+                .toList(growable: false),
+          ),
+        },
       },
     );
   }

@@ -91,6 +91,8 @@ class WeeklyRecap {
     required this.bounds,
     required this.thisWeek,
     required this.lastWeek,
+    required this.thisWeekCoverage,
+    required this.lastWeekCoverage,
     required this.days,
     required this.bestDay,
     required this.worstDay,
@@ -114,6 +116,14 @@ class WeeklyRecap {
 
   /// Stats over the prior 7-day window.
   final GlucoseStats lastWeek;
+
+  /// Coverage calculated from the exact calendar window used by [thisWeek].
+  /// Keeping this beside the recap prevents the UI from accidentally gating a
+  /// calendar recap with a different rolling-duration window.
+  final AnalyticsCoverage thisWeekCoverage;
+
+  /// Coverage calculated from the exact calendar window used by [lastWeek].
+  final AnalyticsCoverage lastWeekCoverage;
 
   /// Per-day breakdown for the current week, ordered oldest → newest, one entry
   /// per calendar day in `[weekStart, weekEnd)` (days without readings still
@@ -172,13 +182,17 @@ abstract final class WeeklyRecapAnalytics {
     DateTime? now,
   }) {
     final reference = now ?? DateTime.now();
+    final localReference = reference.toLocal();
     final today = dayStart(reference);
     // Current week covers today and the previous six days → 7 calendar days.
     final weekStart = _calendarDay(today, -6);
     final weekEnd = _calendarDay(weekStart, 7);
     final lastWeekStart = _calendarDay(weekStart, -7);
 
-    final thisWeekReadings = _inDayRange(readings, weekStart, weekEnd);
+    final currentWindowEnd = localReference.isBefore(weekEnd)
+        ? localReference.add(const Duration(microseconds: 1))
+        : weekEnd;
+    final thisWeekReadings = _inDayRange(readings, weekStart, currentWindowEnd);
     final lastWeekReadings = _inDayRange(readings, lastWeekStart, weekStart);
 
     final thisWeek = GlucoseAnalytics.summarize(
@@ -203,6 +217,8 @@ abstract final class WeeklyRecapAnalytics {
       bounds: bounds,
       thisWeek: thisWeek,
       lastWeek: lastWeek,
+      thisWeekCoverage: _coverageForExactWindow(thisWeekReadings),
+      lastWeekCoverage: _coverageForExactWindow(lastWeekReadings),
       days: days,
       bestDay: best,
       worstDay: worst,
@@ -220,6 +236,21 @@ abstract final class WeeklyRecapAnalytics {
         current: thisWeek.coefficientOfVariationPercent,
         previous: lastWeek.coefficientOfVariationPercent,
       ),
+    );
+  }
+
+  static AnalyticsCoverage _coverageForExactWindow(List<CgmReading> readings) {
+    DateTime? latest;
+    for (final reading in readings) {
+      final at = reading.recordedAt;
+      if (at != null && (latest == null || at.isAfter(latest))) {
+        latest = at;
+      }
+    }
+    return GlucoseAnalytics.assessCoverage(
+      readings,
+      AnalyticsTimeframe.last7d,
+      now: latest,
     );
   }
 
@@ -278,7 +309,7 @@ abstract final class WeeklyRecapAnalytics {
     DailyRecap? best;
     DailyRecap? worst;
     for (final day in days) {
-      if (!day.hasData) continue;
+      if (day.stats.readingCount < 24) continue;
       if (best == null ||
           day.stats.timeInRangePercent > best.stats.timeInRangePercent) {
         best = day;

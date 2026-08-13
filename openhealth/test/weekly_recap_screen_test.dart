@@ -17,15 +17,25 @@ List<CgmReading> _twoWeeks() {
   final readings = <CgmReading>[];
   // This week: steady, mostly in range, with one spike on Saturday.
   for (var day = 16; day <= 22; day++) {
-    for (var h = 6; h < 22; h += 2) {
-      readings.add(_reading(110, DateTime(2026, 6, day, h)));
+    for (var sample = 0; sample < 24; sample++) {
+      readings.add(
+        _reading(
+          110,
+          DateTime(2026, 6, day).add(Duration(minutes: sample * 30)),
+        ),
+      );
     }
   }
   readings.add(_reading(240, DateTime(2026, 6, 20, 13))); // Saturday spike
   // Last week: higher average (more above range) for a clear delta.
   for (var day = 9; day <= 15; day++) {
-    for (var h = 6; h < 22; h += 2) {
-      readings.add(_reading(170, DateTime(2026, 6, day, h)));
+    for (var sample = 0; sample < 24; sample++) {
+      readings.add(
+        _reading(
+          170,
+          DateTime(2026, 6, day).add(Duration(minutes: sample * 30)),
+        ),
+      );
     }
   }
   return readings;
@@ -46,11 +56,16 @@ void main() {
 
     expect(find.text('Weekly recap'), findsOneWidget);
     expect(find.text('This week at a glance'), findsOneWidget);
-    expect(find.text('Versus last week'), findsOneWidget);
     expect(find.textContaining('self-experimentation'), findsWidgets);
 
     // Lower cards are below the fold in a ListView; scroll them into view.
     final scrollable = find.byType(Scrollable).first;
+    await tester.scrollUntilVisible(
+      find.text('Versus last week'),
+      300,
+      scrollable: scrollable,
+    );
+    expect(find.text('Versus last week'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Days by time in range'),
       300,
@@ -86,6 +101,39 @@ void main() {
     expect(find.text('Not enough readings yet'), findsOneWidget);
     expect(find.text('This week at a glance'), findsNothing);
   });
+
+  testWidgets(
+    'does not let prior partial-day readings satisfy recap coverage',
+    (
+      tester,
+    ) async {
+      final readings = <CgmReading>[
+        for (var index = 0; index < 160; index++)
+          _reading(
+            110,
+            DateTime(2026, 6, 15, 13).add(Duration(minutes: index * 4)),
+          ),
+        _reading(110, DateTime(2026, 6, 16, 13)),
+        _reading(110, DateTime(2026, 6, 17, 13)),
+        _reading(110, DateTime(2026, 6, 18, 13)),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: WeeklyRecapScreen(
+            readings: readings,
+            preferences: const DisplayPreferences(),
+            now: _now,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Not enough readings yet'), findsOneWidget);
+      expect(find.textContaining('currently has 3 readings'), findsOneWidget);
+      expect(find.text('This week at a glance'), findsNothing);
+    },
+  );
 
   testWidgets('renders mmol/L when preference is set', (tester) async {
     await tester.pumpWidget(

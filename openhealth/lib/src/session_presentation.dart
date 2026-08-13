@@ -330,7 +330,7 @@ String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
       snapshot.stage == CgmSyncStage.pairing ||
       snapshot.stage == CgmSyncStage.activating ||
       snapshot.stage == CgmSyncStage.syncing) {
-    return hasData ? 'Connected' : 'Connecting';
+    return hasData ? 'Reconnecting' : 'Connecting';
   }
   return 'Connecting';
 }
@@ -347,9 +347,6 @@ String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
   if (snapshot.stage == CgmSyncStage.ready) {
     return 'live';
   }
-  if (hasData) {
-    return 'live';
-  }
   return 'progress';
 }
 
@@ -358,10 +355,10 @@ bool shouldShowPrimaryError(CgmSessionSnapshot snapshot) {
     return false;
   }
   if (snapshot.stage == CgmSyncStage.error) {
-    return snapshot.latestReading == null && snapshot.history.isEmpty;
+    return true;
   }
   if (snapshot.stage == CgmSyncStage.disconnected) {
-    return snapshot.latestReading == null && snapshot.history.isEmpty;
+    return true;
   }
   return false;
 }
