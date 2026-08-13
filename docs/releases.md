@@ -60,13 +60,31 @@ credentials: losing them prevents future in-place beta updates.
 ## TestFlight
 
 `openhealth/scripts/testflight.sh` invokes the repository's exact Flutter/Dart
-runtime verifier and enforces checked-in Fastlane, Xcode, and CocoaPods version
-pins, a clean committed version, exact `RELEASE_COMMIT`, and both
-`RELEASE_APPROVED=yes` and `DISTRIBUTE_EXTERNAL=yes`. It restores the locked
-dependencies before the build and verifies the worktree and dependency inputs
-again afterward. Before upload it verifies the main app and Live Activity
-extension signatures, bundle IDs, versions, build numbers, teams, signed
-application/team entitlements, and embedded App Store provisioning profiles. It
+runtime verifier and supports separate fail-closed `external` (default) and
+`internal` audience modes. Both enforce checked-in Fastlane, Xcode, and
+CocoaPods version pins, a clean committed version, exact `RELEASE_COMMIT`, and
+both `RELEASE_APPROVED=yes` and the matching distribution gate. It restores the
+locked dependencies before the build and verifies the worktree and dependency
+inputs again afterward. Before upload it verifies the main app and Live
+Activity extension signatures, bundle IDs, versions, build numbers, teams,
+signed application/team entitlements, and embedded App Store provisioning
+profiles. It also rejects any IPA containing `Runner.debug.dylib`, preventing
+the untethered debug-engine crash seen in earlier test packages.
+
+Internal mode requires `TESTFLIGHT_MODE=internal`, an immutable
+`TESTFLIGHT_GROUP_ID`, and `DISTRIBUTE_INTERNAL=yes`. It requires exactly one
+automatic internal group with the approved name and ID, exactly one tester in
+that group with its approved immutable relationship ID, no automatic external
+group, and no other automatic internal group. Its Xcode export is marked
+`testFlightInternalTestingOnly`, which prevents later external TestFlight or
+App Store distribution, and the processed build must report `INTERNAL_ONLY`.
+It uploads with external distribution, beta review submission, and external
+notification disabled. After Apple finishes processing, it verifies that the
+exact valid build is associated only with that one internal group and has no
+individually assigned testers, then repeats the audience checks before success.
+It never calls the external association or notification lanes.
+
+External mode requires `DISTRIBUTE_EXTERNAL=yes`. It
 rejects every internal or external group that automatically receives all
 builds, resolves exactly one existing external TestFlight group, and records
 its immutable ID. It rechecks that audience immediately before it uploads
@@ -113,8 +131,8 @@ CocoaPods 1.16.2 in root version files. Updating one is an R3 release change:
 review the new version, change the checked-in pin, and validate a signed app
 plus extension rather than overriding the version from the release environment.
 
-The script uploads and distributes externally, so run it only after the entire
-checklist is approved. Use a separate build-only workflow when distribution is
-not authorized.
+The external mode distributes externally, so run it only after that entire
+audience is approved. Internal mode still uploads a real build to its automatic
+internal audience and therefore requires explicit release approval.
 
 Follow `docs/runbooks/release-rollback.md` for a bad or compromised release.

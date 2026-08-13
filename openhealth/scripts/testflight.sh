@@ -248,12 +248,20 @@ require_command pod
 : "${RELEASE_VERSION:?missing RELEASE_VERSION (must match pubspec.yaml)}"
 : "${RELEASE_COMMIT:?missing RELEASE_COMMIT (must match HEAD)}"
 : "${TESTFLIGHT_GROUP:?missing TESTFLIGHT_GROUP}"
-: "${TESTFLIGHT_NOTIFICATION_RECEIPT_PATH:?missing TESTFLIGHT_NOTIFICATION_RECEIPT_PATH}"
 
+TESTFLIGHT_MODE="${TESTFLIGHT_MODE:-external}"
+[[ "$TESTFLIGHT_MODE" == "external" || "$TESTFLIGHT_MODE" == "internal" ]] || \
+  fail "TESTFLIGHT_MODE must be external or internal"
 TESTFLIGHT_NOTIFY_ONLY="${TESTFLIGHT_NOTIFY_ONLY:-no}"
 [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
   fail "TESTFLIGHT_NOTIFY_ONLY must be yes or no"
-if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+    fail "internal TestFlight mode does not support notify-only runs"
+  : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for internal mode}"
+  : "${TESTFLIGHT_TESTER_ID:?missing immutable TESTFLIGHT_TESTER_ID for internal mode}"
+  : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
+elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for notify-only mode}"
 else
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
@@ -262,41 +270,63 @@ if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
   [[ "$TESTFLIGHT_GROUP_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
     fail "TESTFLIGHT_GROUP_ID is malformed"
 fi
+if [[ -n "${TESTFLIGHT_TESTER_ID:-}" ]]; then
+  [[ "$TESTFLIGHT_TESTER_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
+    fail "TESTFLIGHT_TESTER_ID is malformed"
+fi
 
-[[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" == /* ]] || \
-  fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must be absolute"
-[[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" != *:* ]] || \
-  fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH cannot contain a colon"
-receipt_parent_input=$(dirname -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
-receipt_name=$(basename -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
-[[ "$receipt_name" != "." && "$receipt_name" != ".." ]] || \
-  fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must name a file"
-[[ -d "$receipt_parent_input" ]] || \
-  fail "notification receipt parent directory does not exist"
-receipt_parent=$(cd "$receipt_parent_input" && pwd -P)
-case "$receipt_parent/" in
-  "$REPOSITORY_ROOT/"*)
-    fail "notification receipt must be stored outside the repository"
-    ;;
-esac
-receipt_parent_mode=$(/usr/bin/stat -f '%Lp' "$receipt_parent")
-[[ "$receipt_parent_mode" == "700" ]] || \
-  fail "notification receipt parent must have mode 700 (found $receipt_parent_mode)"
-NOTIFICATION_RECEIPT_PATH="$receipt_parent/$receipt_name"
-if [[ -e "$NOTIFICATION_RECEIPT_PATH" || -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
-  [[ -f "$NOTIFICATION_RECEIPT_PATH" && ! -L "$NOTIFICATION_RECEIPT_PATH" ]] || \
-    fail "notification receipt must be a regular non-symlink file"
-  notification_receipt_mode=$(/usr/bin/stat -f '%Lp' "$NOTIFICATION_RECEIPT_PATH")
-  [[ "$notification_receipt_mode" == "400" || "$notification_receipt_mode" == "600" ]] || \
-    fail "notification receipt must have mode 400 or 600 (found $notification_receipt_mode)"
-  [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
-    fail "notification receipt already exists; use notify-only mode to verify it"
+if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
+  : "${TESTFLIGHT_NOTIFICATION_RECEIPT_PATH:?missing TESTFLIGHT_NOTIFICATION_RECEIPT_PATH}"
+  [[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" == /* ]] || \
+    fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must be absolute"
+  [[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" != *:* ]] || \
+    fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH cannot contain a colon"
+  receipt_parent_input=$(dirname -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
+  receipt_name=$(basename -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
+  [[ "$receipt_name" != "." && "$receipt_name" != ".." ]] || \
+    fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must name a file"
+  [[ -d "$receipt_parent_input" ]] || \
+    fail "notification receipt parent directory does not exist"
+  receipt_parent=$(cd "$receipt_parent_input" && pwd -P)
+  case "$receipt_parent/" in
+    "$REPOSITORY_ROOT/"*)
+      fail "notification receipt must be stored outside the repository"
+      ;;
+  esac
+  receipt_parent_mode=$(/usr/bin/stat -f '%Lp' "$receipt_parent")
+  [[ "$receipt_parent_mode" == "700" ]] || \
+    fail "notification receipt parent must have mode 700 (found $receipt_parent_mode)"
+  NOTIFICATION_RECEIPT_PATH="$receipt_parent/$receipt_name"
+  if [[ -e "$NOTIFICATION_RECEIPT_PATH" || -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
+    [[ -f "$NOTIFICATION_RECEIPT_PATH" && ! -L "$NOTIFICATION_RECEIPT_PATH" ]] || \
+      fail "notification receipt must be a regular non-symlink file"
+    notification_receipt_mode=$(/usr/bin/stat -f '%Lp' "$NOTIFICATION_RECEIPT_PATH")
+    [[ "$notification_receipt_mode" == "400" || "$notification_receipt_mode" == "600" ]] || \
+      fail "notification receipt must have mode 400 or 600 (found $notification_receipt_mode)"
+    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
+      fail "notification receipt already exists; use notify-only mode to verify it"
+  fi
 fi
 
 [[ "${RELEASE_APPROVED:-}" == "yes" ]] || \
   fail "set RELEASE_APPROVED=yes after the release checklist is approved"
-[[ "${DISTRIBUTE_EXTERNAL:-}" == "yes" ]] || \
-  fail "set DISTRIBUTE_EXTERNAL=yes to authorize external tester distribution"
+internal_gate="${DISTRIBUTE_INTERNAL:-no}"
+external_gate="${DISTRIBUTE_EXTERNAL:-no}"
+[[ "$internal_gate" == "yes" || "$internal_gate" == "no" ]] || \
+  fail "DISTRIBUTE_INTERNAL must be yes or no"
+[[ "$external_gate" == "yes" || "$external_gate" == "no" ]] || \
+  fail "DISTRIBUTE_EXTERNAL must be yes or no"
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  [[ "$internal_gate" == "yes" ]] || \
+    fail "set DISTRIBUTE_INTERNAL=yes to authorize the exact internal audience"
+  [[ "$external_gate" == "no" ]] || \
+    fail "DISTRIBUTE_EXTERNAL must be no in internal mode"
+else
+  [[ "$external_gate" == "yes" ]] || \
+    fail "set DISTRIBUTE_EXTERNAL=yes to authorize external tester distribution"
+  [[ "$internal_gate" == "no" ]] || \
+    fail "DISTRIBUTE_INTERNAL must be no in external mode"
+fi
 [[ -f "$ASC_API_KEY_PATH" ]] || fail "App Store Connect key not found"
 
 key_mode=$(/usr/bin/stat -f '%Lp' "$ASC_API_KEY_PATH")
@@ -350,6 +380,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 credential_json="$release_temp/app-store-connect.json"
+export FASTLANE_SKIP_DOCS=1
+export FASTLANE_SKIP_UPDATE_CHECK=1
+export FL_REPORT_PATH="$release_temp/fastlane-reports"
+mkdir -m 700 "$FL_REPORT_PATH"
 
 python3 - "$ASC_API_KEY_PATH" "$ASC_API_KEY_ID" "$ASC_API_ISSUER_ID" "$credential_json" <<'PY'
 import json
@@ -382,12 +416,17 @@ group_options=(
 if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
   group_options+=("group_id:$TESTFLIGHT_GROUP_ID")
 fi
-fastlane ios verify_external_group "${group_options[@]}"
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  group_options+=("expected_tester_id:$TESTFLIGHT_TESTER_ID")
+  fastlane ios verify_internal_group "${group_options[@]}"
+else
+  fastlane ios verify_external_group "${group_options[@]}"
+fi
 [[ -s "$group_id_file" ]] || fail "approved TestFlight group ID was not recorded"
 approved_group_id=$(<"$group_id_file")
 [[ "$approved_group_id" =~ ^[A-Za-z0-9-]+$ ]] || \
   fail "approved TestFlight group ID is malformed"
-echo "==> Approved external group ID: $approved_group_id"
+echo "==> Approved $TESTFLIGHT_MODE group ID: $approved_group_id"
 
 if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   echo "==> Verifying the exact build and sending the deferred tester notification"
@@ -410,7 +449,31 @@ assert_clean_source "dependency restore"
 dependency_state_before=$(dependency_fingerprint)
 
 echo "==> Building committed version $RELEASE_VERSION from $head_commit"
-flutter build ipa --release --no-pub --export-method app-store
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  internal_export_options="$release_temp/internal-export-options.plist"
+  cat >"$internal_export_options" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store-connect</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>teamID</key>
+  <string>$APPLE_TEAM_ID</string>
+  <key>testFlightInternalTestingOnly</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+  flutter build ipa \
+    --release \
+    --no-pub \
+    --export-options-plist="$internal_export_options"
+else
+  flutter build ipa --release --no-pub --export-method app-store
+fi
 
 # Builds and CocoaPods hooks can rewrite tracked dependency state. Verify both
 # the entire worktree and the dependency inputs again before trusting the IPA.
@@ -442,6 +505,10 @@ extensions=("$app"/PlugIns/*.appex)
   fail "expected exactly one signed app extension, found ${#extensions[@]}"
 live_activity_extension="${extensions[0]}"
 
+if find "$app" -name 'Runner.debug.dylib' -print -quit | grep -q .; then
+  fail "release IPA contains Runner.debug.dylib"
+fi
+
 codesign --verify --deep --strict --verbose=2 "$app"
 verify_signed_bundle \
   "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-entitlements.plist"
@@ -466,12 +533,22 @@ extension_point=$(
 
 echo "==> Uploading without distribution or tester notification"
 preupload_group_id_file="$release_temp/preupload-testflight-group-id"
-fastlane ios verify_external_group \
-  "api_key_path:$credential_json" \
-  "bundle_id:$APP_BUNDLE_ID" \
-  "group_name:$TESTFLIGHT_GROUP" \
-  "group_id:$approved_group_id" \
-  "result_path:$preupload_group_id_file"
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  fastlane ios verify_internal_group \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID" \
+    "group_name:$TESTFLIGHT_GROUP" \
+    "group_id:$approved_group_id" \
+    "expected_tester_id:$TESTFLIGHT_TESTER_ID" \
+    "result_path:$preupload_group_id_file"
+else
+  fastlane ios verify_external_group \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID" \
+    "group_name:$TESTFLIGHT_GROUP" \
+    "group_id:$approved_group_id" \
+    "result_path:$preupload_group_id_file"
+fi
 [[ "$(<"$preupload_group_id_file")" == "$approved_group_id" ]] || \
   fail "approved TestFlight audience changed before upload"
 fastlane pilot upload \
@@ -481,11 +558,27 @@ fastlane pilot upload \
   --ipa "$ipa" \
   --skip_waiting_for_build_processing false \
   --skip_submission true \
+  --distribute_external false \
   --app_version "$EXPECTED_MARKETING_VERSION" \
   --build_number "$EXPECTED_BUILD_NUMBER" \
   --notify_external_testers false \
   --changelog "$TESTFLIGHT_CHANGELOG" \
   --wait_processing_interval 30
+
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  echo "==> Verifying the exact internal-only TestFlight audience"
+  fastlane ios verify_internal_build \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID" \
+    "group_name:$TESTFLIGHT_GROUP" \
+    "group_id:$approved_group_id" \
+    "expected_tester_id:$TESTFLIGHT_TESTER_ID" \
+    "version:$EXPECTED_MARKETING_VERSION" \
+    "build_number:$EXPECTED_BUILD_NUMBER"
+  echo "==> Verified internal TestFlight build $RELEASE_VERSION ($head_commit)"
+  echo "    SHA-256: $artifact_sha256"
+  exit 0
+fi
 
 echo "==> Associating the exact build with the approved immutable group ID"
 fastlane ios associate_external_build \

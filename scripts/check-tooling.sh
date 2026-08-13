@@ -41,4 +41,5 @@ if [ -f "$repo_root/openhealth/fastlane/Fastfile" ]; then
   }
   ruby -c "$repo_root/openhealth/fastlane/Fastfile" >/dev/null
   ruby "$repo_root/scripts/test-notification-receipt.rb"
+  ruby "$repo_root/scripts/test-internal-testflight-policy.rb"
 fi
