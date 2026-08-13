@@ -236,6 +236,7 @@ void main() {
         contains('apksigner verify --verbose --print-certs --Werr'),
       );
       expect(verifier, contains('Number of signers: 1'));
+      expect(verifier, contains('APK Signature Scheme v2 is required'));
       expect(verifier, contains('com.openglucose.app'));
       expect(verifier, contains('application-debuggable'));
       expect(verifier, contains('android.permission.INTERNET'));

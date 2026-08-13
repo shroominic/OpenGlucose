@@ -151,7 +151,9 @@ jobs:
           cleanup() {
             rm -f -- "$keystore_path"
           }
-          trap cleanup EXIT INT TERM
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode \
             > "$keystore_path"
           test -s "$keystore_path"
@@ -325,6 +327,7 @@ jobs:
           test "$(jq -r '.size' <<<"$asset_json")" = "$EXPECTED_SIZE"
           test "$(jq -r '.digest' <<<"$asset_json")" = \
             "sha256:$EXPECTED_SHA256"
+          test "$(resolve_release_tag_commit)" = "$GITHUB_SHA"
           {
             printf 'Attached %s to %s.\n\n' "$RELEASE_ASSET_NAME" "$RELEASE_TAG"
             printf 'SHA-256: %s\n' "$EXPECTED_SHA256"

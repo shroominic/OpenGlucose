@@ -45,6 +45,9 @@ SHA-256 digest. It creates GitHub build provenance and attaches those exact APK
 bytes without overwriting an existing asset. Because the release event occurs
 after publication, a failed lane can temporarily leave an assetless prerelease;
 do not delete, recreate, or overwrite it while the result is ambiguous.
+Repository immutable releases must remain disabled for this post-publication
+attachment lane. If immutable releases are enabled, replace it with a
+draft-first build-and-attach flow before publishing any release.
 
 The historical `v0.0.1+10` APK used the standard Android debug certificate.
 `v0.1.0` intentionally starts the dedicated OpenGlucose beta signing lineage

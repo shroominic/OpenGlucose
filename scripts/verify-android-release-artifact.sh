@@ -37,6 +37,11 @@ aapt=$(find "$build_tools_root" -mindepth 2 -maxdepth 2 -type f \
 
 signature_report=$($apksigner verify --verbose --print-certs --Werr "$apk")
 printf '%s\n' "$signature_report" | grep -Fxq 'Verifies'
+printf '%s\n' "$signature_report" |
+  grep -Fxq 'Verified using v2 scheme (APK Signature Scheme v2): true' || {
+    printf 'release blocked: APK Signature Scheme v2 is required\n' >&2
+    exit 1
+  }
 printf '%s\n' "$signature_report" | grep -Fxq 'Number of signers: 1' || {
   printf 'release blocked: APK must have exactly one signer\n' >&2
   exit 1
