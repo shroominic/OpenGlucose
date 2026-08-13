@@ -250,8 +250,14 @@ void main() {
       final liveActivityConfiguration = _read(
         'ios/Flutter/LiveActivity.xcconfig',
       );
+      final runnerEntitlements = _read('ios/Runner/Runner.entitlements');
       expect(script, contains('RELEASE_APPROVED'));
       expect(script, contains('DISTRIBUTE_EXTERNAL'));
+      expect(script, contains('DISTRIBUTE_INTERNAL'));
+      expect(script, contains('TESTFLIGHT_MODE'));
+      expect(script, contains('TESTFLIGHT_TESTER_ID'));
+      expect(script, contains('DISTRIBUTE_INTERNAL must be yes or no'));
+      expect(script, contains('DISTRIBUTE_EXTERNAL must be yes or no'));
       expect(script, contains('RELEASE_COMMIT'));
       expect(script, contains('git status --porcelain'));
       expect(script, contains('mktemp -d'));
@@ -273,8 +279,16 @@ void main() {
       expect(script, contains('verify_main_app_healthkit_entitlement'));
       expect(script, contains('verify_main_app_healthkit_profile'));
       expect(script, contains('com.apple.developer.healthkit'));
+      expect(runnerEntitlements, contains('com.apple.developer.healthkit'));
+      expect(
+        runnerEntitlements,
+        isNot(contains('com.apple.developer.healthkit.access')),
+        reason: 'Verifiable Health Records requires separate Apple approval.',
+      );
       expect(script, contains('verify-native-tooling.sh'));
       expect(script, contains('verify_external_group'));
+      expect(script, contains('verify_internal_group'));
+      expect(script, contains('verify_internal_build'));
       expect(script, contains('associate_external_build'));
       expect(script, contains('notify_external_build'));
       expect(script, contains('TESTFLIGHT_NOTIFY_ONLY'));
@@ -303,7 +317,15 @@ void main() {
         contains('notification receipt parent must have mode 700'),
       );
       expect(script, contains('--skip_submission true'));
+      expect(script, contains('--distribute_external false'));
       expect(script, contains('--notify_external_testers false'));
+      expect(script, contains("find \"\$app\" -name 'Runner.debug.dylib'"));
+      expect(script, contains('testFlightInternalTestingOnly'));
+      expect(script, contains('FASTLANE_SKIP_DOCS=1'));
+      expect(
+        script,
+        contains(r'FL_REPORT_PATH="$release_temp/fastlane-reports"'),
+      );
       expect(script, isNot(contains('--distribute_external true')));
       expect(script, isNot(contains(r'--groups "$TESTFLIGHT_GROUP"')));
       final fastfile = _read('fastlane/Fastfile');
@@ -317,6 +339,14 @@ void main() {
         reason: 'Spaceship wraps its POST helper in internal retries.',
       );
       expect(fastfile, contains('require_exclusive_association'));
+      expect(fastfile, contains('exact_internal_automatic_group'));
+      expect(fastfile, contains('audience classification'));
+      expect(fastfile, contains('require_exact_internal_group_tester'));
+      expect(fastfile, contains('require_exclusive_internal_association'));
+      expect(fastfile, contains('require_internal_only_build'));
+      expect(fastfile, contains('buildAudienceType'));
+      expect(fastfile, contains('INTERNAL_ONLY'));
+      expect(fastfile, contains('/relationships/betaTesters'));
       expect(fastfile, contains('require_no_individual_testers'));
       expect(
         fastfile,

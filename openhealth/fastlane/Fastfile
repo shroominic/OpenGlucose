@@ -57,6 +57,93 @@ def exact_external_group(app:, group_name:, group_id: nil)
   matches.first
 end
 
+def exact_internal_automatic_group(app:, group_name:, group_id:)
+  all_groups = app.get_beta_groups
+  unknown_groups = all_groups.reject do |group|
+    classified = [true, false].include?(group.is_internal_group)
+    automatic_classified = if group.is_internal_group == true
+                             [true, false].include?(group.has_access_to_all_builds)
+                           else
+                             [true, false, nil].include?(group.has_access_to_all_builds)
+                           end
+    classified && automatic_classified
+  end
+  unless unknown_groups.empty?
+    UI.user_error!(
+      "Found #{unknown_groups.length} TestFlight group(s) with unknown " \
+      "audience classification"
+    )
+  end
+  automatic_external_groups = all_groups.select do |group|
+    group.is_internal_group == false && group.has_access_to_all_builds == true
+  end
+  unless automatic_external_groups.empty?
+    UI.user_error!(
+      "External TestFlight groups with automatic access to all builds are " \
+      "not allowed (found #{automatic_external_groups.length})"
+    )
+  end
+
+  automatic_internal_groups = all_groups.select do |group|
+    group.is_internal_group == true && group.has_access_to_all_builds == true
+  end
+  unexpected_automatic_internal_groups = automatic_internal_groups.reject do |group|
+    group.id == group_id
+  end
+  unless unexpected_automatic_internal_groups.empty?
+    UI.user_error!(
+      "Found #{unexpected_automatic_internal_groups.length} unapproved " \
+      "automatic internal TestFlight group(s)"
+    )
+  end
+
+  matches = automatic_internal_groups.select do |group|
+    group.id == group_id && group.name == group_name
+  end
+  UI.user_error!(
+    "Expected exactly one automatic internal TestFlight group named " \
+    "#{group_name} with ID #{group_id}; found #{matches.length}"
+  ) unless matches.one?
+  matches.first
+end
+
+def require_exact_internal_group_tester(group:, expected_tester_id:)
+  UI.user_error!("Internal tester ID is malformed") unless
+    expected_tester_id.match?(/\A[A-Za-z0-9-]+\z/)
+  # Read only relationship linkage IDs. The resource endpoint would expose
+  # tester names and email addresses, which are neither needed nor retained.
+  responses = Spaceship::ConnectAPI.client.test_flight_request_client
+    .get(
+      "v1/betaGroups/#{group.id}/relationships/betaTesters",
+      { limit: 200 }
+    )
+    .all_pages
+  relationships = responses.flat_map do |response|
+    Array(response.body["data"])
+  end
+  valid_linkages = relationships.all? do |relationship|
+    relationship["type"] == "betaTesters" &&
+      !relationship["id"].to_s.strip.empty?
+  end
+  UI.user_error!("Internal tester relationship response is invalid") unless
+    valid_linkages
+  tester_ids = relationships.map { |relationship| relationship["id"] }
+  UI.user_error!(
+    "Approved internal TestFlight tester relationship is not exact"
+  ) unless tester_ids == [expected_tester_id]
+end
+
+def require_internal_only_build(build)
+  response = Spaceship::ConnectAPI.client.test_flight_request_client.get(
+    "v1/builds/#{build.id}"
+  )
+  data = response.body["data"]
+  audience_type = data.is_a?(Hash) ? data.dig("attributes", "buildAudienceType") : nil
+  UI.user_error!(
+    "TestFlight build audience type is #{audience_type.inspect}; expected INTERNAL_ONLY"
+  ) unless audience_type == "INTERNAL_ONLY"
+end
+
 def exact_valid_build(app:, version:, build_number:)
   builds = Spaceship::ConnectAPI::Build.all(
     app_id: app.id,
@@ -103,6 +190,19 @@ def require_exclusive_association(app:, build:, approved_group:, required:)
     UI.user_error!("Build is not associated with the approved external group")
   end
   associated.any? { |group| group.id == approved_group.id }
+end
+
+def require_exclusive_internal_association(app:, build:, approved_group:)
+  associated = associated_groups(app: app, build: build)
+  approved = associated.select { |group| group.id == approved_group.id }
+  unexpected = associated.reject { |group| group.id == approved_group.id }
+  unless approved.one? && unexpected.empty?
+    UI.user_error!(
+      "Expected the build to be associated only with the approved internal " \
+      "TestFlight group; found #{associated.length} associated group(s), " \
+      "including #{unexpected.length} unapproved group(s)"
+    )
+  end
 end
 
 def require_no_individual_testers(build)
@@ -294,6 +394,76 @@ def post_build_beta_notification_once(request_client:, build_id:)
 end
 
 platform :ios do
+  desc "Require the exact automatic internal group and its one approved tester"
+  lane :verify_internal_group do |options|
+    app = connect_api_app(options)
+    expected_tester_id = required_option(options, :expected_tester_id)
+    group = exact_internal_automatic_group(
+      app: app,
+      group_name: required_option(options, :group_name),
+      group_id: required_option(options, :group_id)
+    )
+    require_exact_internal_group_tester(
+      group: group,
+      expected_tester_id: expected_tester_id
+    )
+
+    result_path = required_option(options, :result_path)
+    File.open(result_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      file.write(group.id)
+    end
+    UI.success("Verified the approved internal TestFlight group and tester count")
+  end
+
+  desc "Verify the exact build is available only to the approved internal group"
+  lane :verify_internal_build do |options|
+    app = connect_api_app(options)
+    group_name = required_option(options, :group_name)
+    group_id = required_option(options, :group_id)
+    expected_tester_id = required_option(options, :expected_tester_id)
+    group = exact_internal_automatic_group(
+      app: app,
+      group_name: group_name,
+      group_id: group_id
+    )
+    require_exact_internal_group_tester(
+      group: group,
+      expected_tester_id: expected_tester_id
+    )
+    build = exact_valid_build(
+      app: app,
+      version: required_option(options, :version),
+      build_number: required_option(options, :build_number)
+    )
+    require_internal_only_build(build)
+    require_exclusive_internal_association(
+      app: app,
+      build: build,
+      approved_group: group
+    )
+    require_no_individual_testers(build)
+
+    # Re-resolve the audience after all build-audience reads so a concurrent
+    # group or tester change fails closed before this lane succeeds.
+    group = exact_internal_automatic_group(
+      app: app,
+      group_name: group_name,
+      group_id: group_id
+    )
+    require_exact_internal_group_tester(
+      group: group,
+      expected_tester_id: expected_tester_id
+    )
+    require_exclusive_internal_association(
+      app: app,
+      build: build,
+      approved_group: group
+    )
+    require_no_individual_testers(build)
+    require_internal_only_build(build)
+    UI.success("Verified the exact build has only the approved internal audience")
+  end
+
   desc "Require one existing non-automatic external group and record its immutable ID"
   lane :verify_external_group do |options|
     app = connect_api_app(options)
