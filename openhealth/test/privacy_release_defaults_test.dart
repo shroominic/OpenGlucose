@@ -250,6 +250,7 @@ void main() {
       final liveActivityConfiguration = _read(
         'ios/Flutter/LiveActivity.xcconfig',
       );
+      final runnerEntitlements = _read('ios/Runner/Runner.entitlements');
       expect(script, contains('RELEASE_APPROVED'));
       expect(script, contains('DISTRIBUTE_EXTERNAL'));
       expect(script, contains('DISTRIBUTE_INTERNAL'));
@@ -278,6 +279,12 @@ void main() {
       expect(script, contains('verify_main_app_healthkit_entitlement'));
       expect(script, contains('verify_main_app_healthkit_profile'));
       expect(script, contains('com.apple.developer.healthkit'));
+      expect(runnerEntitlements, contains('com.apple.developer.healthkit'));
+      expect(
+        runnerEntitlements,
+        isNot(contains('com.apple.developer.healthkit.access')),
+        reason: 'Verifiable Health Records requires separate Apple approval.',
+      );
       expect(script, contains('verify-native-tooling.sh'));
       expect(script, contains('verify_external_group'));
       expect(script, contains('verify_internal_group'));
