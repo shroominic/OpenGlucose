@@ -9,7 +9,7 @@ end
 
 internal_input_start = script.index('if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then')
 internal_input_end = script.index(
-  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]',
+  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]',
   internal_input_start
 )
 unless internal_input_start && internal_input_end
@@ -31,7 +31,7 @@ internal_inputs = script[internal_input_start...internal_input_end]
 end
 
 notify_input_start = script.index(
-  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]',
+  'elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_RECOVER_UPLOAD" == "yes" ]]',
   internal_input_end
 )
 external_input_start = script.index("\nelse\n", notify_input_start)
@@ -66,11 +66,14 @@ external_inputs = script[external_input_start...external_input_end]
 end
 
 record_index = script.index(
-  'fastlane ios record_external_upload_provenance'
+  'fastlane ios record_external_upload_intent'
 )
+upload_index = script.index('fastlane pilot upload')
+finalize_index = script.index('fastlane ios finalize_external_upload_provenance')
 associate_index = script.index('fastlane ios associate_external_build')
-unless record_index && associate_index && record_index < associate_index
-  raise "TestFlight signing contract failed: upload provenance must be recorded before association"
+unless record_index && upload_index && finalize_index && associate_index &&
+       record_index < upload_index && finalize_index < associate_index
+  raise "TestFlight signing contract failed: intent/finalization order is unsafe"
 end
 require_match(
   script,

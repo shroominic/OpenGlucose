@@ -115,15 +115,18 @@ states. It rechecks both group memberships and the closed public-link state
 after taking the durable notification claim and immediately before sending one
 build-scoped tester notification.
 
-After Apple processes an external upload, the lane resolves the exact App Store
-Connect app/build resource IDs and creates a mode-400 upload-provenance receipt
-at `TESTFLIGHT_UPLOAD_PROVENANCE_PATH`. The receipt contains only the exact app
-and build IDs, bundle ID, version/build, source commit, IPA SHA-256, and UTC
-recording time. Its mode-700 parent must be outside the repository. Association
-requires that receipt to match the same artifact bytes and source; deferred
-notify-only runs require and revalidate it against the exact remote build. They
-therefore cannot relabel an unrelated existing version/build as the reviewed
-commit. Before the non-idempotent notification request, the lane durably
+Before Apple receives an external upload, the lane creates a mode-400 intent at
+`TESTFLIGHT_UPLOAD_PROVENANCE_PATH.pending`, binding the exact app, bundle,
+version/build, source commit, and IPA SHA-256. After processing, it atomically
+publishes the finalized mode-400 receipt at
+`TESTFLIGHT_UPLOAD_PROVENANCE_PATH`, adding Apple's exact app/build resource IDs.
+Both files use a mode-700 parent outside the repository. Association and deferred
+notification require both records to match the same artifact bytes, source, and
+remote build. If execution stops after Apple accepts the bytes but before final
+receipt publication, `TESTFLIGHT_RECOVER_UPLOAD=yes` requires pending-only state,
+skips rebuilding and re-uploading, resolves the unique exact valid build, and
+finalizes provenance before any association. New upload, recovery, and
+notify-only modes reject contradictory receipt states. Before the non-idempotent notification request, the lane durably
 creates a mode-600 `pending` claim containing the exact source commit, build, both
 authorized group IDs, the associated group-ID set, and the approved external
 tester count/digest plus the provenance-bound IPA SHA-256 at

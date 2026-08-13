@@ -216,22 +216,36 @@ provenance_app = ProvenanceApp.new("app-resource-id")
 provenance_build = ProvenanceBuild.new("build-resource-id")
 source_commit = "a" * 40
 ipa_sha256 = "b" * 64
-expected = expected_upload_provenance(
-  app: provenance_app,
-  build: provenance_build,
-  bundle_id: "com.example.app",
-  version: "1.2.3",
-  build_number: "45",
-  source_commit: source_commit,
-  ipa_sha256: ipa_sha256
-)
 
 Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   File.chmod(0o700, directory)
   path = File.join(directory, "upload.json")
-  create_upload_provenance(path: path, expected: expected)
+  intent_path = "#{path}.pending"
+  intent = normalized_upload_identity(
+    app: provenance_app,
+    bundle_id: "com.example.app",
+    version: "1.2.3",
+    build_number: "45",
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256
+  ).merge(
+    "kind" => "testflightUploadIntent",
+    "recordedAtUtc" => Time.now.utc.iso8601
+  )
+  atomic_create_immutable_json(intent_path, intent, "Upload intent")
+  finalize_upload_provenance(
+    path: path,
+    intent_path: intent_path,
+    app: provenance_app,
+    build: provenance_build,
+    bundle_id: "com.example.app",
+    version: "1.2.3",
+    build_number: "45",
+    source_commit: source_commit
+  )
   receipt = require_upload_provenance(
     path: path,
+    intent_path: intent_path,
     app: provenance_app,
     build: provenance_build,
     bundle_id: "com.example.app",
@@ -251,6 +265,7 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
       path: path,
+      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -262,6 +277,7 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
       path: path,
+      intent_path: intent_path,
       app: provenance_app,
       build: ProvenanceBuild.new("different-build-id"),
       bundle_id: "com.example.app",
@@ -273,6 +289,7 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
       path: path,
+      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -283,7 +300,16 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
     )
   end
   assert_user_error("already exists") do
-    create_upload_provenance(path: path, expected: expected)
+    finalize_upload_provenance(
+      path: path,
+      intent_path: intent_path,
+      app: provenance_app,
+      build: provenance_build,
+      bundle_id: "com.example.app",
+      version: "1.2.3",
+      build_number: "45",
+      source_commit: source_commit
+    )
   end
 
   extra_field_path = File.join(directory, "extra-field.json")
@@ -293,6 +319,7 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("unexpected schema") do
     require_upload_provenance(
       path: extra_field_path,
+      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -306,6 +333,7 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   assert_user_error("must have mode 400") do
     require_upload_provenance(
       path: path,
+      intent_path: intent_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
