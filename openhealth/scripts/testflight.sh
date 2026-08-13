@@ -326,7 +326,10 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
     fail "LIVE_ACTIVITY_APP_STORE_PROFILE_UUID must be a canonical UUID"
   [[ "$IOS_DISTRIBUTION_CERTIFICATE_SHA1" =~ ^[0-9A-Fa-f]{40}$ ]] || \
     fail "IOS_DISTRIBUTION_CERTIFICATE_SHA1 must be 40 hexadecimal characters"
-  IOS_DISTRIBUTION_CERTIFICATE_SHA1=${IOS_DISTRIBUTION_CERTIFICATE_SHA1^^}
+  IOS_DISTRIBUTION_CERTIFICATE_SHA1=$(
+    printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_SHA1" |
+      tr '[:lower:]' '[:upper:]'
+  )
   export IOS_DISTRIBUTION_CERTIFICATE_SHA1
 fi
 if [[ -n "${TESTFLIGHT_TESTER_ID:-}" ]]; then
