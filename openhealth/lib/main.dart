@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui';
 
 import 'package:cgm_core/cgm_core.dart';
@@ -230,6 +229,66 @@ class HealthExportScope extends InheritedNotifier<HealthExportController> {
   }
 }
 
+/// Shares one prepared archived-sensor file through the platform share sheet.
+///
+/// The callback is injectable so tests can verify the exact native payload.
+typedef ArchivedSensorShareAction = Future<void> Function(ShareParams params);
+
+typedef _ArchivedSensorExportRequest = ({
+  ArchivedSensorExportFormat format,
+  ArchivedSensorSession session,
+  List<CgmReading> readings,
+});
+
+Uint8List _buildArchivedSensorExportInBackground(
+  _ArchivedSensorExportRequest request,
+) => buildArchivedSensorExport(
+  format: request.format,
+  session: request.session,
+  readings: request.readings,
+);
+
+class _ArchivedSensorShareScope extends InheritedWidget {
+  const _ArchivedSensorShareScope({
+    required this.share,
+    required super.child,
+  });
+
+  final ArchivedSensorShareAction share;
+
+  static ArchivedSensorShareAction of(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<_ArchivedSensorShareScope>();
+    assert(scope != null, 'No archived-sensor share scope found in context');
+    return scope!.share;
+  }
+
+  @override
+  bool updateShouldNotify(_ArchivedSensorShareScope oldWidget) =>
+      share != oldWidget.share;
+}
+
+Future<void> _shareArchivedSensorFile(ShareParams params) async {
+  await SharePlus.instance.share(params);
+}
+
+/// Builds a one-attachment native share request.
+///
+/// In particular, this intentionally omits `text`: share_plus represents that
+/// as a second iOS activity item, which Files can save as an extra text file.
+ShareParams buildArchivedSensorShareParams({
+  required XFile file,
+  required String filename,
+  Rect? sharePositionOrigin,
+}) => ShareParams(
+  title: 'OpenGlucose sensor export',
+  subject: 'OpenGlucose sensor export',
+  files: <XFile>[file],
+  fileNameOverrides: <String>[filename],
+  mailToFallbackEnabled: false,
+  sharePositionOrigin: sharePositionOrigin,
+);
+
 class OpenGlucoseApp extends StatelessWidget {
   const OpenGlucoseApp({
     super.key,
@@ -237,6 +296,7 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.healthExport,
     required this.preferences,
     this.messageController,
+    this.archivedSensorShareAction,
   });
 
   final CgmAppController controller;
@@ -246,6 +306,9 @@ class OpenGlucoseApp extends StatelessWidget {
   /// Optional contextual-messaging engine. When null (e.g. in some tests) the
   /// dashboard simply renders no message host.
   final MessageController? messageController;
+
+  /// Optional share-sheet seam used by export integration tests.
+  final ArchivedSensorShareAction? archivedSensorShareAction;
 
   @override
   Widget build(BuildContext context) {
@@ -290,15 +353,18 @@ class OpenGlucoseApp extends StatelessWidget {
       // First-run only: show the skippable onboarding flow, then hand off to
       // the existing scan/connect home. Persisted via OnboardingStore; once
       // completed/skipped the gate falls straight through on later launches.
-      home: HealthExportScope(
-        controller: healthExport,
-        child: _OnboardingGate(
-          store: OnboardingStore(preferences),
-          controller: controller,
-          unit: controller.displayPreferences.unit,
-          home: CgmHomePage(
+      home: _ArchivedSensorShareScope(
+        share: archivedSensorShareAction ?? _shareArchivedSensorFile,
+        child: HealthExportScope(
+          controller: healthExport,
+          child: _OnboardingGate(
+            store: OnboardingStore(preferences),
             controller: controller,
-            messageController: messageController,
+            unit: controller.displayPreferences.unit,
+            home: CgmHomePage(
+              controller: controller,
+              messageController: messageController,
+            ),
           ),
         ),
       ),
@@ -1882,24 +1948,25 @@ class _ArchivedSensorDetail extends StatelessWidget {
               builder: (buttonContext) => SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  key: const ValueKey<String>('exportArchivedSensorCsv'),
+                  key: const ValueKey<String>('exportArchivedSensorData'),
                   onPressed: () async {
-                    final confirmed = await _confirmArchivedSensorCsvExport(
+                    final format = await _chooseArchivedSensorExportFormat(
                       buttonContext,
                       session: session,
                       readings: readings,
                     );
-                    if (!confirmed || !buttonContext.mounted) {
+                    if (format == null || !buttonContext.mounted) {
                       return;
                     }
-                    await _exportArchivedSensorCsv(
+                    await _exportArchivedSensorData(
                       buttonContext,
+                      format: format,
                       session: session,
                       readings: readings,
                     );
                   },
                   icon: const Icon(Icons.ios_share_rounded),
-                  label: const Text('Export CSV'),
+                  label: const Text('Export data'),
                 ),
               ),
             ),
@@ -1910,7 +1977,7 @@ class _ArchivedSensorDetail extends StatelessWidget {
   }
 }
 
-Future<bool> _confirmArchivedSensorCsvExport(
+Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
   BuildContext context, {
   required ArchivedSensorSession session,
   required List<CgmReading> readings,
@@ -1936,100 +2003,157 @@ Future<bool> _confirmArchivedSensorCsvExport(
       ? 'Date range unavailable'
       : '${dateFormat.format(rangeStart.toLocal())} – '
             '${dateFormat.format(rangeEnd.toLocal())}';
-  return await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Export archived sensor data?'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text('${readings.length} glucose readings'),
-                const SizedBox(height: 4),
-                Text(dateRange),
-                const SizedBox(height: 18),
-                const Text(
-                  'Included in the CSV',
-                  style: TextStyle(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 8),
-                const Text('• Glucose values in mg/dL and mmol/L'),
-                const Text('• Reading times, source, and sensor minute'),
-                const Text('• Raw quality fields and provisional state'),
-                const Text('• Archive reason and session timing'),
-                const SizedBox(height: 14),
-                const Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Icon(
-                      Icons.privacy_tip_outlined,
-                      size: 20,
-                      color: Color(0xFF0B6E69),
+  var selectedFormat = ArchivedSensorExportFormat.csv;
+  return showDialog<ArchivedSensorExportFormat>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => AlertDialog(
+        title: const Text('Export archived sensor data'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text('${readings.length} glucose readings'),
+              const SizedBox(height: 4),
+              Text(dateRange),
+              const SizedBox(height: 18),
+              const Text(
+                'File format',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<ArchivedSensorExportFormat>(
+                  key: const ValueKey<String>(
+                    'archivedSensorExportFormatPicker',
+                  ),
+                  segments: const <ButtonSegment<ArchivedSensorExportFormat>>[
+                    ButtonSegment<ArchivedSensorExportFormat>(
+                      value: ArchivedSensorExportFormat.csv,
+                      label: Text(
+                        'CSV',
+                        key: ValueKey<String>('exportFormatCsv'),
+                      ),
                     ),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Sensor serials, device IDs, and storage identifiers '
-                        'are not included.',
+                    ButtonSegment<ArchivedSensorExportFormat>(
+                      value: ArchivedSensorExportFormat.txt,
+                      label: Text(
+                        'TXT',
+                        key: ValueKey<String>('exportFormatTxt'),
+                      ),
+                    ),
+                    ButtonSegment<ArchivedSensorExportFormat>(
+                      value: ArchivedSensorExportFormat.xlsx,
+                      label: Text(
+                        'XLSX',
+                        key: ValueKey<String>('exportFormatXlsx'),
                       ),
                     ),
                   ],
+                  selected: <ArchivedSensorExportFormat>{selectedFormat},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (selection) {
+                    setDialogState(() => selectedFormat = selection.single);
+                  },
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 8),
+              Text(_archivedSensorFormatDescription(selectedFormat)),
+              const SizedBox(height: 18),
+              const Text(
+                'Included in the file',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              const Text('• Glucose values in mg/dL and mmol/L'),
+              const Text('• Reading times, source, and sensor minute'),
+              const Text('• Raw quality fields and provisional state'),
+              const Text('• Archive reason and session timing'),
+              const SizedBox(height: 14),
+              const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Icon(
+                    Icons.privacy_tip_outlined,
+                    size: 20,
+                    color: Color(0xFF0B6E69),
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Sensor serials, device IDs, and storage identifiers '
+                      'are not included.',
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const ValueKey<String>('confirmArchivedSensorCsv'),
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Share CSV'),
-            ),
-          ],
         ),
-      ) ??
-      false;
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey<String>('confirmArchivedSensorExport'),
+            onPressed: () => Navigator.of(dialogContext).pop(selectedFormat),
+            child: Text('Share ${selectedFormat.extension.toUpperCase()}'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
-Future<void> _exportArchivedSensorCsv(
+String _archivedSensorFormatDescription(ArchivedSensorExportFormat format) =>
+    switch (format) {
+      ArchivedSensorExportFormat.csv =>
+        'Best for importing into most spreadsheet and analysis apps.',
+      ArchivedSensorExportFormat.txt =>
+        'A tab-separated plain-text file that is easy to inspect anywhere.',
+      ArchivedSensorExportFormat.xlsx =>
+        'A real Excel workbook with glucose measurements stored as numbers.',
+    };
+
+Future<void> _exportArchivedSensorData(
   BuildContext context, {
+  required ArchivedSensorExportFormat format,
   required ArchivedSensorSession session,
   required List<CgmReading> readings,
 }) async {
+  final share = _ArchivedSensorShareScope.of(context);
   final renderBox = context.findRenderObject() as RenderBox?;
   final shareOrigin = renderBox == null
       ? null
       : renderBox.localToGlobal(Offset.zero) & renderBox.size;
   String? preparedFilePath;
   try {
-    final csv = buildArchivedSensorCsv(
-      session: session,
-      readings: readings,
+    final bytes = await compute(
+      _buildArchivedSensorExportInBackground,
+      (
+        format: format,
+        session: session,
+        readings: List<CgmReading>.of(readings, growable: false),
+      ),
     );
-    final filename = archivedSensorCsvFilename();
-    preparedFilePath = await prepareArchivedSensorShareFile(
+    final filename = archivedSensorExportFilename(format);
+    preparedFilePath = await prepareArchivedSensorShareFileBytes(
       filename: filename,
-      contents: csv,
+      bytes: bytes,
     );
     final exportFile = preparedFilePath == null
         ? XFile.fromData(
-            Uint8List.fromList(utf8.encode(csv)),
-            mimeType: 'text/csv',
+            bytes,
+            mimeType: format.mimeType,
           )
-        : XFile(preparedFilePath, mimeType: 'text/csv');
-    await SharePlus.instance.share(
-      ShareParams(
-        title: 'OpenGlucose sensor export',
-        subject: 'OpenGlucose archived sensor data',
-        text:
-            'Archived OpenGlucose sensor data. This file contains glucose '
-            'history and is not medical advice.',
-        files: <XFile>[exportFile],
-        fileNameOverrides: <String>[filename],
+        : XFile(preparedFilePath, mimeType: format.mimeType);
+    await share(
+      buildArchivedSensorShareParams(
+        file: exportFile,
+        filename: filename,
         sharePositionOrigin: shareOrigin,
       ),
     );
@@ -2039,7 +2163,7 @@ Future<void> _exportArchivedSensorCsv(
     }
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('The archived sensor CSV could not be exported.'),
+        content: Text('The archived sensor data could not be exported.'),
       ),
     );
   } finally {

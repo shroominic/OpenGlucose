@@ -12,6 +12,20 @@ Future<String?> prepareArchivedSensorShareFile({
   required String filename,
   required String contents,
   String? temporaryDirectoryPath,
+}) => prepareArchivedSensorShareFileBytes(
+  filename: filename,
+  bytes: utf8.encode(contents),
+  temporaryDirectoryPath: temporaryDirectoryPath,
+);
+
+/// Writes one binary native share payload into its own temporary directory.
+///
+/// This is used for XLSX as well as the UTF-8 CSV and text formats so every
+/// export reaches the platform as one real file with the requested extension.
+Future<String?> prepareArchivedSensorShareFileBytes({
+  required String filename,
+  required List<int> bytes,
+  String? temporaryDirectoryPath,
 }) async {
   final temporaryDirectory = temporaryDirectoryPath == null
       ? await getTemporaryDirectory()
@@ -20,7 +34,7 @@ Future<String?> prepareArchivedSensorShareFile({
     'openglucose-export-',
   );
   final file = File(path.join(exportDirectory.path, filename));
-  await file.writeAsBytes(utf8.encode(contents), flush: true);
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 }
 

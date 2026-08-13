@@ -6,6 +6,12 @@ Future<String?> prepareArchivedSensorShareFile({
   String? temporaryDirectoryPath,
 }) => Future<String?>.value();
 
+Future<String?> prepareArchivedSensorShareFileBytes({
+  required String filename,
+  required List<int> bytes,
+  String? temporaryDirectoryPath,
+}) => Future<String?>.value();
+
 Future<void> disposeArchivedSensorShareFile(String? path) =>
     Future<void>.value();
 

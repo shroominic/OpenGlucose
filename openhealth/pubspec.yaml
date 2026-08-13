@@ -1,13 +1,14 @@
 name: openglucose
 description: Your Open-source health and wellness app focused on local data and privacy.
 publish_to: none
-version: 0.0.1+15
+version: 0.0.1+16
 
 environment:
   sdk: ^3.11.4
   flutter: ">=3.35.0"
 
 dependencies:
+  archive: ^4.0.9
   flutter:
     sdk: flutter
   cgm_aidex:

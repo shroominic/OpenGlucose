@@ -59,7 +59,7 @@ void main() {
   );
 
   testWidgets(
-    'past sensor with readings exposes an enabled Export CSV action',
+    'archive export offers CSV TXT and XLSX choices',
     (
       tester,
     ) async {
@@ -98,7 +98,7 @@ void main() {
       await tester.drag(find.byType(ListView), const Offset(0, -500));
       await tester.pumpAndSettle();
 
-      final exportLabel = find.text('Export CSV');
+      final exportLabel = find.text('Export data');
       expect(exportLabel, findsOneWidget);
       final exportButton = find.ancestor(
         of: exportLabel,
@@ -111,18 +111,43 @@ void main() {
         tester.widget<ButtonStyleButton>(exportButton).onPressed,
         isNotNull,
       );
+
       await tester.tap(exportLabel);
       await tester.pumpAndSettle();
-      expect(find.text('Export archived sensor data?'), findsOneWidget);
-      expect(find.text('Included in the CSV'), findsOneWidget);
+
+      expect(find.text('Export archived sensor data'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey<String>('archivedSensorExportFormatPicker'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('exportFormatCsv')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('exportFormatTxt')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('exportFormatXlsx')),
+        findsOneWidget,
+      );
+      expect(find.text('Included in the file'), findsOneWidget);
       expect(
         find.textContaining('Sensor serials, device IDs'),
         findsOneWidget,
       );
-      expect(
-        find.byKey(const ValueKey<String>('confirmArchivedSensorCsv')),
-        findsOneWidget,
-      );
+      for (final format in const <({String key, String shareLabel})>[
+        (key: 'exportFormatCsv', shareLabel: 'Share CSV'),
+        (key: 'exportFormatTxt', shareLabel: 'Share TXT'),
+        (key: 'exportFormatXlsx', shareLabel: 'Share XLSX'),
+      ]) {
+        await tester.tap(find.byKey(ValueKey<String>(format.key)));
+        await tester.pumpAndSettle();
+        expect(find.text(format.shareLabel), findsOneWidget);
+      }
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
