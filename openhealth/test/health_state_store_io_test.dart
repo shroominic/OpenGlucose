@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/health_state_store_io.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -50,7 +51,7 @@ void main() {
       expect(excludedPaths.last, endsWith(_fileName));
 
       final envelope = await _readEnvelope(directory);
-      expect(envelope['schemaVersion'], 2);
+      expect(envelope['schemaVersion'], 3);
       expect(
         envelope['values'],
         containsPair(_lastSensorKey, '{"deviceId":"sensor-1"}'),
@@ -335,16 +336,19 @@ void main() {
     },
   );
 
-  test('rewrites the unversioned legacy file as schema version two', () async {
-    final directory = await _temporaryDirectory('legacy-file');
-    await _stateFile(directory).writeAsString(
-      jsonEncode(<String, String>{_lastSensorKey: 'flat-file-sensor'}),
-    );
-    final store = await _initializeEmptyStore(directory);
+  test(
+    'rewrites the unversioned legacy file as schema version three',
+    () async {
+      final directory = await _temporaryDirectory('legacy-file');
+      await _stateFile(directory).writeAsString(
+        jsonEncode(<String, String>{_lastSensorKey: 'flat-file-sensor'}),
+      );
+      final store = await _initializeEmptyStore(directory);
 
-    expect(store.getString(_lastSensorKey), 'flat-file-sensor');
-    expect((await _readEnvelope(directory))['schemaVersion'], 2);
-  });
+      expect(store.getString(_lastSensorKey), 'flat-file-sensor');
+      expect((await _readEnvelope(directory))['schemaVersion'], 3);
+    },
+  );
 
   test(
     'keeps each history in an independent blob without rewriting metadata',
@@ -403,6 +407,163 @@ void main() {
     },
   );
 
+  test(
+    'uses deterministic history filenames that do not encode the key',
+    () async {
+      final directory = await _temporaryDirectory('private-history-filename');
+      final store = await _initializeEmptyStore(directory);
+      const key = 'openHealth.history.serial:SENSOR-PRIVATE-42';
+
+      await store.setString(key, 'private-history');
+
+      final blob = _historyBlob(directory, key);
+      final fileName = blob.uri.pathSegments.last;
+      final reversibleName = base64Url.encode(utf8.encode(key));
+      expect(fileName, matches(RegExp(r'^history-[0-9a-f]{64}\.blob$')));
+      expect(fileName, isNot(contains('SENSOR-PRIVATE-42')));
+      expect(fileName, isNot(contains(reversibleName)));
+      expect(await blob.readAsString(), 'private-history');
+    },
+  );
+
+  test('migrates schema-two reversible history filenames', () async {
+    final directory = await _temporaryDirectory('history-name-migration');
+    const key = 'openHealth.history.serial:LEGACY-SENSOR-1';
+    final legacyBlob = _legacyHistoryBlob(directory, key);
+    await _stateFile(directory).writeAsString(
+      _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
+    );
+    await legacyBlob.writeAsString('legacy-history');
+
+    final store = await _initializeEmptyStore(directory);
+
+    expect(store.getString(key), 'legacy-history');
+    expect(legacyBlob.existsSync(), isFalse);
+    expect(await _historyBlob(directory, key).readAsString(), 'legacy-history');
+    expect((await _readEnvelope(directory))['schemaVersion'], 3);
+  });
+
+  test('recovers a legacy history transaction before renaming it', () async {
+    final directory = await _temporaryDirectory('legacy-name-transaction');
+    const key = 'openHealth.history.serial:LEGACY-SENSOR-2';
+    final legacyBlob = _legacyHistoryBlob(directory, key);
+    await _stateFile(directory).writeAsString(
+      _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
+    );
+    await File('${legacyBlob.path}.previous').writeAsString(
+      'committed-history',
+    );
+    await File('${legacyBlob.path}.next').writeAsString('uncommitted-history');
+
+    final store = await _initializeEmptyStore(directory);
+
+    expect(store.getString(key), 'committed-history');
+    expect(legacyBlob.existsSync(), isFalse);
+    expect(
+      await _historyBlob(directory, key).readAsString(),
+      'committed-history',
+    );
+    expect(File('${legacyBlob.path}.previous').existsSync(), isFalse);
+    expect(File('${legacyBlob.path}.next').existsSync(), isFalse);
+  });
+
+  test('resumes after a history rename precedes the schema rewrite', () async {
+    final directory = await _temporaryDirectory('history-name-resume');
+    const key = 'openHealth.history.serial:LEGACY-SENSOR-3';
+    await _stateFile(directory).writeAsString(
+      _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
+    );
+    await _historyBlob(directory, key).writeAsString('renamed-history');
+
+    final store = await _initializeEmptyStore(directory);
+
+    expect(store.getString(key), 'renamed-history');
+    expect((await _readEnvelope(directory))['schemaVersion'], 3);
+  });
+
+  test(
+    'removes an identical legacy copy after an interrupted rename',
+    () async {
+      final directory = await _temporaryDirectory('history-name-duplicate');
+      const key = 'openHealth.history.serial:LEGACY-SENSOR-DUPLICATE';
+      final legacyBlob = _legacyHistoryBlob(directory, key);
+      final migratedBlob = _historyBlob(directory, key);
+      await _stateFile(directory).writeAsString(
+        _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
+      );
+      await legacyBlob.writeAsString('same-preserved-history');
+      await migratedBlob.writeAsString('same-preserved-history');
+
+      final store = await _initializeEmptyStore(directory);
+
+      expect(store.getString(key), 'same-preserved-history');
+      expect(legacyBlob.existsSync(), isFalse);
+      expect(await migratedBlob.readAsString(), 'same-preserved-history');
+      expect((await _readEnvelope(directory))['schemaVersion'], 3);
+    },
+  );
+
+  test('retries backup verification after the history rename', () async {
+    final directory = await _temporaryDirectory('history-name-exclusion');
+    const key = 'openHealth.history.serial:LEGACY-SENSOR-4';
+    final legacyBlob = _legacyHistoryBlob(directory, key);
+    final migratedBlob = _historyBlob(directory, key);
+    await _stateFile(directory).writeAsString(
+      _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
+    );
+    await legacyBlob.writeAsString('preserved-history');
+    SharedPreferences.setMockInitialValues(const <String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final failingStore = FileHealthStateStore(
+      legacyPreferences: preferences,
+      directoryProvider: () async => directory,
+      requiresBackupExclusion: true,
+      backupExclusionMarker: (path) async {
+        if (path == migratedBlob.path) {
+          throw StateError('verification denied');
+        }
+      },
+    );
+
+    await expectLater(failingStore.initialize(), throwsStateError);
+
+    expect(legacyBlob.existsSync(), isFalse);
+    expect(await migratedBlob.readAsString(), 'preserved-history');
+    expect((await _readEnvelope(directory))['schemaVersion'], 2);
+
+    final recoveredStore = await _initializeEmptyStore(directory);
+    expect(recoveredStore.getString(key), 'preserved-history');
+    expect((await _readEnvelope(directory))['schemaVersion'], 3);
+  });
+
+  test(
+    'fails closed without discarding conflicting migration copies',
+    () async {
+      final directory = await _temporaryDirectory('history-name-conflict');
+      const key = 'openHealth.history.serial:LEGACY-SENSOR-5';
+      final legacyBlob = _legacyHistoryBlob(directory, key);
+      final migratedBlob = _historyBlob(directory, key);
+      await _stateFile(directory).writeAsString(
+        _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
+      );
+      await legacyBlob.writeAsString('legacy-history');
+      await migratedBlob.writeAsString('different-migrated-history');
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+
+      await expectLater(store.initialize(), throwsStateError);
+
+      expect(await legacyBlob.readAsString(), 'legacy-history');
+      expect(await migratedBlob.readAsString(), 'different-migrated-history');
+      expect((await _readEnvelope(directory))['schemaVersion'], 2);
+    },
+  );
+
   test('migrates schema-one embedded histories into blobs', () async {
     final directory = await _temporaryDirectory('schema-one-history');
     const activeKey = 'openHealth.history.sensor-legacy';
@@ -420,7 +581,7 @@ void main() {
     expect(store.getString(activeKey), 'active-history');
     expect(store.getString(archivedKey), 'archived-history');
     final envelope = await _readEnvelope(directory);
-    expect(envelope['schemaVersion'], 2);
+    expect(envelope['schemaVersion'], 3);
     expect(envelope['values'], <String, String>{
       _lastSensorKey: 'legacy-sensor',
     });
@@ -592,11 +753,20 @@ void main() {
     'preserves an unsupported-version file and refuses to downgrade it',
     () async {
       final directory = await _temporaryDirectory('unsupported');
+      const futureHistoryKey = 'openHealth.history.serial:FUTURE-SENSOR';
+      final legacyBlob = _legacyHistoryBlob(directory, futureHistoryKey);
+      final futureNext = File('${legacyBlob.path}.next');
+      final futurePrevious = File('${legacyBlob.path}.previous');
+      final futureDeleted = File('${legacyBlob.path}.deleted');
       final unsupportedContents = jsonEncode(<String, Object>{
         'schemaVersion': 99,
         'values': <String, String>{_lastSensorKey: 'future-sensor'},
       });
       await _stateFile(directory).writeAsString(unsupportedContents);
+      await legacyBlob.writeAsString('future-history');
+      await futureNext.writeAsString('future-next');
+      await futurePrevious.writeAsString('future-previous');
+      await futureDeleted.writeAsString('future-deleted');
       SharedPreferences.setMockInitialValues(const <String, Object>{});
       final preferences = await SharedPreferences.getInstance();
       final store = FileHealthStateStore(
@@ -608,6 +778,11 @@ void main() {
       await expectLater(store.initialize(), throwsA(isA<UnsupportedError>()));
 
       expect(await _stateFile(directory).readAsString(), unsupportedContents);
+      expect(await legacyBlob.readAsString(), 'future-history');
+      expect(await futureNext.readAsString(), 'future-next');
+      expect(await futurePrevious.readAsString(), 'future-previous');
+      expect(await futureDeleted.readAsString(), 'future-deleted');
+      expect(_historyBlob(directory, futureHistoryKey).existsSync(), isFalse);
     },
   );
 }
@@ -636,6 +811,15 @@ File _transactionFile(Directory directory, String suffix) =>
 File _historyBlob(Directory directory, String key) {
   final historyDirectory = Directory('${directory.path}/$_historyDirectory')
     ..createSync(recursive: true);
+  final digest = crypto.sha256.convert(utf8.encode(key));
+  return File(
+    '${historyDirectory.path}/history-$digest$_historyBlobExtension',
+  );
+}
+
+File _legacyHistoryBlob(Directory directory, String key) {
+  final historyDirectory = Directory('${directory.path}/$_historyDirectory')
+    ..createSync(recursive: true);
   final encodedKey = base64Url.encode(utf8.encode(key));
   return File(
     '${historyDirectory.path}/$encodedKey$_historyBlobExtension',
@@ -647,8 +831,14 @@ Future<Map<String, dynamic>> _readEnvelope(Directory directory) async {
       as Map<String, dynamic>;
 }
 
-String _encodedEnvelope(Map<String, String> values) {
-  return jsonEncode(<String, Object>{'schemaVersion': 1, 'values': values});
+String _encodedEnvelope(
+  Map<String, String> values, {
+  int schemaVersion = 1,
+}) {
+  return jsonEncode(<String, Object>{
+    'schemaVersion': schemaVersion,
+    'values': values,
+  });
 }
 
 Future<FileHealthStateStore> _initializeEmptyStore(Directory directory) async {

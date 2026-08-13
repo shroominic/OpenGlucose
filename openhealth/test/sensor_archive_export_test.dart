@@ -377,7 +377,7 @@ void main() {
   });
 
   test(
-    'startup cleanup removes only known share payload directories',
+    'startup cleanup removes only known payloads and exact legacy CSV files',
     () async {
       final root = await Directory.systemTemp.createTemp(
         'openglucose-share-cleanup-',
@@ -392,6 +392,24 @@ void main() {
       final unrelated = Directory('${root.path}/unrelated-cache')
         ..createSync(recursive: true);
       File('${unrelated.path}/keep.txt').writeAsStringSync('keep');
+      final legacyCsv = File(
+        '${root.path}/openhealth_SENSOR_42-A_20260609-0858.csv',
+      )..writeAsStringSync('identifier-bearing private export');
+      final legacyCollisionCsv = File(
+        '${root.path}/openhealth_SENSOR_42-A_20260609-0858-2.csv',
+      )..writeAsStringSync('identifier-bearing private export');
+      final legacyXlsx = File(
+        '${root.path}/openhealth_SENSOR_42-A_20260609-0858.xlsx',
+      )..writeAsStringSync('not in the scoped CSV migration');
+      final malformedTimestamp = File(
+        '${root.path}/openhealth_SENSOR_42-A_recent.csv',
+      )..writeAsStringSync('unrelated near-match');
+      final impossibleLegacyCollision = File(
+        '${root.path}/openhealth_SENSOR_42-A_20260609-0858-1.csv',
+      )..writeAsStringSync('unrelated near-match');
+      final similarlyNamedDirectory = Directory(
+        '${root.path}/openhealth_DIRECTORY_20260609-0858.csv',
+      )..createSync();
 
       await clearStaleArchivedSensorShareFiles(
         temporaryDirectoryPath: root.path,
@@ -401,6 +419,18 @@ void main() {
       expect(await pluginCache.exists(), isFalse);
       // ignore: avoid_slow_async_io, verifying privacy cleanup is the behavior.
       expect(await ownCache.exists(), isFalse);
+      // ignore: avoid_slow_async_io, verifying privacy cleanup is the behavior.
+      expect(await legacyCsv.exists(), isFalse);
+      // ignore: avoid_slow_async_io, verifying privacy cleanup is the behavior.
+      expect(await legacyCollisionCsv.exists(), isFalse);
+      // ignore: avoid_slow_async_io, proving non-CSV files remain untouched.
+      expect(await legacyXlsx.exists(), isTrue);
+      // ignore: avoid_slow_async_io, proving near-matches remain untouched.
+      expect(await malformedTimestamp.exists(), isTrue);
+      // ignore: avoid_slow_async_io, old collision numbering began at two.
+      expect(await impossibleLegacyCollision.exists(), isTrue);
+      // ignore: avoid_slow_async_io, proving only regular files are removed.
+      expect(await similarlyNamedDirectory.exists(), isTrue);
       // ignore: avoid_slow_async_io, proving cleanup remains tightly scoped.
       expect(await unrelated.exists(), isTrue);
     },

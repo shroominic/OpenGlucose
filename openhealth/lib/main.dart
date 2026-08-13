@@ -33,6 +33,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await configurePlatformPrivacyDefaults();
 
   FlutterError.onError = (details) {
     if (kDebugMode) {

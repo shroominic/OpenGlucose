@@ -112,9 +112,13 @@ void main() {
               'The directory must be excluded before a sensitive file exists.',
         );
         expect(store, contains("'schemaVersion': _schemaVersion"));
+        expect(store, contains('static const _schemaVersion = 3'));
         expect(store, contains('_serializeMutation'));
         expect(store, contains('.previous'));
         expect(store, contains('openHealth.history.'));
+        expect(store, contains('crypto.sha256.convert'));
+        expect(store, contains('_migrateLegacyHistoryBlobNames'));
+        expect(store, contains('_filesHaveEqualContents'));
         expect(store, contains('openHealth.lastSensor'));
         expect(store, contains('excludeFromBackup'));
         expect(privacyStorageChannel, contains('case "excludeFromBackup"'));
@@ -169,6 +173,38 @@ void main() {
         );
       },
     );
+
+    test('release startup disables native BLE logs before app bootstrap', () {
+      final bootstrap = _read('lib/main.dart');
+      final driverFactory = _read('lib/src/driver_factory_io.dart');
+      final pluginLogging = _read(
+        '../packages/cgm_ble_flutter/lib/src/'
+        'flutter_blue_plus_logging.dart',
+      );
+
+      expect(bootstrap, contains('await configurePlatformPrivacyDefaults();'));
+      expect(
+        bootstrap.indexOf('await configurePlatformPrivacyDefaults();'),
+        lessThan(bootstrap.indexOf('await clearStaleArchivedSensorShareFiles')),
+      );
+      expect(
+        bootstrap.indexOf('await configurePlatformPrivacyDefaults();'),
+        lessThan(bootstrap.indexOf('SharedPreferences.getInstance()')),
+      );
+      expect(driverFactory, contains('if (kReleaseMode)'));
+      expect(driverFactory, contains('await disableFlutterBluePlusLogs();'));
+      expect(pluginLogging, contains('fbp.LogLevel.none'));
+      expect(pluginLogging, contains('color: false'));
+    });
+
+    test('startup export cleanup targets the exact legacy CSV shape', () {
+      final cleanup = _read('lib/src/sensor_archive_share_file_io.dart');
+
+      expect(cleanup, contains('_legacySensorExportFileName'));
+      expect(cleanup, contains('entry is File'));
+      expect(cleanup, contains('entry is Directory'));
+      expect(cleanup, contains(r'\.csv$'));
+    });
   });
 
   group('release safety defaults', () {
