@@ -10,6 +10,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-08-13
+
 ### Added
 
 - Reproducible engineering baseline documentation, ownership, contribution,
@@ -26,6 +30,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   explainable glucose metrics, and weekly recap views.
 - Explicit, write-only Apple Health glucose export with protected progress
   state, plus optional BYO-key AI insights over disclosed 24-hour aggregates.
+- Durable session-keyed archive snapshots with CSV, TXT, and XLSX export
+  through a one-file, previewed share flow.
+- A clearly labeled sample dashboard for first-time users without retained
+  glucose history.
 
 ### Changed
 
@@ -43,11 +51,22 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   variables instead of falling back to debug signing.
 - TestFlight automation now requires an explicit source commit and release
   approval inputs, and uses temporary credential material.
+- Settings now use a full-screen information architecture, active sensor
+  lifecycle detail is kept out of the primary dashboard, and archived-session
+  recap views anchor to their actual reading windows.
+- Sensor restore, activation, expiry, archive persistence, and history
+  deduplication fail closed around incomplete or stale sessions.
+- The Android beta release lane builds from the immutable release-event commit
+  SHA, revalidates its tag before and after upload, requires a dedicated signing
+  identity, verifies the APK identity and version, creates build provenance,
+  and attaches only the verified bytes.
 
 ### Known limitations
 
-- Complete portable file/data export and delete-all flows are not implemented;
-  the Apple Health integration is a separate opt-in write-only path.
+- Complete all-data/recovery export, delete-all, and configurable retention
+  flows are not implemented; this beta exports one archived sensor session at
+  a time, and the Apple Health integration remains a separate opt-in write-only
+  path.
 - The web demo stores `shared_preferences` data in origin-scoped browser
   `localStorage`; it is not a supported private health-data store.
 - Automated physical-device end-to-end coverage is deferred and must not be
@@ -64,5 +83,6 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.0.1%2B10...HEAD
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.0
 [0.0.1+10]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.0.1%2B10

@@ -31,6 +31,15 @@ void main() {
       expect(modernRules, contains('<device-transfer>'));
     });
 
+    test('Android release permits explicit HTTPS integrations', () {
+      final manifest = _read('android/app/src/main/AndroidManifest.xml');
+      expect(
+        manifest,
+        contains('android.permission.INTERNET'),
+        reason: 'The opt-in BYO-key AI transport must work in release builds.',
+      );
+    });
+
     test('lock-screen glucose requires an explicit opt-in', () {
       final android = _read(
         'android/app/src/main/java/com/aidex/aidex_flutter/'
@@ -186,6 +195,53 @@ void main() {
       expect(gradle, contains('signingConfigs.getByName("release")'));
       expect(gradle, isNot(contains('signingConfigs.getByName("debug")')));
       expect(gradle, contains('never falls back to debug signing'));
+    });
+
+    test('Android beta release is source-bound and fail-closed', () {
+      final workflow = _read(
+        '../.github/workflows/release-android-beta.yml',
+      );
+      final verifier = _read(
+        '../scripts/verify-android-release-artifact.sh',
+      );
+
+      expect(workflow, contains('types:\n      - published'));
+      expect(workflow, contains('github.event.release.prerelease == true'));
+      expect(workflow, contains('permissions: {}'));
+      expect(workflow, contains('environment: android-release'));
+      expect(workflow, contains('persist-credentials: false'));
+      expect(workflow, contains('git merge-base --is-ancestor'));
+      expect(workflow, contains('ANDROID_KEYSTORE_BASE64'));
+      expect(workflow, contains('ANDROID_SIGNING_CERT_SHA256'));
+      expect(workflow, contains('github.event.release.id'));
+      expect(workflow, contains('https://uploads.github.com/repos/'));
+      expect(workflow, contains("'.assets | length'"));
+      expect(workflow, contains('verify-android-release-artifact.sh'));
+      expect(workflow, contains('actions/attest@'));
+      expect(
+        workflow,
+        contains('gh api --method POST'),
+      );
+      expect(workflow, contains('resolve_release_tag_commit'));
+      expect(
+        workflow,
+        contains(r'test "$(resolve_release_tag_commit)" = "$GITHUB_SHA"'),
+      );
+      expect(workflow, isNot(contains('--clobber')));
+      expect(workflow, isNot(contains('softprops/action-gh-release')));
+      expect(workflow, isNot(contains('key.properties')));
+
+      expect(
+        verifier,
+        contains('apksigner verify --verbose --print-certs --Werr'),
+      );
+      expect(verifier, contains('Number of signers: 1'));
+      expect(verifier, contains('APK Signature Scheme v2 is required'));
+      expect(verifier, contains('com.openglucose.app'));
+      expect(verifier, contains('application-debuggable'));
+      expect(verifier, contains('android.permission.INTERNET'));
+      expect(verifier, contains('historical_debug_digest'));
+      expect(verifier, contains('CN=Android Debug'));
     });
 
     test('TestFlight distribution is immutable and explicitly gated', () {

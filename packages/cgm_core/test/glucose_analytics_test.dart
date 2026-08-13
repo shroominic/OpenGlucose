@@ -30,6 +30,15 @@ List<CgmReading> _series(
   return readings;
 }
 
+List<CgmReading> _minimum24HourCoverage() {
+  return <CgmReading>[
+    _reading(110, at: _now.subtract(const Duration(hours: 12))),
+    for (var i = 0; i < 22; i++)
+      _reading(110, at: _now.subtract(Duration(minutes: 110 - (i * 5)))),
+    _reading(110, at: _now),
+  ];
+}
+
 void main() {
   group('readingsInTimeframe', () {
     test('keeps readings inside the window and drops older ones', () {
@@ -95,6 +104,122 @@ void main() {
         ).length,
         2,
       );
+    });
+  });
+
+  group('AnalyticsCoverage', () {
+    test('non-empty sparse windows are not sufficient patterns', () {
+      final readings = <CgmReading>[_reading(110, at: _now)];
+
+      for (final timeframe in AnalyticsTimeframe.values) {
+        final coverage = GlucoseAnalytics.assessCoverage(
+          readings,
+          timeframe,
+          now: _now,
+        );
+
+        expect(coverage.readingCount, 1, reason: timeframe.label);
+        expect(coverage.activeDays, 1, reason: timeframe.label);
+        expect(coverage.observedSpan, Duration.zero, reason: timeframe.label);
+        expect(coverage.isSufficient, isFalse, reason: timeframe.label);
+      }
+    });
+
+    test('duplicate timestamps cannot inflate coverage', () {
+      final sameInstant = _now.subtract(const Duration(hours: 13));
+      final readings = <CgmReading>[
+        for (var i = 0; i < 30; i++) _reading(100.0 + i, at: sameInstant),
+        _reading(110, at: _now),
+      ];
+
+      final coverage = GlucoseAnalytics.assessCoverage(
+        readings,
+        AnalyticsTimeframe.last24h,
+        now: _now,
+      );
+
+      expect(coverage.readingCount, 2);
+      expect(coverage.isSufficient, isFalse);
+    });
+
+    test('24h gate accepts its exact reading and span boundaries', () {
+      final readings = _minimum24HourCoverage();
+      final coverage = GlucoseAnalytics.assessCoverage(
+        readings,
+        AnalyticsTimeframe.last24h,
+        now: _now,
+      );
+
+      expect(coverage.readingCount, coverage.minimumReadings);
+      expect(coverage.minimumReadings, 24);
+      expect(coverage.activeDays, coverage.minimumActiveDays);
+      expect(coverage.minimumActiveDays, 1);
+      expect(coverage.observedSpan, coverage.minimumObservedSpan);
+      expect(coverage.minimumObservedSpan, const Duration(hours: 12));
+      expect(coverage.isSufficient, isTrue);
+    });
+
+    test('7d and 14d gates accept exact count and active-day boundaries', () {
+      final cases = <({AnalyticsTimeframe timeframe, int count, int days})>[
+        (timeframe: AnalyticsTimeframe.last7d, count: 144, days: 4),
+        (timeframe: AnalyticsTimeframe.last14d, count: 288, days: 10),
+      ];
+
+      for (final testCase in cases) {
+        final anchors = <DateTime>[
+          for (var day = testCase.days - 1; day >= 0; day--)
+            _now.subtract(Duration(days: day)),
+        ];
+        final readings = <CgmReading>[
+          for (var i = 0; i < testCase.count; i++)
+            _reading(
+              110,
+              at: anchors[i % anchors.length].subtract(
+                Duration(seconds: i ~/ anchors.length),
+              ),
+            ),
+        ];
+        final coverage = GlucoseAnalytics.assessCoverage(
+          readings,
+          testCase.timeframe,
+          now: _now,
+        );
+
+        expect(
+          coverage.readingCount,
+          coverage.minimumReadings,
+          reason: testCase.timeframe.label,
+        );
+        expect(
+          coverage.activeDays,
+          coverage.minimumActiveDays,
+          reason: testCase.timeframe.label,
+        );
+        expect(
+          coverage.observedSpan,
+          greaterThanOrEqualTo(coverage.minimumObservedSpan),
+          reason: testCase.timeframe.label,
+        );
+        expect(coverage.isSufficient, isTrue, reason: testCase.timeframe.label);
+      }
+    });
+
+    test('counts only readings inside the selected window', () {
+      final readings = <CgmReading>[
+        ..._minimum24HourCoverage(),
+        _reading(300, at: _now.subtract(const Duration(hours: 25))),
+        _reading(300, at: _now.add(const Duration(minutes: 1))),
+        _reading(300, minute: 42),
+      ];
+      final coverage = GlucoseAnalytics.assessCoverage(
+        readings,
+        AnalyticsTimeframe.last24h,
+        now: _now,
+      );
+
+      expect(coverage.readingCount, 24);
+      expect(coverage.activeDays, 1);
+      expect(coverage.isSufficient, isTrue);
     });
   });
 

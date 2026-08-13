@@ -11,7 +11,11 @@ import 'health_state_store.dart';
 typedef HealthStateDirectoryProvider = Future<Directory> Function();
 typedef BackupExclusionMarker = Future<void> Function(String path);
 
-/// Native restricted-state store backed by one explicitly backup-excluded file.
+/// Native restricted-state store backed by explicitly backup-excluded files.
+///
+/// Small metadata values live in a versioned snapshot. Each glucose-history
+/// key lives in its own atomically replaced blob, so updating the active sensor
+/// never rewrites archived sensor histories.
 class FileHealthStateStore implements HealthStateStore {
   FileHealthStateStore({
     required SharedPreferences legacyPreferences,
@@ -24,10 +28,14 @@ class FileHealthStateStore implements HealthStateStore {
            backupExclusionMarker ?? _markExcludedFromBackup,
        _requiresBackupExclusion = requiresBackupExclusion ?? Platform.isIOS;
 
-  static const _schemaVersion = 1;
+  static const _schemaVersion = 2;
+  static const _legacySchemaVersion = 1;
   static const _fileName = 'restricted-health-state.json';
   static const _storageDirectoryName = 'RestrictedHealthState';
+  static const _historyDirectoryName = 'HistoryBlobs';
+  static const _historyBlobExtension = '.blob';
   static const _lastSensorKey = 'openHealth.lastSensor';
+  static const _sensorArchiveKey = 'openHealth.sensorArchive';
   static const _historyPrefix = 'openHealth.history.';
   static const _healthExportLastSyncedKey =
       'openHealth.healthExport.lastSyncedMs';
@@ -43,9 +51,11 @@ class FileHealthStateStore implements HealthStateStore {
   final bool _requiresBackupExclusion;
 
   Map<String, String> _values = const <String, String>{};
+  final Map<String, String?> _historyCache = <String, String?>{};
   Future<void> _mutationTail = Future<void>.value();
   Future<void>? _initializationFuture;
   File? _file;
+  Directory? _historyDirectory;
   bool _initialized = false;
 
   @override
@@ -77,21 +87,41 @@ class FileHealthStateStore implements HealthStateStore {
     // can contain sensor identity or glucose history. File-level verification
     // remains in place so every committed artifact is independently checked.
     await _excludeFromBackup(directory.path);
+    final historyDirectory = Directory(
+      '${directory.path}${Platform.pathSeparator}$_historyDirectoryName',
+    );
+    await historyDirectory.create(recursive: true);
+    await _excludeFromBackup(historyDirectory.path);
+    _historyDirectory = historyDirectory;
     final file = File('${directory.path}${Platform.pathSeparator}$_fileName');
     _file = file;
 
     await _restoreInterruptedCommit(file);
+    await _recoverHistoryTransactions(historyDirectory);
 
-    var nextValues = const <String, String>{};
+    var metadataValues = <String, String>{};
     var needsRewrite = false;
     if (file.existsSync()) {
       final decoded = _decodeSnapshot(await file.readAsString());
-      nextValues = decoded.values;
+      metadataValues = Map<String, String>.of(decoded.values);
       needsRewrite = decoded.isLegacy;
       await _excludeFromBackup(file.path);
       await _discardTransactionArtifacts(file);
     } else {
       await _discardIfPresent(File('${file.path}.next'));
+      needsRewrite = true;
+    }
+
+    final historyKeys = await _discoverHistoryBlobs(historyDirectory);
+    final embeddedHistoryKeys = metadataValues.keys
+        .where(_isHistoryKey)
+        .toList(growable: false);
+    for (final key in embeddedHistoryKeys) {
+      final embeddedValue = metadataValues.remove(key)!;
+      if (!historyKeys.contains(key)) {
+        await _persistHistoryBlob(key, embeddedValue);
+        historyKeys.add(key);
+      }
       needsRewrite = true;
     }
 
@@ -101,16 +131,21 @@ class FileHealthStateStore implements HealthStateStore {
             .where(_isRestrictedKey)
             .toList(growable: false)
           ..sort();
-    final mergedValues = Map<String, String>.of(nextValues);
     for (final key in migratedKeys) {
-      if (!mergedValues.containsKey(key)) {
-        mergedValues[key] = _legacyRestrictedValue(key);
+      final legacyValue = _legacyRestrictedValue(key);
+      if (_isHistoryKey(key)) {
+        if (!historyKeys.contains(key)) {
+          await _persistHistoryBlob(key, legacyValue);
+          historyKeys.add(key);
+        }
+      } else if (!metadataValues.containsKey(key)) {
+        metadataValues[key] = legacyValue;
         needsRewrite = true;
       }
     }
-    final committedValues = Map<String, String>.unmodifiable(mergedValues);
+    final committedMetadata = Map<String, String>.unmodifiable(metadataValues);
     if (needsRewrite) {
-      await _persistSnapshot(committedValues);
+      await _persistSnapshot(committedMetadata);
     }
 
     // Remove backup-eligible legacy values only after the replacement is
@@ -122,7 +157,7 @@ class FileHealthStateStore implements HealthStateStore {
       }
     }
 
-    _values = committedValues;
+    _values = committedMetadata;
     _initialized = true;
   }
 
@@ -130,6 +165,14 @@ class FileHealthStateStore implements HealthStateStore {
   String? getString(String key) {
     _requireInitialized();
     _requireRestrictedKey(key);
+    if (_isHistoryKey(key)) {
+      if (_historyCache.containsKey(key)) {
+        return _historyCache[key];
+      }
+      final value = _readHistoryBlob(key);
+      _historyCache[key] = value;
+      return value;
+    }
     return _values[key];
   }
 
@@ -138,6 +181,11 @@ class FileHealthStateStore implements HealthStateStore {
     _requireInitialized();
     _requireRestrictedKey(key);
     return _serializeMutation(() async {
+      if (_isHistoryKey(key)) {
+        await _persistHistoryBlob(key, value);
+        _historyCache[key] = value;
+        return;
+      }
       final nextValues = Map<String, String>.unmodifiable(<String, String>{
         ..._values,
         key: value,
@@ -152,6 +200,16 @@ class FileHealthStateStore implements HealthStateStore {
     _requireInitialized();
     _requireRestrictedKey(key);
     return _serializeMutation(() async {
+      if (_isHistoryKey(key)) {
+        if ((_historyCache.containsKey(key) && _historyCache[key] == null) ||
+            !_historyBlobExists(key)) {
+          _historyCache[key] = null;
+          return;
+        }
+        await _removeHistoryBlob(key);
+        _historyCache[key] = null;
+        return;
+      }
       if (!_values.containsKey(key)) {
         return;
       }
@@ -194,6 +252,67 @@ class FileHealthStateStore implements HealthStateStore {
     await _discardIfPresent(File('${file.path}.previous'));
   }
 
+  Future<void> _recoverHistoryTransactions(Directory directory) async {
+    final primaryPaths = <String>{};
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is! File) {
+        continue;
+      }
+      final path = entity.path;
+      if (path.endsWith(_historyBlobExtension)) {
+        primaryPaths.add(path);
+      } else if (path.endsWith('$_historyBlobExtension.next')) {
+        primaryPaths.add(path.substring(0, path.length - '.next'.length));
+      } else if (path.endsWith('$_historyBlobExtension.previous')) {
+        primaryPaths.add(path.substring(0, path.length - '.previous'.length));
+      } else if (path.endsWith('$_historyBlobExtension.deleted')) {
+        primaryPaths.add(path.substring(0, path.length - '.deleted'.length));
+      }
+    }
+
+    final sortedPaths = primaryPaths.toList(growable: false)..sort();
+    for (final path in sortedPaths) {
+      final file = File(path);
+      final next = File('$path.next');
+      final previous = File('$path.previous');
+      final deleted = File('$path.deleted');
+
+      if (deleted.existsSync() && !file.existsSync()) {
+        // Renaming to `.deleted` is the commit point for removals.
+        await _discardIfPresent(next);
+        await _discardIfPresent(previous);
+        await _discardIfPresent(deleted);
+        continue;
+      }
+      if (!file.existsSync() && previous.existsSync()) {
+        await previous.rename(file.path);
+      }
+      await _discardIfPresent(next);
+      if (file.existsSync()) {
+        await _discardIfPresent(previous);
+        await _discardIfPresent(deleted);
+      }
+    }
+  }
+
+  Future<Set<String>> _discoverHistoryBlobs(Directory directory) async {
+    final files = <File>[];
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is File && entity.path.endsWith(_historyBlobExtension)) {
+        files.add(entity);
+      }
+    }
+    files.sort((left, right) => left.path.compareTo(right.path));
+
+    final keys = <String>{};
+    for (final file in files) {
+      final key = _historyKeyFromBlob(file);
+      await _excludeFromBackup(file.path);
+      keys.add(key);
+    }
+    return keys;
+  }
+
   Future<void> _discardIfPresent(File file) async {
     try {
       if (file.existsSync()) {
@@ -211,13 +330,8 @@ class FileHealthStateStore implements HealthStateStore {
       throw StateError('Restricted health-state store is not initialized.');
     }
 
-    final next = File('${file.path}.next');
-    final previous = File('${file.path}.previous');
-    if (next.existsSync()) {
-      await next.delete();
-    }
-    if (previous.existsSync()) {
-      await previous.delete();
+    if (values.keys.any(_isHistoryKey)) {
+      throw StateError('Glucose history must be stored as a separate blob.');
     }
 
     final sortedKeys = values.keys.toList(growable: false)..sort();
@@ -228,8 +342,64 @@ class FileHealthStateStore implements HealthStateStore {
       'schemaVersion': _schemaVersion,
       'values': sortedValues,
     };
+    await _commitFile(file, jsonEncode(envelope));
+  }
+
+  Future<void> _persistHistoryBlob(String key, String value) async {
+    final directory = _historyDirectory;
+    if (directory == null) {
+      throw StateError('Restricted health-state store is not initialized.');
+    }
+    await _commitFile(_historyBlobFile(directory, key), value);
+  }
+
+  String? _readHistoryBlob(String key) {
+    final directory = _historyDirectory;
+    if (directory == null) {
+      throw StateError('Restricted health-state store is not initialized.');
+    }
+    final file = _historyBlobFile(directory, key);
+    return file.existsSync() ? file.readAsStringSync() : null;
+  }
+
+  bool _historyBlobExists(String key) {
+    final directory = _historyDirectory;
+    if (directory == null) {
+      throw StateError('Restricted health-state store is not initialized.');
+    }
+    return _historyBlobFile(directory, key).existsSync();
+  }
+
+  Future<void> _removeHistoryBlob(String key) async {
+    final directory = _historyDirectory;
+    if (directory == null) {
+      throw StateError('Restricted health-state store is not initialized.');
+    }
+    final file = _historyBlobFile(directory, key);
+    if (!file.existsSync()) {
+      return;
+    }
+
+    final deleted = File('${file.path}.deleted');
+    await _discardIfPresent(deleted);
+    await file.rename(deleted.path);
+    // The rename above is the commit point. Cleanup is best effort, as it is
+    // for rollback copies left by a successful write transaction.
+    await _discardIfPresent(deleted);
+  }
+
+  Future<void> _commitFile(File file, String contents) async {
+    final next = File('${file.path}.next');
+    final previous = File('${file.path}.previous');
+    if (next.existsSync()) {
+      await next.delete();
+    }
+    if (previous.existsSync()) {
+      await previous.delete();
+    }
+
     try {
-      await next.writeAsString(jsonEncode(envelope), flush: true);
+      await next.writeAsString(contents, flush: true);
       await _excludeFromBackup(next.path);
     } catch (error, stackTrace) {
       try {
@@ -304,7 +474,7 @@ class FileHealthStateStore implements HealthStateStore {
           'Restricted health-state schema version is invalid.',
         );
       }
-      if (version != _schemaVersion) {
+      if (version != _schemaVersion && version != _legacySchemaVersion) {
         throw UnsupportedError(
           'Restricted health-state schema version $version is unsupported.',
         );
@@ -315,7 +485,10 @@ class FileHealthStateStore implements HealthStateStore {
           'Restricted health-state values are invalid.',
         );
       }
-      return _DecodedSnapshot(_decodeValues(encodedValues), isLegacy: false);
+      return _DecodedSnapshot(
+        _decodeValues(encodedValues),
+        isLegacy: version != _schemaVersion,
+      );
     }
 
     // The original implementation stored a flat string map. It is accepted as
@@ -336,6 +509,37 @@ class FileHealthStateStore implements HealthStateStore {
     return Map<String, String>.unmodifiable(values);
   }
 
+  File _historyBlobFile(Directory directory, String key) {
+    final encodedKey = base64Url.encode(utf8.encode(key));
+    return File(
+      '${directory.path}${Platform.pathSeparator}'
+      '$encodedKey$_historyBlobExtension',
+    );
+  }
+
+  String _historyKeyFromBlob(File file) {
+    final separatorIndex = file.path.lastIndexOf(Platform.pathSeparator);
+    final fileName = file.path.substring(separatorIndex + 1);
+    final encodedKey = fileName.substring(
+      0,
+      fileName.length - _historyBlobExtension.length,
+    );
+    final String key;
+    try {
+      key = utf8.decode(base64Url.decode(encodedKey));
+    } on FormatException {
+      throw const FormatException('Restricted history filename is invalid.');
+    }
+    if (!_isHistoryKey(key) || _historyBlobFileName(key) != fileName) {
+      throw const FormatException('Restricted history filename is invalid.');
+    }
+    return key;
+  }
+
+  String _historyBlobFileName(String key) {
+    return '${base64Url.encode(utf8.encode(key))}$_historyBlobExtension';
+  }
+
   Future<void> _excludeFromBackup(String path) async {
     if (_requiresBackupExclusion) {
       await _backupExclusionMarker(path);
@@ -354,10 +558,13 @@ class FileHealthStateStore implements HealthStateStore {
 
   static bool _isRestrictedKey(String key) {
     return key == _lastSensorKey ||
+        key == _sensorArchiveKey ||
         key.startsWith(_historyPrefix) ||
         key == _healthExportLastSyncedKey ||
         key == _healthExportWatermarkKey;
   }
+
+  static bool _isHistoryKey(String key) => key.startsWith(_historyPrefix);
 
   String _legacyRestrictedValue(String key) {
     final value = _legacyPreferences.get(key);

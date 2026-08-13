@@ -402,11 +402,64 @@ class AidexSession implements CgmSession {
       final status = parseCgmStatus(
         bytesFromHex(_rawHex[AidexUuids.status] ?? ''),
       );
-      if (sessionStart == null ||
-          sessionStart.isAllZero ||
-          status?.sessionStopped == true) {
+      final explicitActivationAllowed =
+          sensor.metadata[cgmAllowSessionActivationMetadataKey] == 'true';
+      final activationReady =
+          explicitActivationAllowed &&
+          sessionStart != null &&
+          sessionStart.isAllZero &&
+          status?.sessionStopped == true;
+      if (activationReady) {
         _emitLog(CgmLogLevel.debug, 'Starting CGM session');
         await _startSession();
+      } else if (sessionStart == null ||
+          sessionStart.isAllZero ||
+          status?.sessionStopped == true) {
+        final stoppedExistingSession =
+            status?.sessionStopped == true &&
+            sessionStart != null &&
+            !sessionStart.isAllZero;
+        final activationRequired =
+            sessionStart != null &&
+            sessionStart.isAllZero &&
+            status?.sessionStopped == true;
+        _setSnapshot(
+          _snapshot.copyWith(
+            stage: CgmSyncStage.error,
+            statusText: stoppedExistingSession
+                ? 'Sensor session ended'
+                : activationRequired
+                ? 'Sensor activation required'
+                : 'Could not verify sensor session',
+            sessionInfo: _snapshot.sessionInfo.copyWith(
+              sessionStopped: stoppedExistingSession,
+            ),
+            health: _snapshot.health.copyWith(
+              statusText: stoppedExistingSession
+                  ? 'Session stopped'
+                  : activationRequired
+                  ? 'Session not started'
+                  : 'Session state unavailable',
+              expired: stoppedExistingSession,
+            ),
+            metadata: <String, String>{
+              ..._snapshot.metadata,
+              if (activationRequired) 'activationRequired': 'true',
+            },
+            lastError: stoppedExistingSession
+                ? 'This sensor session has ended. Connect a new sensor.'
+                : activationRequired
+                ? 'Choose this sensor from the scan screen to start it.'
+                : 'The sensor session state could not be verified safely.',
+          ),
+        );
+        throw StateError(
+          stoppedExistingSession
+              ? 'Refusing to restart a stopped sensor session'
+              : activationRequired
+              ? 'Sensor activation requires an explicit user connection'
+              : 'Refusing activation because sensor state is malformed',
+        );
       }
       await _refreshVendorStartTimeInternal();
       await _ensureLiveUpdateConfiguration();
@@ -783,6 +836,23 @@ class AidexSession implements CgmSession {
 
     final parsedStatus = parseCgmStatus(statusBytes);
     final parsedSessionStart = parseSessionStart(sessionStartBytes);
+    // Brand-new AiDEX sensors expose an all-zero session start together with
+    // the stopped bit until the explicit Start Session exchange completes.
+    // That is an activation-ready state, not an expired session. Avoid
+    // publishing a terminal snapshot during this narrow initialization phase;
+    // the controller would otherwise correctly archive it before activation.
+    final activationRequired =
+        parsedStatus?.sessionStopped == true &&
+        parsedSessionStart != null &&
+        parsedSessionStart.isAllZero;
+    final activationPending =
+        activationRequired &&
+        sensor.metadata[cgmAllowSessionActivationMetadataKey] == 'true';
+    final stoppedExistingSession =
+        parsedStatus?.sessionStopped == true &&
+        parsedSessionStart != null &&
+        !parsedSessionStart.isAllZero;
+    final sessionStopped = stoppedExistingSession;
     final sessionInfo = _snapshot.sessionInfo.copyWith(
       manufacturer: manufacturer,
       model: model,
@@ -791,15 +861,22 @@ class AidexSession implements CgmSession {
       sessionStart: _snapshot.sessionInfo.sessionStart,
       sessionStartPayloadHex: hexOf(sessionStartBytes),
       elapsedMinutes: parsedStatus?.timeOffsetMinutes,
-      sessionStopped: parsedStatus?.sessionStopped ?? false,
+      sessionStopped: sessionStopped,
     );
     final health = _snapshot.health.copyWith(
       warningFlagsHex: parsedStatus == null
           ? _snapshot.health.warningFlagsHex
           : '0x${parsedStatus.warningFlags.toRadixString(16).padLeft(2, '0')}',
-      statusText: parsedStatus?.sessionStopped == true
+      statusText: activationPending
+          ? 'Awaiting activation'
+          : activationRequired
+          ? 'Activation required'
+          : sessionStopped
           ? 'Session stopped'
+          : parsedStatus?.sessionStopped == true
+          ? 'Session state unavailable'
           : 'Session active',
+      expired: sessionStopped,
     );
     _setSnapshot(
       _snapshot.copyWith(

@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const _fileName = 'restricted-health-state.json';
 const _storageDirectory = 'OpenGlucose/RestrictedHealthState';
+const _historyDirectory = '$_storageDirectory/HistoryBlobs';
+const _historyBlobExtension = '.blob';
 const _lastSensorKey = 'openHealth.lastSensor';
 const _healthExportLastSyncedKey = 'openHealth.healthExport.lastSyncedMs';
 const _healthExportWatermarkKey = 'openHealth.healthExport.watermarkMs';
@@ -48,14 +50,25 @@ void main() {
       expect(excludedPaths.last, endsWith(_fileName));
 
       final envelope = await _readEnvelope(directory);
-      expect(envelope['schemaVersion'], 1);
+      expect(envelope['schemaVersion'], 2);
       expect(
         envelope['values'],
         containsPair(_lastSensorKey, '{"deviceId":"sensor-1"}'),
       );
       expect(
         envelope['values'] as Map<String, dynamic>,
+        isNot(contains('openHealth.history.sensor-1')),
+      );
+      expect(
+        envelope['values'] as Map<String, dynamic>,
         isNot(contains('openHealth.displayPreferences')),
+      );
+      expect(
+        await _historyBlob(
+          directory,
+          'openHealth.history.sensor-1',
+        ).readAsString(),
+        '[{"valueMgdl":100}]',
       );
     },
   );
@@ -193,7 +206,14 @@ void main() {
     expect(maximumActiveMarkers, 1);
     final values = (await _readEnvelope(directory))['values'];
     expect(values, containsPair(_lastSensorKey, 'sensor-a'));
-    expect(values, containsPair('openHealth.history.sensor-a', 'history-a'));
+    expect(values, isNot(contains('openHealth.history.sensor-a')));
+    expect(
+      await _historyBlob(
+        directory,
+        'openHealth.history.sensor-a',
+      ).readAsString(),
+      'history-a',
+    );
   });
 
   test(
@@ -236,6 +256,13 @@ void main() {
       final values = (await _readEnvelope(directory))['values'];
       expect(values, containsPair(_lastSensorKey, 'committed-sensor'));
       expect(values, isNot(containsPair(_lastSensorKey, 'uncommitted-sensor')));
+      expect(
+        await _historyBlob(
+          directory,
+          'openHealth.history.committed-sensor',
+        ).readAsString(),
+        'queued-history',
+      );
       expect(_transactionFile(directory, '.previous').existsSync(), isFalse);
       expect(_transactionFile(directory, '.next').existsSync(), isFalse);
     },
@@ -308,7 +335,7 @@ void main() {
     },
   );
 
-  test('rewrites the unversioned legacy file as schema version one', () async {
+  test('rewrites the unversioned legacy file as schema version two', () async {
     final directory = await _temporaryDirectory('legacy-file');
     await _stateFile(directory).writeAsString(
       jsonEncode(<String, String>{_lastSensorKey: 'flat-file-sensor'}),
@@ -316,8 +343,233 @@ void main() {
     final store = await _initializeEmptyStore(directory);
 
     expect(store.getString(_lastSensorKey), 'flat-file-sensor');
-    expect((await _readEnvelope(directory))['schemaVersion'], 1);
+    expect((await _readEnvelope(directory))['schemaVersion'], 2);
   });
+
+  test(
+    'keeps each history in an independent blob without rewriting metadata',
+    () async {
+      final directory = await _temporaryDirectory('independent-blobs');
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final markedPaths = <String>[];
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async => markedPaths.add(path),
+      );
+      await store.initialize();
+      await store.setString(
+        'openHealth.sensorArchive',
+        '[{"id":"archive-1"}]',
+      );
+      final metadataBefore = await _stateFile(directory).readAsString();
+      markedPaths.clear();
+
+      const archivedKey = 'openHealth.history.archive.archive-1';
+      const activeKey = 'openHealth.history.sensor-active';
+      const archivedHistory = '[{"valueMgdl":95}]';
+      await store.setString(archivedKey, archivedHistory);
+      await store.setString(activeKey, '[{"valueMgdl":101}]');
+      final archivedBlobBefore = await _historyBlob(
+        directory,
+        archivedKey,
+      ).readAsString();
+      await store.setString(activeKey, '[{"valueMgdl":102}]');
+
+      expect(await _stateFile(directory).readAsString(), metadataBefore);
+      expect(
+        await _historyBlob(directory, archivedKey).readAsString(),
+        archivedBlobBefore,
+      );
+      expect(archivedBlobBefore, archivedHistory);
+      expect(
+        await _historyBlob(directory, activeKey).readAsString(),
+        '[{"valueMgdl":102}]',
+      );
+      expect(
+        markedPaths.where((path) => path.endsWith(_fileName)),
+        isEmpty,
+      );
+      expect(
+        markedPaths.where((path) => path.endsWith(_historyBlobExtension)),
+        hasLength(3),
+      );
+      final values = (await _readEnvelope(directory))['values'];
+      expect(values, contains('openHealth.sensorArchive'));
+      expect(values, isNot(contains(archivedKey)));
+      expect(values, isNot(contains(activeKey)));
+    },
+  );
+
+  test('migrates schema-one embedded histories into blobs', () async {
+    final directory = await _temporaryDirectory('schema-one-history');
+    const activeKey = 'openHealth.history.sensor-legacy';
+    const archivedKey = 'openHealth.history.archive.legacy-session';
+    await _stateFile(directory).writeAsString(
+      _encodedEnvelope(<String, String>{
+        _lastSensorKey: 'legacy-sensor',
+        activeKey: 'active-history',
+        archivedKey: 'archived-history',
+      }),
+    );
+
+    final store = await _initializeEmptyStore(directory);
+
+    expect(store.getString(activeKey), 'active-history');
+    expect(store.getString(archivedKey), 'archived-history');
+    final envelope = await _readEnvelope(directory);
+    expect(envelope['schemaVersion'], 2);
+    expect(envelope['values'], <String, String>{
+      _lastSensorKey: 'legacy-sensor',
+    });
+    expect(
+      await _historyBlob(directory, activeKey).readAsString(),
+      'active-history',
+    );
+    expect(
+      await _historyBlob(directory, archivedKey).readAsString(),
+      'archived-history',
+    );
+
+    final restoredStore = await _initializeEmptyStore(directory);
+    expect(restoredStore.getString(activeKey), 'active-history');
+    expect(restoredStore.getString(archivedKey), 'archived-history');
+  });
+
+  test(
+    'prefers a committed blob when schema-one migration was interrupted',
+    () async {
+      final directory = await _temporaryDirectory('interrupted-migration');
+      const key = 'openHealth.history.sensor-migrating';
+      await _stateFile(directory).writeAsString(
+        _encodedEnvelope(<String, String>{key: 'stale-embedded-history'}),
+      );
+      await _historyBlob(
+        directory,
+        key,
+      ).writeAsString('committed-blob-history');
+
+      final store = await _initializeEmptyStore(directory);
+
+      expect(store.getString(key), 'committed-blob-history');
+      expect(
+        (await _readEnvelope(directory))['values'],
+        isNot(contains(key)),
+      );
+      expect(
+        await _historyBlob(directory, key).readAsString(),
+        'committed-blob-history',
+      );
+    },
+  );
+
+  test('recovers an interrupted history replacement', () async {
+    final directory = await _temporaryDirectory('history-rollback');
+    const key = 'openHealth.history.sensor-recovering';
+    final blob = _historyBlob(directory, key);
+    await File('${blob.path}.previous').writeAsString('committed-history');
+    await File('${blob.path}.next').writeAsString('uncommitted-history');
+
+    final store = await _initializeEmptyStore(directory);
+
+    expect(store.getString(key), 'committed-history');
+    expect(await blob.readAsString(), 'committed-history');
+    expect(File('${blob.path}.previous').existsSync(), isFalse);
+    expect(File('${blob.path}.next').existsSync(), isFalse);
+  });
+
+  test(
+    'rolls back a failed history replacement and continues queued writes',
+    () async {
+      final directory = await _temporaryDirectory('history-write-rollback');
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      const firstKey = 'openHealth.history.sensor-first';
+      const secondKey = 'openHealth.history.sensor-second';
+      var failNextFinalVerification = false;
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async {
+          if (failNextFinalVerification &&
+              path.endsWith(_historyBlobExtension)) {
+            failNextFinalVerification = false;
+            throw StateError('history verification denied');
+          }
+        },
+      );
+      await store.initialize();
+      await store.setString(firstKey, 'committed-history');
+      failNextFinalVerification = true;
+
+      final failed = store.setString(firstKey, 'uncommitted-history');
+      final queued = store.setString(secondKey, 'queued-history');
+
+      await expectLater(failed, throwsStateError);
+      await queued;
+      expect(store.getString(firstKey), 'committed-history');
+      expect(store.getString(secondKey), 'queued-history');
+      expect(
+        await _historyBlob(directory, firstKey).readAsString(),
+        'committed-history',
+      );
+      expect(
+        await _historyBlob(directory, secondKey).readAsString(),
+        'queued-history',
+      );
+      expect(
+        File('${_historyBlob(directory, firstKey).path}.previous').existsSync(),
+        isFalse,
+      );
+      expect(
+        File('${_historyBlob(directory, firstKey).path}.next').existsSync(),
+        isFalse,
+      );
+    },
+  );
+
+  test('finishes an interrupted history removal', () async {
+    final directory = await _temporaryDirectory('history-removal');
+    const key = 'openHealth.history.sensor-removed';
+    final blob = _historyBlob(directory, key);
+    await File('${blob.path}.deleted').writeAsString('removed-history');
+
+    final store = await _initializeEmptyStore(directory);
+
+    expect(store.getString(key), isNull);
+    expect(blob.existsSync(), isFalse);
+    expect(File('${blob.path}.deleted').existsSync(), isFalse);
+  });
+
+  test(
+    'keeps legacy history when its backup-excluded blob cannot commit',
+    () async {
+      final directory = await _temporaryDirectory('blob-exclusion-failure');
+      const key = 'openHealth.history.sensor-private';
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        key: 'legacy-private-history',
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async {
+          if (path.endsWith('$_historyBlobExtension.next')) {
+            throw StateError('blob exclusion denied');
+          }
+        },
+      );
+
+      await expectLater(store.initialize(), throwsStateError);
+
+      expect(preferences.getString(key), 'legacy-private-history');
+      expect(_historyBlob(directory, key).existsSync(), isFalse);
+    },
+  );
 
   test('preserves a corrupt file and reports a format error', () async {
     final directory = await _temporaryDirectory('corrupt');
@@ -380,6 +632,15 @@ File _stateFile(Directory directory) {
 
 File _transactionFile(Directory directory, String suffix) =>
     File('${_stateFile(directory).path}$suffix');
+
+File _historyBlob(Directory directory, String key) {
+  final historyDirectory = Directory('${directory.path}/$_historyDirectory')
+    ..createSync(recursive: true);
+  final encodedKey = base64Url.encode(utf8.encode(key));
+  return File(
+    '${historyDirectory.path}/$encodedKey$_historyBlobExtension',
+  );
+}
 
 Future<Map<String, dynamic>> _readEnvelope(Directory directory) async {
   return jsonDecode(await _stateFile(directory).readAsString())

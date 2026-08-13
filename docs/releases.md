@@ -24,9 +24,38 @@ path. Building or uploading does not imply permission to distribute.
 
 Release signing is fail-closed. Provide `ANDROID_KEYSTORE_PATH`,
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` in
-the approved release environment. Debug signing is never accepted for a release
+the local approved build environment. The GitHub `android-release` environment
+instead requires exactly five environment secrets:
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD`, and the independently reviewed
+`ANDROID_SIGNING_CERT_SHA256`. Debug signing is never accepted for a release
 artifact. Verify the APK/AAB signer, certificate fingerprint, package ID,
 version, and checksum before upload.
+
+GitHub beta releases use `.github/workflows/release-android-beta.yml`. Publishing
+a GitHub prerelease with a strict `vMAJOR.MINOR.PATCH` tag triggers the lane. It
+checks that the tag matches the committed Flutter version and is reachable from
+`main`, then enters the protected `android-release` environment. Missing or
+partial signing secrets fail the run; the lane never warns and skips.
+
+The lane builds once, verifies the release signature and configured certificate
+fingerprint, package `com.openglucose.app`, committed version/build number,
+non-debuggable state, required network permission, clean dependency state, and
+SHA-256 digest. It creates GitHub build provenance and attaches those exact APK
+bytes without overwriting an existing asset. Because the release event occurs
+after publication, a failed lane can temporarily leave an assetless prerelease;
+do not delete, recreate, or overwrite it while the result is ambiguous.
+Repository immutable releases must remain disabled for this post-publication
+attachment lane. If immutable releases are enabled, replace it with a
+draft-first build-and-attach flow before publishing any release.
+
+The historical `v0.0.1+10` APK used the standard Android debug certificate.
+`v0.1.0` intentionally starts the dedicated OpenGlucose beta signing lineage
+and is not update-compatible with that APK. The old APK has no migration or
+export path, and uninstalling it deletes its local data. Existing testers who
+need that history must record it manually or defer upgrading; everyone else
+must perform a clean install. Preserve the new keystore and its recovery
+credentials: losing them prevents future in-place beta updates.
 
 ## TestFlight
 

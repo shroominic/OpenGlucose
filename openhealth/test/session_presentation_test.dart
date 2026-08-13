@@ -12,7 +12,7 @@ void main() {
     capabilities: CgmCapabilities(),
   );
 
-  test('primary error stays hidden when usable glucose data exists', () {
+  test('primary error remains visible when cached glucose data exists', () {
     final snapshot = CgmSessionSnapshot(
       stage: CgmSyncStage.error,
       statusText: 'Error',
@@ -33,7 +33,32 @@ void main() {
       lastError: 'Timed out after 10s',
     );
 
-    expect(shouldShowPrimaryError(snapshot), isFalse);
+    expect(shouldShowPrimaryError(snapshot), isTrue);
+  });
+
+  test('cached glucose during reconnect is not labelled Connected', () {
+    final snapshot = CgmSessionSnapshot(
+      stage: CgmSyncStage.connecting,
+      statusText: 'Reconnecting',
+      sensor: sensor,
+      capabilities: sensor.capabilities,
+      latestReading: CgmReading(
+        valueMgdl: 112,
+        source: CgmRecordSource.vendor,
+        recordedAt: DateTime.parse('2026-04-14T08:53:00Z'),
+      ),
+      history: <CgmReading>[
+        CgmReading(
+          valueMgdl: 111,
+          source: CgmRecordSource.vendor,
+          recordedAt: DateTime.parse('2026-04-14T08:52:00Z'),
+        ),
+      ],
+    );
+
+    expect(stageLabelForSnapshot(snapshot), 'Reconnecting');
+    expect(stageLabelForSnapshot(snapshot), isNot('Connected'));
+    expect(stageCodeForSnapshot(snapshot), 'progress');
   });
 
   test('primary error remains visible when no glucose data exists', () {

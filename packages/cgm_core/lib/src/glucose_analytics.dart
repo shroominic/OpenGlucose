@@ -120,12 +120,93 @@ class GlucoseStats {
   bool get hasData => readingCount > 0;
 }
 
+/// Data-quality gate for showing derived patterns in a selected window.
+///
+/// A single value is technically enough to compute an average but not enough
+/// to call the result a pattern. These deliberately conservative minimums
+/// keep sparse or stale history from being presented with false confidence.
+class AnalyticsCoverage {
+  const AnalyticsCoverage({
+    required this.timeframe,
+    required this.readingCount,
+    required this.activeDays,
+    required this.observedSpan,
+    required this.minimumReadings,
+    required this.minimumActiveDays,
+    required this.minimumObservedSpan,
+  });
+
+  final AnalyticsTimeframe timeframe;
+  final int readingCount;
+  final int activeDays;
+  final Duration observedSpan;
+  final int minimumReadings;
+  final int minimumActiveDays;
+  final Duration minimumObservedSpan;
+
+  bool get isSufficient =>
+      readingCount >= minimumReadings &&
+      activeDays >= minimumActiveDays &&
+      observedSpan >= minimumObservedSpan;
+}
+
 /// Pure-Dart glucose analytics over [CgmReading] lists.
 ///
 /// Wellness framing: these surface observations and patterns for
 /// self-experimentation. They are not medical metrics, diagnoses, or a
 /// substitute for clinical measurement.
 abstract final class GlucoseAnalytics {
+  static AnalyticsCoverage assessCoverage(
+    List<CgmReading> readings,
+    AnalyticsTimeframe timeframe, {
+    DateTime? now,
+  }) {
+    final uniqueByTimestamp = <String, CgmReading>{};
+    for (final reading in readingsInTimeframe(readings, timeframe, now: now)) {
+      final at = reading.recordedAt!;
+      final key = at.toUtc().microsecondsSinceEpoch.toString();
+      uniqueByTimestamp.putIfAbsent(key, () => reading);
+    }
+    final windowed = uniqueByTimestamp.values.toList(growable: false)
+      ..sort((left, right) => left.recordedAt!.compareTo(right.recordedAt!));
+    final activeDays = windowed
+        .map((reading) {
+          final at = reading.recordedAt!.toLocal();
+          return '${at.year}-${at.month}-${at.day}';
+        })
+        .toSet()
+        .length;
+    final observedSpan = windowed.length < 2
+        ? Duration.zero
+        : windowed.last.recordedAt!.difference(windowed.first.recordedAt!);
+    final requirements = switch (timeframe) {
+      AnalyticsTimeframe.last24h => (
+        readings: 24,
+        days: 1,
+        span: const Duration(hours: 12),
+      ),
+      AnalyticsTimeframe.last7d => (
+        readings: 144,
+        days: 4,
+        span: const Duration(days: 3),
+      ),
+      AnalyticsTimeframe.last14d => (
+        readings: 288,
+        days: 10,
+        span: const Duration(days: 9),
+      ),
+    };
+    return AnalyticsCoverage(
+      timeframe: timeframe,
+      readingCount: windowed.length,
+      activeDays: activeDays,
+      observedSpan: observedSpan,
+      minimumReadings: requirements.readings,
+      minimumActiveDays: requirements.days,
+      minimumObservedSpan: requirements.span,
+    );
+  }
+
   /// Filters [readings] to those recorded within [timeframe] relative to [now]
   /// (defaults to [DateTime.now]). Readings without a timestamp are excluded
   /// because they cannot be placed in a window.

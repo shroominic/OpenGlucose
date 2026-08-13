@@ -14,10 +14,16 @@ CgmReading _reading(double mgdl, DateTime at) {
 }
 
 /// All readings for one day at [value], every [stepMinutes] from 08:00.
-List<CgmReading> _flatDay(DateTime day, double value, {int count = 6}) {
+List<CgmReading> _flatDay(
+  DateTime day,
+  double value, {
+  int count = 6,
+  int stepMinutes = 60,
+}) {
+  final start = DateTime(day.year, day.month, day.day, 8);
   return <CgmReading>[
     for (var i = 0; i < count; i++)
-      _reading(value, DateTime(day.year, day.month, day.day, 8 + i)),
+      _reading(value, start.add(Duration(minutes: i * stepMinutes))),
   ];
 }
 
@@ -76,14 +82,60 @@ void main() {
       final recap = WeeklyRecapAnalytics.recap(readings, now: _now);
       expect(recap.thisWeek.readingCount, 6);
     });
+
+    test('coverage uses the exact calendar recap window', () {
+      final readings = <CgmReading>[
+        // These samples are inside a rolling 168-hour window ending at
+        // [_now], but outside the recap's calendar window beginning Jun 16.
+        for (var index = 0; index < 160; index++)
+          _reading(
+            110,
+            DateTime(2026, 6, 15, 13).add(Duration(minutes: index * 4)),
+          ),
+        _reading(110, DateTime(2026, 6, 16, 13)),
+        _reading(110, DateTime(2026, 6, 17, 13)),
+        _reading(110, DateTime(2026, 6, 18, 13)),
+      ];
+
+      final rollingCoverage = GlucoseAnalytics.assessCoverage(
+        readings,
+        AnalyticsTimeframe.last7d,
+        now: _now,
+      );
+      final recap = WeeklyRecapAnalytics.recap(readings, now: _now);
+
+      expect(rollingCoverage.readingCount, 163);
+      expect(rollingCoverage.activeDays, 4);
+      expect(rollingCoverage.observedSpan, const Duration(days: 3));
+      expect(rollingCoverage.isSufficient, isTrue);
+      expect(recap.thisWeek.readingCount, 3);
+      expect(recap.thisWeekCoverage.readingCount, 3);
+      expect(recap.thisWeekCoverage.activeDays, 3);
+      expect(recap.thisWeekCoverage.isSufficient, isFalse);
+    });
   });
 
   group('best / worst day by time-in-range', () {
     test('picks highest and lowest TIR days', () {
       final readings = <CgmReading>[
-        ..._flatDay(DateTime(2026, 6, 18), 100), // 100% TIR -> best
-        ..._flatDay(DateTime(2026, 6, 19), 250), // 0% TIR -> worst
-        ..._flatDay(DateTime(2026, 6, 20), 90), // 100% TIR but not first
+        ..._flatDay(
+          DateTime(2026, 6, 18),
+          100,
+          count: 24,
+          stepMinutes: 5,
+        ), // 100% TIR -> best
+        ..._flatDay(
+          DateTime(2026, 6, 19),
+          250,
+          count: 24,
+          stepMinutes: 5,
+        ), // 0% TIR -> worst
+        ..._flatDay(
+          DateTime(2026, 6, 20),
+          90,
+          count: 24,
+          stepMinutes: 5,
+        ), // 100% TIR but not first
       ];
       final recap = WeeklyRecapAnalytics.recap(readings, now: _now);
       expect(recap.bestDay!.date, DateTime(2026, 6, 18));
@@ -92,8 +144,26 @@ void main() {
       expect(recap.worstDay!.stats.timeInRangePercent, 0);
     });
 
-    test('single day with data is both best and worst', () {
-      final readings = _flatDay(DateTime(2026, 6, 20), 120);
+    test('fewer than 24 readings do not rank a day as a pattern', () {
+      final readings = _flatDay(
+        DateTime(2026, 6, 20),
+        120,
+        count: 23,
+        stepMinutes: 5,
+      );
+      final recap = WeeklyRecapAnalytics.recap(readings, now: _now);
+      expect(recap.thisWeek.hasData, isTrue);
+      expect(recap.bestDay, isNull);
+      expect(recap.worstDay, isNull);
+    });
+
+    test('a day at the 24-reading boundary is both best and worst', () {
+      final readings = _flatDay(
+        DateTime(2026, 6, 20),
+        120,
+        count: 24,
+        stepMinutes: 5,
+      );
       final recap = WeeklyRecapAnalytics.recap(readings, now: _now);
       expect(recap.bestDay!.date, DateTime(2026, 6, 20));
       expect(recap.worstDay!.date, DateTime(2026, 6, 20));
@@ -227,6 +297,17 @@ void main() {
       expect(recap.hasData, isTrue);
       expect(recap.days.where((d) => d.hasData), hasLength(1));
       expect(recap.thisWeek.averageMgdl, closeTo(110, 0.001));
+    });
+
+    test('excludes readings later than now on the current day', () {
+      final recap = WeeklyRecapAnalytics.recap(<CgmReading>[
+        _reading(110, _now),
+        _reading(300, _now.add(const Duration(minutes: 1))),
+      ], now: _now);
+
+      expect(recap.thisWeek.readingCount, 1);
+      expect(recap.thisWeek.averageMgdl, 110);
+      expect(recap.thisWeek.maxMgdl, 110);
     });
   });
 }
