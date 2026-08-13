@@ -1,6 +1,7 @@
 require "json"
 require "logger"
 require "securerandom"
+require "digest"
 require "time"
 
 default_platform(:ios)
@@ -36,17 +37,52 @@ def external_groups(app)
   app.get_beta_groups.select { |group| group.is_internal_group == false }
 end
 
-def exact_external_group(app:, group_name:, group_id: nil)
+def exact_external_group(
+  app:,
+  group_name:,
+  group_id: nil,
+  internal_group_name: nil,
+  internal_group_id: nil,
+  internal_tester_id: nil,
+  external_tester_count: nil,
+  external_tester_ids_sha256: nil
+)
   all_groups = app.get_beta_groups
-  automatic_groups = all_groups.select(&:has_access_to_all_builds)
-  unless automatic_groups.empty?
+  unknown_groups = all_groups.reject do |group|
+    classified = [true, false].include?(group.is_internal_group)
+    automatic_classified = [true, false, nil].include?(group.has_access_to_all_builds)
+    classified && automatic_classified
+  end
+  unless unknown_groups.empty?
     UI.user_error!(
-      "TestFlight groups with automatic access to all builds are not allowed " \
-      "(found #{automatic_groups.length})"
+      "Found #{unknown_groups.length} TestFlight group(s) with unknown " \
+      "audience classification"
+    )
+  end
+  automatic_external_groups = all_groups.select do |group|
+    group.is_internal_group == false && group.has_access_to_all_builds == true
+  end
+  unless automatic_external_groups.empty?
+    UI.user_error!(
+      "External TestFlight groups with automatic access to all builds are " \
+      "not allowed (found #{automatic_external_groups.length})"
+    )
+  end
+  if internal_group_name && internal_group_id && internal_tester_id
+    internal_group = exact_internal_automatic_group(
+      app: app,
+      group_name: internal_group_name,
+      group_id: internal_group_id
+    )
+    require_exact_internal_group_tester(
+      group: internal_group,
+      expected_tester_id: internal_tester_id
     )
   end
 
-  groups = all_groups.select { |group| group.is_internal_group == false }
+  groups = all_groups.select do |group|
+    group.is_internal_group == false && group.has_access_to_all_builds != true
+  end
   matches = groups.select do |group|
     group.name == group_name && (group_id.nil? || group.id == group_id)
   end
@@ -54,7 +90,16 @@ def exact_external_group(app:, group_name:, group_id: nil)
     "Expected exactly one non-automatic external TestFlight group named " \
     "#{group_name}#{group_id ? " with ID #{group_id}" : ''}; found #{matches.length}"
   ) unless matches.one?
-  matches.first
+  match = matches.first
+  UI.user_error!(
+    "Approved external TestFlight group must not expose a public link"
+  ) unless match.public_link_enabled == false
+  require_exact_external_group_testers(
+    group: match,
+    expected_count: external_tester_count,
+    expected_ids_sha256: external_tester_ids_sha256
+  )
+  match
 end
 
 def exact_internal_automatic_group(app:, group_name:, group_id:)
@@ -107,9 +152,7 @@ def exact_internal_automatic_group(app:, group_name:, group_id:)
   matches.first
 end
 
-def require_exact_internal_group_tester(group:, expected_tester_id:)
-  UI.user_error!("Internal tester ID is malformed") unless
-    expected_tester_id.match?(/\A[A-Za-z0-9-]+\z/)
+def tester_relationship_ids(group)
   # Read only relationship linkage IDs. The resource endpoint would expose
   # tester names and email addresses, which are neither needed nor retained.
   responses = Spaceship::ConnectAPI.client.test_flight_request_client
@@ -127,21 +170,59 @@ def require_exact_internal_group_tester(group:, expected_tester_id:)
   end
   UI.user_error!("Internal tester relationship response is invalid") unless
     valid_linkages
-  tester_ids = relationships.map { |relationship| relationship["id"] }
+  tester_ids = relationships.map { |relationship| relationship["id"] }.sort
+  UI.user_error!("Tester relationship response contains duplicates") unless
+    tester_ids.uniq.length == tester_ids.length
+  tester_ids
+end
+
+def require_exact_internal_group_tester(group:, expected_tester_id:)
+  UI.user_error!("Internal tester ID is malformed") unless
+    expected_tester_id.match?(/\A[A-Za-z0-9-]+\z/)
+  tester_ids = tester_relationship_ids(group)
   UI.user_error!(
     "Approved internal TestFlight tester relationship is not exact"
   ) unless tester_ids == [expected_tester_id]
 end
 
+def require_exact_external_group_testers(
+  group:,
+  expected_count:,
+  expected_ids_sha256:
+)
+  count = Integer(expected_count, 10)
+  UI.user_error!("External tester count must be positive") unless count.positive?
+  digest = expected_ids_sha256.to_s.downcase
+  UI.user_error!("External tester ID digest is malformed") unless
+    digest.match?(/\A[0-9a-f]{64}\z/)
+  tester_ids = tester_relationship_ids(group)
+  actual_digest = Digest::SHA256.hexdigest(tester_ids.join("\n"))
+  UI.user_error!("Approved external TestFlight tester count is not exact") unless
+    tester_ids.length == count
+  UI.user_error!("Approved external TestFlight tester set is not exact") unless
+    actual_digest == digest
+  { count: count, ids_sha256: digest }
+rescue ArgumentError
+  UI.user_error!("External tester count must be a decimal integer")
+end
+
 def require_internal_only_build(build)
+  require_build_audience_type(build: build, expected: "INTERNAL_ONLY")
+end
+
+def require_app_store_eligible_build(build)
+  require_build_audience_type(build: build, expected: "APP_STORE_ELIGIBLE")
+end
+
+def require_build_audience_type(build:, expected:)
   response = Spaceship::ConnectAPI.client.test_flight_request_client.get(
     "v1/builds/#{build.id}"
   )
   data = response.body["data"]
   audience_type = data.is_a?(Hash) ? data.dig("attributes", "buildAudienceType") : nil
   UI.user_error!(
-    "TestFlight build audience type is #{audience_type.inspect}; expected INTERNAL_ONLY"
-  ) unless audience_type == "INTERNAL_ONLY"
+    "TestFlight build audience type is #{audience_type.inspect}; expected #{expected}"
+  ) unless audience_type == expected
 end
 
 def exact_valid_build(app:, version:, build_number:)
@@ -178,9 +259,25 @@ def associated_groups(app:, build:)
   end
 end
 
-def require_exclusive_association(app:, build:, approved_group:, required:)
+def require_exact_external_association(
+  app:,
+  build:,
+  approved_group:,
+  approved_internal_group_id:,
+  required:
+)
   associated = associated_groups(app: app, build: build)
-  unexpected = associated.reject { |group| group.id == approved_group.id }
+  associated_ids = associated.map(&:id)
+  UI.user_error!("Build group association response contains duplicates") unless
+    associated_ids.uniq.length == associated_ids.length
+  unexpected = associated.reject do |group|
+    group.id == approved_group.id ||
+      (
+        group.id == approved_internal_group_id &&
+          group.is_internal_group == true &&
+          group.has_access_to_all_builds == true
+      )
+  end
   unless unexpected.empty?
     UI.user_error!(
       "Build is associated with #{unexpected.length} unapproved beta group(s)"
@@ -189,7 +286,18 @@ def require_exclusive_association(app:, build:, approved_group:, required:)
   if required && associated.none? { |group| group.id == approved_group.id }
     UI.user_error!("Build is not associated with the approved external group")
   end
-  associated.any? { |group| group.id == approved_group.id }
+  internal = associated.select do |group|
+    group.is_internal_group == true && group.has_access_to_all_builds == true
+  end
+  unless internal.one? && internal.first.id == approved_internal_group_id
+    UI.user_error!("Build does not have exactly the approved automatic internal group")
+  end
+  expected_ids = [approved_internal_group_id]
+  expected_ids << approved_group.id if required
+  if required && associated_ids.sort != expected_ids.sort
+    UI.user_error!("Build does not have the exact approved external audience")
+  end
+  associated
 end
 
 def require_exclusive_internal_association(app:, build:, approved_group:)
@@ -220,15 +328,31 @@ def require_no_individual_testers(build)
   ) unless count.zero?
 end
 
-def expected_notification_receipt(app:, build:, group:, bundle_id:, version:, build_number:, source_commit:)
+def expected_notification_receipt(
+  app:,
+  build:,
+  group:,
+  approved_internal_group_id:,
+  associated_group_ids:,
+  external_tester_count:,
+  external_tester_ids_sha256:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:
+)
   {
-    "schemaVersion" => 1,
+    "schemaVersion" => 2,
     "appId" => app.id,
     "bundleId" => bundle_id,
     "buildId" => build.id,
     "version" => version,
     "buildNumber" => build_number,
-    "groupId" => group.id,
+    "externalGroupId" => group.id,
+    "automaticInternalGroupId" => approved_internal_group_id,
+    "associatedGroupIds" => associated_group_ids.sort,
+    "externalTesterCount" => Integer(external_tester_count, 10),
+    "externalTesterIdsSha256" => external_tester_ids_sha256.downcase,
     "sourceCommit" => source_commit
   }
 end
@@ -473,7 +597,15 @@ platform :ios do
     group = exact_external_group(
       app: app,
       group_name: group_name,
-      group_id: expected_group_id
+      group_id: expected_group_id,
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: required_option(options, :internal_group_id),
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
     )
 
     File.open(result_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
@@ -488,34 +620,51 @@ platform :ios do
     group = exact_external_group(
       app: app,
       group_name: required_option(options, :group_name),
-      group_id: required_option(options, :group_id)
+      group_id: required_option(options, :group_id),
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: required_option(options, :approved_internal_group_id),
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
+    )
+    approved_internal_group_id = required_option(
+      options,
+      :approved_internal_group_id
     )
     build = exact_valid_build(
       app: app,
       version: required_option(options, :version),
       build_number: required_option(options, :build_number)
     )
+    require_app_store_eligible_build(build)
     build = disable_automatic_notification(build)
     require_no_individual_testers(build)
 
-    already_associated = require_exclusive_association(
+    associated = require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: false
     )
+    already_associated = associated.any? { |candidate| candidate.id == group.id }
     if build.ready_for_beta_submission?
       build.post_beta_app_review_submission
       UI.important("Submitted the exact build for external beta review")
     end
     build.add_beta_groups(beta_groups: [group]) unless already_associated
-    require_exclusive_association(
+    associated = require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: true
     )
     require_no_individual_testers(build)
+    require_app_store_eligible_build(build)
     UI.success("Associated the exact build with only the approved group ID")
   end
 
@@ -526,7 +675,19 @@ platform :ios do
     group = exact_external_group(
       app: app,
       group_name: required_option(options, :group_name),
-      group_id: required_option(options, :group_id)
+      group_id: required_option(options, :group_id),
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: required_option(options, :approved_internal_group_id),
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
+    )
+    approved_internal_group_id = required_option(
+      options,
+      :approved_internal_group_id
     )
     version = required_option(options, :version)
     build_number = required_option(options, :build_number)
@@ -535,14 +696,17 @@ platform :ios do
       version: version,
       build_number: build_number
     )
+    require_app_store_eligible_build(build)
     build = disable_automatic_notification(build)
-    require_exclusive_association(
+    associated = require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: true
     )
     require_no_individual_testers(build)
+    require_app_store_eligible_build(build)
 
     detail = build.build_beta_detail
     receipt_path = required_option(options, :notification_receipt_path)
@@ -550,6 +714,13 @@ platform :ios do
       app: app,
       build: build,
       group: group,
+      approved_internal_group_id: approved_internal_group_id,
+      associated_group_ids: associated.map(&:id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      ),
       bundle_id: bundle_id,
       version: version,
       build_number: build_number,
@@ -569,6 +740,7 @@ platform :ios do
       )
     end
     eligible_states = [
+      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::READY_FOR_BETA_TESTING,
       Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::BETA_APPROVED,
       Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::IN_BETA_TESTING
     ]
@@ -587,13 +759,28 @@ platform :ios do
       path: receipt_path,
       expected: expected_receipt
     )
-    require_exclusive_association(
+    group = exact_external_group(
+      app: app,
+      group_name: required_option(options, :group_name),
+      group_id: required_option(options, :group_id),
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: approved_internal_group_id,
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
+    )
+    require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: true
     )
     require_no_individual_testers(build)
+    require_app_store_eligible_build(build)
     begin
       response = post_build_beta_notification_once(
         request_client: Spaceship::ConnectAPI.client.test_flight_request_client,

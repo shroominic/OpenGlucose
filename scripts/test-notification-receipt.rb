@@ -99,13 +99,17 @@ assert(
 )
 
 expected = {
-  "schemaVersion" => 1,
+  "schemaVersion" => 2,
   "appId" => "app-id",
   "bundleId" => "com.example.app",
   "buildId" => "build-id",
   "version" => "1.2.3",
   "buildNumber" => "45",
-  "groupId" => "group-id",
+  "externalGroupId" => "external-group-id",
+  "automaticInternalGroupId" => "internal-group-id",
+  "associatedGroupIds" => ["external-group-id", "internal-group-id"],
+  "externalTesterCount" => 23,
+  "externalTesterIdsSha256" => "0" * 64,
   "sourceCommit" => "0123456789abcdef"
 }
 

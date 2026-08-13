@@ -91,16 +91,26 @@ exact valid build is associated only with that one internal group and has no
 individually assigned testers, then repeats the audience checks before success.
 It never calls the external association or notification lanes.
 
-External mode requires `DISTRIBUTE_EXTERNAL=yes`. It
-rejects every internal or external group that automatically receives all
-builds, resolves exactly one existing external TestFlight group, and records
-its immutable ID. It rechecks that audience immediately before it uploads
-with distribution and automatic notification disabled, associates the exact
-processed build through that ID, proves that no other external group is
-associated, rejects every other internal/external group and individually
-assigned tester on the build, and only then sends a single build-scoped tester
-notification. Before that non-idempotent request, it durably creates a mode-600
-`pending` claim containing the exact source commit, build, and group identity at
+External mode requires both `DISTRIBUTE_EXTERNAL=yes` and
+`DISTRIBUTE_INTERNAL=yes` because Apple's approved automatic internal group
+also receives every App Store-eligible build. It pins that group and its sole
+tester by immutable IDs, rejects any other automatic group, resolves exactly
+one existing non-automatic external group, requires its public link to be
+disabled, and records its immutable ID. External export uses the same exact
+manual profile and certificate mapping as internal export, explicitly leaves
+`testFlightInternalTestingOnly` disabled, and requires the processed build to
+report `APP_STORE_ELIGIBLE`. It rechecks that audience immediately before it
+uploads with distribution and automatic notification disabled, associates the
+exact processed build through the external ID, proves that the exact associated
+group set is the approved automatic internal group plus the approved external
+group, rejects individually assigned testers, and pins the external group's
+exact tester relationship set using an approved count plus SHA-256 digest. It
+rechecks both group memberships and the closed public-link state after taking
+the durable notification claim and immediately before sending one build-scoped
+tester notification. Before that non-idempotent request, it durably creates a
+mode-600 `pending` claim containing the exact source commit, build, both
+authorized group IDs, the associated group-ID set, and the approved external
+tester count/digest at
 `TESTFLIGHT_NOTIFICATION_RECEIPT_PATH` outside the repository. A second process
 cannot create the same claim. Only a confirmed response atomically transitions
 it to a mode-400 `complete` receipt with the returned notification ID. The
@@ -121,9 +131,10 @@ install software, change the version, or pick an ambiguous artifact.
 If external beta review is still pending, the command fails closed after the
 approved ID association. After approval, rerun with
 `TESTFLIGHT_NOTIFY_ONLY=yes` and the printed immutable
-`TESTFLIGHT_GROUP_ID`; this mode verifies the same clean commit, exact build,
-group ID/name, exclusive group association, and notification state without
-uploading again. Concurrent notification runs are prohibited. A `pending`
+`TESTFLIGHT_GROUP_ID` plus the exact automatic internal group/tester IDs; this
+mode verifies the same clean commit, exact build, closed public-link state,
+exact two-group association, and notification state without uploading again.
+Concurrent notification runs are prohibited. A `pending`
 claim, interrupted run, or ambiguous App Store Connect response blocks every
 retry until the release owner reconciles the exact build. If the owner can prove
 the request never reached App Store Connect, they may archive the pending claim

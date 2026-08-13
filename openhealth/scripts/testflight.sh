@@ -306,7 +306,21 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
 elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for notify-only mode}"
+  : "${TESTFLIGHT_INTERNAL_GROUP:?missing TESTFLIGHT_INTERNAL_GROUP for notify-only mode}"
+  : "${TESTFLIGHT_INTERNAL_GROUP_ID:?missing TESTFLIGHT_INTERNAL_GROUP_ID for notify-only mode}"
+  : "${TESTFLIGHT_INTERNAL_TESTER_ID:?missing TESTFLIGHT_INTERNAL_TESTER_ID for notify-only mode}"
+  : "${TESTFLIGHT_EXTERNAL_TESTER_COUNT:?missing TESTFLIGHT_EXTERNAL_TESTER_COUNT for notify-only mode}"
+  : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for notify-only mode}"
 else
+  : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for external mode}"
+  : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for external mode}"
+  : "${LIVE_ACTIVITY_APP_STORE_PROFILE_UUID:?missing LIVE_ACTIVITY_APP_STORE_PROFILE_UUID for external mode}"
+  : "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:?missing IOS_DISTRIBUTION_CERTIFICATE_SHA1 for external mode}"
+  : "${TESTFLIGHT_INTERNAL_GROUP:?missing TESTFLIGHT_INTERNAL_GROUP for external mode}"
+  : "${TESTFLIGHT_INTERNAL_GROUP_ID:?missing TESTFLIGHT_INTERNAL_GROUP_ID for external mode}"
+  : "${TESTFLIGHT_INTERNAL_TESTER_ID:?missing TESTFLIGHT_INTERNAL_TESTER_ID for external mode}"
+  : "${TESTFLIGHT_EXTERNAL_TESTER_COUNT:?missing TESTFLIGHT_EXTERNAL_TESTER_COUNT for external mode}"
+  : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for external mode}"
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
 fi
 [[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || \
@@ -319,7 +333,7 @@ if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
   [[ "$TESTFLIGHT_GROUP_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
     fail "TESTFLIGHT_GROUP_ID is malformed"
 fi
-if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]]; then
   [[ "$APP_STORE_PROFILE_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
     fail "APP_STORE_PROFILE_UUID must be a canonical UUID"
   [[ "$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
@@ -335,6 +349,25 @@ fi
 if [[ -n "${TESTFLIGHT_TESTER_ID:-}" ]]; then
   [[ "$TESTFLIGHT_TESTER_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
     fail "TESTFLIGHT_TESTER_ID is malformed"
+fi
+if [[ -n "${TESTFLIGHT_INTERNAL_GROUP_ID:-}" ]]; then
+  [[ "$TESTFLIGHT_INTERNAL_GROUP_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
+    fail "TESTFLIGHT_INTERNAL_GROUP_ID is malformed"
+fi
+if [[ -n "${TESTFLIGHT_INTERNAL_TESTER_ID:-}" ]]; then
+  [[ "$TESTFLIGHT_INTERNAL_TESTER_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
+    fail "TESTFLIGHT_INTERNAL_TESTER_ID is malformed"
+fi
+if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
+  [[ "$TESTFLIGHT_EXTERNAL_TESTER_COUNT" =~ ^[1-9][0-9]*$ ]] || \
+    fail "TESTFLIGHT_EXTERNAL_TESTER_COUNT must be a positive decimal integer"
+  [[ "$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || \
+    fail "TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 must be 64 hexadecimal characters"
+  TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256=$(
+    printf '%s' "$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" |
+      tr '[:upper:]' '[:lower:]'
+  )
+  export TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256
 fi
 
 if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
@@ -386,8 +419,8 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
 else
   [[ "$external_gate" == "yes" ]] || \
     fail "set DISTRIBUTE_EXTERNAL=yes to authorize external tester distribution"
-  [[ "$internal_gate" == "no" ]] || \
-    fail "DISTRIBUTE_INTERNAL must be no in external mode"
+  [[ "$internal_gate" == "yes" ]] || \
+    fail "set DISTRIBUTE_INTERNAL=yes to authorize the automatic internal audience"
 fi
 [[ -f "$ASC_API_KEY_PATH" ]] || fail "App Store Connect key not found"
 
@@ -482,7 +515,13 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   group_options+=("expected_tester_id:$TESTFLIGHT_TESTER_ID")
   fastlane ios verify_internal_group "${group_options[@]}"
 else
-  fastlane ios verify_external_group "${group_options[@]}"
+  fastlane ios verify_external_group \
+    "${group_options[@]}" \
+    "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+    "internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+    "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+    "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+    "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256"
 fi
 [[ -s "$group_id_file" ]] || fail "approved TestFlight group ID was not recorded"
 approved_group_id=$(<"$group_id_file")
@@ -497,6 +536,11 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "bundle_id:$APP_BUNDLE_ID" \
     "group_name:$TESTFLIGHT_GROUP" \
     "group_id:$approved_group_id" \
+    "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+    "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+    "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+    "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+    "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
     "version:$EXPECTED_MARKETING_VERSION" \
     "build_number:$EXPECTED_BUILD_NUMBER" \
     "source_commit:$head_commit" \
@@ -547,7 +591,40 @@ PLIST
     --no-pub \
     --export-options-plist="$internal_export_options"
 else
-  flutter build ipa --release --no-pub --export-method app-store
+  external_export_options="$release_temp/external-export-options.plist"
+  cat >"$external_export_options" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store-connect</string>
+  <key>destination</key>
+  <string>export</string>
+  <key>signingStyle</key>
+  <string>manual</string>
+  <key>signingCertificate</key>
+  <string>$IOS_DISTRIBUTION_CERTIFICATE_SHA1</string>
+  <key>teamID</key>
+  <string>$APPLE_TEAM_ID</string>
+  <key>manageAppVersionAndBuildNumber</key>
+  <false/>
+  <key>testFlightInternalTestingOnly</key>
+  <false/>
+  <key>provisioningProfiles</key>
+  <dict>
+    <key>$APP_BUNDLE_ID</key>
+    <string>$APP_STORE_PROFILE_UUID</string>
+    <key>$LIVE_ACTIVITY_BUNDLE_ID</key>
+    <string>$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+  flutter build ipa \
+    --release \
+    --no-pub \
+    --export-options-plist="$external_export_options"
 fi
 
 # Builds and CocoaPods hooks can rewrite tracked dependency state. Verify both
@@ -627,6 +704,11 @@ else
     "bundle_id:$APP_BUNDLE_ID" \
     "group_name:$TESTFLIGHT_GROUP" \
     "group_id:$approved_group_id" \
+    "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+    "internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+    "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+    "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+    "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
     "result_path:$preupload_group_id_file"
 fi
 [[ "$(<"$preupload_group_id_file")" == "$approved_group_id" ]] || \
@@ -666,6 +748,11 @@ fastlane ios associate_external_build \
   "bundle_id:$APP_BUNDLE_ID" \
   "group_name:$TESTFLIGHT_GROUP" \
   "group_id:$approved_group_id" \
+  "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+  "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+  "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+  "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+  "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
   "version:$EXPECTED_MARKETING_VERSION" \
   "build_number:$EXPECTED_BUILD_NUMBER"
 
@@ -676,6 +763,11 @@ fastlane ios notify_external_build \
   "bundle_id:$APP_BUNDLE_ID" \
   "group_name:$TESTFLIGHT_GROUP" \
   "group_id:$approved_group_id" \
+  "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+  "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+  "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+  "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+  "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
   "version:$EXPECTED_MARKETING_VERSION" \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
