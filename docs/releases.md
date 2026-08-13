@@ -24,7 +24,11 @@ path. Building or uploading does not imply permission to distribute.
 
 Release signing is fail-closed. Provide `ANDROID_KEYSTORE_PATH`,
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` in
-the approved release environment. Debug signing is never accepted for a release
+the local approved build environment. The GitHub `android-release` environment
+instead requires exactly five environment secrets:
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD`, and the independently reviewed
+`ANDROID_SIGNING_CERT_SHA256`. Debug signing is never accepted for a release
 artifact. Verify the APK/AAB signer, certificate fingerprint, package ID,
 version, and checksum before upload.
 
