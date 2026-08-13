@@ -78,16 +78,23 @@ not backup-eligible preferences. Because a HealthKit write and the local cursor
 cannot commit atomically, an interrupted sync can write a duplicate sample on
 retry. The UI discloses this at-least-once behavior.
 
-The app does not provide a verified file/share-sheet or recovery export. The
-following are acceptance requirements for such a future export feature:
+Archived sensor details provide an explicit CSV export through the platform
+share sheet. A confirmation preview displays the sensor-session date range,
+reading count, and every exported category before the share sheet opens. The
+CSV contains glucose values/times, units, record source, sensor-relative minute,
+raw/qualifier fields, provisional state, archive reason, and session timing.
+Stable session IDs, storage keys, serials, device IDs, display names, model,
+firmware, and driver IDs are omitted. The filename is neutral. Native exports
+use one scoped temporary directory, delete their source file after the share
+sheet completes, and remove stale OpenGlucose/share-plugin cache copies at the
+next launch. Cleanup is best effort because platform share targets and operating
+systems may retain copies under their own terms. Export never starts
+automatically; the destination is user-controlled and its privacy and retention
+terms apply.
 
-- Display the categories and date range before export.
-- Omit serials/device identifiers unless the user explicitly selects them.
-- Use a neutral filename and delete temporary plaintext artifacts after sharing.
-- Never upload automatically. The destination share sheet is user-controlled,
-  and its privacy/retention terms are outside OpenGlucose.
-- Recovery exports must be encrypted, versioned, integrity checked, and restored
-  only after an explicit preview. This capability is planned, not implemented.
+This CSV is a user-readable data export, not a recovery/restore backup.
+Recovery exports remain planned: they must be encrypted, versioned, integrity
+checked, and restored only after an explicit preview.
 
 ## Logs, analytics, and incidents
 

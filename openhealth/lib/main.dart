@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 
 import 'package:cgm_core/cgm_core.dart';
@@ -20,12 +21,15 @@ import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:openglucose/src/sensor_archive.dart';
+import 'package:openglucose/src/sensor_archive_export.dart';
+import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Future<void> main() async {
@@ -48,6 +52,11 @@ Future<void> main() async {
 }
 
 Future<_BootstrapResult> _bootstrap() async {
+  try {
+    await clearStaleArchivedSensorShareFiles();
+  } catch (_) {
+    // Share-cache cleanup is privacy hygiene, never a reason to block launch.
+  }
   final preferences = await SharedPreferences.getInstance();
   final healthStateStore = createHealthStateStore(preferences);
   final controller = CgmAppController(
@@ -521,22 +530,27 @@ class _ScanView extends StatelessWidget {
                                 : 'Find my sensor',
                           ),
                         ),
-                        OutlinedButton.icon(
-                          key: const ValueKey<String>('sampleDashboardButton'),
-                          onPressed: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => SampleDashboardScreen(
-                                preferences: controller.displayPreferences,
+                        if (controller.allHistoricalReadings.isEmpty)
+                          OutlinedButton.icon(
+                            key: const ValueKey<String>(
+                              'sampleDashboardButton',
+                            ),
+                            onPressed: () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => SampleDashboardScreen(
+                                  preferences: controller.displayPreferences,
+                                ),
+                              ),
+                            ),
+                            icon: const Icon(Icons.visibility_outlined),
+                            label: const Text('Explore sample data'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(
+                                color: Color(0xFF9CC9C1),
                               ),
                             ),
                           ),
-                          icon: const Icon(Icons.visibility_outlined),
-                          label: const Text('Explore sample data'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            side: const BorderSide(color: Color(0xFF9CC9C1)),
-                          ),
-                        ),
                       ],
                     ),
                     if (controller.lastError != null) ...<Widget>[
@@ -865,11 +879,24 @@ class _DashboardView extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        Text(
-                          remainingLife,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: const Color(0xFF5B6E6A),
-                          ),
+                        Row(
+                          key: const ValueKey<String>('sensorExpiryIndicator'),
+                          children: <Widget>[
+                            const Icon(
+                              Icons.event_outlined,
+                              size: 16,
+                              color: Color(0xFF5B6E6A),
+                            ),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                remainingLife,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: const Color(0xFF5B6E6A),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -894,17 +921,6 @@ class _DashboardView extends StatelessWidget {
               snapshot: snapshot,
             ),
           ),
-          // --- Sensor lifecycle center (TASK-008) -------------------------
-          // Self-contained widget; safe to relocate/remove as one block.
-          SliverToBoxAdapter(
-            child: SensorLifecycleCard(
-              snapshot: snapshot,
-              latestReading: controller.latestReading,
-              onReplaceSensor: () =>
-                  unawaited(controller.replaceCurrentSensor()),
-            ),
-          ),
-          // --- end sensor lifecycle center --------------------------------
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
@@ -1861,10 +1877,173 @@ class _ArchivedSensorDetail extends StatelessWidget {
               icon: const Icon(Icons.insights_rounded),
               label: const Text('Recap this sensor'),
             ),
+            const SizedBox(height: 10),
+            Builder(
+              builder: (buttonContext) => SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  key: const ValueKey<String>('exportArchivedSensorCsv'),
+                  onPressed: () async {
+                    final confirmed = await _confirmArchivedSensorCsvExport(
+                      buttonContext,
+                      session: session,
+                      readings: readings,
+                    );
+                    if (!confirmed || !buttonContext.mounted) {
+                      return;
+                    }
+                    await _exportArchivedSensorCsv(
+                      buttonContext,
+                      session: session,
+                      readings: readings,
+                    );
+                  },
+                  icon: const Icon(Icons.ios_share_rounded),
+                  label: const Text('Export CSV'),
+                ),
+              ),
+            ),
           ],
         ],
       ),
     );
+  }
+}
+
+Future<bool> _confirmArchivedSensorCsvExport(
+  BuildContext context, {
+  required ArchivedSensorSession session,
+  required List<CgmReading> readings,
+}) async {
+  DateTime? firstReadingAt;
+  DateTime? lastReadingAt;
+  for (final reading in readings) {
+    final recordedAt = reading.recordedAt;
+    if (recordedAt == null) {
+      continue;
+    }
+    if (firstReadingAt == null || recordedAt.isBefore(firstReadingAt)) {
+      firstReadingAt = recordedAt;
+    }
+    if (lastReadingAt == null || recordedAt.isAfter(lastReadingAt)) {
+      lastReadingAt = recordedAt;
+    }
+  }
+  final rangeStart = firstReadingAt ?? session.startedAt;
+  final rangeEnd = lastReadingAt ?? session.lastReadingAt ?? session.endedAt;
+  final dateFormat = DateFormat('MMM d, y · HH:mm');
+  final dateRange = rangeStart == null || rangeEnd == null
+      ? 'Date range unavailable'
+      : '${dateFormat.format(rangeStart.toLocal())} – '
+            '${dateFormat.format(rangeEnd.toLocal())}';
+  return await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Export archived sensor data?'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text('${readings.length} glucose readings'),
+                const SizedBox(height: 4),
+                Text(dateRange),
+                const SizedBox(height: 18),
+                const Text(
+                  'Included in the CSV',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                const Text('• Glucose values in mg/dL and mmol/L'),
+                const Text('• Reading times, source, and sensor minute'),
+                const Text('• Raw quality fields and provisional state'),
+                const Text('• Archive reason and session timing'),
+                const SizedBox(height: 14),
+                const Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Icon(
+                      Icons.privacy_tip_outlined,
+                      size: 20,
+                      color: Color(0xFF0B6E69),
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Sensor serials, device IDs, and storage identifiers '
+                        'are not included.',
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const ValueKey<String>('confirmArchivedSensorCsv'),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Share CSV'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+}
+
+Future<void> _exportArchivedSensorCsv(
+  BuildContext context, {
+  required ArchivedSensorSession session,
+  required List<CgmReading> readings,
+}) async {
+  final renderBox = context.findRenderObject() as RenderBox?;
+  final shareOrigin = renderBox == null
+      ? null
+      : renderBox.localToGlobal(Offset.zero) & renderBox.size;
+  String? preparedFilePath;
+  try {
+    final csv = buildArchivedSensorCsv(
+      session: session,
+      readings: readings,
+    );
+    final filename = archivedSensorCsvFilename();
+    preparedFilePath = await prepareArchivedSensorShareFile(
+      filename: filename,
+      contents: csv,
+    );
+    final exportFile = preparedFilePath == null
+        ? XFile.fromData(
+            Uint8List.fromList(utf8.encode(csv)),
+            mimeType: 'text/csv',
+          )
+        : XFile(preparedFilePath, mimeType: 'text/csv');
+    await SharePlus.instance.share(
+      ShareParams(
+        title: 'OpenGlucose sensor export',
+        subject: 'OpenGlucose archived sensor data',
+        text:
+            'Archived OpenGlucose sensor data. This file contains glucose '
+            'history and is not medical advice.',
+        files: <XFile>[exportFile],
+        fileNameOverrides: <String>[filename],
+        sharePositionOrigin: shareOrigin,
+      ),
+    );
+  } catch (_) {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('The archived sensor CSV could not be exported.'),
+      ),
+    );
+  } finally {
+    await disposeArchivedSensorShareFile(preparedFilePath);
   }
 }
 
@@ -2060,23 +2239,23 @@ Widget _buildSensorSettingsPane(
   CgmSessionSnapshot snapshot,
 ) {
   final sessionStart = snapshot.sessionInfo.sessionStart;
-  final warmup = computeWarmupStatus(
-    snapshot,
-    latestReading: controller.latestReading,
-  );
   return ListView(
     padding: const EdgeInsets.all(20),
     children: <Widget>[
+      SensorLifecycleCard(
+        snapshot: snapshot,
+        latestReading: controller.latestReading,
+        onReplaceSensor: () => unawaited(controller.replaceCurrentSensor()),
+        outerPadding: EdgeInsets.zero,
+      ),
+      const SizedBox(height: 18),
       Text(
-        'Sensor',
+        'Sensor details',
         style: Theme.of(
           context,
-        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
-      const SizedBox(height: 16),
-      if (warmup != null)
-        _KeyValueRow(label: 'Warmup', value: warmupSubtext(warmup)),
-      _KeyValueRow(label: 'Life', value: sensorLifeText(sessionStart)),
+      const SizedBox(height: 8),
       _KeyValueRow(label: 'Serial', value: snapshot.sessionInfo.serial),
       _KeyValueRow(label: 'Model', value: snapshot.sessionInfo.model),
       _KeyValueRow(label: 'Firmware', value: snapshot.sessionInfo.firmware),

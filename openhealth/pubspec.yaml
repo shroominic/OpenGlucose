@@ -1,7 +1,7 @@
 name: openglucose
 description: Your Open-source health and wellness app focused on local data and privacy.
 publish_to: none
-version: 0.0.1+14
+version: 0.0.1+15
 
 environment:
   sdk: ^3.11.4
@@ -18,6 +18,7 @@ dependencies:
     path: ../packages/cgm_core
   intl: ^0.20.2
   path_provider: ^2.1.5
+  share_plus: ^12.0.2
   shared_preferences: ^2.5.3
   health: ^13.3.1
   # Secure on-device storage (iOS Keychain / Android Keystore) for the optional

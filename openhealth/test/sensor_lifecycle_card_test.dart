@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
 
@@ -43,6 +44,30 @@ void main() {
     expect(find.text('Time remaining'), findsOneWidget);
     expect(find.text('Sensor age'), findsOneWidget);
     expect(find.text('15 days'), findsOneWidget);
+  });
+
+  testWidgets('unknown lifecycle remains explicit while session is verified', (
+    tester,
+  ) async {
+    final active = catalog.buildSnapshot(MockScenario.activeNormal);
+    final snapshot = CgmSessionSnapshot(
+      stage: CgmSyncStage.connecting,
+      statusText: 'Reconnecting',
+      sensor: active.sensor,
+      capabilities: active.capabilities,
+      sessionInfo: const CgmSessionInfo(),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SensorLifecycleCard(snapshot: snapshot, clock: () => now),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('sensorLifecycleCard')), findsOneWidget);
+    expect(find.text('Sensor lifecycle'), findsOneWidget);
+    expect(find.textContaining('Life remaining unavailable'), findsOneWidget);
   });
 
   testWidgets('warmup scenario shows the warmup countdown', (tester) async {
