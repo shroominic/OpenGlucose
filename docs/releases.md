@@ -75,9 +75,16 @@ Internal mode requires `TESTFLIGHT_MODE=internal`, an immutable
 `TESTFLIGHT_GROUP_ID`, and `DISTRIBUTE_INTERNAL=yes`. It requires exactly one
 automatic internal group with the approved name and ID, exactly one tester in
 that group with its approved immutable relationship ID, no automatic external
-group, and no other automatic internal group. Its Xcode export is marked
-`testFlightInternalTestingOnly`, which prevents later external TestFlight or
-App Store distribution, and the processed build must report `INTERNAL_ONLY`.
+group, and no other automatic internal group. A headless internal export also
+requires the canonical App Store provisioning-profile UUID for each exact
+bundle ID in `APP_STORE_PROFILE_UUID` and
+`LIVE_ACTIVITY_APP_STORE_PROFILE_UUID`, plus the exact 40-character Apple
+Distribution certificate SHA-1 in `IOS_DISTRIBUTION_CERTIFICATE_SHA1`. The
+generated Xcode ExportOptions use manual signing, map both targets to those
+explicit UUIDs, and set `testFlightInternalTestingOnly`; Xcode therefore cannot
+silently choose a stale profile or rely on a signed-in Apple account, and the
+artifact cannot later be distributed through external TestFlight or the App
+Store. The processed build must report `INTERNAL_ONLY`.
 It uploads with external distribution, beta review submission, and external
 notification disabled. After Apple finishes processing, it verifies that the
 exact valid build is associated only with that one internal group and has no
@@ -130,6 +137,16 @@ The current native release-tool pins are Fastlane 2.232.2, Xcode 26.6, and
 CocoaPods 1.16.2 in root version files. Updating one is an R3 release change:
 review the new version, change the checked-in pin, and validate a signed app
 plus extension rather than overriding the version from the release environment.
+
+Resolve the two profile UUIDs from freshly downloaded App Store distribution
+profiles after decoding them with `security cms -D`; do not substitute profile
+names. Resolve the certificate SHA-1 from the approved valid `Apple
+Distribution` identity in the release keychain. Verify that each profile is
+unexpired, belongs to the exact team and bundle ID, includes
+`beta-reports-active`, excludes device provisioning and debugger attachment,
+and that the main-app profile includes HealthKit. Export these three values only
+in the private release shell; do not add real signing identifiers or profiles
+to `.env`, logs, or the repository.
 
 The external mode distributes externally, so run it only after that entire
 audience is approved. Internal mode still uploads a real build to its automatic

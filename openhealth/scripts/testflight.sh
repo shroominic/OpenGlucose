@@ -99,6 +99,7 @@ verify_signed_bundle() {
   local expected_bundle_id="$2"
   local label="$3"
   local entitlement_file="$4"
+  local certificate_prefix="${5:-}"
 
   codesign --verify --strict --verbose=2 "$bundle"
 
@@ -140,6 +141,17 @@ verify_signed_bundle() {
   application_identifier=$(plist_value "$entitlement_file" application-identifier)
   [[ "$application_identifier" == "$APPLE_TEAM_ID.$expected_bundle_id" ]] || \
     fail "$label application-identifier entitlement is $application_identifier"
+
+  if [[ -n "$certificate_prefix" ]]; then
+    codesign -d --extract-certificates "$certificate_prefix" "$bundle" \
+      >/dev/null 2>&1 || fail "could not extract $label signing certificate"
+    [[ -f "${certificate_prefix}0" ]] || \
+      fail "$label has no leaf signing certificate"
+    local actual_certificate_sha1
+    actual_certificate_sha1=$(shasum -a 1 "${certificate_prefix}0" | awk '{print toupper($1)}')
+    [[ "$actual_certificate_sha1" == "$IOS_DISTRIBUTION_CERTIFICATE_SHA1" ]] || \
+      fail "$label signing certificate does not match approved input"
+  fi
 }
 
 verify_main_app_healthkit_entitlement() {
@@ -150,6 +162,11 @@ verify_main_app_healthkit_entitlement() {
   )
   [[ "$healthkit_enabled" == "true" ]] || \
     fail "main app signed entitlements do not enable HealthKit"
+  if /usr/libexec/PlistBuddy \
+    -c "Print :com.apple.developer.healthkit.access" \
+    "$entitlement_file" >/dev/null 2>&1; then
+    fail "main app unexpectedly requests Health Records access"
+  fi
 }
 
 verify_distribution_profile() {
@@ -157,6 +174,8 @@ verify_distribution_profile() {
   local expected_bundle_id="$2"
   local label="$3"
   local profile_plist="$4"
+  local expected_profile_uuid="${5:-}"
+  local expected_certificate_sha1="${6:-}"
   local embedded_profile="$bundle/embedded.mobileprovision"
 
   [[ -f "$embedded_profile" ]] || \
@@ -165,12 +184,19 @@ verify_distribution_profile() {
     fail "could not decode $label embedded.mobileprovision"
   [[ -s "$profile_plist" ]] || fail "$label provisioning profile is empty"
 
-python3 - "$profile_plist" "$expected_bundle_id" "$APPLE_TEAM_ID" "$label" <<'PY'
+python3 - \
+  "$profile_plist" \
+  "$expected_bundle_id" \
+  "$APPLE_TEAM_ID" \
+  "$label" \
+  "$expected_profile_uuid" \
+  "$expected_certificate_sha1" <<'PY'
 import datetime as dt
+import hashlib
 import plistlib
 import sys
 
-profile_path, bundle_id, team_id, label = sys.argv[1:]
+profile_path, bundle_id, team_id, label, expected_uuid, expected_cert_sha1 = sys.argv[1:]
 with open(profile_path, "rb") as source:
     profile = plistlib.load(source)
 
@@ -187,6 +213,8 @@ if expiration.tzinfo is None:
 require(expiration > dt.datetime.now(dt.timezone.utc), "profile is expired")
 require("ProvisionedDevices" not in profile, "uses device provisioning")
 require(profile.get("ProvisionsAllDevices") is not True, "uses enterprise provisioning")
+if expected_uuid:
+    require(profile.get("UUID") == expected_uuid, "profile UUID does not match approved input")
 
 teams = profile.get("TeamIdentifier")
 require(isinstance(teams, list) and teams == [team_id], "profile team is not exact")
@@ -202,6 +230,17 @@ require(
     entitlements.get("application-identifier") == f"{team_id}.{bundle_id}",
     "application identifier does not match",
 )
+if expected_cert_sha1:
+    certificates = profile.get("DeveloperCertificates")
+    require(
+        isinstance(certificates, list) and len(certificates) == 1,
+        "profile does not contain exactly one signing certificate",
+    )
+    actual_cert_sha1 = hashlib.sha1(certificates[0]).hexdigest().upper()
+    require(
+        actual_cert_sha1 == expected_cert_sha1,
+        "profile signing certificate does not match approved input",
+    )
 PY
 }
 
@@ -232,6 +271,7 @@ require_command shasum
 require_command unzip
 require_command codesign
 require_command security
+require_command openssl
 require_command xcodebuild
 require_command pod
 [[ -x "$RUNTIME_VERIFIER" ]] || fail "repository runtime verifier is missing"
@@ -260,15 +300,34 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
     fail "internal TestFlight mode does not support notify-only runs"
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for internal mode}"
   : "${TESTFLIGHT_TESTER_ID:?missing immutable TESTFLIGHT_TESTER_ID for internal mode}"
+  : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for internal mode}"
+  : "${LIVE_ACTIVITY_APP_STORE_PROFILE_UUID:?missing LIVE_ACTIVITY_APP_STORE_PROFILE_UUID for internal mode}"
+  : "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:?missing IOS_DISTRIBUTION_CERTIFICATE_SHA1 for internal mode}"
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
 elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for notify-only mode}"
 else
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
 fi
+[[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || \
+  fail "APPLE_TEAM_ID is malformed"
+[[ "$APP_BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || \
+  fail "APP_BUNDLE_ID is malformed"
+[[ "$LIVE_ACTIVITY_BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || \
+  fail "LIVE_ACTIVITY_BUNDLE_ID is malformed"
 if [[ -n "${TESTFLIGHT_GROUP_ID:-}" ]]; then
   [[ "$TESTFLIGHT_GROUP_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
     fail "TESTFLIGHT_GROUP_ID is malformed"
+fi
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  [[ "$APP_STORE_PROFILE_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
+    fail "APP_STORE_PROFILE_UUID must be a canonical UUID"
+  [[ "$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || \
+    fail "LIVE_ACTIVITY_APP_STORE_PROFILE_UUID must be a canonical UUID"
+  [[ "$IOS_DISTRIBUTION_CERTIFICATE_SHA1" =~ ^[0-9A-Fa-f]{40}$ ]] || \
+    fail "IOS_DISTRIBUTION_CERTIFICATE_SHA1 must be 40 hexadecimal characters"
+  IOS_DISTRIBUTION_CERTIFICATE_SHA1=${IOS_DISTRIBUTION_CERTIFICATE_SHA1^^}
+  export IOS_DISTRIBUTION_CERTIFICATE_SHA1
 fi
 if [[ -n "${TESTFLIGHT_TESTER_ID:-}" ]]; then
   [[ "$TESTFLIGHT_TESTER_ID" =~ ^[A-Za-z0-9-]+$ ]] || \
@@ -458,12 +517,25 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
 <dict>
   <key>method</key>
   <string>app-store-connect</string>
+  <key>destination</key>
+  <string>export</string>
   <key>signingStyle</key>
-  <string>automatic</string>
+  <string>manual</string>
+  <key>signingCertificate</key>
+  <string>$IOS_DISTRIBUTION_CERTIFICATE_SHA1</string>
   <key>teamID</key>
   <string>$APPLE_TEAM_ID</string>
+  <key>manageAppVersionAndBuildNumber</key>
+  <false/>
   <key>testFlightInternalTestingOnly</key>
   <true/>
+  <key>provisioningProfiles</key>
+  <dict>
+    <key>$APP_BUNDLE_ID</key>
+    <string>$APP_STORE_PROFILE_UUID</string>
+    <key>$LIVE_ACTIVITY_BUNDLE_ID</key>
+    <string>$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID</string>
+  </dict>
 </dict>
 </plist>
 PLIST
@@ -511,17 +583,22 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "$app"
 verify_signed_bundle \
-  "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-entitlements.plist"
+  "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-entitlements.plist" \
+  "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:+$release_temp/main-certificate-}"
 verify_main_app_healthkit_entitlement "$release_temp/main-entitlements.plist"
 verify_signed_bundle \
   "$live_activity_extension" "$LIVE_ACTIVITY_BUNDLE_ID" \
-  "Live Activity extension" "$release_temp/extension-entitlements.plist"
+  "Live Activity extension" "$release_temp/extension-entitlements.plist" \
+  "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:+$release_temp/extension-certificate-}"
 verify_distribution_profile \
-  "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-profile.plist"
+  "$app" "$APP_BUNDLE_ID" "main app" "$release_temp/main-profile.plist" \
+  "${APP_STORE_PROFILE_UUID:-}" "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:-}"
 verify_main_app_healthkit_profile "$release_temp/main-profile.plist"
 verify_distribution_profile \
   "$live_activity_extension" "$LIVE_ACTIVITY_BUNDLE_ID" \
-  "Live Activity extension" "$release_temp/extension-profile.plist"
+  "Live Activity extension" "$release_temp/extension-profile.plist" \
+  "${LIVE_ACTIVITY_APP_STORE_PROFILE_UUID:-}" \
+  "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:-}"
 
 extension_point=$(
   plist_value \
