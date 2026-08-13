@@ -1,7 +1,7 @@
 name: cgm_ble_flutter
 description: Flutter BLE transport bridge for the pure Dart CGM SDK.
 publish_to: none
-version: 1.0.0
+version: 1.1.0
 
 environment:
   sdk: ^3.11.4

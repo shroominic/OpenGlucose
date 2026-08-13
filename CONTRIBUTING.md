@@ -11,9 +11,9 @@ repository's [MIT License](LICENSE), and that you have the right to submit it.
 
 - Search existing [issues](https://github.com/shroominic/OpenGlucose/issues) and
   pull requests before proposing duplicate work.
-- Follow [SECURITY.md](SECURITY.md) for a vulnerability. Private vulnerability
-  reporting is an external GitHub setting and is not yet verified; do not send
-  details until the private intake is visibly available.
+- Follow [SECURITY.md](SECURITY.md) for a vulnerability. GitHub private
+  vulnerability reporting was reported enabled by the repository API on
+  2026-08-14; confirm the private form is still visible before sending details.
 - Do not submit real glucose histories, sensor serials, Bluetooth identifiers,
   provisioning material, credentials, or other personal data.
 - Keep the product boundary clear: OpenGlucose is wellness/reference software,

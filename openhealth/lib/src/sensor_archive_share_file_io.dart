@@ -4,6 +4,11 @@ import 'dart:io';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
+final _legacySensorExportFileName = RegExp(
+  '^openhealth_[A-Za-z0-9_-]+_[0-9]{8}-[0-9]{4}'
+  r'(?:-(?:[2-9]|[1-9][0-9]+))?\.csv$',
+);
+
 /// Writes one native share payload into its own temporary directory.
 ///
 /// The caller must invoke [disposeArchivedSensorShareFile] after the platform
@@ -64,7 +69,9 @@ Future<void> disposeArchivedSensorShareFile(String? filePath) async {
 ///
 /// Android's native share intent needs its private FileProvider copy after the
 /// chooser returns, so that copy cannot safely be deleted immediately. The
-/// next app launch is the earliest reliable cleanup boundary.
+/// next app launch is the earliest reliable cleanup boundary. The exact legacy
+/// `openhealth_<sensor-id>_<timestamp>.csv` shape is also removed because old
+/// app versions wrote identifier-bearing exports directly into this directory.
 Future<void> clearStaleArchivedSensorShareFiles({
   String? temporaryDirectoryPath,
 }) async {
@@ -79,7 +86,12 @@ Future<void> clearStaleArchivedSensorShareFiles({
   }
   for (final entry in entries) {
     final name = path.basename(entry.path);
-    if (name != 'share_plus' && !name.startsWith('openglucose-export-')) {
+    final isKnownDirectory =
+        entry is Directory &&
+        (name == 'share_plus' || name.startsWith('openglucose-export-'));
+    final isLegacySensorExport =
+        entry is File && _legacySensorExportFileName.hasMatch(name);
+    if (!isKnownDirectory && !isLegacySensorExport) {
       continue;
     }
     try {
