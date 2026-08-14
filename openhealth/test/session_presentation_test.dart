@@ -1,3 +1,4 @@
+import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -71,6 +72,55 @@ void main() {
     );
 
     expect(shouldShowPrimaryError(snapshot), isTrue);
+  });
+
+  group('BLE setup recovery', () {
+    CgmSessionSnapshot snapshotFor(BleFailureKind kind) {
+      final failure = BleFailure(
+        kind: kind,
+        operation: kind == BleFailureKind.permissionRequired
+            ? BleOperation.scan
+            : BleOperation.bond,
+        diagnosticCode: 'test.${kind.name}',
+      );
+      return CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: failure.toMetadata(),
+        lastError: 'Bluetooth setup could not be completed.',
+      );
+    }
+
+    test('permission failure gives platform-neutral settings guidance', () {
+      final snapshot = snapshotFor(BleFailureKind.permissionRequired);
+      final message = primaryErrorTextForSnapshot(snapshot)!;
+
+      expect(message, contains('phone settings'));
+      expect(message, contains('Bluetooth'));
+      expect(message, contains('Location'));
+      expect(message, isNot(contains('Android')));
+      expect(bleFailureRequiresUserAction(snapshot), isTrue);
+      expect(snapshotAllowsAutomaticReconnect(snapshot), isFalse);
+    });
+
+    test('pairing failure cautiously explains possible other-phone use', () {
+      final snapshot = snapshotFor(BleFailureKind.sensorPossiblyInUse);
+      final message = primaryErrorTextForSnapshot(snapshot)!;
+
+      expect(message, contains('may be'));
+      expect(message, contains('another phone'));
+      expect(message, contains('Do not reset'));
+      expect(message, isNot(contains('test.sensorPossiblyInUse')));
+    });
+
+    test('transient disconnect remains eligible for automatic reconnect', () {
+      final snapshot = snapshotFor(BleFailureKind.deviceDisconnected);
+
+      expect(bleFailureRequiresUserAction(snapshot), isFalse);
+      expect(snapshotAllowsAutomaticReconnect(snapshot), isTrue);
+    });
   });
 
   group('computeWarmupStatus', () {

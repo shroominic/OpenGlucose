@@ -10,6 +10,15 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Android setup now establishes the OS BLE bond before subscribing to
+  protected sensor notifications, allowing the system pairing prompt to appear
+  on phones that do not auto-pair from a notification request. Permission,
+  Bluetooth, pairing, timeout, and possible other-phone contention failures now
+  show identifier-free recovery guidance and pause automatic retry when user
+  action is required.
+
 ### Changed
 
 - External TestFlight builds no longer self-declare an unreviewed export-

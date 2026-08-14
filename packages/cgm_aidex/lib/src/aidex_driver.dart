@@ -197,7 +197,6 @@ class AidexSession implements CgmSession {
   Timer? _historyResumeTimer;
   bool _liveCatchUpQueued = false;
   bool _disconnecting = false;
-  bool _didRetryInitializationAfterBondReset = false;
   String _lastF003Hex = '';
 
   @override
@@ -358,8 +357,6 @@ class AidexSession implements CgmSession {
       final bondStateBeforeSetup = conn.supportsBondLifecycle
           ? await conn.currentBondState()
           : BleBondState.bonded;
-      _emitLog(CgmLogLevel.debug, 'Subscribing to notifications');
-      await _subscribeToNotifications();
       _setSnapshot(
         _snapshot.copyWith(
           stage: CgmSyncStage.bonding,
@@ -384,6 +381,11 @@ class AidexSession implements CgmSession {
         _emitLog(CgmLogLevel.debug, 'Refreshing services after bond');
         await _discoverServices();
       }
+      // Some Android stacks do not trigger pairing from a protected CCCD
+      // write. Establish the OS bond first so subscribing cannot fail before
+      // Android has a chance to show its pairing prompt.
+      _emitLog(CgmLogLevel.debug, 'Subscribing to notifications');
+      await _subscribeToNotifications();
       if (_requiresGattIdentityForVendorPair()) {
         _emitLog(CgmLogLevel.debug, 'Prefetching identity for vendor pair');
         await _prefetchIdentity();
@@ -470,9 +472,6 @@ class AidexSession implements CgmSession {
       unawaited(_runInitialBackgroundSync());
       _scheduleLiveRefresh(const Duration(seconds: 1));
     } catch (error, stackTrace) {
-      if (await _retryInitializationAfterBondReset(error)) {
-        return;
-      }
       _handleError(error, stackTrace, context: 'initializing session');
     }
   }
@@ -584,15 +583,20 @@ class AidexSession implements CgmSession {
     }
     _connectionState = BleConnectionState.connected;
     _connectionStateSubscription?.cancel();
-    _connectionStateSubscription = connection.connectionStates.listen((state) {
-      _connectionState = state;
-      if (_disconnecting) {
-        return;
-      }
-      if (state == BleConnectionState.disconnected) {
-        _handleUnexpectedDisconnect();
-      }
-    });
+    _connectionStateSubscription = connection.connectionStates.listen(
+      (state) {
+        _connectionState = state;
+        if (_disconnecting) {
+          return;
+        }
+        if (state == BleConnectionState.disconnected) {
+          _handleUnexpectedDisconnect();
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handleError(error, stackTrace, context: 'monitoring BLE connection');
+      },
+    );
   }
 
   void _handleUnexpectedDisconnect() {
@@ -690,10 +694,16 @@ class AidexSession implements CgmSession {
 
   Future<void> _discoverServices() async {
     final services = await _requireConnection.discoverServices();
+    // A post-bond discovery must fully replace pre-bond references. Android
+    // may return different characteristic handles after encryption starts.
+    final refreshedCharacteristics = <String, BleCharacteristicRef>{};
     for (final service in services) {
       for (final characteristic in service.characteristics) {
-        _characteristics[_normalizeUuid(characteristic.characteristicUuid)] =
-            characteristic.copyWith(serviceUuid: _normalizeUuid(service.uuid));
+        refreshedCharacteristics[_normalizeUuid(
+          characteristic.characteristicUuid,
+        )] = characteristic.copyWith(
+          serviceUuid: _normalizeUuid(service.uuid),
+        );
       }
     }
     for (final uuid in <String>[
@@ -707,10 +717,13 @@ class AidexSession implements CgmSession {
       AidexUuids.racp,
       AidexUuids.measurement,
     ]) {
-      if (!_characteristics.containsKey(uuid)) {
+      if (!refreshedCharacteristics.containsKey(uuid)) {
         throw StateError('Missing required Aidex characteristic $uuid.');
       }
     }
+    _characteristics
+      ..clear()
+      ..addAll(refreshedCharacteristics);
   }
 
   Future<void> _subscribeToNotifications() async {
@@ -737,17 +750,22 @@ class AidexSession implements CgmSession {
     final ref = _characteristic(uuid);
     final conn = _requireConnection;
     final stream = conn.notifications(ref);
-    _notificationSubscriptions[uuid] = stream.listen((bytes) {
-      _rawHex[uuid] = hexOf(bytes);
-      if (!sink.isClosed) {
-        sink.add(bytes);
-      }
-      if (uuid == AidexUuids.f003) {
-        _lastF003Hex = hexOf(bytes);
-      } else if (uuid == AidexUuids.measurement) {
-        _handleMeasurementNotification(bytes);
-      }
-    });
+    _notificationSubscriptions[uuid] = stream.listen(
+      (bytes) {
+        _rawHex[uuid] = hexOf(bytes);
+        if (!sink.isClosed) {
+          sink.add(bytes);
+        }
+        if (uuid == AidexUuids.f003) {
+          _lastF003Hex = hexOf(bytes);
+        } else if (uuid == AidexUuids.measurement) {
+          _handleMeasurementNotification(bytes);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handleError(error, stackTrace, context: 'receiving BLE notifications');
+      },
+    );
     await conn.setNotify(ref, true);
     await Future<void>.delayed(_timings.gattGap);
   }
@@ -1027,81 +1045,6 @@ class AidexSession implements CgmSession {
     }
     await _write(controlPoint, const <int>[0x06]);
     _emitLog(CgmLogLevel.info, 'Bond Management delete-all opcode sent');
-  }
-
-  Future<bool> _retryInitializationAfterBondReset(Object error) async {
-    final connection = _connection;
-    if (_disconnecting ||
-        _didRetryInitializationAfterBondReset ||
-        connection == null ||
-        !connection.supportsBondLifecycle ||
-        _sessionKey != null) {
-      return false;
-    }
-
-    final bondState = await connection.currentBondState();
-    if (bondState != BleBondState.bonded && bondState != BleBondState.bonding) {
-      return false;
-    }
-
-    _didRetryInitializationAfterBondReset = true;
-    _emitLog(
-      CgmLogLevel.warning,
-      'Initialization failed while a local BLE bond exists; removing the '
-      'local bond and retrying once (${error.runtimeType})',
-    );
-    await _resetBleLinkForRetry(removeBond: true);
-    _setSnapshot(
-      _snapshot.copyWith(
-        stage: CgmSyncStage.connecting,
-        statusText: 'Retrying after bond reset',
-        lastError: null,
-      ),
-    );
-    await Future<void>.delayed(_timings.gattGap);
-    await _initializeInternal();
-    return true;
-  }
-
-  Future<void> _resetBleLinkForRetry({required bool removeBond}) async {
-    _liveRefreshTimer?.cancel();
-    _liveRefreshTimer = null;
-    _historyResumeTimer?.cancel();
-    _historyResumeTimer = null;
-    _liveCatchUpQueued = false;
-
-    await _connectionStateSubscription?.cancel();
-    _connectionStateSubscription = null;
-
-    for (final subscription in _notificationSubscriptions.values) {
-      await subscription.cancel();
-    }
-    _notificationSubscriptions.clear();
-
-    if (removeBond) {
-      try {
-        await _connection?.removeBond();
-        _emitLog(CgmLogLevel.info, 'Removed stale Android bond before retry');
-      } catch (bondError) {
-        _emitLog(
-          CgmLogLevel.warning,
-          'Could not remove stale Android bond before retry '
-          '(${bondError.runtimeType})',
-        );
-      }
-    }
-
-    try {
-      await _connection?.disconnect();
-    } catch (_) {}
-
-    _characteristics.clear();
-    _connection = null;
-    _connectionState = BleConnectionState.disconnected;
-    _sessionKey = null;
-    _sessionIv = null;
-    _rawVendorSeed = null;
-    _lastF003Hex = '';
   }
 
   Future<void> _startSession() async {
@@ -2133,12 +2076,37 @@ class AidexSession implements CgmSession {
     _historyResumeTimer?.cancel();
     _historyResumeTimer = null;
     _liveCatchUpQueued = false;
-    final safeError = '$context failed (${error.runtimeType})';
-    _emitLog(CgmLogLevel.error, safeError);
+    final hasSpecificSessionFailure =
+        _snapshot.stage == CgmSyncStage.error && _snapshot.lastError != null;
+    final bleFailure = error is BleFailure
+        ? error
+        : context == 'initializing session' && !hasSpecificSessionFailure
+        ? BleFailure(
+            kind: BleFailureKind.unexpected,
+            operation: BleOperation.connect,
+            diagnosticCode: 'aidex.initialize.unexpected',
+          )
+        : null;
+    final safeError = hasSpecificSessionFailure
+        ? _snapshot.lastError!
+        : bleFailure == null
+        ? '$context failed (${error.runtimeType})'
+        : 'Bluetooth setup could not be completed.';
+    final diagnosticMessage = hasSpecificSessionFailure
+        ? '$context failed (${error.runtimeType})'
+        : bleFailure == null
+        ? safeError
+        : 'BLE ${bleFailure.operation.name} failed '
+              '[${bleFailure.diagnosticCode}]';
+    _emitLog(CgmLogLevel.error, diagnosticMessage);
     _setSnapshot(
       _snapshot.copyWith(
         stage: CgmSyncStage.error,
         statusText: 'Error',
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          ...?bleFailure?.toMetadata(),
+        },
         lastError: safeError,
       ),
     );

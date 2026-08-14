@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/app_controller.dart';
@@ -42,6 +43,85 @@ void main() {
     await driver.close();
   });
 
+  test(
+    'user-action BLE failure does not auto-retry or archive an unverified sensor',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+      );
+      final driver = _ControlledDriver(<_ControlledSession>[session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+        reconnectDelay: Duration.zero,
+      );
+      final failure = BleFailure(
+        kind: BleFailureKind.sensorPossiblyInUse,
+        operation: BleOperation.bond,
+        diagnosticCode: 'fbp.android.bond.busy',
+      );
+
+      await controller.initialize();
+      await controller.connect(sensor);
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.error,
+          metadata: failure.toMetadata(),
+          lastError: 'Bluetooth setup could not be completed.',
+        ),
+      );
+      await _drainEventQueue();
+
+      expect(controller.connectionRequiresUserAction, isTrue);
+      expect(controller.lastError, contains('another phone'));
+      expect(driver.connectedSensors, hasLength(1));
+
+      await controller.chooseAnotherSensor();
+      expect(controller.snapshot, isNull);
+      expect(controller.archivedSensors, isEmpty);
+
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test('unclassified initial BLE setup failure does not auto-retry', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _testSensor();
+    final session = _ControlledSession(
+      _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+    );
+    final driver = _ControlledDriver(<_ControlledSession>[session]);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+      reconnectDelay: Duration.zero,
+    );
+    await controller.initialize();
+    await controller.connect(sensor);
+    session.emit(
+      _testSnapshot(
+        sensor,
+        stage: CgmSyncStage.error,
+        lastError: 'initializing session failed (StateError)',
+      ),
+    );
+    await _drainEventQueue();
+
+    expect(controller.connectionRequiresUserAction, isFalse);
+    expect(driver.connectedSensors, hasLength(1));
+
+    controller.dispose();
+    await driver.close();
+  });
+
   test('promotes a ready sensor to the durable selection', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -63,9 +143,7 @@ void main() {
     await _drainEventQueue();
 
     final persisted =
-        jsonDecode(
-              store.getString('openHealth.lastSensor')!,
-            )
+        jsonDecode(store.getString('openHealth.lastSensor')!)
             as Map<String, dynamic>;
     expect(persisted['storageKey'], sensor.storageKey);
     expect(
@@ -268,9 +346,7 @@ void main() {
       expect(vendorReadings.single.valueMgdl, rebasedReading.valueMgdl);
       expect(vendorReadings.single.recordedAt, rebasedReading.recordedAt);
       expect(
-        history.where(
-          (reading) => reading.source == CgmRecordSource.broadcast,
-        ),
+        history.where((reading) => reading.source == CgmRecordSource.broadcast),
         hasLength(1),
       );
 
@@ -489,10 +565,7 @@ class _ProductionTestDriver implements CgmDriver {
     Duration? timeout,
     bool allowDuplicates = true,
   }) {
-    return _delegate.scan(
-      timeout: timeout,
-      allowDuplicates: allowDuplicates,
-    );
+    return _delegate.scan(timeout: timeout, allowDuplicates: allowDuplicates);
   }
 
   @override
@@ -642,6 +715,7 @@ CgmSessionSnapshot _testSnapshot(
   List<CgmReading> history = const <CgmReading>[],
   CgmSessionInfo sessionInfo = const CgmSessionInfo(),
   Map<String, String> metadata = const <String, String>{},
+  String? lastError,
 }) {
   return CgmSessionSnapshot(
     stage: stage,
@@ -652,6 +726,7 @@ CgmSessionSnapshot _testSnapshot(
     latestReading: history.isEmpty ? null : history.last,
     sessionInfo: sessionInfo,
     metadata: metadata,
+    lastError: lastError,
   );
 }
 

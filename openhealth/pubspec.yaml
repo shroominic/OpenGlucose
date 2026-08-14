@@ -14,6 +14,8 @@ dependencies:
     sdk: flutter
   cgm_aidex:
     path: ../packages/cgm_aidex
+  cgm_ble:
+    path: ../packages/cgm_ble
   cgm_ble_flutter:
     path: ../packages/cgm_ble_flutter
   cgm_core:

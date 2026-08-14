@@ -20,9 +20,11 @@ class CgmAppController extends ChangeNotifier {
     required SharedPreferences preferences,
     required CgmDriver driver,
     HealthStateStore? healthStateStore,
+    Duration reconnectDelay = const Duration(seconds: 3),
   }) : _preferences = preferences,
        _healthStateStore =
            healthStateStore ?? PreferencesHealthStateStore(preferences),
+       _reconnectDelay = reconnectDelay,
        _driver = driver;
 
   static const _displayPreferencesKey = 'openHealth.displayPreferences';
@@ -31,7 +33,6 @@ class CgmAppController extends ChangeNotifier {
   static const _scanTimeout = Duration(seconds: 6);
   static const _historyPersistDebounce = Duration(milliseconds: 900);
   static const _restoredConnectDelay = Duration(milliseconds: 700);
-  static const _reconnectDelay = Duration(seconds: 3);
   static const _liveRefreshThreshold = Duration(minutes: 2);
   static const _historyCatchUpThreshold = Duration(minutes: 5);
   static const _resumeOffsetMetadataKey = 'resumeOffset';
@@ -40,6 +41,7 @@ class CgmAppController extends ChangeNotifier {
 
   final SharedPreferences _preferences;
   final HealthStateStore _healthStateStore;
+  final Duration _reconnectDelay;
   final CgmDriver _driver;
   final Map<String, DiscoveredSensor> _sensorsById =
       <String, DiscoveredSensor>{};
@@ -236,9 +238,7 @@ class CgmAppController extends ChangeNotifier {
           _selectedSensor?.deviceId != restoredSensor.deviceId) {
         return;
       }
-      unawaited(
-        connect(restoredSensor, allowSessionActivation: false),
-      );
+      unawaited(connect(restoredSensor, allowSessionActivation: false));
     });
   }
 
@@ -320,6 +320,12 @@ class CgmAppController extends ChangeNotifier {
       );
       _session = session;
       _snapshot = session.currentSnapshot;
+      final initialErrorSnapshot = _snapshot;
+      if (initialErrorSnapshot != null &&
+          (initialErrorSnapshot.stage == CgmSyncStage.error ||
+              initialErrorSnapshot.stage == CgmSyncStage.disconnected)) {
+        _lastError = primaryErrorTextForSnapshot(initialErrorSnapshot);
+      }
       if (_snapshot?.stage == CgmSyncStage.ready) {
         _promoteVerifiedSelection(sensor);
       }
@@ -341,7 +347,9 @@ class CgmAppController extends ChangeNotifier {
             nextSnapshot.stage == CgmSyncStage.disconnected ||
             nextSnapshot.stage == CgmSyncStage.error;
         if (nextSnapshot.lastError != null && reconnectingStage) {
-          _lastError = 'Sensor connection reported an error';
+          _lastError =
+              primaryErrorTextForSnapshot(_snapshot!) ??
+              'Sensor connection reported an error';
         } else if (!reconnectingStage) {
           _lastError = null;
         }
@@ -374,7 +382,9 @@ class CgmAppController extends ChangeNotifier {
           _allowSessionActivation = false;
           _promoteVerifiedSelection(sensor);
         }
-        if (reconnectingStage && !isMockDriver) {
+        if (reconnectingStage &&
+            !isMockDriver &&
+            snapshotAllowsAutomaticReconnect(_snapshot!)) {
           _scheduleReconnect();
         } else {
           _cancelReconnect();
@@ -433,10 +443,7 @@ class CgmAppController extends ChangeNotifier {
     final session = _session;
     final currentSnapshot = snapshot;
     if (session == null || currentSnapshot == null) {
-      await connect(
-        sensor,
-        allowSessionActivation: _allowSessionActivation,
-      );
+      await connect(sensor, allowSessionActivation: _allowSessionActivation);
       return;
     }
     if (currentSnapshot.stage == CgmSyncStage.disconnected) {
@@ -475,6 +482,29 @@ class CgmAppController extends ChangeNotifier {
       _freshnessInFlight = false;
       notifyListeners();
     }
+  }
+
+  bool get connectionRequiresUserAction {
+    final current = snapshot;
+    return current != null &&
+        snapshotHasBleFailure(current) &&
+        !_canAutomaticallyReconnect(current);
+  }
+
+  Future<void> retryConnection() async {
+    final sensor = _selectedSensor;
+    if (sensor == null) {
+      return;
+    }
+    _cancelReconnect();
+    await connect(sensor, allowSessionActivation: _allowSessionActivation);
+  }
+
+  Future<void> chooseAnotherSensor() {
+    final current = snapshot;
+    final shouldArchive =
+        _selectionPersisted || (current?.history.isNotEmpty ?? false);
+    return disconnect(clearSelection: true, archiveWhenClearing: shouldArchive);
   }
 
   Future<void> refresh() async {
@@ -1116,7 +1146,8 @@ class CgmAppController extends ChangeNotifier {
   }
 
   String _safeError(String context, Object error) {
-    return '$context failed (${error.runtimeType})';
+    return userMessageForBleError(error) ??
+        '$context failed (${error.runtimeType})';
   }
 
   void _startPlatformTask(Future<void> task, String context) {
@@ -1300,6 +1331,10 @@ class CgmAppController extends ChangeNotifier {
     }
     final currentSnapshot = snapshot;
     if (currentSnapshot != null &&
+        !_canAutomaticallyReconnect(currentSnapshot)) {
+      return;
+    }
+    if (currentSnapshot != null &&
         (currentSnapshot.latestReading != null ||
             currentSnapshot.history.isNotEmpty) &&
         (currentSnapshot.stage == CgmSyncStage.disconnected ||
@@ -1318,6 +1353,9 @@ class CgmAppController extends ChangeNotifier {
         return;
       }
       final nextSnapshot = snapshot;
+      if (nextSnapshot != null && !_canAutomaticallyReconnect(nextSnapshot)) {
+        return;
+      }
       if (nextSnapshot != null &&
           nextSnapshot.stage != CgmSyncStage.disconnected &&
           nextSnapshot.stage != CgmSyncStage.error &&
@@ -1325,10 +1363,7 @@ class CgmAppController extends ChangeNotifier {
         return;
       }
       unawaited(
-        connect(
-          sensor,
-          allowSessionActivation: _allowSessionActivation,
-        ),
+        connect(sensor, allowSessionActivation: _allowSessionActivation),
       );
     });
   }
@@ -1336,6 +1371,18 @@ class CgmAppController extends ChangeNotifier {
   void _cancelReconnect() {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+  }
+
+  bool _canAutomaticallyReconnect(CgmSessionSnapshot currentSnapshot) {
+    if (!snapshotAllowsAutomaticReconnect(currentSnapshot)) {
+      return false;
+    }
+    final verifiedOrPreviouslyUseful =
+        _selectionPersisted ||
+        _selectionPromotion != null ||
+        currentSnapshot.latestReading != null ||
+        currentSnapshot.history.isNotEmpty;
+    return verifiedOrPreviouslyUseful;
   }
 
   DiscoveredSensor _connectionSensorFor(

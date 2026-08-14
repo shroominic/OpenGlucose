@@ -250,10 +250,7 @@ Uint8List _buildArchivedSensorExportInBackground(
 );
 
 class _ArchivedSensorShareScope extends InheritedWidget {
-  const _ArchivedSensorShareScope({
-    required this.share,
-    required super.child,
-  });
+  const _ArchivedSensorShareScope({required this.share, required super.child});
 
   final ArchivedSensorShareAction share;
 
@@ -613,9 +610,7 @@ class _ScanView extends StatelessWidget {
                             label: const Text('Explore sample data'),
                             style: OutlinedButton.styleFrom(
                               foregroundColor: Colors.white,
-                              side: const BorderSide(
-                                color: Color(0xFF9CC9C1),
-                              ),
+                              side: const BorderSide(color: Color(0xFF9CC9C1)),
                             ),
                           ),
                       ],
@@ -1134,6 +1129,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final snapshot = widget.snapshot;
     final latest = widget.controller.latestReading;
     final warmup = computeWarmupStatus(snapshot, latestReading: latest);
+    final primaryError = primaryErrorTextForSnapshot(snapshot);
 
     final String bigValue;
     final String unitLabel;
@@ -1218,14 +1214,41 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   color: const Color(0xFFD6ECE7),
                 ),
               ),
-              if (shouldShowPrimaryError(snapshot)) ...<Widget>[
+              if (primaryError != null) ...<Widget>[
                 const SizedBox(height: 12),
                 Text(
-                  snapshot.lastError!,
+                  primaryError,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: const Color(0xFFFFC4AA),
                   ),
                 ),
+                if (widget.controller.connectionRequiresUserAction) ...<Widget>[
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: <Widget>[
+                      FilledButton.tonal(
+                        key: const ValueKey<String>('retryBleSetupButton'),
+                        onPressed: () =>
+                            unawaited(widget.controller.retryConnection()),
+                        child: const Text('Try again'),
+                      ),
+                      OutlinedButton(
+                        key: const ValueKey<String>(
+                          'chooseAnotherSensorButton',
+                        ),
+                        onPressed: () =>
+                            unawaited(widget.controller.chooseAnotherSensor()),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Color(0xFF9CC9C1)),
+                        ),
+                        child: const Text('Choose another sensor'),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ],
           ),
@@ -2132,24 +2155,18 @@ Future<void> _exportArchivedSensorData(
       : renderBox.localToGlobal(Offset.zero) & renderBox.size;
   String? preparedFilePath;
   try {
-    final bytes = await compute(
-      _buildArchivedSensorExportInBackground,
-      (
-        format: format,
-        session: session,
-        readings: List<CgmReading>.of(readings, growable: false),
-      ),
-    );
+    final bytes = await compute(_buildArchivedSensorExportInBackground, (
+      format: format,
+      session: session,
+      readings: List<CgmReading>.of(readings, growable: false),
+    ));
     final filename = archivedSensorExportFilename(format);
     preparedFilePath = await prepareArchivedSensorShareFileBytes(
       filename: filename,
       bytes: bytes,
     );
     final exportFile = preparedFilePath == null
-        ? XFile.fromData(
-            bytes,
-            mimeType: format.mimeType,
-          )
+        ? XFile.fromData(bytes, mimeType: format.mimeType)
         : XFile(preparedFilePath, mimeType: format.mimeType);
     await share(
       buildArchivedSensorShareParams(
