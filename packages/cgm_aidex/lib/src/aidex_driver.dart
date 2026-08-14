@@ -603,6 +603,11 @@ class AidexSession implements CgmSession {
     if (_disconnecting || _snapshot.stage == CgmSyncStage.disconnected) {
       return;
     }
+    final failure = BleFailure(
+      kind: BleFailureKind.deviceDisconnected,
+      operation: BleOperation.connect,
+      diagnosticCode: 'aidex.connection.disconnected',
+    );
     _connection = null;
     _connectionState = BleConnectionState.disconnected;
     _liveRefreshTimer?.cancel();
@@ -615,6 +620,10 @@ class AidexSession implements CgmSession {
       _snapshot.copyWith(
         stage: CgmSyncStage.disconnected,
         statusText: 'Connection lost',
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          ...failure.toMetadata(),
+        },
         lastError: 'BLE connection lost',
       ),
     );

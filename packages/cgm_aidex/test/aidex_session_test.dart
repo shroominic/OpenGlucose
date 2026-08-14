@@ -539,6 +539,28 @@ void main() {
     await session.disconnect();
   });
 
+  test('disconnect events expose safe structured recovery metadata', () async {
+    final transport = _FakeBleTransport();
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+    await session.initialize();
+
+    transport.lastConnection.emitDisconnected();
+    await Future<void>.delayed(Duration.zero);
+
+    final snapshot = session.currentSnapshot;
+    final failure = BleFailure.fromMetadata(snapshot.metadata);
+    expect(snapshot.stage, CgmSyncStage.disconnected);
+    expect(failure?.kind, BleFailureKind.deviceDisconnected);
+    expect(failure?.operation, BleOperation.connect);
+    expect(failure?.diagnosticCode, 'aidex.connection.disconnected');
+    expect(snapshot.lastError, isNot(contains(session.sensor.deviceId)));
+    await session.disconnect();
+  });
+
   test('notification stream errors become safe session errors', () async {
     final transport = _FakeBleTransport();
     final session =
@@ -874,6 +896,10 @@ class _FakeBleConnection implements BleConnection {
 
   void emitConnectionError(Object error) {
     _connectionStates.addError(error, StackTrace.current);
+  }
+
+  void emitDisconnected() {
+    _connectionStates.add(BleConnectionState.disconnected);
   }
 
   void emitNotificationError(String uuid, Object error) {
