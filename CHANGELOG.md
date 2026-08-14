@@ -10,25 +10,16 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
-### Changed
+## [0.1.1] - 2026-08-14
 
-- External TestFlight builds no longer self-declare an unreviewed export-
-  compliance exemption. The Account Holder must explicitly classify the build,
-  and the release owner must record that determination before external beta
-  approval and tester notification.
-- Restricted glucose-history blobs now use deterministic SHA-256 filenames
-  that do not embed reversible sensor storage keys. Schema-two filenames are
-  migrated crash-safely at startup, interrupted migrations resume, and
-  conflicting copies fail closed without discarding either history.
+### Fixed
 
-### Security
-
-- Startup removes identifier-bearing legacy
-  `openhealth_<sensor-id>_<timestamp>.csv` cache exports using an exact filename
-  and regular-file check, while preserving unrelated cache entries.
-- Release startup sets `flutter_blue_plus` Dart/native logging to `none` before
-  storage initialization or any BLE operation and fails closed if the plugin
-  cannot confirm the setting.
+- Android setup now establishes the OS BLE bond before subscribing to
+  protected sensor notifications, allowing the system pairing prompt to appear
+  on phones that do not auto-pair from a notification request. Permission,
+  Bluetooth, pairing, timeout, and possible other-phone contention failures now
+  show identifier-free recovery guidance and pause automatic retry when user
+  action is required.
 
 ## [0.1.0] - 2026-08-13
 
@@ -55,6 +46,14 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Changed
 
+- External TestFlight builds no longer self-declare an unreviewed export-
+  compliance exemption. The Account Holder must explicitly classify the build,
+  and the release owner must record that determination before external beta
+  approval and tester notification.
+- Restricted glucose-history blobs now use deterministic SHA-256 filenames
+  that do not embed reversible sensor storage keys. Schema-two filenames are
+  migrated crash-safely at startup, interrupted migrations resume, and
+  conflicting copies fail closed without discarding either history.
 - Dart-owned sensor selection and glucose history move from ordinary platform
   preferences into an application-support file; those legacy values are removed
   only after the replacement is durable. iOS native lock-screen payloads are
@@ -79,6 +78,15 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   identity, verifies the APK identity and version, creates build provenance,
   and attaches only the verified bytes.
 
+### Security
+
+- Startup removes identifier-bearing legacy
+  `openhealth_<sensor-id>_<timestamp>.csv` cache exports using an exact filename
+  and regular-file check, while preserving unrelated cache entries.
+- Release startup sets `flutter_blue_plus` Dart/native logging to `none` before
+  storage initialization or any BLE operation and fails closed if the plugin
+  cannot confirm the setting.
+
 ### Known limitations
 
 - Complete all-data/recovery export, delete-all, and configurable retention
@@ -101,6 +109,7 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.1
 [0.1.0]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.0
 [0.0.1+10]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.0.1%2B10

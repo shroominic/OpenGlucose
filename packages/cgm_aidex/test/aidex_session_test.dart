@@ -101,9 +101,9 @@ void main() {
       transport.lastConnection.operations,
       containsAllInOrder(<String>[
         'discoverServices',
+        'ensureBonded',
         'setNotify:${AidexUuids.f001}',
         'setNotify:${AidexUuids.f003}',
-        'ensureBonded',
       ]),
     );
   });
@@ -332,6 +332,7 @@ void main() {
       expect(session.currentSnapshot.sessionInfo.sessionStopped, isFalse);
       expect(session.currentSnapshot.health.expired, isFalse);
       expect(session.currentSnapshot.metadata['activationRequired'], 'true');
+      expect(session.currentSnapshot.lastError, contains('Choose this sensor'));
       expect(transport.lastConnection.didRequestStartSession, isFalse);
       expect(transport.lastConnection.didWriteSessionStart, isFalse);
 
@@ -393,6 +394,7 @@ void main() {
       expect(session.currentSnapshot.stage, CgmSyncStage.error);
       expect(session.currentSnapshot.sessionInfo.sessionStopped, isTrue);
       expect(session.currentSnapshot.health.expired, isTrue);
+      expect(session.currentSnapshot.lastError, contains('ended'));
       expect(transport.lastConnection.didRequestStartSession, isFalse);
       expect(transport.lastConnection.didWriteSessionStart, isFalse);
 
@@ -400,42 +402,223 @@ void main() {
     },
   );
 
-  test('session retries once after clearing a stale bond', () async {
-    final transport = _FakeBleTransport(failDiscoverServicesOnce: true);
-    final driver = AidexSensorDriver(
-      transport,
-      clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
-      timingProfile: const AidexTimingProfile(
-        gattGap: Duration.zero,
-        postStartSession: Duration.zero,
-        postSessionStartWrite: Duration.zero,
-        vendorPairTimeout: Duration(seconds: 1),
-        vendorCommandTimeout: Duration(seconds: 1),
-      ),
-    );
-    final sensor = DiscoveredSensor(
-      driverId: 'aidex',
-      deviceId: 'AA:BB:CC:DD:EE:FF',
-      displayName: 'AiDEX-2222293Q2E',
-      storageKey: 'serial:2222293Q2E',
-      rssi: -40,
-      capabilities: const CgmCapabilities(
-        supportsDirectBle: true,
-        supportsVendorPairing: true,
-        supportsHistory: true,
-        supportsDiagnostics: true,
-        supportsCalibration: true,
-      ),
-      metadata: const <String, String>{'serial': '2222293Q2E'},
-    );
+  test(
+    'initialization failure never removes a local bond automatically',
+    () async {
+      final transport = _FakeBleTransport(failDiscoverServicesOnce: true);
+      final driver = AidexSensorDriver(
+        transport,
+        clock: () => DateTime.parse('2026-04-02T04:28:10Z'),
+        timingProfile: const AidexTimingProfile(
+          gattGap: Duration.zero,
+          postStartSession: Duration.zero,
+          postSessionStartWrite: Duration.zero,
+          vendorPairTimeout: Duration(seconds: 1),
+          vendorCommandTimeout: Duration(seconds: 1),
+        ),
+      );
+      final sensor = DiscoveredSensor(
+        driverId: 'aidex',
+        deviceId: 'AA:BB:CC:DD:EE:FF',
+        displayName: 'AiDEX-2222293Q2E',
+        storageKey: 'serial:2222293Q2E',
+        rssi: -40,
+        capabilities: const CgmCapabilities(
+          supportsDirectBle: true,
+          supportsVendorPairing: true,
+          supportsHistory: true,
+          supportsDiagnostics: true,
+          supportsCalibration: true,
+        ),
+        metadata: const <String, String>{'serial': '2222293Q2E'},
+      );
 
-    final session = await driver.connect(sensor) as AidexSession;
+      final session = await driver.connect(sensor) as AidexSession;
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      expect(transport.connections, hasLength(1));
+      expect(transport.connections.single.didRemoveBond, isFalse);
+      expect(
+        BleFailure.fromMetadata(
+          session.currentSnapshot.metadata,
+        )?.allowsAutomaticRetry,
+        isFalse,
+      );
+
+      await session.disconnect();
+    },
+  );
+
+  test('session bonds before protected notification subscriptions', () async {
+    final transport = _FakeBleTransport(requireBondBeforeNotifications: true);
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+
     await session.initialize();
 
+    final operations = transport.lastConnection.operations;
     expect(session.currentSnapshot.stage, CgmSyncStage.ready);
-    expect(transport.connections, hasLength(2));
-    expect(transport.connections.first.didRemoveBond, isTrue);
+    expect(
+      operations.indexOf('ensureBonded'),
+      lessThan(operations.indexOf('setNotify:${AidexUuids.f001}')),
+    );
+    expect(
+      operations.where((operation) => operation == 'discoverServices'),
+      hasLength(2),
+      reason: 'A newly established bond requires fresh GATT references.',
+    );
+    await session.disconnect();
+  });
 
+  test('bond failure exposes only safe structured recovery metadata', () async {
+    final transport = _FakeBleTransport(
+      bondFailure: BleFailure(
+        kind: BleFailureKind.sensorPossiblyInUse,
+        operation: BleOperation.bond,
+        diagnosticCode: 'fbp.android.bond.busy',
+      ),
+    );
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+    final logs = <CgmLogEntry>[];
+    final subscription = session.logs.listen(logs.add);
+
+    await session.initialize();
+    await Future<void>.delayed(Duration.zero);
+
+    final snapshot = session.currentSnapshot;
+    final failure = BleFailure.fromMetadata(snapshot.metadata);
+    expect(snapshot.stage, CgmSyncStage.error);
+    expect(snapshot.lastError, 'Bluetooth setup could not be completed.');
+    expect(failure?.kind, BleFailureKind.sensorPossiblyInUse);
+    expect(failure?.allowsAutomaticRetry, isFalse);
+    expect(transport.lastConnection.didRemoveBond, isFalse);
+    expect(
+      logs.map((entry) => entry.message).join('\n'),
+      contains('fbp.android.bond.busy'),
+    );
+    expect(
+      logs.map((entry) => entry.message).join('\n'),
+      isNot(contains(session.sensor.deviceId)),
+    );
+
+    await subscription.cancel();
+    await session.disconnect();
+  });
+
+  test('connection-state stream errors become safe session errors', () async {
+    final transport = _FakeBleTransport();
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+    await session.initialize();
+
+    transport.lastConnection.emitConnectionError(
+      BleFailure(
+        kind: BleFailureKind.deviceDisconnected,
+        operation: BleOperation.connect,
+        diagnosticCode: 'fake.connection.stream',
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(
+      BleFailure.fromMetadata(session.currentSnapshot.metadata)?.kind,
+      BleFailureKind.deviceDisconnected,
+    );
+    await session.disconnect();
+  });
+
+  test('disconnect events expose safe structured recovery metadata', () async {
+    final transport = _FakeBleTransport();
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+    await session.initialize();
+
+    transport.lastConnection.emitDisconnected();
+    await Future<void>.delayed(Duration.zero);
+
+    final snapshot = session.currentSnapshot;
+    final failure = BleFailure.fromMetadata(snapshot.metadata);
+    expect(snapshot.stage, CgmSyncStage.disconnected);
+    expect(failure?.kind, BleFailureKind.deviceDisconnected);
+    expect(failure?.operation, BleOperation.connect);
+    expect(failure?.diagnosticCode, 'aidex.connection.disconnected');
+    expect(snapshot.lastError, isNot(contains(session.sensor.deviceId)));
+    await session.disconnect();
+  });
+
+  test(
+    'disconnect after pairing error preserves non-retryable failure',
+    () async {
+      final transport = _FakeBleTransport();
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+      await session.initialize();
+      const diagnosticCode = 'fake.bond.rejected';
+
+      transport.lastConnection.emitConnectionError(
+        BleFailure(
+          kind: BleFailureKind.bondRejected,
+          operation: BleOperation.bond,
+          diagnosticCode: diagnosticCode,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      transport.lastConnection.emitDisconnected();
+      await Future<void>.delayed(Duration.zero);
+
+      final snapshot = session.currentSnapshot;
+      final failure = BleFailure.fromMetadata(snapshot.metadata);
+      expect(snapshot.stage, CgmSyncStage.disconnected);
+      expect(failure?.kind, BleFailureKind.bondRejected);
+      expect(failure?.operation, BleOperation.bond);
+      expect(failure?.diagnosticCode, diagnosticCode);
+      expect(failure?.allowsAutomaticRetry, isFalse);
+      await session.disconnect();
+    },
+  );
+
+  test('notification stream errors become safe session errors', () async {
+    final transport = _FakeBleTransport();
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+    await session.initialize();
+
+    transport.lastConnection.emitNotificationError(
+      AidexUuids.measurement,
+      BleFailure(
+        kind: BleFailureKind.bondRejected,
+        operation: BleOperation.subscribe,
+        diagnosticCode: 'fake.notification.stream',
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(
+      BleFailure.fromMetadata(session.currentSnapshot.metadata)?.kind,
+      BleFailureKind.bondRejected,
+    );
     await session.disconnect();
   });
 }
@@ -485,6 +668,8 @@ class _FakeBleTransport implements BleTransport {
     this.initialSessionStopped,
     this.uninitialized = false,
     this.malformedSessionStart = false,
+    this.requireBondBeforeNotifications = false,
+    this.bondFailure,
   });
 
   final bool failDiscoverServicesOnce;
@@ -493,6 +678,8 @@ class _FakeBleTransport implements BleTransport {
   final bool? initialSessionStopped;
   final bool uninitialized;
   final bool malformedSessionStart;
+  final bool requireBondBeforeNotifications;
+  final BleFailure? bondFailure;
   final List<_FakeBleConnection> connections = <_FakeBleConnection>[];
   late _FakeBleConnection lastConnection;
 
@@ -509,6 +696,8 @@ class _FakeBleTransport implements BleTransport {
       initialSessionStopped: initialSessionStopped,
       uninitialized: uninitialized,
       malformedSessionStart: malformedSessionStart,
+      requireBondBeforeNotifications: requireBondBeforeNotifications,
+      bondFailure: bondFailure,
     );
     connections.add(lastConnection);
     return lastConnection;
@@ -559,8 +748,13 @@ class _FakeBleConnection implements BleConnection {
     bool? initialSessionStopped,
     bool uninitialized = false,
     bool malformedSessionStart = false,
+    bool requireBondBeforeNotifications = false,
+    BleFailure? bondFailure,
   }) : _failDiscoverServices = failDiscoverServices,
-       _autoUpdateEnabled = autoUpdateEnabled {
+       _autoUpdateEnabled = autoUpdateEnabled,
+       _requireBondBeforeNotifications = requireBondBeforeNotifications,
+       _bondFailure = bondFailure,
+       _isBonded = !requireBondBeforeNotifications && bondFailure == null {
     _services = <BleService>[
       const BleService(
         uuid: AidexUuids.deviceInfoService,
@@ -718,6 +912,9 @@ class _FakeBleConnection implements BleConnection {
   late final Uint8List _pairResponse;
   bool _failDiscoverServices;
   bool _autoUpdateEnabled;
+  final bool _requireBondBeforeNotifications;
+  final BleFailure? _bondFailure;
+  bool _isBonded;
   bool _didInjectInvalidHistoryFrame = false;
   bool didVendorUnpair = false;
   bool didClearBondViaBms = false;
@@ -731,11 +928,24 @@ class _FakeBleConnection implements BleConnection {
   @override
   Stream<BleConnectionState> get connectionStates => _connectionStates.stream;
 
+  void emitConnectionError(Object error) {
+    _connectionStates.addError(error, StackTrace.current);
+  }
+
+  void emitDisconnected() {
+    _connectionStates.add(BleConnectionState.disconnected);
+  }
+
+  void emitNotificationError(String uuid, Object error) {
+    _notifications[uuid]!.addError(error, StackTrace.current);
+  }
+
   @override
   bool get supportsBondLifecycle => true;
 
   @override
-  Future<BleBondState> currentBondState() async => BleBondState.bonded;
+  Future<BleBondState> currentBondState() async =>
+      _isBonded ? BleBondState.bonded : BleBondState.unbonded;
 
   @override
   Future<List<BleService>> discoverServices() async {
@@ -758,6 +968,11 @@ class _FakeBleConnection implements BleConnection {
   @override
   Future<void> ensureBonded() async {
     operations.add('ensureBonded');
+    final failure = _bondFailure;
+    if (failure != null) {
+      throw failure;
+    }
+    _isBonded = true;
   }
 
   @override
@@ -791,6 +1006,13 @@ class _FakeBleConnection implements BleConnection {
     bool enabled,
   ) async {
     operations.add('setNotify:${characteristic.characteristicUuid}');
+    if (_requireBondBeforeNotifications && !_isBonded) {
+      throw BleFailure(
+        kind: BleFailureKind.bondRejected,
+        operation: BleOperation.subscribe,
+        diagnosticCode: 'fake.subscribe.authentication-required',
+      );
+    }
     _notifications.putIfAbsent(
       characteristic.characteristicUuid,
       () => StreamController<List<int>>.broadcast(),

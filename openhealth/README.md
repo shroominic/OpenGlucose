@@ -45,6 +45,19 @@ Mobile operation depends on Bluetooth availability, granted platform
 permissions, and a supported sensor. Never add provisioning profiles, signing
 keys, `.env` files, sensor exports, or identifiers to the repository.
 
+### Android pairing recovery
+
+Allow OpenGlucose access to **Nearby devices** and **Location**, and keep the
+phone's system Location setting on while scanning. Keep the phone close to the
+sensor and accept Android's pairing prompt when it appears.
+
+If pairing reports that the sensor became unavailable, it may be out of range
+or another phone may still be connected or bonded. OpenGlucose does not claim
+that one sensor supports concurrent direct-BLE readers. Stop the other phone's
+connection, if applicable, and retry explicitly. Do not reset or unpair an
+active sensor as a generic recovery step; the app does not do either
+automatically.
+
 ## Verify changes
 
 Run the shared checks from the repository root:
