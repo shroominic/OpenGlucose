@@ -16,6 +16,19 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   compliance exemption. The Account Holder must explicitly classify the build,
   and the release owner must record that determination before external beta
   approval and tester notification.
+- Restricted glucose-history blobs now use deterministic SHA-256 filenames
+  that do not embed reversible sensor storage keys. Schema-two filenames are
+  migrated crash-safely at startup, interrupted migrations resume, and
+  conflicting copies fail closed without discarding either history.
+
+### Security
+
+- Startup removes identifier-bearing legacy
+  `openhealth_<sensor-id>_<timestamp>.csv` cache exports using an exact filename
+  and regular-file check, while preserving unrelated cache entries.
+- Release startup sets `flutter_blue_plus` Dart/native logging to `none` before
+  storage initialization or any BLE operation and fails closed if the plugin
+  cannot confirm the setting.
 
 ## [0.1.0] - 2026-08-13
 

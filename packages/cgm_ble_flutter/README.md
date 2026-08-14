@@ -27,6 +27,16 @@ Pass the transport to a compatible protocol driver, such as
 platform Bluetooth declarations, runtime permission UX, lifecycle behavior,
 and clearly communicating stale or disconnected data.
 
+Distributable applications should disable the plugin's DEBUG-native default as
+their first plugin operation, before scanning or restoring state:
+
+```dart
+await disableFlutterBluePlusLogs();
+```
+
+The helper sets both Dart and native plugin logging to `LogLevel.none` and
+propagates failure so a privacy-sensitive release can fail closed.
+
 ## Platform behavior
 
 - Android supports explicit bond lifecycle operations through the adapter.

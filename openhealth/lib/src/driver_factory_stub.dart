@@ -8,5 +8,7 @@ import 'mock_scenarios.dart';
 /// [MockScenario.activeNormal].
 const String kOgScenario = String.fromEnvironment('OG_SCENARIO');
 
+Future<void> configurePlatformPrivacyDefaults() async {}
+
 CgmDriver buildPlatformDriver() =>
     DemoCgmDriver(initialScenario: MockScenario.fromId(kOgScenario));

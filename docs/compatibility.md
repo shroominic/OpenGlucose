@@ -86,6 +86,20 @@ last-verified release/date. A shared name, service UUID, or demo-driver result
 alone is not compatibility evidence. Protocol changes should remain tolerant
 of unknown data while failing safely on malformed or unauthenticated input.
 
+Restricted health-state schema three changes history-blob filenames from a
+reversible base64 storage key to `history-<sha256>.blob`. Schema-zero/one
+embedded histories and schema-two filenames migrate automatically. The rename
+is atomic within the restricted directory; a launch interrupted before the
+metadata rewrite resumes from either old or new names. If both names exist with
+different contents, startup preserves both and fails closed for manual recovery
+instead of guessing which glucose history is authoritative.
+
+Downgrading to a schema-two app after filename migration is unsupported: the
+older app cannot locate schema-three blobs even though their bytes remain on
+disk. Roll forward to a schema-three build and preserve the original app
+container read-only for recovery; do not manually rename or edit live health
+state. See [the recovery runbook](runbooks/data-recovery.md).
+
 ## Application releases
 
 The OpenGlucose app remains pre-1.0. User-facing behavior can change between

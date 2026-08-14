@@ -9,6 +9,7 @@ environment:
 
 dependencies:
   archive: ^4.0.9
+  crypto: ^3.0.7
   flutter:
     sdk: flutter
   cgm_aidex:

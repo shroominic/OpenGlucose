@@ -18,6 +18,15 @@ const bool kOgDemo = bool.fromEnvironment('OG_DEMO', defaultValue: false);
 /// also be switched at runtime from the Developer settings tab.
 const String kOgScenario = String.fromEnvironment('OG_SCENARIO');
 
+/// Suppresses the BLE plugin's native DEBUG default before any BLE operation.
+/// Debug/profile development behavior remains available for local diagnosis;
+/// distributable release builds fail closed if suppression cannot be applied.
+Future<void> configurePlatformPrivacyDefaults() async {
+  if (kReleaseMode) {
+    await disableFlutterBluePlusLogs();
+  }
+}
+
 CgmDriver buildPlatformDriver() {
   if (kOgDemo && kReleaseMode) {
     throw UnsupportedError('OG_DEMO is disabled in release builds.');
