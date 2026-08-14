@@ -157,6 +157,7 @@ def assert_direct_parent(remote, kind, expected_parent_kind)
 end
 
 script_source = File.read(SCRIPT)
+assert(!script_source.include?("stat -f"), "ledger mode checks must not use platform-ambiguous stat flags")
 assert(!script_source.include?("update-ref"), "ledger client must not expose ref updates")
 assert(!script_source.match?(/git[^\n]*\s--(?:delete|force)\b/), "ledger client must not force or delete refs")
 assert(!script_source.match?(/push[^\n]*\s\+[^\n]*:/), "ledger client must not use a forced refspec")

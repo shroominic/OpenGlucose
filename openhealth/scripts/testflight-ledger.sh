@@ -84,7 +84,7 @@ sha256_file() {
 }
 
 portable_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+  ruby -e 'printf "%o\n", File.lstat(ARGV.fetch(0)).mode & 0o777' "$1"
 }
 
 normalize_kind() {
