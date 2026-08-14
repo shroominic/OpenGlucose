@@ -42,6 +42,88 @@ end
 
 load File.expand_path("../openhealth/fastlane/Fastfile", __dir__)
 
+original_ledger_hook = ENV.delete("TESTFLIGHT_LEDGER_HOOK")
+original_ledger_capture = ENV.delete("TESTFLIGHT_LEDGER_CAPTURE")
+begin
+  assert(
+    persist_external_release_record(
+      kind: "notification_pending",
+      path: "/private/record.json"
+    ) == false,
+    "an unconfigured ledger hook must preserve local-only compatibility"
+  )
+  ENV["TESTFLIGHT_LEDGER_HOOK"] = "relative-hook"
+  assert_user_error("must be an absolute path") do
+    persist_external_release_record(
+      kind: "notification_pending",
+      path: "/private/record.json"
+    )
+  end
+
+  Dir.mktmpdir("openglucose-ledger-hook-test") do |directory|
+    hook_path = File.join(directory, "ledger-hook")
+    capture_path = File.join(directory, "capture")
+    record_path = File.join(directory, "notification.json")
+    File.write(
+      hook_path,
+      "#!/bin/sh\nprintf '%s\\n' \"$1\" \"$2\" \"$3\" > \"$TESTFLIGHT_LEDGER_CAPTURE\"\n"
+    )
+    File.chmod(0o700, hook_path)
+    File.write(record_path, "{}\n")
+    ENV["TESTFLIGHT_LEDGER_HOOK"] = hook_path
+    ENV["TESTFLIGHT_LEDGER_CAPTURE"] = capture_path
+    assert(
+      persist_external_release_record(
+        kind: "notification_pending",
+        path: record_path
+      ),
+      "the synchronous ledger hook must report success"
+    )
+    assert(
+      File.readlines(capture_path, chomp: true) == [
+        "persist",
+        "notification_pending",
+        record_path
+      ],
+      "the ledger hook must receive the stable persist/kind/path interface"
+    )
+
+    File.write(hook_path, "#!/bin/sh\nexit 19\n")
+    File.chmod(0o700, hook_path)
+    assert_user_error("hook failed while persisting notification_complete") do
+      persist_external_release_record(
+        kind: "notification_complete",
+        path: record_path
+      )
+    end
+  end
+ensure
+  if original_ledger_hook
+    ENV["TESTFLIGHT_LEDGER_HOOK"] = original_ledger_hook
+  else
+    ENV.delete("TESTFLIGHT_LEDGER_HOOK")
+  end
+  if original_ledger_capture
+    ENV["TESTFLIGHT_LEDGER_CAPTURE"] = original_ledger_capture
+  else
+    ENV.delete("TESTFLIGHT_LEDGER_CAPTURE")
+  end
+end
+
+BetaDetail = Struct.new(:auto_notify_enabled)
+ReceiptBuild = Struct.new(:build_beta_detail)
+assert(
+  require_automatic_notification_disabled(
+    ReceiptBuild.new(BetaDetail.new(false))
+  ).auto_notify_enabled == false,
+  "read-only completion verification must accept disabled automatic notification"
+)
+assert_user_error("is not disabled") do
+  require_automatic_notification_disabled(
+    ReceiptBuild.new(BetaDetail.new(true))
+  )
+end
+
 class RecordingTransport
   attr_reader :calls
 
@@ -153,12 +235,26 @@ Dir.mktmpdir("openglucose-receipt-test") do |directory|
     notification_receipt_state(path: receipt_path, expected: expected) == :complete,
     "an exact complete receipt must be verification-only"
   )
+  extra_field_path = File.join(directory, "extra-field-notification.json")
+  File.write(
+    extra_field_path,
+    "#{JSON.generate(complete.merge("unexpected" => true))}\n"
+  )
+  File.chmod(0o400, extra_field_path)
+  assert_user_error("unexpected schema") do
+    notification_receipt_state(path: extra_field_path, expected: expected)
+  end
   assert_user_error("does not match the exact release") do
     notification_receipt_state(
       path: receipt_path,
       expected: expected.merge("buildId" => "different-build")
     )
   end
+  File.chmod(0o600, receipt_path)
+  assert_user_error("must have mode 400") do
+    notification_receipt_state(path: receipt_path, expected: expected)
+  end
+  File.chmod(0o400, receipt_path)
 
   second_path = File.join(directory, "second-notification.json")
   second_claim = create_notification_claim(path: second_path, expected: expected)

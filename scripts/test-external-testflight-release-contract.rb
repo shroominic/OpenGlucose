@@ -214,6 +214,23 @@ Spaceship::ConnectAPI::Build.refetched = RefetchedBuild.new(nil)
 assert_user_error("no external beta review submission") do
   require_external_beta_review_submission(build: RemoteBuild.new("build-id"))
 end
+Spaceship::ConnectAPI::Build.refetched = RefetchedBuild.new(
+  Submission.new("APPROVED")
+)
+assert(
+  require_approved_external_beta_review_submission(
+    build: RemoteBuild.new("build-id")
+  ).beta_review_state == "APPROVED",
+  "completed notification verification must require approved beta review"
+)
+Spaceship::ConnectAPI::Build.refetched = RefetchedBuild.new(
+  Submission.new("WAITING_FOR_REVIEW")
+)
+assert_user_error("is not approved") do
+  require_approved_external_beta_review_submission(
+    build: RemoteBuild.new("build-id")
+  )
+end
 
 ProvenanceApp = Struct.new(:id)
 ProvenanceBuild = Struct.new(:id)

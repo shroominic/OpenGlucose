@@ -10,6 +10,20 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- Published beta releases can start independent Android and TestFlight GitHub
+  Actions lanes. The iOS lane builds and uploads on the immutable release
+  commit, then exposes separate protected review-submission and tester-
+  notification operations for Apple's asynchronous gates.
+
+### Security
+
+- TestFlight upload and notification claims can be mirrored synchronously to a
+  private, append-only Git ledger, allowing ephemeral macOS runners to preserve
+  the existing no-retry guarantees without exposing release state as public
+  workflow artifacts.
+
 ## [0.1.1] - 2026-08-14
 
 ### Fixed

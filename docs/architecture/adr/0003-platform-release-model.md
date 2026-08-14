@@ -36,6 +36,17 @@ store, and rollback models differ. Repository workflows and scripts express
 intent; protected environments, secrets, app-store roles, and branch rules are
 external controls and remain unverified until an authorized owner checks them.
 
+GitHub-hosted iOS release jobs may be used only when non-idempotent TestFlight
+state is synchronously committed to a private append-only ledger at the exact
+claim boundary. Upload-attempt, upload-provenance, notification-pending, and
+notification-complete records use separate create-only identities keyed by the
+App Store app/version/build. Ledger refs must reject update and deletion. A
+runner may not substitute Actions caches or artifacts, because they are written
+after the operation, expire, and cannot provide an atomic no-overwrite claim.
+Apple export-compliance classification and external beta review remain
+accountable asynchronous gates, so review submission and final tester
+notification are separate protected operations rather than upload retries.
+
 ## Alternatives considered
 
 - **Local maintainer scripts as the primary release path:** flexible but
@@ -46,6 +57,13 @@ external controls and remain unverified until an authorized owner checks them.
   complexity but exposes high-impact secrets to untrusted code.
 - **Treat passing platform builds as release readiness:** misses signing,
   entitlement, store, provenance, and recovery controls.
+- **Persist TestFlight claims in workflow artifacts or caches:** those stores
+  do not close the crash window around an upload or notification and are not an
+  append-only release ledger.
+- **Run a persistent repository-level macOS runner for the public repository:**
+  keeps signing state local, but gives public-repository workflows unnecessary
+  reach into a long-lived host. Ephemeral hosted runners plus scoped credentials
+  and a private ledger have a smaller operational trust boundary.
 
 ## Consequences
 
@@ -56,6 +74,8 @@ external controls and remain unverified until an authorized owner checks them.
   digest, signature, approver, and destination.
 - Store rollback is usually a new release or rollout pause rather than deletion;
   recovery plans must reflect platform reality.
+- An upload-attempt without provenance or a notification-pending record without
+  completion is an incident state, not an automatic retry signal.
 - Local development and unsigned CI builds remain available without release
   credentials.
 
