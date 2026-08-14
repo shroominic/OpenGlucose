@@ -65,14 +65,47 @@ external_inputs = script[external_input_start...external_input_end]
   )
 end
 
-record_index = script.index(
-  'fastlane ios record_external_upload_provenance'
+require_match(
+  script,
+  /UPLOAD_ATTEMPT_PATH=\$\(canonical_external_record_path \\\n+\s+"\$UPLOAD_PROVENANCE_PATH\.attempt" "upload attempt"\)/,
+  "upload attempt path must derive deterministically from provenance"
 )
+
+claim_index = script.index('fastlane ios claim_external_upload_attempt')
 upload_index = script.index('fastlane pilot upload')
+record_index = script.index('fastlane ios record_external_upload_provenance')
 associate_index = script.rindex('fastlane ios associate_external_build')
-unless upload_index && record_index && associate_index &&
-       upload_index < record_index && record_index < associate_index
-  raise "TestFlight signing contract failed: successful upload must precede provenance and association"
+unless claim_index && upload_index && record_index && associate_index &&
+       claim_index < upload_index && upload_index < record_index &&
+       record_index < associate_index
+  raise "TestFlight signing contract failed: attempt, upload, provenance, and association order is unsafe"
+end
+
+metadata_index = script.index('fastlane ios verify_external_review_metadata')
+clean_build_index = script.index('assert_clean_source "release build"')
+profile_index = script.rindex("verify_distribution_profile \\\n", claim_index)
+preupload_audience_index = script.rindex(
+  'fastlane ios verify_external_group',
+  claim_index
+)
+audience_assertion_index = script.rindex(
+  'approved TestFlight audience changed before upload',
+  claim_index
+)
+deterministic_preflights = [
+  metadata_index,
+  clean_build_index,
+  profile_index,
+  preupload_audience_index,
+  audience_assertion_index
+]
+unless deterministic_preflights.all? { |index| index && index < claim_index }
+  raise "TestFlight signing contract failed: every deterministic preflight must precede the upload attempt"
+end
+
+claim_end = script.index("\nfi\n", claim_index)
+unless claim_end && script[(claim_end + 4)...upload_index].to_s.strip.empty?
+  raise "TestFlight signing contract failed: pilot must run immediately after the external upload attempt claim"
 end
 
 notify_only_start = script.index(
@@ -93,6 +126,7 @@ end
   version:$EXPECTED_MARKETING_VERSION
   build_number:$EXPECTED_BUILD_NUMBER
   source_commit:$head_commit
+  upload_attempt_path:$UPLOAD_ATTEMPT_PATH
   upload_provenance_path:$UPLOAD_PROVENANCE_PATH
 ].each do |binding|
   occurrences = notify_only.scan(%r{"#{Regexp.escape(binding)}"}).length
@@ -106,8 +140,19 @@ if notify_only.include?('fastlane pilot upload') ||
 end
 require_match(
   script,
-  /fastlane ios notify_external_build \\\n+(?:.*\\\n)*?\s+"upload_provenance_path:\$UPLOAD_PROVENANCE_PATH"/,
-  "external notification must validate immutable upload provenance"
+  /fastlane ios notify_external_build \\\n+(?:.*\\\n)*?\s+"upload_attempt_path:\$UPLOAD_ATTEMPT_PATH" \\\n+\s+"upload_provenance_path:\$UPLOAD_PROVENANCE_PATH"/,
+  "external notification must validate immutable upload attempt and provenance"
+)
+
+require_match(
+  script,
+  /an upload attempt is pending without finalized provenance; preserve it, record an incident, and cut a new build number/,
+  "pending-only upload state must block restarted automation"
+)
+require_match(
+  script,
+  /normal upload reruns are blocked after an attempt is finalized/,
+  "normal reruns must not overwrite a completed upload state"
 )
 
 uuid_validator = Regexp.escape(

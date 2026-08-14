@@ -361,7 +361,10 @@ void main() {
       );
       expect(
         script,
-        contains('notification receipt parent must have mode 700'),
+        contains(r'$label parent must have mode 700'),
+        reason:
+            'Every external release-record parent must stay private, including '
+            'the notification, attempt, and provenance records.',
       );
       expect(script, contains('--skip_submission true'));
       expect(script, contains('--distribute_external false'));

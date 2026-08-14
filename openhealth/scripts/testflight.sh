@@ -13,6 +13,48 @@ fail() {
   exit 1
 }
 
+canonical_external_record_path() {
+  local input="$1"
+  local label="$2"
+  [[ "$input" == /* ]] || fail "$label path must be absolute"
+  [[ "$input" != *:* ]] || fail "$label path cannot contain a colon"
+  local parent_input
+  local name
+  parent_input=$(dirname -- "$input")
+  name=$(basename -- "$input")
+  [[ "$name" != "." && "$name" != ".." ]] || fail "$label path must name a file"
+  [[ "$name" != *.tmp.* && "$name" != *.complete.* ]] || \
+    fail "$label path collides with a managed temporary namespace"
+  [[ -d "$parent_input" ]] || fail "$label parent directory does not exist"
+  local parent
+  parent=$(cd "$parent_input" && pwd -P)
+  case "$parent/" in
+    "$REPOSITORY_ROOT/"*)
+      fail "$label must be stored outside the repository"
+      ;;
+  esac
+  local parent_mode
+  parent_mode=$(/usr/bin/stat -f '%Lp' "$parent")
+  [[ "$parent_mode" == "700" ]] || \
+    fail "$label parent must have mode 700 (found $parent_mode)"
+  printf '%s/%s\n' "$parent" "$name"
+}
+
+require_regular_file_mode() {
+  local path="$1"
+  local label="$2"
+  shift 2
+  [[ -f "$path" && ! -L "$path" ]] || \
+    fail "$label must be a regular non-symlink file"
+  local actual_mode
+  actual_mode=$(/usr/bin/stat -f '%Lp' "$path")
+  local allowed_mode
+  for allowed_mode in "$@"; do
+    [[ "$actual_mode" != "$allowed_mode" ]] || return 0
+  done
+  fail "$label has unapproved mode $actual_mode"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required; install and pin it before release"
 }
@@ -374,75 +416,62 @@ fi
 
 if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   : "${TESTFLIGHT_NOTIFICATION_RECEIPT_PATH:?missing TESTFLIGHT_NOTIFICATION_RECEIPT_PATH}"
-  [[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" == /* ]] || \
-    fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must be absolute"
-  [[ "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" != *:* ]] || \
-    fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH cannot contain a colon"
-  receipt_parent_input=$(dirname -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
-  receipt_name=$(basename -- "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH")
-  [[ "$receipt_name" != "." && "$receipt_name" != ".." ]] || \
-    fail "TESTFLIGHT_NOTIFICATION_RECEIPT_PATH must name a file"
-  [[ -d "$receipt_parent_input" ]] || \
-    fail "notification receipt parent directory does not exist"
-  receipt_parent=$(cd "$receipt_parent_input" && pwd -P)
-  case "$receipt_parent/" in
-    "$REPOSITORY_ROOT/"*)
-      fail "notification receipt must be stored outside the repository"
-      ;;
-  esac
-  receipt_parent_mode=$(/usr/bin/stat -f '%Lp' "$receipt_parent")
-  [[ "$receipt_parent_mode" == "700" ]] || \
-    fail "notification receipt parent must have mode 700 (found $receipt_parent_mode)"
-  NOTIFICATION_RECEIPT_PATH="$receipt_parent/$receipt_name"
-  if [[ -e "$NOTIFICATION_RECEIPT_PATH" || -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
-    [[ -f "$NOTIFICATION_RECEIPT_PATH" && ! -L "$NOTIFICATION_RECEIPT_PATH" ]] || \
-      fail "notification receipt must be a regular non-symlink file"
-    notification_receipt_mode=$(/usr/bin/stat -f '%Lp' "$NOTIFICATION_RECEIPT_PATH")
-    [[ "$notification_receipt_mode" == "400" || "$notification_receipt_mode" == "600" ]] || \
-      fail "notification receipt must have mode 400 or 600 (found $notification_receipt_mode)"
-    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
-      fail "notification receipt already exists; use notify-only mode to verify it"
+  NOTIFICATION_RECEIPT_PATH=$(canonical_external_record_path \
+    "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" "notification receipt")
+  UPLOAD_PROVENANCE_PATH=$(canonical_external_record_path \
+    "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH" "upload provenance")
+  # The attempt location is intentionally not configurable independently. All
+  # official runs for one provenance record must contend on the same claim.
+  UPLOAD_ATTEMPT_PATH=$(canonical_external_record_path \
+    "$UPLOAD_PROVENANCE_PATH.attempt" "upload attempt")
+
+  managed_release_paths=(
+    "$NOTIFICATION_RECEIPT_PATH"
+    "$UPLOAD_ATTEMPT_PATH"
+    "$UPLOAD_PROVENANCE_PATH"
+  )
+  for managed_path in "${managed_release_paths[@]}"; do
+    for namespace_owner in "${managed_release_paths[@]}"; do
+      [[ "$managed_path" != "$namespace_owner".tmp.* ]] || \
+        fail "managed release paths collide with an immutable temporary namespace"
+      [[ "$managed_path" != "$namespace_owner".complete.* ]] || \
+        fail "managed release paths collide with a notification temporary namespace"
+    done
+  done
+  [[ "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_ATTEMPT_PATH" && \
+     "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_PROVENANCE_PATH" && \
+     "$UPLOAD_ATTEMPT_PATH" != "$UPLOAD_PROVENANCE_PATH" ]] || \
+    fail "notification, upload-attempt, and provenance paths must be different"
+
+  attempt_present=no
+  provenance_present=no
+  if [[ -e "$UPLOAD_ATTEMPT_PATH" || -L "$UPLOAD_ATTEMPT_PATH" ]]; then
+    require_regular_file_mode "$UPLOAD_ATTEMPT_PATH" "upload attempt" 400
+    attempt_present=yes
+  fi
+  if [[ -e "$UPLOAD_PROVENANCE_PATH" || -L "$UPLOAD_PROVENANCE_PATH" ]]; then
+    require_regular_file_mode "$UPLOAD_PROVENANCE_PATH" "upload provenance" 400
+    provenance_present=yes
+  fi
+  if [[ "$attempt_present" == "yes" && "$provenance_present" == "no" ]]; then
+    fail "an upload attempt is pending without finalized provenance; preserve it, record an incident, and cut a new build number"
+  fi
+  if [[ "$attempt_present" == "no" && "$provenance_present" == "yes" ]]; then
+    fail "upload provenance exists without its immutable attempt claim"
+  fi
+  if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+    [[ "$attempt_present" == "yes" && "$provenance_present" == "yes" ]] || \
+      fail "notify-only mode requires both immutable upload attempt and provenance"
+  else
+    [[ "$attempt_present" == "no" && "$provenance_present" == "no" ]] || \
+      fail "normal upload reruns are blocked after an attempt is finalized; use notify-only mode"
   fi
 
-  [[ "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH" == /* ]] || \
-    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH must be absolute"
-  [[ "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH" != *:* ]] || \
-    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH cannot contain a colon"
-  provenance_parent_input=$(dirname -- "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH")
-  provenance_name=$(basename -- "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH")
-  [[ "$provenance_name" != "." && "$provenance_name" != ".." ]] || \
-    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH must name a file"
-  [[ "$provenance_name" != *.tmp.* ]] || \
-    fail "TESTFLIGHT_UPLOAD_PROVENANCE_PATH collides with the private temporary namespace"
-  [[ -d "$provenance_parent_input" ]] || \
-    fail "upload provenance parent directory does not exist"
-  provenance_parent=$(cd "$provenance_parent_input" && pwd -P)
-  case "$provenance_parent/" in
-    "$REPOSITORY_ROOT/"*)
-      fail "upload provenance must be stored outside the repository"
-      ;;
-  esac
-  provenance_parent_mode=$(/usr/bin/stat -f '%Lp' "$provenance_parent")
-  [[ "$provenance_parent_mode" == "700" ]] || \
-    fail "upload provenance parent must have mode 700 (found $provenance_parent_mode)"
-  UPLOAD_PROVENANCE_PATH="$provenance_parent/$provenance_name"
-  [[ "$UPLOAD_PROVENANCE_PATH" != "$NOTIFICATION_RECEIPT_PATH" ]] || \
-    fail "upload provenance and notification receipt paths must be different"
-  [[ "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_PROVENANCE_PATH".tmp.* ]] || \
-    fail "notification receipt collides with the upload temporary namespace"
-  [[ "$UPLOAD_PROVENANCE_PATH" != "$NOTIFICATION_RECEIPT_PATH".complete.* ]] || \
-    fail "upload provenance collides with the notification temporary namespace"
-  if [[ -e "$UPLOAD_PROVENANCE_PATH" || -L "$UPLOAD_PROVENANCE_PATH" ]]; then
-    [[ -f "$UPLOAD_PROVENANCE_PATH" && ! -L "$UPLOAD_PROVENANCE_PATH" ]] || \
-      fail "upload provenance must be a regular non-symlink file"
-    upload_provenance_mode=$(/usr/bin/stat -f '%Lp' "$UPLOAD_PROVENANCE_PATH")
-    [[ "$upload_provenance_mode" == "400" ]] || \
-      fail "upload provenance must have mode 400 (found $upload_provenance_mode)"
+  if [[ -e "$NOTIFICATION_RECEIPT_PATH" || -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
+    require_regular_file_mode \
+      "$NOTIFICATION_RECEIPT_PATH" "notification receipt" 400 600
     [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
-      fail "upload provenance already exists; use notify-only mode"
-  else
-    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
-      fail "notify-only mode requires immutable upload provenance"
+      fail "notification receipt already exists; use notify-only mode to verify it"
   fi
 fi
 
@@ -594,6 +623,7 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "version:$EXPECTED_MARKETING_VERSION" \
     "build_number:$EXPECTED_BUILD_NUMBER" \
     "source_commit:$head_commit" \
+    "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
   echo "==> Verifying the exact build and sending the deferred tester notification"
   fastlane ios notify_external_build \
@@ -609,6 +639,7 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "version:$EXPECTED_MARKETING_VERSION" \
     "build_number:$EXPECTED_BUILD_NUMBER" \
     "source_commit:$head_commit" \
+    "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
     "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
   echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
@@ -779,6 +810,19 @@ else
 fi
 [[ "$(<"$preupload_group_id_file")" == "$approved_group_id" ]] || \
   fail "approved TestFlight audience changed before upload"
+upload_continuation_token="$release_temp/upload-continuation-token"
+if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
+  fastlane ios claim_external_upload_attempt \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID" \
+    "version:$EXPECTED_MARKETING_VERSION" \
+    "build_number:$EXPECTED_BUILD_NUMBER" \
+    "source_commit:$head_commit" \
+    "ipa_sha256:$artifact_sha256" \
+    "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
+    "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
+    "continuation_token_path:$upload_continuation_token"
+fi
 fastlane pilot upload \
   --api_key_path "$credential_json" \
   --app_identifier "$APP_BUNDLE_ID" \
@@ -816,6 +860,8 @@ fastlane ios record_external_upload_provenance \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
   "ipa_sha256:$artifact_sha256" \
+  "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
+  "continuation_token_path:$upload_continuation_token" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
 
 echo "==> Associating the exact build with the approved immutable group ID"
@@ -833,6 +879,7 @@ fastlane ios associate_external_build \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
   "ipa_sha256:$artifact_sha256" \
+  "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
 
 echo "==> Verifying the exclusive audience and notifying eligible testers"
@@ -850,6 +897,7 @@ fastlane ios notify_external_build \
   "version:$EXPECTED_MARKETING_VERSION" \
   "build_number:$EXPECTED_BUILD_NUMBER" \
   "source_commit:$head_commit" \
+  "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
   "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
 
