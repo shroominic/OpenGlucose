@@ -1,6 +1,7 @@
 require "json"
 require "logger"
 require "securerandom"
+require "digest"
 require "time"
 
 default_platform(:ios)
@@ -36,17 +37,55 @@ def external_groups(app)
   app.get_beta_groups.select { |group| group.is_internal_group == false }
 end
 
-def exact_external_group(app:, group_name:, group_id: nil)
+def exact_external_group(
+  app:,
+  group_name:,
+  group_id: nil,
+  internal_group_name: nil,
+  internal_group_id: nil,
+  internal_tester_id: nil,
+  external_tester_count: nil,
+  external_tester_ids_sha256: nil
+)
   all_groups = app.get_beta_groups
-  automatic_groups = all_groups.select(&:has_access_to_all_builds)
-  unless automatic_groups.empty?
+  unknown_groups = all_groups.reject do |group|
+    classified = [true, false].include?(group.is_internal_group)
+    automatic_classified = [true, false, nil].include?(group.has_access_to_all_builds)
+    classified && automatic_classified
+  end
+  unless unknown_groups.empty?
     UI.user_error!(
-      "TestFlight groups with automatic access to all builds are not allowed " \
-      "(found #{automatic_groups.length})"
+      "Found #{unknown_groups.length} TestFlight group(s) with unknown " \
+      "audience classification"
+    )
+  end
+  automatic_external_groups = all_groups.select do |group|
+    group.is_internal_group == false && group.has_access_to_all_builds == true
+  end
+  unless automatic_external_groups.empty?
+    UI.user_error!(
+      "External TestFlight groups with automatic access to all builds are " \
+      "not allowed (found #{automatic_external_groups.length})"
+    )
+  end
+  if internal_group_name && internal_group_id && internal_tester_id
+    internal_group = exact_internal_automatic_group(
+      app: app,
+      group_name: internal_group_name,
+      group_id: internal_group_id
+    )
+    require_exact_internal_group_tester(
+      group: internal_group,
+      expected_tester_id: internal_tester_id
     )
   end
 
-  groups = all_groups.select { |group| group.is_internal_group == false }
+  groups = all_groups.select do |group|
+    # Fastlane 2.232.2 exposes App Store Connect's omitted
+    # hasAccessToAllBuilds attribute as nil for non-automatic external groups.
+    # A literal true is still automatic and is rejected above.
+    group.is_internal_group == false && group.has_access_to_all_builds != true
+  end
   matches = groups.select do |group|
     group.name == group_name && (group_id.nil? || group.id == group_id)
   end
@@ -54,7 +93,16 @@ def exact_external_group(app:, group_name:, group_id: nil)
     "Expected exactly one non-automatic external TestFlight group named " \
     "#{group_name}#{group_id ? " with ID #{group_id}" : ''}; found #{matches.length}"
   ) unless matches.one?
-  matches.first
+  match = matches.first
+  UI.user_error!(
+    "Approved external TestFlight group must not expose a public link"
+  ) unless match.public_link_enabled == false
+  require_exact_external_group_testers(
+    group: match,
+    expected_count: external_tester_count,
+    expected_ids_sha256: external_tester_ids_sha256
+  )
+  match
 end
 
 def exact_internal_automatic_group(app:, group_name:, group_id:)
@@ -107,9 +155,7 @@ def exact_internal_automatic_group(app:, group_name:, group_id:)
   matches.first
 end
 
-def require_exact_internal_group_tester(group:, expected_tester_id:)
-  UI.user_error!("Internal tester ID is malformed") unless
-    expected_tester_id.match?(/\A[A-Za-z0-9-]+\z/)
+def tester_relationship_ids(group)
   # Read only relationship linkage IDs. The resource endpoint would expose
   # tester names and email addresses, which are neither needed nor retained.
   responses = Spaceship::ConnectAPI.client.test_flight_request_client
@@ -127,21 +173,59 @@ def require_exact_internal_group_tester(group:, expected_tester_id:)
   end
   UI.user_error!("Internal tester relationship response is invalid") unless
     valid_linkages
-  tester_ids = relationships.map { |relationship| relationship["id"] }
+  tester_ids = relationships.map { |relationship| relationship["id"] }.sort
+  UI.user_error!("Tester relationship response contains duplicates") unless
+    tester_ids.uniq.length == tester_ids.length
+  tester_ids
+end
+
+def require_exact_internal_group_tester(group:, expected_tester_id:)
+  UI.user_error!("Internal tester ID is malformed") unless
+    expected_tester_id.match?(/\A[A-Za-z0-9-]+\z/)
+  tester_ids = tester_relationship_ids(group)
   UI.user_error!(
     "Approved internal TestFlight tester relationship is not exact"
   ) unless tester_ids == [expected_tester_id]
 end
 
+def require_exact_external_group_testers(
+  group:,
+  expected_count:,
+  expected_ids_sha256:
+)
+  count = Integer(expected_count, 10)
+  UI.user_error!("External tester count must be positive") unless count.positive?
+  digest = expected_ids_sha256.to_s.downcase
+  UI.user_error!("External tester ID digest is malformed") unless
+    digest.match?(/\A[0-9a-f]{64}\z/)
+  tester_ids = tester_relationship_ids(group)
+  actual_digest = Digest::SHA256.hexdigest(tester_ids.join("\n"))
+  UI.user_error!("Approved external TestFlight tester count is not exact") unless
+    tester_ids.length == count
+  UI.user_error!("Approved external TestFlight tester set is not exact") unless
+    actual_digest == digest
+  { count: count, ids_sha256: digest }
+rescue ArgumentError
+  UI.user_error!("External tester count must be a decimal integer")
+end
+
 def require_internal_only_build(build)
+  require_build_audience_type(build: build, expected: "INTERNAL_ONLY")
+end
+
+def require_app_store_eligible_build(build)
+  require_build_audience_type(build: build, expected: "APP_STORE_ELIGIBLE")
+end
+
+def require_build_audience_type(build:, expected:)
   response = Spaceship::ConnectAPI.client.test_flight_request_client.get(
     "v1/builds/#{build.id}"
   )
   data = response.body["data"]
   audience_type = data.is_a?(Hash) ? data.dig("attributes", "buildAudienceType") : nil
   UI.user_error!(
-    "TestFlight build audience type is #{audience_type.inspect}; expected INTERNAL_ONLY"
-  ) unless audience_type == "INTERNAL_ONLY"
+    "TestFlight build audience type is #{audience_type.inspect}; expected #{expected}"
+  ) unless audience_type == expected
 end
 
 def exact_valid_build(app:, version:, build_number:)
@@ -178,9 +262,25 @@ def associated_groups(app:, build:)
   end
 end
 
-def require_exclusive_association(app:, build:, approved_group:, required:)
+def require_exact_external_association(
+  app:,
+  build:,
+  approved_group:,
+  approved_internal_group_id:,
+  required:
+)
   associated = associated_groups(app: app, build: build)
-  unexpected = associated.reject { |group| group.id == approved_group.id }
+  associated_ids = associated.map(&:id)
+  UI.user_error!("Build group association response contains duplicates") unless
+    associated_ids.uniq.length == associated_ids.length
+  unexpected = associated.reject do |group|
+    group.id == approved_group.id ||
+      (
+        group.id == approved_internal_group_id &&
+          group.is_internal_group == true &&
+          group.has_access_to_all_builds == true
+      )
+  end
   unless unexpected.empty?
     UI.user_error!(
       "Build is associated with #{unexpected.length} unapproved beta group(s)"
@@ -189,7 +289,18 @@ def require_exclusive_association(app:, build:, approved_group:, required:)
   if required && associated.none? { |group| group.id == approved_group.id }
     UI.user_error!("Build is not associated with the approved external group")
   end
-  associated.any? { |group| group.id == approved_group.id }
+  internal = associated.select do |group|
+    group.is_internal_group == true && group.has_access_to_all_builds == true
+  end
+  unless internal.one? && internal.first.id == approved_internal_group_id
+    UI.user_error!("Build does not have exactly the approved automatic internal group")
+  end
+  expected_ids = [approved_internal_group_id]
+  expected_ids << approved_group.id if required
+  if required && associated_ids.sort != expected_ids.sort
+    UI.user_error!("Build does not have the exact approved external audience")
+  end
+  associated
 end
 
 def require_exclusive_internal_association(app:, build:, approved_group:)
@@ -220,16 +331,232 @@ def require_no_individual_testers(build)
   ) unless count.zero?
 end
 
-def expected_notification_receipt(app:, build:, group:, bundle_id:, version:, build_number:, source_commit:)
+def require_external_beta_review_metadata(app:)
+  localizations = app.get_beta_app_localizations
+  UI.user_error!("External beta review has no app localization") if
+    localizations.empty?
+
+  locale_keys = localizations.map { |localization| localization.locale.to_s.strip }
+  UI.user_error!("External beta review localization has no locale") if
+    locale_keys.any?(&:empty?)
+  UI.user_error!("External beta review localizations contain duplicates") unless
+    locale_keys.uniq.length == locale_keys.length
+  localizations.each do |localization|
+    UI.user_error!("External beta review description is missing") if
+      localization.description.to_s.strip.empty?
+    UI.user_error!("External beta review feedback email is missing") if
+      localization.feedback_email.to_s.strip.empty?
+  end
+
+  responses = Spaceship::ConnectAPI.get_beta_app_review_detail(
+    filter: { app: app.id },
+    limit: 200
+  ).all_pages
+  details = responses.flat_map(&:to_models)
+  UI.user_error!(
+    "Expected exactly one external beta review detail; found #{details.length}"
+  ) unless details.one?
+  detail = details.first
+  {
+    "contact first name" => detail.contact_first_name,
+    "contact last name" => detail.contact_last_name,
+    "contact email" => detail.contact_email,
+    "contact phone" => detail.contact_phone,
+    "review notes" => detail.notes
+  }.each do |label, value|
+    UI.user_error!("External beta review #{label} is missing") if
+      value.to_s.strip.empty?
+  end
+  UI.user_error!("External beta review demo-account flag is unknown") unless
+    [true, false].include?(detail.demo_account_required)
+  if detail.demo_account_required
+    UI.user_error!("External beta review demo account name is missing") if
+      detail.demo_account_name.to_s.strip.empty?
+    UI.user_error!("External beta review demo account password is missing") if
+      detail.demo_account_password.to_s.strip.empty?
+  end
+  true
+end
+
+def require_external_beta_review_submission(build:)
+  refreshed = Spaceship::ConnectAPI::Build.get(
+    build_id: build.id,
+    includes: "betaAppReviewSubmission"
+  )
+  UI.user_error!("Could not refetch the exact external beta build") unless refreshed
+  submission = refreshed.beta_app_review_submission
+  UI.user_error!("Exact build has no external beta review submission") unless
+    submission
+  eligible_states = %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED]
+  UI.user_error!(
+    "Exact build beta review submission has an ineligible state"
+  ) unless eligible_states.include?(submission.beta_review_state)
+  submission
+end
+
+def expected_upload_provenance(
+  app:,
+  build:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256:
+)
+  commit = source_commit.to_s.downcase
+  digest = ipa_sha256.to_s.downcase
+  UI.user_error!("Upload provenance source commit is malformed") unless
+    commit.match?(/\A[0-9a-f]{40,64}\z/)
+  UI.user_error!("Upload provenance IPA SHA-256 is malformed") unless
+    digest.match?(/\A[0-9a-f]{64}\z/)
   {
     "schemaVersion" => 1,
+    "kind" => "testflightUploadProvenance",
     "appId" => app.id,
     "bundleId" => bundle_id,
     "buildId" => build.id,
     "version" => version,
     "buildNumber" => build_number,
-    "groupId" => group.id,
-    "sourceCommit" => source_commit
+    "sourceCommit" => commit,
+    "ipaSha256" => digest
+  }
+end
+
+def load_upload_provenance(path)
+  receipt_stat = File.lstat(path)
+  UI.user_error!("Upload provenance must be a regular non-symlink file") unless
+    receipt_stat.file? && !receipt_stat.symlink?
+
+  File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+    opened_stat = file.stat
+    UI.user_error!("Upload provenance changed during verification") unless
+      opened_stat.file? &&
+        opened_stat.dev == receipt_stat.dev &&
+        opened_stat.ino == receipt_stat.ino
+    UI.user_error!("Upload provenance must have mode 400") unless
+      (opened_stat.mode & 0o777) == 0o400
+    JSON.parse(file.read)
+  end
+rescue JSON::ParserError
+  UI.user_error!("Upload provenance is not valid JSON")
+rescue Errno::ENOENT, Errno::ELOOP
+  UI.user_error!("Upload provenance changed during verification")
+end
+
+def require_upload_provenance(
+  path:,
+  app:,
+  build:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256: nil
+)
+  receipt = load_upload_provenance(path)
+  expected_keys = %w[
+    appId buildId buildNumber bundleId ipaSha256 kind recordedAtUtc
+    schemaVersion sourceCommit version
+  ]
+  UI.user_error!("Upload provenance has an unexpected schema") unless
+    receipt.keys.sort == expected_keys.sort
+  UI.user_error!("Upload provenance IPA SHA-256 is malformed") unless
+    receipt["ipaSha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+  begin
+    recorded_at = Time.iso8601(receipt["recordedAtUtc"].to_s)
+  rescue ArgumentError
+    UI.user_error!("Upload provenance timestamp is malformed")
+  end
+  UI.user_error!("Upload provenance timestamp is not UTC") unless
+    recorded_at.utc_offset.zero? && receipt["recordedAtUtc"].to_s.end_with?("Z")
+  expected = expected_upload_provenance(
+    app: app,
+    build: build,
+    bundle_id: bundle_id,
+    version: version,
+    build_number: build_number,
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256 || receipt["ipaSha256"]
+  )
+  UI.user_error!("Upload provenance does not match the exact release") unless
+    expected.all? { |key, value| receipt[key] == value }
+  receipt
+end
+
+def create_upload_provenance(path:, expected:)
+  receipt = expected.merge("recordedAtUtc" => Time.now.utc.iso8601)
+  temporary = "#{path}.tmp.#{Process.pid}.#{SecureRandom.hex(16)}"
+  temporary_identity = nil
+  File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    temporary_identity = file.stat
+    file.write("#{JSON.generate(receipt)}\n")
+    file.flush
+    file.fsync
+    file.chmod(0o400)
+    file.fsync
+  end
+  # A same-directory hard link publishes the fully durable inode atomically
+  # and fails rather than replacing an existing provenance receipt.
+  File.link(temporary, path)
+  fsync_parent_directory(path)
+  receipt
+rescue Errno::EEXIST
+  if File.exist?(path) || File.symlink?(path)
+    UI.user_error!("Upload provenance already exists")
+  else
+    UI.user_error!("Upload provenance temporary-path collision")
+  end
+rescue SystemCallError => error
+  UI.user_error!(
+    "Upload provenance could not be recorded (#{error.class}); do not " \
+    "associate or notify this build"
+  )
+ensure
+  if temporary && temporary_identity &&
+     (File.exist?(temporary) || File.symlink?(temporary))
+    begin
+      current = File.lstat(temporary)
+      if current.file? && !current.symlink? &&
+         current.dev == temporary_identity.dev &&
+         current.ino == temporary_identity.ino
+        File.unlink(temporary)
+        fsync_parent_directory(temporary)
+      end
+    rescue SystemCallError
+      # Never delete a path that no longer resolves to this invocation's
+      # private temporary inode. The mode-700 parent contains any residue.
+    end
+  end
+end
+
+def expected_notification_receipt(
+  app:,
+  build:,
+  group:,
+  approved_internal_group_id:,
+  associated_group_ids:,
+  external_tester_count:,
+  external_tester_ids_sha256:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256:
+)
+  {
+    "schemaVersion" => 3,
+    "appId" => app.id,
+    "bundleId" => bundle_id,
+    "buildId" => build.id,
+    "version" => version,
+    "buildNumber" => build_number,
+    "externalGroupId" => group.id,
+    "automaticInternalGroupId" => approved_internal_group_id,
+    "associatedGroupIds" => associated_group_ids.sort,
+    "externalTesterCount" => Integer(external_tester_count, 10),
+    "externalTesterIdsSha256" => external_tester_ids_sha256.downcase,
+    "sourceCommit" => source_commit,
+    "ipaSha256" => ipa_sha256
   }
 end
 
@@ -473,7 +800,15 @@ platform :ios do
     group = exact_external_group(
       app: app,
       group_name: group_name,
-      group_id: expected_group_id
+      group_id: expected_group_id,
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: required_option(options, :internal_group_id),
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
     )
 
     File.open(result_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
@@ -482,40 +817,122 @@ platform :ios do
     UI.success("Verified the approved external TestFlight group")
   end
 
+  desc "Fail closed unless external beta-review metadata is complete"
+  lane :verify_external_review_metadata do |options|
+    app = connect_api_app(options)
+    require_external_beta_review_metadata(app: app)
+    UI.success("Verified complete external beta-review metadata")
+  end
+
+  desc "Record immutable provenance for the exact processed external build"
+  lane :record_external_upload_provenance do |options|
+    app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+    ipa_sha256 = required_option(options, :ipa_sha256)
+    build = exact_valid_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    require_app_store_eligible_build(build)
+    expected = expected_upload_provenance(
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256
+    )
+    path = required_option(options, :upload_provenance_path)
+    create_upload_provenance(path: path, expected: expected)
+    require_upload_provenance(
+      path: path,
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256
+    )
+    UI.success("Recorded immutable provenance for the exact external build")
+  end
+
   desc "Associate an exact build with only the approved immutable group ID"
   lane :associate_external_build do |options|
     app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
     group = exact_external_group(
       app: app,
       group_name: required_option(options, :group_name),
-      group_id: required_option(options, :group_id)
+      group_id: required_option(options, :group_id),
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: required_option(options, :approved_internal_group_id),
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
     )
+    approved_internal_group_id = required_option(
+      options,
+      :approved_internal_group_id
+    )
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+    # Upload mode supplies the locally verified digest explicitly. A
+    # notify-only resume can omit it: the immutable finalized receipt remains
+    # the authority and require_upload_provenance validates its digest/schema.
+    ipa_sha256 = optional_option(options, :ipa_sha256)
     build = exact_valid_build(
       app: app,
-      version: required_option(options, :version),
-      build_number: required_option(options, :build_number)
+      version: version,
+      build_number: build_number
     )
+    require_app_store_eligible_build(build)
+    require_upload_provenance(
+      path: required_option(options, :upload_provenance_path),
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256
+    )
+    require_external_beta_review_metadata(app: app)
     build = disable_automatic_notification(build)
     require_no_individual_testers(build)
 
-    already_associated = require_exclusive_association(
+    associated = require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: false
     )
+    already_associated = associated.any? { |candidate| candidate.id == group.id }
     if build.ready_for_beta_submission?
       build.post_beta_app_review_submission
       UI.important("Submitted the exact build for external beta review")
     end
+    require_external_beta_review_submission(build: build)
     build.add_beta_groups(beta_groups: [group]) unless already_associated
-    require_exclusive_association(
+    associated = require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: true
     )
     require_no_individual_testers(build)
+    require_app_store_eligible_build(build)
     UI.success("Associated the exact build with only the approved group ID")
   end
 
@@ -526,7 +943,19 @@ platform :ios do
     group = exact_external_group(
       app: app,
       group_name: required_option(options, :group_name),
-      group_id: required_option(options, :group_id)
+      group_id: required_option(options, :group_id),
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: required_option(options, :approved_internal_group_id),
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
+    )
+    approved_internal_group_id = required_option(
+      options,
+      :approved_internal_group_id
     )
     version = required_option(options, :version)
     build_number = required_option(options, :build_number)
@@ -535,14 +964,26 @@ platform :ios do
       version: version,
       build_number: build_number
     )
+    require_app_store_eligible_build(build)
+    upload_provenance = require_upload_provenance(
+      path: required_option(options, :upload_provenance_path),
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: required_option(options, :source_commit)
+    )
     build = disable_automatic_notification(build)
-    require_exclusive_association(
+    associated = require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: true
     )
     require_no_individual_testers(build)
+    require_app_store_eligible_build(build)
 
     detail = build.build_beta_detail
     receipt_path = required_option(options, :notification_receipt_path)
@@ -550,10 +991,18 @@ platform :ios do
       app: app,
       build: build,
       group: group,
+      approved_internal_group_id: approved_internal_group_id,
+      associated_group_ids: associated.map(&:id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      ),
       bundle_id: bundle_id,
       version: version,
       build_number: build_number,
-      source_commit: required_option(options, :source_commit)
+      source_commit: required_option(options, :source_commit),
+      ipa_sha256: upload_provenance["ipaSha256"]
     )
     if notification_receipt_state(
       path: receipt_path,
@@ -569,6 +1018,7 @@ platform :ios do
       )
     end
     eligible_states = [
+      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::READY_FOR_BETA_TESTING,
       Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::BETA_APPROVED,
       Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::IN_BETA_TESTING
     ]
@@ -587,13 +1037,28 @@ platform :ios do
       path: receipt_path,
       expected: expected_receipt
     )
-    require_exclusive_association(
+    group = exact_external_group(
+      app: app,
+      group_name: required_option(options, :group_name),
+      group_id: required_option(options, :group_id),
+      internal_group_name: required_option(options, :internal_group_name),
+      internal_group_id: approved_internal_group_id,
+      internal_tester_id: required_option(options, :internal_tester_id),
+      external_tester_count: required_option(options, :external_tester_count),
+      external_tester_ids_sha256: required_option(
+        options,
+        :external_tester_ids_sha256
+      )
+    )
+    require_exact_external_association(
       app: app,
       build: build,
       approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
       required: true
     )
     require_no_individual_testers(build)
+    require_app_store_eligible_build(build)
     begin
       response = post_build_beta_notification_once(
         request_client: Spaceship::ConnectAPI.client.test_flight_request_client,

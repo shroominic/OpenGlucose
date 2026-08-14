@@ -374,7 +374,14 @@ void main() {
         isNot(contains('test_flight_request_client.post(')),
         reason: 'Spaceship wraps its POST helper in internal retries.',
       );
-      expect(fastfile, contains('require_exclusive_association'));
+      expect(fastfile, contains('require_exact_external_association'));
+      expect(fastfile, contains('APP_STORE_ELIGIBLE'));
+      expect(fastfile, contains('externalGroupId'));
+      expect(fastfile, contains('automaticInternalGroupId'));
+      expect(fastfile, contains('associatedGroupIds'));
+      expect(fastfile, contains('externalTesterCount'));
+      expect(fastfile, contains('externalTesterIdsSha256'));
+      expect(fastfile, contains('require_exact_external_group_testers'));
       expect(fastfile, contains('exact_internal_automatic_group'));
       expect(fastfile, contains('audience classification'));
       expect(fastfile, contains('require_exact_internal_group_tester'));
