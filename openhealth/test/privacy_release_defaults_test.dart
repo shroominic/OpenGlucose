@@ -286,7 +286,9 @@ void main() {
       final liveActivityConfiguration = _read(
         'ios/Flutter/LiveActivity.xcconfig',
       );
+      final runnerInfo = _read('ios/Runner/Info.plist');
       final runnerEntitlements = _read('ios/Runner/Runner.entitlements');
+      final releasePolicy = _read('../docs/releases.md');
       expect(script, contains('RELEASE_APPROVED'));
       expect(script, contains('DISTRIBUTE_EXTERNAL'));
       expect(script, contains('DISTRIBUTE_INTERNAL'));
@@ -316,6 +318,15 @@ void main() {
       expect(script, contains('verify_main_app_healthkit_profile'));
       expect(script, contains('com.apple.developer.healthkit'));
       expect(runnerEntitlements, contains('com.apple.developer.healthkit'));
+      expect(
+        runnerInfo,
+        isNot(contains('ITSAppUsesNonExemptEncryption')),
+        reason:
+            'External beta export compliance requires an explicit, recorded '
+            'Account Holder determination.',
+      );
+      expect(releasePolicy, contains('Account Holder'));
+      expect(releasePolicy, contains('export-compliance determination'));
       expect(
         runnerEntitlements,
         isNot(contains('com.apple.developer.healthkit.access')),

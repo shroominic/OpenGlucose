@@ -12,6 +12,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Changed
 
+- External TestFlight builds no longer self-declare an unreviewed export-
+  compliance exemption. The Account Holder must explicitly classify the build,
+  and the release owner must record that determination before external beta
+  approval and tester notification.
 - Restricted glucose-history blobs now use deterministic SHA-256 filenames
   that do not embed reversible sensor storage keys. Schema-two filenames are
   migrated crash-safely at startup, interrupted migrations resume, and
