@@ -17,6 +17,34 @@ def optional_option(options, key)
   value.empty? ? nil : value
 end
 
+def persist_external_release_record(kind:, path:)
+  hook = ENV["TESTFLIGHT_LEDGER_HOOK"].to_s.strip
+  return false if hook.empty?
+
+  allowed_kinds = %w[
+    upload_attempt upload_provenance notification_pending notification_complete
+  ]
+  UI.user_error!("Unknown TestFlight ledger record kind") unless
+    allowed_kinds.include?(kind)
+  UI.user_error!("TESTFLIGHT_LEDGER_HOOK must be an absolute path") unless
+    hook.start_with?(File::SEPARATOR)
+  hook_stat = File.lstat(hook)
+  UI.user_error!(
+    "TESTFLIGHT_LEDGER_HOOK must be an executable regular non-symlink file"
+  ) unless hook_stat.file? && !hook_stat.symlink? && File.executable?(hook)
+  UI.user_error!("TestFlight ledger record path must be absolute") unless
+    path.start_with?(File::SEPARATOR)
+
+  persisted = system(hook, "persist", kind, path)
+  UI.user_error!("TestFlight ledger hook failed while persisting #{kind}") unless
+    persisted
+  true
+rescue SystemCallError => error
+  UI.user_error!(
+    "TestFlight ledger hook could not persist #{kind} (#{error.class})"
+  )
+end
+
 def connect_api_app(options)
   api_key_path = required_option(options, :api_key_path)
   bundle_id = required_option(options, :bundle_id)
@@ -266,9 +294,31 @@ def disable_automatic_notification(build)
     attributes: { autoNotifyEnabled: false }
   )
   refreshed = Spaceship::ConnectAPI::Build.get(build_id: build.id)
-  UI.user_error!("Could not disable automatic tester notification") unless
-    refreshed.build_beta_detail&.auto_notify_enabled == false
+  require_automatic_notification_disabled(refreshed)
   refreshed
+end
+
+def require_automatic_notification_disabled(build)
+  detail = build.build_beta_detail
+  UI.user_error!("TestFlight build has no beta detail") unless detail
+  UI.user_error!("Automatic tester notification is not disabled") unless
+    detail.auto_notify_enabled == false
+  detail
+end
+
+def require_external_notification_eligible_state(build)
+  detail = build.build_beta_detail
+  UI.user_error!("TestFlight build has no beta detail") unless detail
+  eligible_states = [
+    Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::READY_FOR_BETA_TESTING,
+    Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::BETA_APPROVED,
+    Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::IN_BETA_TESTING
+  ]
+  UI.user_error!(
+    "The exact build is not in a notification-eligible external state " \
+    "(found #{detail.external_build_state})"
+  ) unless eligible_states.include?(detail.external_build_state)
+  detail
 end
 
 def associated_groups(app:, build:)
@@ -406,6 +456,13 @@ def require_external_beta_review_submission(build:)
   UI.user_error!(
     "Exact build beta review submission has an ineligible state"
   ) unless eligible_states.include?(submission.beta_review_state)
+  submission
+end
+
+def require_approved_external_beta_review_submission(build:)
+  submission = require_external_beta_review_submission(build: build)
+  UI.user_error!("Exact build beta review submission is not approved") unless
+    submission.beta_review_state == "APPROVED"
   submission
 end
 
@@ -870,7 +927,7 @@ def load_notification_receipt(path)
     mode = opened_stat.mode & 0o777
     UI.user_error!("Notification receipt must have mode 400 or 600") unless
       [0o400, 0o600].include?(mode)
-    JSON.parse(file.read)
+    [JSON.parse(file.read), mode]
   end
 rescue JSON::ParserError
   UI.user_error!("Notification receipt is not valid JSON")
@@ -881,7 +938,7 @@ end
 def notification_receipt_state(path:, expected:)
   return :absent unless File.exist?(path) || File.symlink?(path)
 
-  receipt = load_notification_receipt(path)
+  receipt, mode = load_notification_receipt(path)
   matches = expected.all? { |key, value| receipt[key] == value }
   UI.user_error!("Notification receipt does not match the exact release") unless matches
 
@@ -889,15 +946,33 @@ def notification_receipt_state(path:, expected:)
   claimed_at = receipt["claimedAtUtc"].to_s.strip
   UI.user_error!("Notification receipt has incomplete claim metadata") if
     claim_id.empty? || claimed_at.empty?
+  UI.user_error!("Notification receipt claim ID is malformed") unless
+    claim_id.match?(
+      /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+    )
+  require_utc_timestamp(value: claimed_at, label: "Notification claim")
 
   case receipt["status"]
   when "complete"
+    expected_keys = expected.keys + %w[
+      claimId claimedAtUtc notificationId notifiedAtUtc status
+    ]
+    UI.user_error!("Completed notification receipt has an unexpected schema") unless
+      receipt.keys.sort == expected_keys.sort
+    UI.user_error!("Completed notification receipt must have mode 400") unless
+      mode == 0o400
     notification_id = receipt["notificationId"].to_s.strip
     notified_at = receipt["notifiedAtUtc"].to_s.strip
     UI.user_error!("Completed notification receipt is incomplete") if
       notification_id.empty? || notified_at.empty?
+    require_utc_timestamp(value: notified_at, label: "Notification completion")
     :complete
   when "pending"
+    expected_keys = expected.keys + %w[claimId claimedAtUtc status]
+    UI.user_error!("Pending notification receipt has an unexpected schema") unless
+      receipt.keys.sort == expected_keys.sort
+    UI.user_error!("Pending notification receipt must have mode 600") unless
+      mode == 0o600
     UI.user_error!(
       "A durable notification claim is pending for this exact release. " \
       "Do not run concurrently or retry until the release owner reconciles " \
@@ -939,7 +1014,7 @@ end
 def complete_notification_claim(path:, expected:, claim_id:, notification_id:)
   completion_path = nil
   begin
-    pending = load_notification_receipt(path)
+    pending, = load_notification_receipt(path)
     matches = expected.all? { |key, value| pending[key] == value }
     matches &&= pending["status"] == "pending"
     matches &&= pending["claimId"] == claim_id
@@ -1274,8 +1349,8 @@ platform :ios do
     build_number = required_option(options, :build_number)
     source_commit = required_option(options, :source_commit)
     # Upload mode supplies the locally verified digest explicitly. A
-    # notify-only resume can omit it: the immutable finalized receipt remains
-    # the authority and require_upload_provenance validates its digest/schema.
+    # A post-upload operation can omit it: the immutable finalized receipt is
+    # authoritative and require_upload_provenance validates its digest/schema.
     ipa_sha256 = optional_option(options, :ipa_sha256)
     build = exact_valid_build(
       app: app,
@@ -1322,6 +1397,160 @@ platform :ios do
     require_no_individual_testers(build)
     require_app_store_eligible_build(build)
     UI.success("Associated the exact build with only the approved group ID")
+  end
+
+  desc "Verify a completed external notification without mutating App Store Connect"
+  lane :verify_external_notification do |options|
+    attempt_path = required_option(options, :upload_attempt_path)
+    provenance_path = required_option(options, :upload_provenance_path)
+    receipt_path = required_option(options, :notification_receipt_path)
+    require_external_upload_paths_distinct(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      notification_path: receipt_path
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :complete
+    )
+
+    app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
+    group_name = required_option(options, :group_name)
+    group_id = required_option(options, :group_id)
+    internal_group_name = required_option(options, :internal_group_name)
+    approved_internal_group_id = required_option(
+      options,
+      :approved_internal_group_id
+    )
+    internal_tester_id = required_option(options, :internal_tester_id)
+    external_tester_count = required_option(options, :external_tester_count)
+    external_tester_ids_sha256 = required_option(
+      options,
+      :external_tester_ids_sha256
+    )
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+
+    group = exact_external_group(
+      app: app,
+      group_name: group_name,
+      group_id: group_id,
+      internal_group_name: internal_group_name,
+      internal_group_id: approved_internal_group_id,
+      internal_tester_id: internal_tester_id,
+      external_tester_count: external_tester_count,
+      external_tester_ids_sha256: external_tester_ids_sha256
+    )
+    build = exact_valid_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    require_app_store_eligible_build(build)
+    upload_provenance = require_upload_provenance(
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit
+    )
+    require_automatic_notification_disabled(build)
+    associated = require_exact_external_association(
+      app: app,
+      build: build,
+      approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
+      required: true
+    )
+    require_no_individual_testers(build)
+    require_approved_external_beta_review_submission(build: build)
+    require_external_notification_eligible_state(build)
+    expected_receipt = expected_notification_receipt(
+      app: app,
+      build: build,
+      group: group,
+      approved_internal_group_id: approved_internal_group_id,
+      associated_group_ids: associated.map(&:id),
+      external_tester_count: external_tester_count,
+      external_tester_ids_sha256: external_tester_ids_sha256,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: upload_provenance["ipaSha256"]
+    )
+    UI.user_error!("Notification receipt is not complete") unless
+      notification_receipt_state(
+        path: receipt_path,
+        expected: expected_receipt
+      ) == :complete
+
+    # Re-read the exact remote state after receipt validation. Every method in
+    # this lane is read-only; the second pass detects concurrent audience or
+    # review-state changes before reporting successful completion.
+    group = exact_external_group(
+      app: app,
+      group_name: group_name,
+      group_id: group_id,
+      internal_group_name: internal_group_name,
+      internal_group_id: approved_internal_group_id,
+      internal_tester_id: internal_tester_id,
+      external_tester_count: external_tester_count,
+      external_tester_ids_sha256: external_tester_ids_sha256
+    )
+    build = exact_valid_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    require_app_store_eligible_build(build)
+    upload_provenance = require_upload_provenance(
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
+      app: app,
+      build: build,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit
+    )
+    require_automatic_notification_disabled(build)
+    associated = require_exact_external_association(
+      app: app,
+      build: build,
+      approved_group: group,
+      approved_internal_group_id: approved_internal_group_id,
+      required: true
+    )
+    require_no_individual_testers(build)
+    require_approved_external_beta_review_submission(build: build)
+    require_external_notification_eligible_state(build)
+    expected_receipt = expected_notification_receipt(
+      app: app,
+      build: build,
+      group: group,
+      approved_internal_group_id: approved_internal_group_id,
+      associated_group_ids: associated.map(&:id),
+      external_tester_count: external_tester_count,
+      external_tester_ids_sha256: external_tester_ids_sha256,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: upload_provenance["ipaSha256"]
+    )
+    UI.user_error!("Notification receipt changed during verification") unless
+      notification_receipt_state(
+        path: receipt_path,
+        expected: expected_receipt
+      ) == :complete
+    UI.success("Verified the completed external notification without mutations")
   end
 
   desc "Verify the immutable audience and notify it after external beta approval"
@@ -1387,7 +1616,6 @@ platform :ios do
     require_no_individual_testers(build)
     require_app_store_eligible_build(build)
 
-    detail = build.build_beta_detail
     expected_receipt = expected_notification_receipt(
       app: app,
       build: build,
@@ -1415,20 +1643,10 @@ platform :ios do
     if build.ready_for_beta_submission?
       UI.user_error!(
         "The exact build still requires beta-review submission. Run the " \
-        "association lane before using notify-only mode."
+        "submit_review operation before notify_testers."
       )
     end
-    eligible_states = [
-      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::READY_FOR_BETA_TESTING,
-      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::BETA_APPROVED,
-      Spaceship::ConnectAPI::BuildBetaDetail::ExternalState::IN_BETA_TESTING
-    ]
-    unless eligible_states.include?(detail.external_build_state)
-      UI.user_error!(
-        "The exact build is not ready to notify (external state: " \
-        "#{detail.external_build_state}). Re-run in notify-only mode after approval."
-      )
-    end
+    require_external_notification_eligible_state(build)
 
     # Claim the exact release durably before the build-scoped, non-idempotent
     # notification request. Existing pending or complete records prevent a
@@ -1437,6 +1655,10 @@ platform :ios do
     claim_id = create_notification_claim(
       path: receipt_path,
       expected: expected_receipt
+    )
+    persist_external_release_record(
+      kind: "notification_pending",
+      path: receipt_path
     )
     group = exact_external_group(
       app: app,
@@ -1490,6 +1712,10 @@ platform :ios do
       expected: expected_receipt,
       claim_id: claim_id,
       notification_id: notification_id
+    )
+    persist_external_release_record(
+      kind: "notification_complete",
+      path: receipt_path
     )
     UI.success("Notified testers assigned only to the approved group")
   end

@@ -13,6 +13,32 @@ fail() {
   exit 1
 }
 
+canonical_repository_executable() {
+  local input="$1"
+  local label="$2"
+  [[ "$input" == /* ]] || fail "$label must be an absolute path"
+  [[ -f "$input" && ! -L "$input" && -x "$input" ]] || \
+    fail "$label must be an executable regular non-symlink file"
+  local parent
+  parent=$(cd "$(dirname -- "$input")" && pwd -P)
+  local executable
+  executable="$parent/$(basename -- "$input")"
+  case "$executable" in
+    "$REPOSITORY_ROOT/"*) ;;
+    *) fail "$label must be repository-owned" ;;
+  esac
+  printf '%s\n' "$executable"
+}
+
+persist_external_release_record() {
+  local kind="$1"
+  local path="$2"
+  [[ -n "${TESTFLIGHT_LEDGER_HOOK:-}" ]] || return 0
+  if ! "$TESTFLIGHT_LEDGER_HOOK" persist "$kind" "$path"; then
+    fail "TestFlight ledger hook failed while persisting $kind"
+  fi
+}
+
 canonical_external_record_path() {
   local input="$1"
   local label="$2"
@@ -53,6 +79,156 @@ require_regular_file_mode() {
     [[ "$actual_mode" != "$allowed_mode" ]] || return 0
   done
   fail "$label has unapproved mode $actual_mode"
+}
+
+notification_receipt_status() {
+  local path="$1"
+  python3 - "$path" <<'PY'
+import json
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+def object_without_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key {key}")
+        result[key] = value
+    return result
+
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+with os.fdopen(descriptor, encoding="utf-8") as source:
+    opened = os.fstat(source.fileno())
+    if not stat.S_ISREG(opened.st_mode):
+        raise SystemExit("release blocked: notification receipt is not a regular file")
+    try:
+        receipt = json.load(source, object_pairs_hook=object_without_duplicate_keys)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise SystemExit(
+            f"release blocked: notification receipt schema is invalid ({error})"
+        ) from error
+if not isinstance(receipt, dict):
+    raise SystemExit("release blocked: notification receipt must be a JSON object")
+status_value = receipt.get("status")
+if status_value not in {"pending", "complete"}:
+    raise SystemExit("release blocked: notification receipt has an unknown status")
+print(status_value)
+PY
+}
+
+verify_complete_notification_receipt_before_asc() {
+  local path="$1"
+  local expected_version="${RELEASE_VERSION%+*}"
+  local expected_build_number="${RELEASE_VERSION##*+}"
+  python3 - \
+    "$path" \
+    "$APP_BUNDLE_ID" \
+    "$expected_version" \
+    "$expected_build_number" \
+    "$RELEASE_COMMIT" \
+    "$TESTFLIGHT_GROUP_ID" \
+    "$TESTFLIGHT_INTERNAL_GROUP_ID" \
+    "$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+    "$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" <<'PY'
+import datetime
+import json
+import os
+import re
+import stat
+import sys
+
+(
+    path,
+    bundle_id,
+    version,
+    build_number,
+    source_commit,
+    external_group_id,
+    internal_group_id,
+    tester_count,
+    tester_digest,
+) = sys.argv[1:]
+
+def object_without_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key {key}")
+        result[key] = value
+    return result
+
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+with os.fdopen(descriptor, encoding="utf-8") as source:
+    opened = os.fstat(source.fileno())
+    if not stat.S_ISREG(opened.st_mode):
+        raise SystemExit("release blocked: notification receipt is not a regular file")
+    try:
+        receipt = json.load(source, object_pairs_hook=object_without_duplicate_keys)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise SystemExit(
+            f"release blocked: notification receipt schema is invalid ({error})"
+        ) from error
+
+expected_keys = {
+    "appId",
+    "associatedGroupIds",
+    "automaticInternalGroupId",
+    "buildId",
+    "buildNumber",
+    "bundleId",
+    "claimId",
+    "claimedAtUtc",
+    "externalGroupId",
+    "externalTesterCount",
+    "externalTesterIdsSha256",
+    "ipaSha256",
+    "notificationId",
+    "notifiedAtUtc",
+    "schemaVersion",
+    "sourceCommit",
+    "status",
+    "version",
+}
+if not isinstance(receipt, dict) or set(receipt) != expected_keys:
+    raise SystemExit("release blocked: notification receipt has an unexpected schema")
+expected_values = {
+    "schemaVersion": 3,
+    "bundleId": bundle_id,
+    "version": version,
+    "buildNumber": build_number,
+    "sourceCommit": source_commit.lower(),
+    "externalGroupId": external_group_id,
+    "automaticInternalGroupId": internal_group_id,
+    "associatedGroupIds": sorted([external_group_id, internal_group_id]),
+    "externalTesterCount": int(tester_count, 10),
+    "externalTesterIdsSha256": tester_digest.lower(),
+    "status": "complete",
+}
+if any(receipt.get(key) != value for key, value in expected_values.items()):
+    raise SystemExit("release blocked: notification receipt does not match the release")
+for key in ("appId", "buildId", "claimId", "notificationId"):
+    value = receipt.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"release blocked: notification receipt {key} is invalid")
+if not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("ipaSha256", ""))):
+    raise SystemExit("release blocked: notification receipt IPA digest is invalid")
+for key in ("claimedAtUtc", "notifiedAtUtc"):
+    value = receipt.get(key)
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise SystemExit(f"release blocked: notification receipt {key} is invalid")
+    try:
+        parsed = datetime.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise SystemExit(
+            f"release blocked: notification receipt {key} is invalid"
+        ) from error
+    if parsed.utcoffset() != datetime.timedelta(0):
+        raise SystemExit(f"release blocked: notification receipt {key} is not UTC")
+PY
 }
 
 require_command() {
@@ -334,12 +510,54 @@ require_command pod
 TESTFLIGHT_MODE="${TESTFLIGHT_MODE:-external}"
 [[ "$TESTFLIGHT_MODE" == "external" || "$TESTFLIGHT_MODE" == "internal" ]] || \
   fail "TESTFLIGHT_MODE must be external or internal"
-TESTFLIGHT_NOTIFY_ONLY="${TESTFLIGHT_NOTIFY_ONLY:-no}"
-[[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+legacy_notify_only_is_set="${TESTFLIGHT_NOTIFY_ONLY+x}"
+legacy_notify_only="${TESTFLIGHT_NOTIFY_ONLY:-no}"
+[[ "$legacy_notify_only" == "yes" || "$legacy_notify_only" == "no" ]] || \
   fail "TESTFLIGHT_NOTIFY_ONLY must be yes or no"
+TESTFLIGHT_EXTERNAL_OPERATION="${TESTFLIGHT_EXTERNAL_OPERATION:-}"
 if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
-  [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+  [[ -z "$TESTFLIGHT_EXTERNAL_OPERATION" || \
+     "$TESTFLIGHT_EXTERNAL_OPERATION" == "upload" ]] || \
+    fail "internal TestFlight mode supports only the upload operation"
+  [[ "$legacy_notify_only" == "no" ]] || \
     fail "internal TestFlight mode does not support notify-only runs"
+  TESTFLIGHT_EXTERNAL_OPERATION="upload"
+  TESTFLIGHT_NOTIFY_ONLY="no"
+else
+  if [[ -z "$TESTFLIGHT_EXTERNAL_OPERATION" ]]; then
+    if [[ "$legacy_notify_only" == "yes" ]]; then
+      TESTFLIGHT_EXTERNAL_OPERATION="notify_testers"
+    else
+      TESTFLIGHT_EXTERNAL_OPERATION="upload"
+    fi
+  fi
+  case "$TESTFLIGHT_EXTERNAL_OPERATION" in
+    upload)
+      derived_notify_only="no"
+      ;;
+    submit_review | notify_testers | verify_notification)
+      derived_notify_only="yes"
+      ;;
+    *)
+      fail "TESTFLIGHT_EXTERNAL_OPERATION must be upload, submit_review, notify_testers, or verify_notification"
+      ;;
+  esac
+  if [[ -n "$legacy_notify_only_is_set" && \
+        "$legacy_notify_only" != "$derived_notify_only" ]]; then
+    fail "TESTFLIGHT_NOTIFY_ONLY conflicts with TESTFLIGHT_EXTERNAL_OPERATION"
+  fi
+  TESTFLIGHT_NOTIFY_ONLY="$derived_notify_only"
+  if [[ -n "${TESTFLIGHT_LEDGER_HOOK:-}" ]]; then
+    TESTFLIGHT_LEDGER_HOOK=$(canonical_repository_executable \
+      "$TESTFLIGHT_LEDGER_HOOK" "TESTFLIGHT_LEDGER_HOOK")
+  fi
+fi
+export TESTFLIGHT_EXTERNAL_OPERATION TESTFLIGHT_NOTIFY_ONLY
+if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
+  export TESTFLIGHT_LEDGER_HOOK
+fi
+
+if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for internal mode}"
   : "${TESTFLIGHT_TESTER_ID:?missing immutable TESTFLIGHT_TESTER_ID for internal mode}"
   : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for internal mode}"
@@ -347,13 +565,13 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   : "${IOS_DISTRIBUTION_CERTIFICATE_SHA1:?missing IOS_DISTRIBUTION_CERTIFICATE_SHA1 for internal mode}"
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
 elif [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
-  : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for notify-only mode}"
-  : "${TESTFLIGHT_INTERNAL_GROUP:?missing TESTFLIGHT_INTERNAL_GROUP for notify-only mode}"
-  : "${TESTFLIGHT_INTERNAL_GROUP_ID:?missing TESTFLIGHT_INTERNAL_GROUP_ID for notify-only mode}"
-  : "${TESTFLIGHT_INTERNAL_TESTER_ID:?missing TESTFLIGHT_INTERNAL_TESTER_ID for notify-only mode}"
-  : "${TESTFLIGHT_EXTERNAL_TESTER_COUNT:?missing TESTFLIGHT_EXTERNAL_TESTER_COUNT for notify-only mode}"
-  : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for notify-only mode}"
-  : "${TESTFLIGHT_UPLOAD_PROVENANCE_PATH:?missing TESTFLIGHT_UPLOAD_PROVENANCE_PATH for notify-only mode}"
+  : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for $TESTFLIGHT_EXTERNAL_OPERATION}"
+  : "${TESTFLIGHT_INTERNAL_GROUP:?missing TESTFLIGHT_INTERNAL_GROUP for $TESTFLIGHT_EXTERNAL_OPERATION}"
+  : "${TESTFLIGHT_INTERNAL_GROUP_ID:?missing TESTFLIGHT_INTERNAL_GROUP_ID for $TESTFLIGHT_EXTERNAL_OPERATION}"
+  : "${TESTFLIGHT_INTERNAL_TESTER_ID:?missing TESTFLIGHT_INTERNAL_TESTER_ID for $TESTFLIGHT_EXTERNAL_OPERATION}"
+  : "${TESTFLIGHT_EXTERNAL_TESTER_COUNT:?missing TESTFLIGHT_EXTERNAL_TESTER_COUNT for $TESTFLIGHT_EXTERNAL_OPERATION}"
+  : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for $TESTFLIGHT_EXTERNAL_OPERATION}"
+  : "${TESTFLIGHT_UPLOAD_PROVENANCE_PATH:?missing TESTFLIGHT_UPLOAD_PROVENANCE_PATH for $TESTFLIGHT_EXTERNAL_OPERATION}"
 else
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for external mode}"
   : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for external mode}"
@@ -415,9 +633,6 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
 fi
 
 if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
-  : "${TESTFLIGHT_NOTIFICATION_RECEIPT_PATH:?missing TESTFLIGHT_NOTIFICATION_RECEIPT_PATH}"
-  NOTIFICATION_RECEIPT_PATH=$(canonical_external_record_path \
-    "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" "notification receipt")
   UPLOAD_PROVENANCE_PATH=$(canonical_external_record_path \
     "$TESTFLIGHT_UPLOAD_PROVENANCE_PATH" "upload provenance")
   # The attempt location is intentionally not configurable independently. All
@@ -425,11 +640,14 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   UPLOAD_ATTEMPT_PATH=$(canonical_external_record_path \
     "$UPLOAD_PROVENANCE_PATH.attempt" "upload attempt")
 
-  managed_release_paths=(
-    "$NOTIFICATION_RECEIPT_PATH"
-    "$UPLOAD_ATTEMPT_PATH"
-    "$UPLOAD_PROVENANCE_PATH"
-  )
+  managed_release_paths=("$UPLOAD_ATTEMPT_PATH" "$UPLOAD_PROVENANCE_PATH")
+  if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "notify_testers" || \
+        "$TESTFLIGHT_EXTERNAL_OPERATION" == "verify_notification" ]]; then
+    : "${TESTFLIGHT_NOTIFICATION_RECEIPT_PATH:?missing TESTFLIGHT_NOTIFICATION_RECEIPT_PATH for $TESTFLIGHT_EXTERNAL_OPERATION}"
+    NOTIFICATION_RECEIPT_PATH=$(canonical_external_record_path \
+      "$TESTFLIGHT_NOTIFICATION_RECEIPT_PATH" "notification receipt")
+    managed_release_paths+=("$NOTIFICATION_RECEIPT_PATH")
+  fi
   for managed_path in "${managed_release_paths[@]}"; do
     for namespace_owner in "${managed_release_paths[@]}"; do
       [[ "$managed_path" != "$namespace_owner".tmp.* ]] || \
@@ -438,10 +656,14 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
         fail "managed release paths collide with a notification temporary namespace"
     done
   done
-  [[ "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_ATTEMPT_PATH" && \
-     "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_PROVENANCE_PATH" && \
-     "$UPLOAD_ATTEMPT_PATH" != "$UPLOAD_PROVENANCE_PATH" ]] || \
-    fail "notification, upload-attempt, and provenance paths must be different"
+  [[ "$UPLOAD_ATTEMPT_PATH" != "$UPLOAD_PROVENANCE_PATH" ]] || \
+    fail "upload-attempt and provenance paths must be different"
+  if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "notify_testers" || \
+        "$TESTFLIGHT_EXTERNAL_OPERATION" == "verify_notification" ]]; then
+    [[ "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_ATTEMPT_PATH" && \
+       "$NOTIFICATION_RECEIPT_PATH" != "$UPLOAD_PROVENANCE_PATH" ]] || \
+      fail "notification, upload-attempt, and provenance paths must be different"
+  fi
 
   attempt_present=no
   provenance_present=no
@@ -459,19 +681,39 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   if [[ "$attempt_present" == "no" && "$provenance_present" == "yes" ]]; then
     fail "upload provenance exists without its immutable attempt claim"
   fi
-  if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+  if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" != "upload" ]]; then
     [[ "$attempt_present" == "yes" && "$provenance_present" == "yes" ]] || \
-      fail "notify-only mode requires both immutable upload attempt and provenance"
+      fail "$TESTFLIGHT_EXTERNAL_OPERATION requires both immutable upload attempt and provenance"
   else
     [[ "$attempt_present" == "no" && "$provenance_present" == "no" ]] || \
-      fail "normal upload reruns are blocked after an attempt is finalized; use notify-only mode"
+      fail "normal upload reruns are blocked after an attempt is finalized; use submit_review or notify_testers"
   fi
 
-  if [[ -e "$NOTIFICATION_RECEIPT_PATH" || -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
-    require_regular_file_mode \
-      "$NOTIFICATION_RECEIPT_PATH" "notification receipt" 400 600
-    [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
-      fail "notification receipt already exists; use notify-only mode to verify it"
+  if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "notify_testers" || \
+        "$TESTFLIGHT_EXTERNAL_OPERATION" == "verify_notification" ]]; then
+    if [[ ! -e "$NOTIFICATION_RECEIPT_PATH" && \
+          ! -L "$NOTIFICATION_RECEIPT_PATH" ]]; then
+      [[ "$TESTFLIGHT_EXTERNAL_OPERATION" != "verify_notification" ]] || \
+        fail "verify_notification requires a restored complete notification receipt"
+    else
+      if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "verify_notification" ]]; then
+        require_regular_file_mode \
+          "$NOTIFICATION_RECEIPT_PATH" "notification receipt" 400
+      else
+        require_regular_file_mode \
+          "$NOTIFICATION_RECEIPT_PATH" "notification receipt" 400 600
+      fi
+      notification_status=$(notification_receipt_status \
+        "$NOTIFICATION_RECEIPT_PATH")
+      [[ "$notification_status" != "pending" ]] || \
+        fail "an immutable notification-pending claim cannot be retried"
+      if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "verify_notification" ]]; then
+        [[ "$notification_status" == "complete" ]] || \
+          fail "verify_notification requires notification-complete ledger state"
+        verify_complete_notification_receipt_before_asc \
+          "$NOTIFICATION_RECEIPT_PATH"
+      fi
+    fi
   fi
 fi
 
@@ -534,6 +776,8 @@ grep -Fq "PRODUCT_BUNDLE_IDENTIFIER = $LIVE_ACTIVITY_BUNDLE_ID;" \
   fail "Live Activity bundle ID must be namespaced below the app bundle ID"
 
 release_temp=$(mktemp -d "${TMPDIR:-/tmp}/openglucose-release.XXXXXX")
+# Invoked by the EXIT trap below; ShellCheck cannot infer trap-based callers.
+# shellcheck disable=SC2329
 cleanup() {
   case "${release_temp:-}" in
     "${TMPDIR:-/tmp}"/openglucose-release.*)
@@ -601,15 +845,37 @@ approved_group_id=$(<"$group_id_file")
   fail "approved TestFlight group ID is malformed"
 echo "==> Approved $TESTFLIGHT_MODE group ID: $approved_group_id"
 
-if [[ "$TESTFLIGHT_MODE" == "external" && "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]]; then
+if [[ "$TESTFLIGHT_MODE" == "external" && \
+      "$TESTFLIGHT_EXTERNAL_OPERATION" == "upload" ]]; then
   echo "==> Verifying external beta-review metadata before upload"
   fastlane ios verify_external_review_metadata \
     "api_key_path:$credential_json" \
     "bundle_id:$APP_BUNDLE_ID"
 fi
 
-if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
-  echo "==> Resuming idempotent association for the finalized external build"
+if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "verify_notification" ]]; then
+  echo "==> Verifying the completed external notification without mutations"
+  fastlane ios verify_external_notification \
+    "api_key_path:$credential_json" \
+    "bundle_id:$APP_BUNDLE_ID" \
+    "group_name:$TESTFLIGHT_GROUP" \
+    "group_id:$approved_group_id" \
+    "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
+    "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
+    "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
+    "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
+    "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
+    "version:$EXPECTED_MARKETING_VERSION" \
+    "build_number:$EXPECTED_BUILD_NUMBER" \
+    "source_commit:$head_commit" \
+    "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
+    "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
+    "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
+  echo "==> Verified completed TestFlight notification for $RELEASE_VERSION ($head_commit)"
+  exit 0
+fi
+
+associate_finalized_external_build() {
   fastlane ios associate_external_build \
     "api_key_path:$credential_json" \
     "bundle_id:$APP_BUNDLE_ID" \
@@ -625,6 +891,18 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "source_commit:$head_commit" \
     "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
+}
+
+if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "submit_review" ]]; then
+  echo "==> Associating the finalized external build and submitting beta review"
+  associate_finalized_external_build
+  echo "==> Submitted TestFlight beta review for $RELEASE_VERSION ($head_commit)"
+  exit 0
+fi
+
+if [[ "$TESTFLIGHT_EXTERNAL_OPERATION" == "notify_testers" ]]; then
+  echo "==> Revalidating the idempotent external association"
+  associate_finalized_external_build
   echo "==> Verifying the exact build and sending the deferred tester notification"
   fastlane ios notify_external_build \
     "api_key_path:$credential_json" \
@@ -822,6 +1100,7 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
     "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
     "continuation_token_path:$upload_continuation_token"
+  persist_external_release_record upload_attempt "$UPLOAD_ATTEMPT_PATH"
 fi
 fastlane pilot upload \
   --api_key_path "$credential_json" \
@@ -863,43 +1142,7 @@ fastlane ios record_external_upload_provenance \
   "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
   "continuation_token_path:$upload_continuation_token" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
-
-echo "==> Associating the exact build with the approved immutable group ID"
-fastlane ios associate_external_build \
-  "api_key_path:$credential_json" \
-  "bundle_id:$APP_BUNDLE_ID" \
-  "group_name:$TESTFLIGHT_GROUP" \
-  "group_id:$approved_group_id" \
-  "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
-  "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
-  "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
-  "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
-  "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
-  "version:$EXPECTED_MARKETING_VERSION" \
-  "build_number:$EXPECTED_BUILD_NUMBER" \
-  "source_commit:$head_commit" \
-  "ipa_sha256:$artifact_sha256" \
-  "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
-  "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
-
-echo "==> Verifying the exclusive audience and notifying eligible testers"
-echo "    If beta review is pending, re-run with TESTFLIGHT_NOTIFY_ONLY=yes and TESTFLIGHT_GROUP_ID=$approved_group_id after approval."
-fastlane ios notify_external_build \
-  "api_key_path:$credential_json" \
-  "bundle_id:$APP_BUNDLE_ID" \
-  "group_name:$TESTFLIGHT_GROUP" \
-  "group_id:$approved_group_id" \
-  "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
-  "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
-  "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
-  "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
-  "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
-  "version:$EXPECTED_MARKETING_VERSION" \
-  "build_number:$EXPECTED_BUILD_NUMBER" \
-  "source_commit:$head_commit" \
-  "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
-  "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
-  "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
-
-echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
+persist_external_release_record upload_provenance "$UPLOAD_PROVENANCE_PATH"
+echo "==> Uploaded and recorded TestFlight provenance for $RELEASE_VERSION ($head_commit)"
 echo "    SHA-256: $artifact_sha256"
+exit 0
