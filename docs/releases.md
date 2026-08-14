@@ -113,12 +113,16 @@ omits `hasAccessToAllBuilds` for non-automatic external groups, which Fastlane
 literal `true` remains rejected as automatic. External export uses the same exact
 manual profile and certificate mapping as internal export, explicitly leaves
 `testFlightInternalTestingOnly` disabled, and requires the processed build to
-report `APP_STORE_ELIGIBLE`. It rechecks that audience immediately before it
-uploads with distribution and automatic notification disabled, associates the
-exact processed build through the external ID, proves that the exact associated
-group set is the approved automatic internal group plus the approved external
-group, rejects individually assigned testers, and pins the external group's
-exact tester relationship set using an approved count plus SHA-256 digest. It
+report `APP_STORE_ELIGIBLE`. After every deterministic source, dependency,
+artifact, signature, provisioning-profile, review-metadata, and audience
+preflight passes, it rechecks that audience and takes the immutable upload
+attempt described below. `pilot` is the immediately following command and
+uploads with distribution and automatic notification disabled. The lane then
+associates the exact processed build through the external ID, proves that the
+exact associated group set is the approved automatic internal group plus the
+approved external group, rejects individually assigned testers, and pins the
+external group's exact tester relationship set using an approved count plus
+SHA-256 digest. It
 requires every beta app localization to have a nonblank description and
 feedback email, and requires one exact beta review detail with contact name,
 email, phone, review notes, and an explicit demo-account flag (plus credentials
@@ -129,24 +133,44 @@ states. It rechecks both group memberships and the closed public-link state
 after taking the durable notification claim and immediately before sending one
 build-scoped tester notification.
 
-After Apple processes an external upload, the lane resolves the exact App Store
-Connect app/build resource IDs and creates a mode-400 upload-provenance receipt
-at `TESTFLIGHT_UPLOAD_PROVENANCE_PATH`. The receipt contains only the exact app
-and build IDs, bundle ID, version/build, source commit, IPA SHA-256, and UTC
-recording time. The SHA-256 identifies the locally verified IPA supplied by the
-same uninterrupted `pilot upload` invocation that returned successfully; Apple
-does not independently attest that digest. Its mode-700 parent must be outside
-the repository. Association
-requires that receipt to match the same artifact bytes and source; deferred
-notify-only runs require and revalidate it against the exact remote build. They
-therefore cannot relabel an unrelated existing version/build as the reviewed
-commit. The receipt is published from a uniquely named, fsynced same-directory
-temporary inode with an atomic no-overwrite link, so a partial JSON document can
-never occupy the final path. App Store Connect does not expose the uploaded
-IPA's digest or an upload identity that can prove byte ownership after an
-interrupted client. If the process stops after upload starts but before the
-final receipt is published, do not automatically reconcile, associate, or
-notify that remote build; inspect the incident and cut a new build number.
+The external lane requires `TESTFLIGHT_UPLOAD_PROVENANCE_PATH` in a mode-700
+directory outside the repository and deterministically derives the immutable
+attempt path by appending `.attempt`; there is no separately configurable
+attempt location. After every deterministic preflight and immediately before
+`pilot`, the claim lane asks App Store Connect for the exact app, iOS version,
+and build number across every processing state and aborts if any build already
+exists. It then publishes a mode-400 immutable attempt containing only the app
+and bundle IDs, version/build, source commit, locally verified IPA SHA-256,
+random attempt ID, continuation-token digest, and UTC claim time. Publication
+uses a uniquely named, fsynced same-directory inode and an atomic no-overwrite
+hard link. Official runs for the same provenance record therefore contend on
+one path: one claim wins and no process can replace it. Managed attempt,
+provenance, notification, `.tmp.*`, and `.complete.*` path namespaces may not
+collide.
+
+Only the same uninterrupted shell has the private, mode-600 continuation token
+needed to finalize the claim. After `pilot` returns and Apple processing
+succeeds, the lane resolves exactly one valid build, rechecks its
+`APP_STORE_ELIGIBLE` audience type, and atomically publishes mode-400 final
+provenance. The final record binds the exact App Store Connect build ID and
+audience type to the attempt ID and SHA-256 of the immutable attempt bytes, as
+well as the app/bundle, version/build, source commit, IPA digest, and UTC
+recording time. Successful state permanently retains both records. Association
+and notification require both, validate their schemas/modes/binding, and
+revalidate the exact remote build. A normal upload rerun is blocked even after
+finalization; use notify-only mode for the already finalized release.
+
+An attempt without final provenance means the non-idempotent upload boundary is
+ambiguous. Every restarted automation mode must stop before App Store Connect
+access. Do not delete, archive, auto-recover, or infer success from the remote
+version/build lookup; preserve the claim, record an incident, and cut a new
+build number. Final provenance without its attempt is also inconsistent and
+blocks automation. App Store Connect exposes neither the uploaded IPA digest
+nor an uploader-owned delivery identity, so an out-of-band uploader racing
+between the absence query and `pilot` cannot be cryptographically excluded.
+The release owner must enforce exclusive upload authority for the app/version/
+build during this window. Apple also does not attest the local IPA SHA-256; it
+identifies the bytes supplied by this uninterrupted claimed invocation.
 Before the non-idempotent notification request, the lane durably
 creates a mode-600 `pending` claim containing the exact source commit, build, both
 authorized group IDs, the associated group-ID set, and the approved external
@@ -173,10 +197,11 @@ approved ID association. After approval, rerun with
 `TESTFLIGHT_NOTIFY_ONLY=yes` and the printed immutable
 `TESTFLIGHT_GROUP_ID` plus the exact automatic internal group/tester IDs; this
 mode first idempotently resumes association from the immutable finalized
-provenance receipt, then verifies the same clean commit, exact build, closed
-public-link state, exact two-group association, and notification state without
-building or uploading again. This also safely resumes a process that stopped
-after final provenance publication but before association.
+upload attempt and provenance, then verifies the same clean commit, exact
+build, closed public-link state, exact two-group association, and notification
+state without building or uploading again. This also safely resumes a process
+that stopped after final provenance publication but before association. A
+pending-only upload attempt can never enter notify-only mode.
 Concurrent notification runs are prohibited. A `pending`
 claim, interrupted run, or ambiguous App Store Connect response blocks every
 retry until the release owner reconciles the exact build. If the owner can prove

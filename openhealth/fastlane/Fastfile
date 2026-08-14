@@ -243,6 +243,21 @@ def exact_valid_build(app:, version:, build_number:)
   Spaceship::ConnectAPI::Build.get(build_id: builds.first.id)
 end
 
+def require_no_exact_build(app:, version:, build_number:)
+  builds = Spaceship::ConnectAPI::Build.all(
+    app_id: app.id,
+    version: version,
+    build_number: build_number,
+    platform: "IOS",
+    processing_states: "PROCESSING,FAILED,INVALID,VALID"
+  ).uniq(&:id)
+  UI.user_error!(
+    "App Store Connect already contains TestFlight build #{version} " \
+    "(#{build_number}); preserve any upload claim and cut a new build number"
+  ) unless builds.empty?
+  true
+end
+
 def disable_automatic_notification(build)
   detail = build.build_beta_detail
   UI.user_error!("TestFlight build has no beta detail") unless detail
@@ -394,126 +409,157 @@ def require_external_beta_review_submission(build:)
   submission
 end
 
-def expected_upload_provenance(
-  app:,
-  build:,
-  bundle_id:,
-  version:,
-  build_number:,
-  source_commit:,
-  ipa_sha256:
-)
+def normalized_upload_identity(source_commit:, ipa_sha256:)
   commit = source_commit.to_s.downcase
   digest = ipa_sha256.to_s.downcase
-  UI.user_error!("Upload provenance source commit is malformed") unless
+  UI.user_error!("Upload source commit is malformed") unless
     commit.match?(/\A[0-9a-f]{40,64}\z/)
-  UI.user_error!("Upload provenance IPA SHA-256 is malformed") unless
+  UI.user_error!("Upload IPA SHA-256 is malformed") unless
     digest.match?(/\A[0-9a-f]{64}\z/)
-  {
-    "schemaVersion" => 1,
-    "kind" => "testflightUploadProvenance",
-    "appId" => app.id,
-    "bundleId" => bundle_id,
-    "buildId" => build.id,
-    "version" => version,
-    "buildNumber" => build_number,
-    "sourceCommit" => commit,
-    "ipaSha256" => digest
-  }
+  [commit, digest]
 end
 
-def load_upload_provenance(path)
-  receipt_stat = File.lstat(path)
-  UI.user_error!("Upload provenance must be a regular non-symlink file") unless
-    receipt_stat.file? && !receipt_stat.symlink?
+def require_utc_timestamp(value:, label:)
+  timestamp = value.to_s
+  begin
+    parsed = Time.iso8601(timestamp)
+  rescue ArgumentError
+    UI.user_error!("#{label} timestamp is malformed")
+  end
+  UI.user_error!("#{label} timestamp is not UTC") unless
+    parsed.utc_offset.zero? && timestamp.end_with?("Z")
+  timestamp
+end
+
+def immutable_path_present?(path)
+  File.exist?(path) || File.symlink?(path)
+end
+
+def external_upload_file_state(attempt_path:, provenance_path:)
+  attempt_present = immutable_path_present?(attempt_path)
+  provenance_present = immutable_path_present?(provenance_path)
+  return :absent unless attempt_present || provenance_present
+  return :pending if attempt_present && !provenance_present
+  return :complete if attempt_present && provenance_present
+
+  :inconsistent
+end
+
+def require_external_upload_paths_distinct(
+  attempt_path:,
+  provenance_path:,
+  notification_path: nil
+)
+  paths = [attempt_path, provenance_path, notification_path].compact
+  UI.user_error!("External release record paths must be distinct") unless
+    paths.uniq.length == paths.length
+  paths.each do |candidate|
+    paths.each do |owner|
+      UI.user_error!("External release record paths collide with a temporary namespace") if
+        candidate.start_with?("#{owner}.tmp.") ||
+        candidate.start_with?("#{owner}.complete.")
+    end
+  end
+  true
+end
+
+def require_external_upload_file_state(
+  attempt_path:,
+  provenance_path:,
+  expected:,
+  allow_pending_continuation: false
+)
+  state = external_upload_file_state(
+    attempt_path: attempt_path,
+    provenance_path: provenance_path
+  )
+  if state == :pending
+    if expected != :pending
+      UI.user_error!(
+        "An immutable upload attempt exists without finalized provenance. " \
+        "All restarted automation is blocked: preserve the claim, record an " \
+        "incident, and cut a new build number."
+      )
+    end
+    UI.user_error!(
+      "A pending upload attempt cannot be resumed by restarted automation; " \
+      "cut a new build number"
+    ) unless allow_pending_continuation
+  end
+  if state == :inconsistent
+    UI.user_error!(
+      "Upload provenance exists without its immutable attempt claim; " \
+      "automation is blocked"
+    )
+  end
+  if state == :complete && expected != :complete
+    UI.user_error!(
+      "This upload attempt is already finalized; normal upload reruns are blocked"
+    )
+  end
+  if state == :absent && expected != :absent
+    UI.user_error!("The immutable upload attempt and provenance are missing")
+  end
+  UI.user_error!("External upload state is #{state}; expected #{expected}") unless
+    state == expected
+  state
+end
+
+def load_immutable_json(path:, label:, allowed_modes: [0o400])
+  path_stat = File.lstat(path)
+  UI.user_error!("#{label} must be a regular non-symlink file") unless
+    path_stat.file? && !path_stat.symlink?
 
   File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
     opened_stat = file.stat
-    UI.user_error!("Upload provenance changed during verification") unless
+    UI.user_error!("#{label} changed during verification") unless
       opened_stat.file? &&
-        opened_stat.dev == receipt_stat.dev &&
-        opened_stat.ino == receipt_stat.ino
-    UI.user_error!("Upload provenance must have mode 400") unless
-      (opened_stat.mode & 0o777) == 0o400
-    JSON.parse(file.read)
+        opened_stat.dev == path_stat.dev &&
+        opened_stat.ino == path_stat.ino
+    mode = opened_stat.mode & 0o777
+    UI.user_error!(
+      "#{label} must have mode #{allowed_modes.map { |value| value.to_s(8) }.join(' or ')}"
+    ) unless allowed_modes.include?(mode)
+    bytes = file.read
+    [JSON.parse(bytes), Digest::SHA256.hexdigest(bytes)]
   end
 rescue JSON::ParserError
-  UI.user_error!("Upload provenance is not valid JSON")
-rescue Errno::ENOENT, Errno::ELOOP
-  UI.user_error!("Upload provenance changed during verification")
+  UI.user_error!("#{label} is not valid JSON")
+rescue Errno::ENOENT
+  UI.user_error!("#{label} is missing")
+rescue Errno::ELOOP
+  UI.user_error!("#{label} changed during verification")
 end
 
-def require_upload_provenance(
-  path:,
-  app:,
-  build:,
-  bundle_id:,
-  version:,
-  build_number:,
-  source_commit:,
-  ipa_sha256: nil
-)
-  receipt = load_upload_provenance(path)
-  expected_keys = %w[
-    appId buildId buildNumber bundleId ipaSha256 kind recordedAtUtc
-    schemaVersion sourceCommit version
-  ]
-  UI.user_error!("Upload provenance has an unexpected schema") unless
-    receipt.keys.sort == expected_keys.sort
-  UI.user_error!("Upload provenance IPA SHA-256 is malformed") unless
-    receipt["ipaSha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
-  begin
-    recorded_at = Time.iso8601(receipt["recordedAtUtc"].to_s)
-  rescue ArgumentError
-    UI.user_error!("Upload provenance timestamp is malformed")
-  end
-  UI.user_error!("Upload provenance timestamp is not UTC") unless
-    recorded_at.utc_offset.zero? && receipt["recordedAtUtc"].to_s.end_with?("Z")
-  expected = expected_upload_provenance(
-    app: app,
-    build: build,
-    bundle_id: bundle_id,
-    version: version,
-    build_number: build_number,
-    source_commit: source_commit,
-    ipa_sha256: ipa_sha256 || receipt["ipaSha256"]
-  )
-  UI.user_error!("Upload provenance does not match the exact release") unless
-    expected.all? { |key, value| receipt[key] == value }
-  receipt
-end
-
-def create_upload_provenance(path:, expected:)
-  receipt = expected.merge("recordedAtUtc" => Time.now.utc.iso8601)
+def atomic_create_immutable_json(path:, payload:, label:)
   temporary = "#{path}.tmp.#{Process.pid}.#{SecureRandom.hex(16)}"
   temporary_identity = nil
   File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
     temporary_identity = file.stat
-    file.write("#{JSON.generate(receipt)}\n")
+    file.write("#{JSON.generate(payload)}\n")
     file.flush
     file.fsync
     file.chmod(0o400)
     file.fsync
   end
-  # A same-directory hard link publishes the fully durable inode atomically
-  # and fails rather than replacing an existing provenance receipt.
+  # A same-directory hard link publishes one complete, durable inode and
+  # fails atomically if any concurrent process already owns the final path.
   File.link(temporary, path)
   fsync_parent_directory(path)
-  receipt
+  payload
 rescue Errno::EEXIST
-  if File.exist?(path) || File.symlink?(path)
-    UI.user_error!("Upload provenance already exists")
+  if immutable_path_present?(path)
+    UI.user_error!("#{label} already exists")
   else
-    UI.user_error!("Upload provenance temporary-path collision")
+    UI.user_error!("#{label} temporary-path collision")
   end
 rescue SystemCallError => error
   UI.user_error!(
-    "Upload provenance could not be recorded (#{error.class}); do not " \
-    "associate or notify this build"
+    "#{label} could not be recorded (#{error.class}); preserve the release " \
+    "state and do not retry"
   )
 ensure
-  if temporary && temporary_identity &&
-     (File.exist?(temporary) || File.symlink?(temporary))
+  if temporary && temporary_identity && immutable_path_present?(temporary)
     begin
       current = File.lstat(temporary)
       if current.file? && !current.symlink? &&
@@ -524,9 +570,253 @@ ensure
       end
     rescue SystemCallError
       # Never delete a path that no longer resolves to this invocation's
-      # private temporary inode. The mode-700 parent contains any residue.
+      # private temporary inode. The enclosing mode-700 directory contains it.
     end
   end
+end
+
+def expected_upload_attempt(
+  app:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256:,
+  attempt_id:,
+  continuation_token_sha256:
+)
+  commit, digest = normalized_upload_identity(
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256
+  )
+  UI.user_error!("Upload attempt ID is malformed") unless
+    attempt_id.to_s.match?(
+      /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+    )
+  token_digest = continuation_token_sha256.to_s.downcase
+  UI.user_error!("Upload continuation-token digest is malformed") unless
+    token_digest.match?(/\A[0-9a-f]{64}\z/)
+  {
+    "schemaVersion" => 1,
+    "kind" => "testflightUploadAttempt",
+    "appId" => app.id,
+    "bundleId" => bundle_id,
+    "version" => version,
+    "buildNumber" => build_number,
+    "sourceCommit" => commit,
+    "ipaSha256" => digest,
+    "attemptId" => attempt_id,
+    "continuationTokenSha256" => token_digest
+  }
+end
+
+def write_upload_continuation_token(path:, token:)
+  token_identity = nil
+  File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    file.chmod(0o600)
+    file.write("#{token}\n")
+    file.flush
+    file.fsync
+    token_identity = file.stat
+  end
+  fsync_parent_directory(path)
+  token_identity
+rescue Errno::EEXIST
+  UI.user_error!("Upload continuation-token path already exists")
+rescue SystemCallError => error
+  UI.user_error!("Upload continuation token could not be recorded (#{error.class})")
+end
+
+def load_upload_continuation_token(path)
+  token_stat = File.lstat(path)
+  UI.user_error!("Upload continuation token must be a regular non-symlink file") unless
+    token_stat.file? && !token_stat.symlink?
+  File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+    opened_stat = file.stat
+    UI.user_error!("Upload continuation token changed during verification") unless
+      opened_stat.file? &&
+        opened_stat.dev == token_stat.dev &&
+        opened_stat.ino == token_stat.ino
+    UI.user_error!("Upload continuation token must have mode 600") unless
+      (opened_stat.mode & 0o777) == 0o600
+    bytes = file.read
+    UI.user_error!("Upload continuation token is malformed") unless
+      bytes.match?(/\A[0-9a-f]{64}\n\z/)
+    bytes.chomp
+  end
+rescue Errno::ENOENT
+  UI.user_error!("Upload continuation token is missing; cut a new build number")
+rescue Errno::ELOOP
+  UI.user_error!("Upload continuation token changed during verification")
+end
+
+def create_upload_attempt(path:, continuation_token_path:, expected:)
+  token = SecureRandom.hex(32)
+  continuation_identity = write_upload_continuation_token(
+    path: continuation_token_path,
+    token: token
+  )
+  receipt = expected_upload_attempt(
+    **expected,
+    attempt_id: SecureRandom.uuid,
+    continuation_token_sha256: Digest::SHA256.hexdigest(token)
+  ).merge("claimedAtUtc" => Time.now.utc.iso8601)
+  atomic_create_immutable_json(
+    path: path,
+    payload: receipt,
+    label: "Upload attempt"
+  )
+rescue StandardError
+  if continuation_token_path && continuation_identity &&
+     immutable_path_present?(continuation_token_path)
+    begin
+      continuation_stat = File.lstat(continuation_token_path)
+      if continuation_stat.file? && !continuation_stat.symlink? &&
+         continuation_stat.dev == continuation_identity.dev &&
+         continuation_stat.ino == continuation_identity.ino
+        File.unlink(continuation_token_path)
+        fsync_parent_directory(continuation_token_path)
+      end
+    rescue SystemCallError
+      # The release temp directory is private and removed by the shell trap.
+    end
+  end
+  raise
+end
+
+def require_upload_attempt(
+  path:,
+  app:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256:,
+  continuation_token_path: nil
+)
+  receipt, receipt_sha256 = load_immutable_json(
+    path: path,
+    label: "Upload attempt"
+  )
+  expected_keys = %w[
+    appId attemptId buildNumber bundleId claimedAtUtc continuationTokenSha256
+    ipaSha256 kind schemaVersion sourceCommit version
+  ]
+  UI.user_error!("Upload attempt has an unexpected schema") unless
+    receipt.keys.sort == expected_keys.sort
+  require_utc_timestamp(
+    value: receipt["claimedAtUtc"],
+    label: "Upload attempt"
+  )
+  expected = expected_upload_attempt(
+    app: app,
+    bundle_id: bundle_id,
+    version: version,
+    build_number: build_number,
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256,
+    attempt_id: receipt["attemptId"],
+    continuation_token_sha256: receipt["continuationTokenSha256"]
+  )
+  UI.user_error!("Upload attempt does not match the exact release") unless
+    expected.all? { |key, value| receipt[key] == value }
+  if continuation_token_path
+    token = load_upload_continuation_token(continuation_token_path)
+    UI.user_error!("Upload continuation token does not match this attempt") unless
+      Digest::SHA256.hexdigest(token) == receipt["continuationTokenSha256"]
+  end
+  { receipt: receipt, sha256: receipt_sha256 }
+end
+
+def expected_upload_provenance(
+  app:,
+  build:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256:,
+  upload_attempt:
+)
+  commit, digest = normalized_upload_identity(
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256
+  )
+  {
+    "schemaVersion" => 2,
+    "kind" => "testflightUploadProvenance",
+    "appId" => app.id,
+    "bundleId" => bundle_id,
+    "buildId" => build.id,
+    "buildAudienceType" => "APP_STORE_ELIGIBLE",
+    "version" => version,
+    "buildNumber" => build_number,
+    "sourceCommit" => commit,
+    "ipaSha256" => digest,
+    "uploadAttemptId" => upload_attempt[:receipt]["attemptId"],
+    "uploadAttemptSha256" => upload_attempt[:sha256]
+  }
+end
+
+def require_upload_provenance(
+  path:,
+  upload_attempt_path:,
+  app:,
+  build:,
+  bundle_id:,
+  version:,
+  build_number:,
+  source_commit:,
+  ipa_sha256: nil
+)
+  require_external_upload_file_state(
+    attempt_path: upload_attempt_path,
+    provenance_path: path,
+    expected: :complete
+  )
+  receipt, = load_immutable_json(path: path, label: "Upload provenance")
+  expected_keys = %w[
+    appId buildAudienceType buildId buildNumber bundleId ipaSha256 kind
+    recordedAtUtc schemaVersion sourceCommit uploadAttemptId
+    uploadAttemptSha256 version
+  ]
+  UI.user_error!("Upload provenance has an unexpected schema") unless
+    receipt.keys.sort == expected_keys.sort
+  require_utc_timestamp(
+    value: receipt["recordedAtUtc"],
+    label: "Upload provenance"
+  )
+  upload_attempt = require_upload_attempt(
+    path: upload_attempt_path,
+    app: app,
+    bundle_id: bundle_id,
+    version: version,
+    build_number: build_number,
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256 || receipt["ipaSha256"]
+  )
+  expected = expected_upload_provenance(
+    app: app,
+    build: build,
+    bundle_id: bundle_id,
+    version: version,
+    build_number: build_number,
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256 || receipt["ipaSha256"],
+    upload_attempt: upload_attempt
+  )
+  UI.user_error!("Upload provenance does not match the exact release") unless
+    expected.all? { |key, value| receipt[key] == value }
+  receipt
+end
+
+def create_upload_provenance(path:, expected:)
+  receipt = expected.merge("recordedAtUtc" => Time.now.utc.iso8601)
+  atomic_create_immutable_json(
+    path: path,
+    payload: receipt,
+    label: "Upload provenance"
+  )
 end
 
 def expected_notification_receipt(
@@ -824,14 +1114,99 @@ platform :ios do
     UI.success("Verified complete external beta-review metadata")
   end
 
-  desc "Record immutable provenance for the exact processed external build"
-  lane :record_external_upload_provenance do |options|
+  desc "Claim one exact external upload after all deterministic preflights"
+  lane :claim_external_upload_attempt do |options|
+    attempt_path = required_option(options, :upload_attempt_path)
+    provenance_path = required_option(options, :upload_provenance_path)
+    continuation_token_path = required_option(options, :continuation_token_path)
+    require_external_upload_paths_distinct(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :absent
+    )
+
     app = connect_api_app(options)
     bundle_id = required_option(options, :bundle_id)
     version = required_option(options, :version)
     build_number = required_option(options, :build_number)
     source_commit = required_option(options, :source_commit)
     ipa_sha256 = required_option(options, :ipa_sha256)
+    # This absence query and the exclusive local publication together are the
+    # final claim step. The shell invokes pilot immediately after this lane.
+    require_no_exact_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    create_upload_attempt(
+      path: attempt_path,
+      continuation_token_path: continuation_token_path,
+      expected: {
+        app: app,
+        bundle_id: bundle_id,
+        version: version,
+        build_number: build_number,
+        source_commit: source_commit,
+        ipa_sha256: ipa_sha256
+      }
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :pending,
+      allow_pending_continuation: true
+    )
+    require_upload_attempt(
+      path: attempt_path,
+      app: app,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256,
+      continuation_token_path: continuation_token_path
+    )
+    UI.success("Claimed the exact external upload attempt")
+  end
+
+  desc "Finalize immutable provenance for the exact processed external build"
+  lane :record_external_upload_provenance do |options|
+    attempt_path = required_option(options, :upload_attempt_path)
+    provenance_path = required_option(options, :upload_provenance_path)
+    require_external_upload_paths_distinct(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :pending,
+      allow_pending_continuation: true
+    )
+
+    app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+    ipa_sha256 = required_option(options, :ipa_sha256)
+    upload_attempt = require_upload_attempt(
+      path: attempt_path,
+      app: app,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256,
+      continuation_token_path: required_option(
+        options,
+        :continuation_token_path
+      )
+    )
     build = exact_valid_build(
       app: app,
       version: version,
@@ -845,12 +1220,13 @@ platform :ios do
       version: version,
       build_number: build_number,
       source_commit: source_commit,
-      ipa_sha256: ipa_sha256
+      ipa_sha256: ipa_sha256,
+      upload_attempt: upload_attempt
     )
-    path = required_option(options, :upload_provenance_path)
-    create_upload_provenance(path: path, expected: expected)
+    create_upload_provenance(path: provenance_path, expected: expected)
     require_upload_provenance(
-      path: path,
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: app,
       build: build,
       bundle_id: bundle_id,
@@ -864,6 +1240,17 @@ platform :ios do
 
   desc "Associate an exact build with only the approved immutable group ID"
   lane :associate_external_build do |options|
+    attempt_path = required_option(options, :upload_attempt_path)
+    provenance_path = required_option(options, :upload_provenance_path)
+    require_external_upload_paths_distinct(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :complete
+    )
     app = connect_api_app(options)
     bundle_id = required_option(options, :bundle_id)
     group = exact_external_group(
@@ -897,7 +1284,8 @@ platform :ios do
     )
     require_app_store_eligible_build(build)
     require_upload_provenance(
-      path: required_option(options, :upload_provenance_path),
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: app,
       build: build,
       bundle_id: bundle_id,
@@ -938,6 +1326,19 @@ platform :ios do
 
   desc "Verify the immutable audience and notify it after external beta approval"
   lane :notify_external_build do |options|
+    attempt_path = required_option(options, :upload_attempt_path)
+    provenance_path = required_option(options, :upload_provenance_path)
+    receipt_path = required_option(options, :notification_receipt_path)
+    require_external_upload_paths_distinct(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      notification_path: receipt_path
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :complete
+    )
     app = connect_api_app(options)
     bundle_id = required_option(options, :bundle_id)
     group = exact_external_group(
@@ -966,7 +1367,8 @@ platform :ios do
     )
     require_app_store_eligible_build(build)
     upload_provenance = require_upload_provenance(
-      path: required_option(options, :upload_provenance_path),
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: app,
       build: build,
       bundle_id: bundle_id,
@@ -986,7 +1388,6 @@ platform :ios do
     require_app_store_eligible_build(build)
 
     detail = build.build_beta_detail
-    receipt_path = required_option(options, :notification_receipt_path)
     expected_receipt = expected_notification_receipt(
       app: app,
       build: build,

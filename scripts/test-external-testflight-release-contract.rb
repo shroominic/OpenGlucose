@@ -172,11 +172,16 @@ module Spaceship
   class ConnectAPI
     class Build
       class << self
-        attr_accessor :refetched, :last_options
+        attr_accessor :refetched, :last_options, :all_result, :last_all_options
 
         def get(**options)
           self.last_options = options
           refetched
+        end
+
+        def all(**options)
+          self.last_all_options = options
+          all_result || []
         end
       end
     end
@@ -216,22 +221,167 @@ provenance_app = ProvenanceApp.new("app-resource-id")
 provenance_build = ProvenanceBuild.new("build-resource-id")
 source_commit = "a" * 40
 ipa_sha256 = "b" * 64
-expected = expected_upload_provenance(
+
+Spaceship::ConnectAPI::Build.all_result = []
+assert(
+  require_no_exact_build(
+    app: provenance_app,
+    version: "1.2.3",
+    build_number: "45"
+  ),
+  "claim preflight must accept an absent exact build"
+)
+assert(
+  Spaceship::ConnectAPI::Build.last_all_options == {
+    app_id: "app-resource-id",
+    version: "1.2.3",
+    build_number: "45",
+    platform: "IOS",
+    processing_states: "PROCESSING,FAILED,INVALID,VALID"
+  },
+  "claim preflight must query the exact app, version, build, and platform"
+)
+Spaceship::ConnectAPI::Build.all_result = [ProvenanceBuild.new("existing")]
+assert_user_error("already contains TestFlight build") do
+  require_no_exact_build(
+    app: provenance_app,
+    version: "1.2.3",
+    build_number: "45"
+  )
+end
+Spaceship::ConnectAPI::Build.all_result = []
+
+attempt_identity = {
   app: provenance_app,
-  build: provenance_build,
   bundle_id: "com.example.app",
   version: "1.2.3",
   build_number: "45",
   source_commit: source_commit,
   ipa_sha256: ipa_sha256
-)
+}
+assert_user_error("must be distinct") do
+  require_external_upload_paths_distinct(
+    attempt_path: "/secure/release.json",
+    provenance_path: "/secure/release.json"
+  )
+end
+assert_user_error("temporary namespace") do
+  require_external_upload_paths_distinct(
+    attempt_path: "/secure/attempt.json",
+    provenance_path: "/secure/attempt.json.tmp.operator"
+  )
+end
 
 Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   File.chmod(0o700, directory)
-  path = File.join(directory, "upload.json")
-  create_upload_provenance(path: path, expected: expected)
+  attempt_path = File.join(directory, "upload-attempt.json")
+  provenance_path = File.join(directory, "upload-provenance.json")
+  continuation_path = File.join(directory, "continuation-token")
+  assert(
+    external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path
+    ) == :absent,
+    "new external build must begin with no upload state"
+  )
+  create_upload_attempt(
+    path: attempt_path,
+    continuation_token_path: continuation_path,
+    expected: attempt_identity
+  )
+  assert(
+    (File.stat(attempt_path).mode & 0o777) == 0o400,
+    "upload attempt must be immutable"
+  )
+  assert(
+    (File.stat(continuation_path).mode & 0o777) == 0o600,
+    "uninterrupted finalization token must stay private"
+  )
+  assert(
+    external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path
+    ) == :pending,
+    "attempt without final provenance must be pending"
+  )
+  upload_attempt = require_upload_attempt(
+    path: attempt_path,
+    **attempt_identity,
+    continuation_token_path: continuation_path
+  )
+  assert(
+    upload_attempt[:receipt]["appId"] == "app-resource-id",
+    "attempt must bind the App Store Connect app"
+  )
+  assert(
+    upload_attempt[:receipt]["ipaSha256"] == ipa_sha256,
+    "attempt must bind the locally verified IPA digest"
+  )
+  assert(
+    !File.binread(attempt_path).include?(load_upload_continuation_token(continuation_path)),
+    "attempt must retain only the continuation-token digest"
+  )
+  wrong_continuation_path = File.join(directory, "wrong-continuation-token")
+  File.write(wrong_continuation_path, "#{'f' * 64}\n")
+  File.chmod(0o600, wrong_continuation_path)
+  assert_user_error("does not match this attempt") do
+    require_upload_attempt(
+      path: attempt_path,
+      **attempt_identity,
+      continuation_token_path: wrong_continuation_path
+    )
+  end
+  tampered_attempt_path = File.join(directory, "tampered-attempt.json")
+  tampered_attempt = upload_attempt[:receipt].merge("unreviewedField" => true)
+  File.write(tampered_attempt_path, "#{JSON.generate(tampered_attempt)}\n")
+  File.chmod(0o400, tampered_attempt_path)
+  assert_user_error("unexpected schema") do
+    require_upload_attempt(
+      path: tampered_attempt_path,
+      **attempt_identity
+    )
+  end
+  assert_user_error("without finalized provenance") do
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :complete
+    )
+  end
+  assert_user_error("without finalized provenance") do
+    require_upload_provenance(
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
+      app: provenance_app,
+      build: provenance_build,
+      bundle_id: "com.example.app",
+      version: "1.2.3",
+      build_number: "45",
+      source_commit: source_commit
+    )
+  end
+  assert_user_error("cannot be resumed") do
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :pending
+    )
+  end
+
+  expected = expected_upload_provenance(
+    app: provenance_app,
+    build: provenance_build,
+    bundle_id: "com.example.app",
+    version: "1.2.3",
+    build_number: "45",
+    source_commit: source_commit,
+    ipa_sha256: ipa_sha256,
+    upload_attempt: upload_attempt
+  )
+  create_upload_provenance(path: provenance_path, expected: expected)
   receipt = require_upload_provenance(
-    path: path,
+    path: provenance_path,
+    upload_attempt_path: attempt_path,
     app: provenance_app,
     build: provenance_build,
     bundle_id: "com.example.app",
@@ -245,17 +395,33 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
     receipt["buildId"] == "build-resource-id",
     "build resource ID must be recorded"
   )
-  assert(receipt["ipaSha256"] == ipa_sha256, "IPA digest must be recorded")
-  assert((File.stat(path).mode & 0o777) == 0o400, "provenance must be immutable")
   assert(
-    Dir.children(directory).sort == ["upload.json"],
-    "successful publication must clean its private temporary file"
+    receipt["buildAudienceType"] == "APP_STORE_ELIGIBLE",
+    "final provenance must bind an App Store-eligible build"
   )
-  original_bytes = File.binread(path)
+  assert(receipt["ipaSha256"] == ipa_sha256, "IPA digest must be recorded")
+  assert(
+    receipt["uploadAttemptId"] == upload_attempt[:receipt]["attemptId"],
+    "provenance must bind the exact immutable attempt"
+  )
+  assert(
+    receipt["uploadAttemptSha256"] == upload_attempt[:sha256],
+    "provenance must bind the exact attempt bytes"
+  )
+  assert(
+    (File.stat(provenance_path).mode & 0o777) == 0o400,
+    "provenance must be immutable"
+  )
+  assert(
+    Dir.children(directory).grep(/\.tmp\./).empty?,
+    "successful publication must clean private temporary files"
+  )
+  original_bytes = File.binread(provenance_path)
 
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
-      path: path,
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -266,7 +432,8 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   end
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
-      path: path,
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: provenance_app,
       build: ProvenanceBuild.new("different-build-id"),
       bundle_id: "com.example.app",
@@ -277,7 +444,8 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
   end
   assert_user_error("does not match the exact release") do
     require_upload_provenance(
-      path: path,
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -288,10 +456,10 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
     )
   end
   assert_user_error("already exists") do
-    create_upload_provenance(path: path, expected: expected)
+    create_upload_provenance(path: provenance_path, expected: expected)
   end
   assert(
-    File.binread(path) == original_bytes,
+    File.binread(provenance_path) == original_bytes,
     "no-overwrite publication must preserve the existing receipt"
   )
   assert(
@@ -323,13 +491,17 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
     "a temporary collision must not delete an inode it does not own"
   )
 
-  extra_field_path = File.join(directory, "extra-field.json")
+  extra_field_attempt = File.join(directory, "extra-field-attempt.json")
+  File.write(extra_field_attempt, File.binread(attempt_path))
+  File.chmod(0o400, extra_field_attempt)
+  extra_field_path = File.join(directory, "extra-field-provenance.json")
   extra_field_receipt = receipt.merge("unreviewedField" => "must fail")
   File.write(extra_field_path, "#{JSON.generate(extra_field_receipt)}\n")
   File.chmod(0o400, extra_field_path)
   assert_user_error("unexpected schema") do
     require_upload_provenance(
       path: extra_field_path,
+      upload_attempt_path: extra_field_attempt,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
@@ -339,18 +511,80 @@ Dir.mktmpdir("openglucose-upload-provenance-test") do |directory|
     )
   end
 
-  File.chmod(0o600, path)
+  File.chmod(0o600, provenance_path)
   assert_user_error("must have mode 400") do
     require_upload_provenance(
-      path: path,
+      path: provenance_path,
+      upload_attempt_path: attempt_path,
       app: provenance_app,
       build: provenance_build,
       bundle_id: "com.example.app",
       version: "1.2.3",
       build_number: "45",
       source_commit: source_commit
+    )
+  end
+
+  final_only_attempt = File.join(directory, "missing-attempt.json")
+  final_only_provenance = File.join(directory, "final-only.json")
+  File.write(final_only_provenance, "{}\n")
+  File.chmod(0o400, final_only_provenance)
+  assert_user_error("without its immutable attempt claim") do
+    require_external_upload_file_state(
+      attempt_path: final_only_attempt,
+      provenance_path: final_only_provenance,
+      expected: :complete
+    )
+  end
+  assert_user_error("normal upload reruns are blocked") do
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :absent
     )
   end
 end
 
-puts "External TestFlight review and upload-provenance checks passed."
+Dir.mktmpdir("openglucose-concurrent-upload-attempt-test") do |directory|
+  File.chmod(0o700, directory)
+  attempt_path = File.join(directory, "attempt.json")
+  child_pids = 2.times.map do |index|
+    fork do
+      begin
+        create_upload_attempt(
+          path: attempt_path,
+          continuation_token_path: File.join(directory, "token-#{index}"),
+          expected: attempt_identity
+        )
+        exit!(0)
+      rescue UI::UserError
+        exit!(10)
+      end
+    end
+  end
+  statuses = child_pids.map { |pid| Process.wait2(pid).last.exitstatus }.sort
+  assert(statuses == [0, 10], "exactly one concurrent attempt must win")
+  original_attempt = File.binread(attempt_path)
+  assert((File.stat(attempt_path).mode & 0o777) == 0o400, "winning claim is immutable")
+  assert(
+    Dir.children(directory).grep(/\.tmp\./).empty?,
+    "concurrent attempt publication must clean owned temporary inodes"
+  )
+  assert_user_error("already exists") do
+    create_upload_attempt(
+      path: attempt_path,
+      continuation_token_path: File.join(directory, "third-token"),
+      expected: attempt_identity
+    )
+  end
+  assert(
+    File.binread(attempt_path) == original_attempt,
+    "a later attempt must never overwrite the winning claim"
+  )
+  assert(
+    !File.exist?(File.join(directory, "third-token")),
+    "a losing attempt must clean only its own continuation token"
+  )
+end
+
+puts "External TestFlight review, upload-attempt, and provenance checks passed."
