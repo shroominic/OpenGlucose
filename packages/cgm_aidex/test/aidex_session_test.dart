@@ -561,6 +561,40 @@ void main() {
     await session.disconnect();
   });
 
+  test(
+    'disconnect after pairing error preserves non-retryable failure',
+    () async {
+      final transport = _FakeBleTransport();
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+      await session.initialize();
+      const diagnosticCode = 'fake.bond.rejected';
+
+      transport.lastConnection.emitConnectionError(
+        BleFailure(
+          kind: BleFailureKind.bondRejected,
+          operation: BleOperation.bond,
+          diagnosticCode: diagnosticCode,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      transport.lastConnection.emitDisconnected();
+      await Future<void>.delayed(Duration.zero);
+
+      final snapshot = session.currentSnapshot;
+      final failure = BleFailure.fromMetadata(snapshot.metadata);
+      expect(snapshot.stage, CgmSyncStage.disconnected);
+      expect(failure?.kind, BleFailureKind.bondRejected);
+      expect(failure?.operation, BleOperation.bond);
+      expect(failure?.diagnosticCode, diagnosticCode);
+      expect(failure?.allowsAutomaticRetry, isFalse);
+      await session.disconnect();
+    },
+  );
+
   test('notification stream errors become safe session errors', () async {
     final transport = _FakeBleTransport();
     final session =
