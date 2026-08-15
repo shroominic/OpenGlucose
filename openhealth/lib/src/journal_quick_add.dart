@@ -36,11 +36,13 @@ class JournalQuickAddController extends ChangeNotifier {
   int? _todayEventCount;
   String? _latestSummary;
   String? _error;
+  JournalContext? _todayContext;
 
   bool get busy => _busy;
   int? get todayEventCount => _todayEventCount;
   String? get latestSummary => _latestSummary;
   String? get error => _error;
+  JournalContext? get todayContext => _todayContext;
 
   String? get summaryText {
     final count = _todayEventCount;
@@ -87,6 +89,7 @@ class JournalQuickAddController extends ChangeNotifier {
       final at = _now().toUtc();
       final event = await save(service, at);
       final context = await service.loadContextForDay(at);
+      _todayContext = context;
       _todayEventCount = context.events.length;
       _latestSummary = journalEventSummary(event);
       notifyListeners();

@@ -21,6 +21,7 @@ class TodayCockpit extends StatelessWidget {
     this.journalSummaryBuilder,
     this.journalListenable,
     this.bodyTimelineContext,
+    this.bodyTimelineContextBuilder,
     this.bodyTimelineObservations = const <MetabolicObservation>[],
     this.showBodyTimeline = false,
     this.observations = const <MetabolicObservation>[],
@@ -35,6 +36,7 @@ class TodayCockpit extends StatelessWidget {
   final String? Function()? journalSummaryBuilder;
   final Listenable? journalListenable;
   final JournalContext? bodyTimelineContext;
+  final JournalContext? Function()? bodyTimelineContextBuilder;
   final List<MetabolicObservation> bodyTimelineObservations;
   final bool showBodyTimeline;
   final List<MetabolicObservation> observations;
@@ -61,6 +63,8 @@ class TodayCockpit extends StatelessWidget {
   Widget _buildCockpit(BuildContext context) {
     final currentJournalSummary =
         journalSummaryBuilder?.call() ?? journalSummary;
+    final currentBodyTimelineContext =
+        bodyTimelineContextBuilder?.call() ?? bodyTimelineContext;
     final reference = now ?? DateTime.now();
     final stats = GlucoseAnalytics.summarize(
       readings,
@@ -210,7 +214,7 @@ class TodayCockpit extends StatelessWidget {
           const SizedBox(height: 10),
           BodyTimelineCard(
             readings: readings,
-            context: bodyTimelineContext,
+            context: currentBodyTimelineContext,
             observations: bodyTimelineObservations,
             now: reference,
             preferences: preferences,

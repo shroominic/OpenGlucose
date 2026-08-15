@@ -82,6 +82,8 @@ void main() {
 
     expect(saved, isNotNull);
     expect(controller.todayEventCount, 1);
+    expect(controller.todayContext?.events, hasLength(1));
+    expect(controller.todayContext?.events.single.type, HealthEventType.note);
     expect(controller.latestSummary, 'Note: Felt steady');
     expect(controller.summaryText, '1 journal entry today');
     controller.dispose();

@@ -1154,6 +1154,9 @@ class _DashboardView extends StatelessWidget {
                       ? null
                       : () => journalController!.summaryText,
                   journalListenable: journalController,
+                  bodyTimelineContextBuilder: journalController == null
+                      ? null
+                      : () => journalController!.todayContext,
                   showBodyTimeline: history.isNotEmpty,
                 ),
               ),
