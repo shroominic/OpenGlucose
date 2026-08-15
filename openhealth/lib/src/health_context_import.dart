@@ -33,6 +33,27 @@ class HealthContextImportSettings {
   final bool activeEnergy;
   final bool distance;
 
+  /// Stable local representation for the settings pane. The map contains
+  /// only category switches; it never stores health samples or permissions.
+  Map<String, Object> toJson() => <String, Object>{
+    'steps': steps,
+    'workouts': workouts,
+    'sleep': sleep,
+    'heartRate': heartRate,
+    'activeEnergy': activeEnergy,
+    'distance': distance,
+  };
+
+  factory HealthContextImportSettings.fromJson(Map<String, Object?> json) =>
+      HealthContextImportSettings(
+        steps: json['steps'] as bool? ?? true,
+        workouts: json['workouts'] as bool? ?? true,
+        sleep: json['sleep'] as bool? ?? true,
+        heartRate: json['heartRate'] as bool? ?? true,
+        activeEnergy: json['activeEnergy'] as bool? ?? true,
+        distance: json['distance'] as bool? ?? true,
+      );
+
   Set<HealthContextType> get enabledTypes => <HealthContextType>{
     if (steps) HealthContextType.steps,
     if (workouts) HealthContextType.workout,
