@@ -16,6 +16,9 @@
   and archive, background surfaces, caches, and temporary exports. Execution
   requires exact confirmation, detects stale plans, verifies each domain, and
   reports partial failures without claiming complete erasure.
+- Add deterministic meal-response analytics with a local pre-meal baseline,
+  bounded two-hour post-meal window, explicit coverage states, and a required
+  non-causal wellness safety boundary.
 
 These additive public APIs require a minor version bump before any independent
 package publication.
