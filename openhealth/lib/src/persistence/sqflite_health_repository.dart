@@ -32,7 +32,7 @@ class SqfliteHealthRepository implements HealthRepository {
        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
 
   static const String tableEvents = 'health_events';
   static const String tableActivity = 'activity_samples';
@@ -101,6 +101,7 @@ class SqfliteHealthRepository implements HealthRepository {
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           start_ms INTEGER NOT NULL,
           type TEXT NOT NULL,
+          record_id TEXT,
           data TEXT NOT NULL
         )
       ''');
@@ -110,27 +111,39 @@ class SqfliteHealthRepository implements HealthRepository {
       await db.execute(
         'CREATE INDEX idx_activity_type ON $tableActivity(type)',
       );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_activity_record_id ON '
+        '$tableActivity(record_id) WHERE record_id IS NOT NULL',
+      );
 
       await db.execute('''
         CREATE TABLE $tableSleep (
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           start_ms INTEGER NOT NULL,
+          record_id TEXT,
           data TEXT NOT NULL
         )
       ''');
+      await db.execute('CREATE INDEX idx_sleep_start ON $tableSleep(start_ms)');
       await db.execute(
-        'CREATE INDEX idx_sleep_start ON $tableSleep(start_ms)',
+        'CREATE UNIQUE INDEX idx_sleep_record_id ON '
+        '$tableSleep(record_id) WHERE record_id IS NOT NULL',
       );
 
       await db.execute('''
         CREATE TABLE $tableHeartRate (
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp_ms INTEGER NOT NULL,
+          record_id TEXT,
           data TEXT NOT NULL
         )
       ''');
       await db.execute(
         'CREATE INDEX idx_hr_ts ON $tableHeartRate(timestamp_ms)',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_hr_record_id ON '
+        '$tableHeartRate(record_id) WHERE record_id IS NOT NULL',
       );
 
       await db.execute('''
@@ -148,7 +161,25 @@ class SqfliteHealthRepository implements HealthRepository {
         'CREATE INDEX idx_insights_category ON $tableInsights(category)',
       );
     }
-    // Future migrations: if (from < 2) { ... } // bump [schemaVersion] too.
+    if (from >= 1 && from < 2) {
+      // Keep legacy rows intact. New imports use the nullable identity column
+      // to replace a source record instead of appending duplicates.
+      await db.execute('ALTER TABLE $tableActivity ADD COLUMN record_id TEXT');
+      await db.execute('ALTER TABLE $tableSleep ADD COLUMN record_id TEXT');
+      await db.execute('ALTER TABLE $tableHeartRate ADD COLUMN record_id TEXT');
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_activity_record_id ON '
+        '$tableActivity(record_id) WHERE record_id IS NOT NULL',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_sleep_record_id ON '
+        '$tableSleep(record_id) WHERE record_id IS NOT NULL',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_hr_record_id ON '
+        '$tableHeartRate(record_id) WHERE record_id IS NOT NULL',
+      );
+    }
   }
 
   static int _ms(DateTime t) => t.toUtc().millisecondsSinceEpoch;
@@ -261,6 +292,7 @@ class SqfliteHealthRepository implements HealthRepository {
       batch.insert(tableActivity, {
         'start_ms': _ms(s.start),
         'type': s.type.key,
+        'record_id': _recordId(s.source, s.metadata),
         'data': jsonEncode(s.toJson()),
       });
     }
@@ -310,6 +342,7 @@ class SqfliteHealthRepository implements HealthRepository {
     for (final s in samples) {
       batch.insert(tableSleep, {
         'start_ms': _ms(s.start),
+        'record_id': _recordId(s.source, s.metadata),
         'data': jsonEncode(s.toJson()),
       });
     }
@@ -351,6 +384,7 @@ class SqfliteHealthRepository implements HealthRepository {
     for (final s in samples) {
       batch.insert(tableHeartRate, {
         'timestamp_ms': _ms(s.timestamp),
+        'record_id': _recordId(s.source, s.metadata),
         'data': jsonEncode(s.toJson()),
       });
     }
@@ -442,4 +476,7 @@ class SqfliteHealthRepository implements HealthRepository {
   static Map<String, Object?> _decode(Object? data) {
     return jsonDecode(data! as String) as Map<String, Object?>;
   }
+
+  static String? _recordId(DataSource source, HealthSampleMetadata? metadata) =>
+      metadata?.identityKey(source);
 }

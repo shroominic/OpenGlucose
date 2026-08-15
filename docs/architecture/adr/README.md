@@ -10,6 +10,7 @@ enforcement detail is already implemented.
 | [0002](0002-local-first-health-data.md) | Accepted | Keep health data local by default and make movement explicit                            |
 | [0003](0003-platform-release-model.md)  | Accepted | Build source-bound mobile artifacts and release only through fail-closed platform lanes |
 | [0004](0004-evidence-backed-observations.md) | Accepted | Keep metabolic observations deterministic, typed, evidence-backed, and AI output bounded |
+| [0005](0005-source-aware-health-context-import.md) | Accepted | Import bounded, read-only health context through one source-aware local contract |
 
 ## Adding an ADR
 
