@@ -155,6 +155,12 @@ void main() {
       expect(insight.tags, contains(AiDisclaimer.tag));
       expect(insight.body, contains(AiDisclaimer.short));
       expect(insight.body, contains('steadier mornings'));
+      expect(insight.hasEvidence, isTrue);
+      expect(insight.isWellnessBounded, isTrue);
+      expect(
+        provider.lastRequest!.messages.last.content,
+        contains('Evidence available'),
+      );
 
       // Persisted and queryable.
       final stored = await repo.queryInsights();
@@ -242,6 +248,21 @@ void main() {
       final provider = _FakeProvider(
         error: const AiGenerationException('network failure'),
       );
+      final service = InsightService(repository: repo, provider: provider);
+      await expectLater(
+        service.generateSummaryInsight(
+          readings: _synthReadings(start, 145),
+          windowStart: start,
+          windowEnd: end,
+        ),
+        throwsA(isA<AiGenerationException>()),
+      );
+      expect(await repo.queryInsights(), isEmpty);
+    });
+
+    test('unsafe provider output fails closed and is not persisted', () async {
+      final provider = _FakeProvider()
+        ..response = 'You have diabetes; take insulin.';
       final service = InsightService(repository: repo, provider: provider);
       await expectLater(
         service.generateSummaryInsight(

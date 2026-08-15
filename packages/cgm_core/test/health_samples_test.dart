@@ -47,6 +47,31 @@ void main() {
       expect(sample.copyWith(steps: 200).steps, 200);
       expect(sample.copyWith(steps: 200).start, sample.start);
     });
+
+    test('preserves source identity metadata for incremental imports', () {
+      final sample = ActivitySample(
+        start: DateTime.utc(2026, 1, 1, 9),
+        end: DateTime.utc(2026, 1, 1, 9, 30),
+        type: ActivityType.steps,
+        source: DataSource.appleHealth,
+        steps: 1200,
+        metadata: const HealthSampleMetadata(
+          externalId: 'healthkit-uuid',
+          sourceId: 'com.apple.Health',
+          sourceName: 'Apple Health',
+          deviceId: 'watch-fixture',
+          deviceModel: 'Watch',
+          recordingMethod: 'automatic',
+        ),
+      );
+      final out = ActivitySample.fromJson(sample.toJson());
+      expect(out.metadata?.externalId, 'healthkit-uuid');
+      expect(out.metadata?.sourceId, 'com.apple.Health');
+      expect(
+        out.metadata?.identityKey(out.source),
+        'appleHealth:healthkit-uuid',
+      );
+    });
   });
 
   group('SleepSample', () {

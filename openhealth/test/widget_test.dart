@@ -201,7 +201,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.text('Connected'), findsOneWidget);
-    expect(find.text('History'), findsOneWidget);
     expect(find.text('DEMO DATA — NOT REAL GLUCOSE'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();

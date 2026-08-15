@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../persistence/health_store.dart';
 import 'ai_controller.dart';
+import 'ai_insight_surface.dart';
 import 'ai_settings.dart';
 import 'ai_settings_store.dart';
 
@@ -33,6 +34,7 @@ class AiSettingsPane extends StatefulWidget {
 }
 
 class _AiSettingsPaneState extends State<AiSettingsPane> {
+  late final AiInsightSurfaceController _surfaceController;
   AiSettingsStore? _store;
   AiSettings _settings = const AiSettings();
   bool _hasKey = false;
@@ -47,6 +49,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
   @override
   void initState() {
     super.initState();
+    _surfaceController = AiInsightSurfaceController(generate: _generateInsight);
     unawaited(_load());
   }
 
@@ -64,10 +67,12 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _modelController.text = settings.model;
       _loading = false;
     });
+    _surfaceController.enabled = settings.enabled && hasKey;
   }
 
   @override
   void dispose() {
+    _surfaceController.dispose();
     _baseUrlController.dispose();
     _modelController.dispose();
     _apiKeyController.dispose();
@@ -92,6 +97,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _settings = next;
       _hasKey = hasKey;
     });
+    _surfaceController.enabled = next.enabled && hasKey;
     return true;
   }
 
@@ -115,49 +121,64 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _hasKey = false;
       _status = 'API key removed.';
     });
+    _surfaceController.enabled = false;
   }
 
-  Future<void> _generateNow() async {
+  Future<AiInsight?> _generateInsight() async {
     final store = _store;
-    if (store == null) return;
-    setState(() {
-      _busy = true;
-      _status = 'Saving provider settings…';
-    });
+    if (store == null) return null;
     HealthRepository? repo;
     try {
       if (!await _persistDraft() || !mounted) {
-        return;
+        return null;
       }
       if (!_settings.enabled) {
-        setState(() => _status = 'Enable cloud AI before testing.');
-        return;
+        throw const AiGenerationException('Enable cloud AI before testing.');
       }
       if (!_hasKey) {
-        setState(() => _status = 'Add an API key before testing.');
-        return;
+        throw const AiGenerationException('Add an API key before testing.');
       }
-      setState(() => _status = 'Generating…');
+      if (widget.recentReadings.isEmpty) {
+        throw const AiGenerationException(
+          'Not enough glucose data in this window to generate an insight.',
+        );
+      }
       repo = await openHealthRepository();
       final controller = AiController(store: store, repository: repo);
-      final insight = await controller.generateRecentInsight(
+      return controller.generateRecentInsight(
         readings: widget.recentReadings,
         unit: widget.unit,
       );
-      if (!mounted) return;
-      setState(() {
-        _status = insight == null
-            ? 'AI is disabled or no key set.'
-            : 'Generated & saved: "${insight.title}".';
-      });
-    } on AiGenerationException catch (error) {
-      if (!mounted) return;
-      setState(() => _status = 'Could not generate: ${error.message}');
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _status = 'Could not generate the AI insight.');
     } finally {
       await repo?.close();
+    }
+  }
+
+  Future<void> _generateNow() async {
+    setState(() {
+      _busy = true;
+      _status = 'Generating…';
+    });
+    try {
+      // Persist the current form first so "Test with aggregates" honors an
+      // unsaved opt-in and key. The generator repeats this safely before it
+      // builds the provider, which also keeps the explicit consent boundary
+      // in one place.
+      if (!await _persistDraft() || !mounted) return;
+      _surfaceController.enabled = _settings.enabled && _hasKey;
+      await _surfaceController.generate();
+      if (!mounted) return;
+      final state = _surfaceController.state;
+      setState(() {
+        _status = switch (state.status) {
+          AiInsightSurfaceStatus.ready =>
+            'Generated & saved: "${state.insight!.title}".',
+          AiInsightSurfaceStatus.error =>
+            'Could not generate: ${state.errorMessage}',
+          _ => 'AI is disabled or no key set.',
+        };
+      });
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -231,9 +252,12 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                 value: _settings.enabled,
                 onChanged: _busy
                     ? null
-                    : (value) => setState(
-                        () => _settings = _settings.copyWith(enabled: value),
-                      ),
+                    : (value) {
+                        setState(
+                          () => _settings = _settings.copyWith(enabled: value),
+                        );
+                        _surfaceController.enabled = value && _hasKey;
+                      },
               ),
               TextField(
                 controller: _baseUrlController,
@@ -325,6 +349,15 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
             ),
           ),
         ],
+        const SizedBox(height: 16),
+        AiInsightSurface(
+          controller: _surfaceController,
+          onEnable: () {
+            setState(() => _settings = _settings.copyWith(enabled: true));
+            _surfaceController.enabled = _hasKey;
+          },
+          onGenerate: _busy ? null : () => unawaited(_generateNow()),
+        ),
       ],
     );
   }

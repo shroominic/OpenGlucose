@@ -10,6 +10,40 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- Added a local-only glucose alert evaluator and bounded episode history for
+  low, high, and stale-reading conditions. The foreground monitor persists
+  transitions in the restricted local-state store without producing native
+  notification or lock-screen payloads; platform surfaces can consume the
+  same deterministic contract later.
+- Added bounded, read-only Apple Health and Health Connect context import for
+  user-selected activity, sleep, heart-rate, energy, and distance categories,
+  with source-aware local deduplication and explicit permission handling.
+- Added a compact Today quick-add sheet for meals, exercise, and notes. Entries
+  stay in the local journal, validate before saving, and show a same-day count
+  in the Today cockpit; no background or network sync is introduced.
+- Added a compact local Body timeline that interleaves glucose, journal,
+  imported activity/sleep/heart-rate rows, and evidence-backed observations
+  with source and freshness labels.
+- Added foreground-only context loading for the Today body timeline, including
+  explicit loading, empty, and fail-closed error states after Health sync,
+  journal capture, app resume, and pull-to-refresh.
+- Added local meal-response coverage and peak/timing summaries to Today with
+  explicit insufficient-data states and non-causal wellness framing.
+- Added an opt-in AI insight surface with disabled, loading, empty, error, and
+  evidence-backed states; it remains off by default and never exposes journal
+  text or provider secrets.
+- Added a redacted-by-default, adapter-neutral glanceable surface contract for
+  current glucose, freshness, warmup, context summary, and alert state. Native
+  notification/widget payloads remain unchanged until a platform mapping is
+  reviewed separately.
+
+### Changed
+
+- The dashboard now opens with a compact "Today at a glance" cockpit showing
+  the latest reading, 24-hour context, freshness, and a conservative sparse-
+  data explanation before longer history and pattern views.
 ## [0.1.2] - 2026-08-15
 
 ### Changed

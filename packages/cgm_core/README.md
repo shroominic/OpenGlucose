@@ -15,7 +15,11 @@ drivers. This package has no Flutter or vendor-protocol dependency.
 - immutable session snapshots and structured log entries;
 - `CgmDriver` and `CgmSession` contracts for vendor implementations; and
 - an explicitly separated `CgmUnsafeAdmin` interface for destructive sensor
-  operations.
+  operations;
+- local-first `HealthEvent`, imported context samples, and `JournalService`
+  contracts for meal/activity/sleep-aware timelines; and
+- `LocalDataDeletionCoordinator`, a dry-run, explicit-confirmation, and
+  post-delete-verification contract for complete local-data erasure.
 
 Only declarations exported from `lib/cgm_core.dart` are public. Files below
 `lib/src/` are implementation details.
@@ -43,6 +47,12 @@ final displayedMmol = GlucoseUnit.mmolL.convertFromMgdl(reading.valueMgdl);
 Driver packages implement `CgmDriver` and publish state through
 `CgmSession.snapshots`. Consumers should branch on advertised capabilities
 instead of downcasting to a vendor session.
+
+`JournalService` provides quick local entry points for meals, exercise, and
+notes. It writes through `HealthRepository` and can load a mixed event,
+activity, sleep, and heart-rate timeline without introducing a cloud or AI
+dependency. Use `InMemoryHealthRepository` for deterministic tests and the
+app's SQLite repository for on-device persistence.
 
 ## Development
 
