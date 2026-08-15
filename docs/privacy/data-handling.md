@@ -77,15 +77,24 @@ clearing one selected sensor is not equivalent to complete erasure.
 
 ## Sharing and export
 
-The iOS app implements an opt-in, write-only Apple Health integration. It sends
-glucose values and their timestamps as blood-glucose samples only after the
-user enables the integration and taps **Sync now**; simulated/demo data is
-blocked. It does not read HealthKit data. Apple Health's privacy, retention,
-backup, and deletion behavior applies once a sample is written. The local
-contiguous export watermark and last-sync time use the restricted state store,
-not backup-eligible preferences. Because a HealthKit write and the local cursor
-cannot commit atomically, an interrupted sync can write a duplicate sample on
-retry. The UI discloses this at-least-once behavior.
+The iOS app implements an opt-in Apple Health integration. The glucose export
+path sends glucose values and their timestamps as blood-glucose samples only
+after the user enables the integration and taps **Sync now**; simulated/demo
+data is blocked. The local contiguous export watermark and last-sync time use
+the restricted state store, not backup-eligible preferences. Because a
+HealthKit write and the local cursor cannot commit atomically, an interrupted
+sync can write a duplicate sample on retry. The UI discloses this at-least-once
+behavior.
+
+The separate context-import path reads only the categories the user selects
+(steps, workouts, sleep, heart rate, active energy, or walking/running
+distance) for an explicit bounded foreground window. Samples remain on-device
+and are de-duplicated by a namespaced platform record identifier. Source bundle
+or package, source name, device, and recording method are restricted metadata;
+they are not logged or included in user-facing glucose exports. Permission
+denial and empty reads are reported without guessing which state the platform
+returned. Background delivery, anchored sync, and source deletion polling are
+not implemented yet and must not be claimed as available.
 
 Archived sensor details provide an explicit single-file export through the
 platform share sheet. A confirmation preview displays the sensor-session date
