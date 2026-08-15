@@ -11,6 +11,7 @@ import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/journal_quick_add.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
@@ -297,6 +298,7 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
+    this.journalServiceFactory,
   });
 
   final CgmAppController controller;
@@ -309,6 +311,9 @@ class OpenGlucoseApp extends StatelessWidget {
 
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
+
+  /// Optional local journal seam for deterministic dashboard/widget tests.
+  final JournalServiceFactory? journalServiceFactory;
 
   @override
   Widget build(BuildContext context) {
@@ -364,6 +369,7 @@ class OpenGlucoseApp extends StatelessWidget {
             home: CgmHomePage(
               controller: controller,
               messageController: messageController,
+              journalServiceFactory: journalServiceFactory,
             ),
           ),
         ),
@@ -423,10 +429,12 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.journalServiceFactory,
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
+  final JournalServiceFactory? journalServiceFactory;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -436,10 +444,15 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   static const _foregroundFreshnessInterval = Duration(seconds: 45);
 
   Timer? _freshnessTimer;
+  late final JournalQuickAddController _journalController;
 
   @override
   void initState() {
     super.initState();
+    _journalController = JournalQuickAddController(
+      serviceFactory:
+          widget.journalServiceFactory ?? defaultJournalServiceFactory,
+    );
     WidgetsBinding.instance.addObserver(this);
     _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
       unawaited(widget.controller.ensureFreshData());
@@ -449,6 +462,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _journalController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -498,6 +512,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                       controller: widget.controller,
                       snapshot: snapshot,
                       messageController: widget.messageController,
+                      journalController: _journalController,
                     ),
             ),
           ),
@@ -1015,11 +1030,13 @@ class _DashboardView extends StatelessWidget {
     required this.controller,
     required this.snapshot,
     this.messageController,
+    this.journalController,
   });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
   final MessageController? messageController;
+  final JournalQuickAddController? journalController;
 
   @override
   Widget build(BuildContext context) {
@@ -1125,6 +1142,18 @@ class _DashboardView extends StatelessWidget {
                 child: TodayCockpit(
                   readings: history,
                   preferences: preferences,
+                  onAddContext: journalController == null
+                      ? null
+                      : () => unawaited(
+                          showJournalQuickAddSheet(
+                            context,
+                            controller: journalController,
+                          ),
+                        ),
+                  journalSummaryBuilder: journalController == null
+                      ? null
+                      : () => journalController!.summaryText,
+                  journalListenable: journalController,
                 ),
               ),
             ),

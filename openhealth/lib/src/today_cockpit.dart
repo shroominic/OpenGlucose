@@ -16,6 +16,9 @@ class TodayCockpit extends StatelessWidget {
     required this.preferences,
     this.now,
     this.onAddContext,
+    this.journalSummary,
+    this.journalSummaryBuilder,
+    this.journalListenable,
     this.observations = const <MetabolicObservation>[],
     this.safetyBoundary = AiDisclaimer.short,
   });
@@ -24,6 +27,9 @@ class TodayCockpit extends StatelessWidget {
   final DisplayPreferences preferences;
   final DateTime? now;
   final VoidCallback? onAddContext;
+  final String? journalSummary;
+  final String? Function()? journalSummaryBuilder;
+  final Listenable? journalListenable;
   final List<MetabolicObservation> observations;
   final String safetyBoundary;
 
@@ -35,6 +41,19 @@ class TodayCockpit extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final listenable = journalListenable;
+    if (listenable != null) {
+      return AnimatedBuilder(
+        animation: listenable,
+        builder: (context, _) => _buildCockpit(context),
+      );
+    }
+    return _buildCockpit(context);
+  }
+
+  Widget _buildCockpit(BuildContext context) {
+    final currentJournalSummary =
+        journalSummaryBuilder?.call() ?? journalSummary;
     final reference = now ?? DateTime.now();
     final stats = GlucoseAnalytics.summarize(
       readings,
@@ -99,6 +118,16 @@ class TodayCockpit extends StatelessWidget {
                       ),
                   ],
                 ),
+                if (currentJournalSummary != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    currentJournalSummary,
+                    key: const ValueKey<String>('todayJournalSummary'),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF5B6E6A),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Row(
                   children: <Widget>[

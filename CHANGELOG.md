@@ -20,6 +20,9 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - Added bounded, read-only Apple Health and Health Connect context import for
   user-selected activity, sleep, heart-rate, energy, and distance categories,
   with source-aware local deduplication and explicit permission handling.
+- Added a compact Today quick-add sheet for meals, exercise, and notes. Entries
+  stay in the local journal, validate before saving, and show a same-day count
+  in the Today cockpit; no background or network sync is introduced.
 
 ### Changed
 
