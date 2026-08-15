@@ -26,6 +26,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - Added a compact local Body timeline that interleaves glucose, journal,
   imported activity/sleep/heart-rate rows, and evidence-backed observations
   with source and freshness labels.
+- Added a redacted-by-default, adapter-neutral glanceable surface contract for
+  current glucose, freshness, warmup, context summary, and alert state. Native
+  notification/widget payloads remain unchanged until a platform mapping is
+  reviewed separately.
 
 ### Changed
 

@@ -76,6 +76,10 @@ The meaningful critical journey is scan, connect, synchronize history, display
 freshness accurately, handle a disconnect or stale reading, reconnect, and
 recover persisted state without duplication or time shifts.
 
+Compact platform surfaces use the adapter-neutral
+[glanceable surface contract](glanceable-surfaces.md); native payload mappings
+remain separate, opt-in changes.
+
 ## Cross-cutting constraints
 
 - **Safety:** OpenGlucose is wellness/reference software. No component may
