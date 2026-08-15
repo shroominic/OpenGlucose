@@ -292,7 +292,9 @@ class BodyTimelineCard extends StatelessWidget {
               _ContextStatusMessage(status: contextStatus, error: contextError),
               const SizedBox(height: 10),
             ],
-            if (items.isEmpty)
+            if (items.isEmpty &&
+                (contextStatus == BodyTimelineContextStatus.empty ||
+                    contextStatus == BodyTimelineContextStatus.ready))
               const Text(
                 'No body context yet. Add a meal, exercise, or note, or sync '
                 'health context.',

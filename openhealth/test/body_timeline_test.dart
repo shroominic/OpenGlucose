@@ -156,6 +156,7 @@ void main() {
       ),
     );
     expect(find.text('Loading local context…'), findsOneWidget);
+    expect(find.textContaining('No body context yet.'), findsNothing);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -172,5 +173,6 @@ void main() {
       find.text('Could not load local body context. Try again.'),
       findsOneWidget,
     );
+    expect(find.textContaining('No body context yet.'), findsNothing);
   });
 }
