@@ -25,6 +25,7 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/today_cockpit.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -1116,6 +1117,17 @@ class _DashboardView extends StatelessWidget {
               snapshot: snapshot,
             ),
           ),
+          if (!isWarmingUp)
+            SliverToBoxAdapter(
+              key: const ValueKey<String>('dashboardTodayCockpitSection'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: TodayCockpit(
+                  readings: history,
+                  preferences: preferences,
+                ),
+              ),
+            ),
           if (!isWarmingUp)
             SliverToBoxAdapter(
               key: const ValueKey<String>('dashboardHistorySection'),
