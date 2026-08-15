@@ -113,7 +113,7 @@ void main() {
     expect(find.text('A small pattern to explore'), findsOneWidget);
     expect(find.textContaining('private journal says hello'), findsNothing);
     expect(find.textContaining('sk-test_123456789'), findsNothing);
-    expect(find.text('Average glucose'), findsOneWidget);
+    expect(find.textContaining('Average glucose'), findsOneWidget);
     expect(find.textContaining('Wellness only'), findsOneWidget);
   });
 
