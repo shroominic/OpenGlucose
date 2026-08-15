@@ -11,6 +11,7 @@ enforcement detail is already implemented.
 | [0003](0003-platform-release-model.md)  | Accepted | Build source-bound mobile artifacts and release only through fail-closed platform lanes |
 | [0004](0004-evidence-backed-observations.md) | Accepted | Keep metabolic observations deterministic, typed, evidence-backed, and AI output bounded |
 | [0005](0005-source-aware-health-context-import.md) | Accepted | Import bounded, read-only health context through one source-aware local contract |
+| [0006](0006-local-data-deletion-coordinator.md) | Accepted | Coordinate complete local-data deletion through a dry-run, confirmation, and verification contract |
 
 ## Adding an ADR
 

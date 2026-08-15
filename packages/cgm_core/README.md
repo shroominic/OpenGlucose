@@ -17,7 +17,9 @@ drivers. This package has no Flutter or vendor-protocol dependency.
 - an explicitly separated `CgmUnsafeAdmin` interface for destructive sensor
   operations;
 - local-first `HealthEvent`, imported context samples, and `JournalService`
-  contracts for meal/activity/sleep-aware timelines.
+  contracts for meal/activity/sleep-aware timelines; and
+- `LocalDataDeletionCoordinator`, a dry-run, explicit-confirmation, and
+  post-delete-verification contract for complete local-data erasure.
 
 Only declarations exported from `lib/cgm_core.dart` are public. Files below
 `lib/src/` are implementation details.
