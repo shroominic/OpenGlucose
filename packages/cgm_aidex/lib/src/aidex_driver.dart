@@ -8,6 +8,38 @@ import 'package:cgm_core/cgm_core.dart';
 
 import 'aidex_protocol.dart';
 
+/// Metadata key for the current, privacy-safe AiDEX setup phase.
+///
+/// Values are deliberately closed and opaque. They describe only which setup
+/// operation was in progress; they never contain device or sensor data.
+const String aidexSetupPhaseMetadataKey = 'cgm.aidex.setup.phase';
+
+abstract final class AidexSetupPhase {
+  static const String connect = 'P01';
+  static const String bond = 'P02';
+  static const String reconnect = 'P03';
+  static const String discovery = 'P04';
+  static const String subscribe = 'P05';
+  static const String identity = 'P06';
+  static const String vendorPair = 'P07';
+  static const String baseline = 'P08';
+  static const String activation = 'P09';
+  static const String finalization = 'P10';
+
+  static const Set<String> values = <String>{
+    connect,
+    bond,
+    reconnect,
+    discovery,
+    subscribe,
+    identity,
+    vendorPair,
+    baseline,
+    activation,
+    finalization,
+  };
+}
+
 class AidexSensorDriver implements CgmDriver {
   AidexSensorDriver(
     this._transport, {
@@ -146,7 +178,10 @@ class AidexSession implements CgmSession {
          capabilities: sensor.capabilities,
          lastAdvertisement: sensor.advertisement,
          sessionInfo: const CgmSessionInfo(warmupMinutes: _aidexWarmupMinutes),
-         metadata: <String, String>{'deviceId': sensor.deviceId},
+         metadata: <String, String>{
+           'deviceId': sensor.deviceId,
+           aidexSetupPhaseMetadataKey: AidexSetupPhase.connect,
+         },
        ),
        _unsafeAdmin = AidexUnsafeAdmin._() {
     _unsafeAdmin.attach(this);
@@ -339,24 +374,18 @@ class AidexSession implements CgmSession {
 
   Future<void> _initializeInternal() async {
     try {
+      _setSetupPhase(AidexSetupPhase.connect);
       _emitLog(CgmLogLevel.info, 'Connecting to AiDEX sensor');
       _connection = await _transport.connect(sensor.deviceId);
       _connectionState = BleConnectionState.connected;
+      _throwIfDisconnectingDuringSetup();
       _emitLog(CgmLogLevel.debug, 'BLE link connected');
-      _monitorConnectionState();
-      _setSnapshot(
-        _snapshot.copyWith(
-          stage: CgmSyncStage.bonding,
-          statusText: 'Discovering services',
-        ),
-      );
-      _emitLog(CgmLogLevel.debug, 'Discovering services');
-      await _discoverServices();
+      _setSetupPhase(AidexSetupPhase.bond);
       var conn = _connection;
       if (conn == null) throw StateError('Disconnected during setup');
-      final bondStateBeforeSetup = conn.supportsBondLifecycle
-          ? await conn.currentBondState()
-          : BleBondState.bonded;
+      if (conn.supportsBondLifecycle) {
+        await conn.currentBondState();
+      }
       _setSnapshot(
         _snapshot.copyWith(
           stage: CgmSyncStage.bonding,
@@ -365,39 +394,73 @@ class AidexSession implements CgmSession {
       );
       conn = _connection;
       if (conn == null) throw StateError('Disconnected during setup');
+      _throwIfDisconnectingDuringSetup();
       _emitLog(CgmLogLevel.debug, 'Ensuring BLE bond');
       await conn.ensureBonded();
+      _throwIfDisconnectingDuringSetup();
       conn = _connection;
       if (conn == null) throw StateError('Disconnected during setup');
       final bondStateAfterSetup = conn.supportsBondLifecycle
           ? await conn.currentBondState()
           : BleBondState.bonded;
-      final didEstablishBond =
-          conn.supportsBondLifecycle &&
-          bondStateBeforeSetup != BleBondState.bonded &&
-          bondStateAfterSetup == BleBondState.bonded;
-      if (didEstablishBond) {
-        await Future<void>.delayed(_timings.gattGap);
-        _emitLog(CgmLogLevel.debug, 'Refreshing services after bond');
-        await _discoverServices();
+      if (conn.supportsBondLifecycle &&
+          bondStateAfterSetup != BleBondState.bonded) {
+        throw BleFailure(
+          kind: BleFailureKind.bondRejected,
+          operation: BleOperation.bond,
+          diagnosticCode: 'aidex.bond.not-completed',
+        );
       }
-      // Some Android stacks do not trigger pairing from a protected CCCD
-      // write. Establish the OS bond first so subscribing cannot fail before
-      // Android has a chance to show its pairing prompt.
+      final shouldRefreshBondedGatt =
+          conn.supportsBondLifecycle &&
+          bondStateAfterSetup == BleBondState.bonded;
+      _throwIfDisconnectingDuringSetup();
+      if (shouldRefreshBondedGatt) {
+        _setSetupPhase(AidexSetupPhase.reconnect);
+        await _reconnectGattAfterBond(conn);
+      } else {
+        _monitorConnectionState();
+      }
+      // flutter_blue_plus service discovery can subscribe to the protected
+      // GAP Service Changed characteristic as an implementation detail. Bond
+      // before the first discovery so Android can present pairing before any
+      // protected CCCD write. Refresh every confirmed Android-style bond,
+      // including a bond from an earlier app run: OEM stacks can preserve a
+      // stale unauthenticated GATT link even when the bond already exists.
+      // Discovery therefore runs only on the fresh bonded GATT link.
+      _setSnapshot(
+        _snapshot.copyWith(
+          stage: CgmSyncStage.bonding,
+          statusText: 'Discovering services',
+        ),
+      );
+      _setSetupPhase(AidexSetupPhase.discovery);
+      _emitLog(CgmLogLevel.debug, 'Discovering services');
+      _throwIfDisconnectingDuringSetup();
+      await _discoverServices();
+      _throwIfDisconnectingDuringSetup();
+      _setSetupPhase(AidexSetupPhase.subscribe);
       _emitLog(CgmLogLevel.debug, 'Subscribing to notifications');
       await _subscribeToNotifications();
+      _throwIfDisconnectingDuringSetup();
       if (_requiresGattIdentityForVendorPair()) {
+        _setSetupPhase(AidexSetupPhase.identity);
         _emitLog(CgmLogLevel.debug, 'Prefetching identity for vendor pair');
         await _prefetchIdentity();
       }
+      _setSetupPhase(AidexSetupPhase.vendorPair);
       _emitLog(CgmLogLevel.debug, 'Running vendor pair handshake');
       await _pairVendor();
+      _throwIfDisconnectingDuringSetup();
       if (!_requiresGattIdentityForVendorPair()) {
+        _setSetupPhase(AidexSetupPhase.identity);
         _emitLog(CgmLogLevel.debug, 'Prefetching identity');
         await _prefetchIdentity();
       }
+      _setSetupPhase(AidexSetupPhase.baseline);
       _emitLog(CgmLogLevel.debug, 'Refreshing baseline');
       await _refreshBaseline();
+      _setSetupPhase(AidexSetupPhase.activation);
       final sessionStart = parseSessionStart(
         bytesFromHex(_rawHex[AidexUuids.sessionStart] ?? ''),
       );
@@ -412,6 +475,7 @@ class AidexSession implements CgmSession {
           sessionStart.isAllZero &&
           status?.sessionStopped == true;
       if (activationReady) {
+        _throwIfDisconnectingDuringSetup();
         _emitLog(CgmLogLevel.debug, 'Starting CGM session');
         await _startSession();
       } else if (sessionStart == null ||
@@ -463,16 +527,72 @@ class AidexSession implements CgmSession {
               : 'Refusing activation because sensor state is malformed',
         );
       }
+      _setSetupPhase(AidexSetupPhase.finalization);
       await _refreshVendorStartTimeInternal();
       await _ensureLiveUpdateConfiguration();
+      final readyMetadata = <String, String>{..._snapshot.metadata}
+        ..remove(aidexSetupPhaseMetadataKey);
       _setSnapshot(
-        _snapshot.copyWith(stage: CgmSyncStage.ready, statusText: 'Connected'),
+        _snapshot.copyWith(
+          stage: CgmSyncStage.ready,
+          statusText: 'Connected',
+          metadata: readyMetadata,
+        ),
       );
       _emitLog(CgmLogLevel.info, 'Aidex session connected');
       unawaited(_runInitialBackgroundSync());
       _scheduleLiveRefresh(const Duration(seconds: 1));
     } catch (error, stackTrace) {
       _handleError(error, stackTrace, context: 'initializing session');
+    }
+  }
+
+  Future<void> _reconnectGattAfterBond(BleConnection bondedConnection) async {
+    _throwIfDisconnectingDuringSetup();
+    if (!identical(_connection, bondedConnection)) {
+      throw StateError('BLE connection changed during bonding');
+    }
+    _setSnapshot(
+      _snapshot.copyWith(
+        stage: CgmSyncStage.bonding,
+        statusText: 'Refreshing Bluetooth link',
+      ),
+    );
+    _emitLog(CgmLogLevel.debug, 'Refreshing GATT link after bond');
+
+    // Android vendors can retain stale, unauthenticated GATT handles across a
+    // newly established bond. Cancel monitoring before this intentional
+    // disconnect so it cannot be reported as a user-visible link loss.
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
+    _throwIfDisconnectingDuringSetup();
+    await bondedConnection.disconnect();
+    _connection = null;
+    _connectionState = BleConnectionState.disconnected;
+
+    _throwIfDisconnectingDuringSetup();
+    await Future<void>.delayed(_timings.gattGap);
+    _throwIfDisconnectingDuringSetup();
+    final refreshedConnection = await _transport.connect(sensor.deviceId);
+    _connection = refreshedConnection;
+    _connectionState = BleConnectionState.connected;
+    _throwIfDisconnectingDuringSetup();
+
+    if (refreshedConnection.supportsBondLifecycle &&
+        await refreshedConnection.currentBondState() != BleBondState.bonded) {
+      throw BleFailure(
+        kind: BleFailureKind.bondRejected,
+        operation: BleOperation.bond,
+        diagnosticCode: 'aidex.bond.not-persisted',
+      );
+    }
+    _monitorConnectionState();
+    _emitLog(CgmLogLevel.debug, 'GATT link refreshed after bond');
+  }
+
+  void _throwIfDisconnectingDuringSetup() {
+    if (_disconnecting) {
+      throw const _SessionSetupCancelled();
     }
   }
 
@@ -2121,6 +2241,18 @@ class AidexSession implements CgmSession {
     }
   }
 
+  void _setSetupPhase(String phase) {
+    assert(AidexSetupPhase.values.contains(phase));
+    _setSnapshot(
+      _snapshot.copyWith(
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          aidexSetupPhaseMetadataKey: phase,
+        },
+      ),
+    );
+  }
+
   Future<T> _runQueued<T>(Future<T> Function() action) {
     final completer = Completer<T>();
     _operationChain = _operationChain.catchError((Object _) {}).then((_) async {
@@ -2186,6 +2318,10 @@ class AidexSession implements CgmSession {
   }
 
   String _normalizeUuid(String uuid) => uuid.toUpperCase();
+}
+
+class _SessionSetupCancelled implements Exception {
+  const _SessionSetupCancelled();
 }
 
 class AidexUnsafeAdmin implements CgmUnsafeAdmin {

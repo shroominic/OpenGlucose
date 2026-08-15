@@ -6,9 +6,10 @@
   automatically at the warmup boundary, while genuine post-warmup protocol
   failures still become safe session errors.
 - Establish the Android OS bond before subscribing to protected
-  characteristics, rediscover services after a new bond, and retain only
-  privacy-safe BLE failure metadata. Initialization no longer removes a local
-  bond automatically after an unclassified setup error.
+  characteristics, refresh GATT before discovery for newly created or existing
+  bonds, and retain only privacy-safe BLE failure metadata and closed setup
+  phases. Initialization no longer removes a local bond automatically after an
+  unclassified setup error.
 
 ## 1.0.0
 
