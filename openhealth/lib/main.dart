@@ -1167,6 +1167,17 @@ class _DashboardView extends StatelessWidget {
                       ? null
                       : () => journalController!.summaryText,
                   journalListenable: journalController,
+                  mealResponseBuilder: bodyTimelineController == null
+                      ? null
+                      : () {
+                          final context = bodyTimelineController.context;
+                          if (context == null) return null;
+                          return MealResponseAnalytics.analyze(
+                            events: context.events,
+                            readings: history,
+                            now: DateTime.now(),
+                          );
+                        },
                   bodyTimelineListenable: bodyTimelineController,
                   bodyTimelineContextBuilder: () =>
                       bodyTimelineController?.context ??

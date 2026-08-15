@@ -29,6 +29,11 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - Added foreground-only context loading for the Today body timeline, including
   explicit loading, empty, and fail-closed error states after Health sync,
   journal capture, app resume, and pull-to-refresh.
+- Added local meal-response coverage and peak/timing summaries to Today with
+  explicit insufficient-data states and non-causal wellness framing.
+- Added an opt-in AI insight surface with disabled, loading, empty, error, and
+  evidence-backed states; it remains off by default and never exposes journal
+  text or provider secrets.
 - Added a redacted-by-default, adapter-neutral glanceable surface contract for
   current glucose, freshness, warmup, context summary, and alert state. Native
   notification/widget payloads remain unchanged until a platform mapping is
