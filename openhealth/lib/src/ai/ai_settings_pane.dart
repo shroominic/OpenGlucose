@@ -138,6 +138,11 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       if (!_hasKey) {
         throw const AiGenerationException('Add an API key before testing.');
       }
+      if (widget.recentReadings.isEmpty) {
+        throw const AiGenerationException(
+          'Not enough glucose data in this window to generate an insight.',
+        );
+      }
       repo = await openHealthRepository();
       final controller = AiController(store: store, repository: repo);
       return controller.generateRecentInsight(
@@ -154,19 +159,28 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _busy = true;
       _status = 'Generating…';
     });
-    await _surfaceController.generate();
-    if (!mounted) return;
-    final state = _surfaceController.state;
-    setState(() {
-      _status = switch (state.status) {
-        AiInsightSurfaceStatus.ready =>
-          'Generated & saved: "${state.insight!.title}".',
-        AiInsightSurfaceStatus.error =>
-          'Could not generate: ${state.errorMessage}',
-        _ => 'AI is disabled or no key set.',
-      };
-      _busy = false;
-    });
+    try {
+      // Persist the current form first so "Test with aggregates" honors an
+      // unsaved opt-in and key. The generator repeats this safely before it
+      // builds the provider, which also keeps the explicit consent boundary
+      // in one place.
+      if (!await _persistDraft() || !mounted) return;
+      _surfaceController.enabled = _settings.enabled && _hasKey;
+      await _surfaceController.generate();
+      if (!mounted) return;
+      final state = _surfaceController.state;
+      setState(() {
+        _status = switch (state.status) {
+          AiInsightSurfaceStatus.ready =>
+            'Generated & saved: "${state.insight!.title}".',
+          AiInsightSurfaceStatus.error =>
+            'Could not generate: ${state.errorMessage}',
+          _ => 'AI is disabled or no key set.',
+        };
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override

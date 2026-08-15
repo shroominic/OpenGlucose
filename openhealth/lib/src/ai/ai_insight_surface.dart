@@ -310,7 +310,7 @@ class _EmptyState extends StatelessWidget {
           child: Text(
             hasEvidence
                 ? 'Your local evidence is ready for an optional insight.'
-                : 'AI insights need a little more data before they can help.',
+                : 'AI insights need a little more data',
             style: const TextStyle(color: Color(0xFF49615D), height: 1.3),
           ),
         ),

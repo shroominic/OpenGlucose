@@ -511,7 +511,11 @@ void main() {
       findsOneWidget,
     );
     expect(
-      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).onChanged,
+      tester
+          .widget<SwitchListTile>(
+            find.widgetWithText(SwitchListTile, 'Export to Apple Health'),
+          )
+          .onChanged,
       isNull,
     );
     expect(
