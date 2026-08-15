@@ -5,6 +5,7 @@ import 'body_timeline.dart';
 import 'body_timeline_context.dart';
 import 'display_preferences.dart';
 import 'evidence_observation_card.dart';
+import 'meal_response_card.dart';
 
 /// A compact, non-clinical summary of the current day.
 ///
@@ -21,6 +22,8 @@ class TodayCockpit extends StatelessWidget {
     this.journalSummary,
     this.journalSummaryBuilder,
     this.journalListenable,
+    this.mealResponse,
+    this.mealResponseBuilder,
     this.bodyTimelineContext,
     this.bodyTimelineContextBuilder,
     this.bodyTimelineObservations = const <MetabolicObservation>[],
@@ -39,6 +42,8 @@ class TodayCockpit extends StatelessWidget {
   final String? journalSummary;
   final String? Function()? journalSummaryBuilder;
   final Listenable? journalListenable;
+  final MealResponseSummary? mealResponse;
+  final MealResponseSummary? Function()? mealResponseBuilder;
   final JournalContext? bodyTimelineContext;
   final JournalContext? Function()? bodyTimelineContextBuilder;
   final List<MetabolicObservation> bodyTimelineObservations;
@@ -75,6 +80,7 @@ class TodayCockpit extends StatelessWidget {
         journalSummaryBuilder?.call() ?? journalSummary;
     final currentBodyTimelineContext =
         bodyTimelineContextBuilder?.call() ?? bodyTimelineContext;
+    final currentMealResponse = mealResponseBuilder?.call() ?? mealResponse;
     final reference = now ?? DateTime.now();
     final stats = GlucoseAnalytics.summarize(
       readings,
@@ -218,6 +224,13 @@ class TodayCockpit extends StatelessWidget {
           EvidenceObservationCard(
             observations: effectiveObservations,
             safetyBoundary: safetyBoundary,
+          ),
+        ],
+        if (currentMealResponse != null) ...<Widget>[
+          const SizedBox(height: 10),
+          MealResponseCard(
+            summary: currentMealResponse,
+            unit: preferences.unit,
           ),
         ],
         if (showBodyTimeline) ...<Widget>[
