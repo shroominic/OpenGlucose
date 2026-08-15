@@ -1,3 +1,4 @@
+import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/session_presentation.dart';
@@ -120,6 +121,123 @@ void main() {
 
       expect(bleFailureRequiresUserAction(snapshot), isFalse);
       expect(snapshotAllowsAutomaticReconnect(snapshot), isTrue);
+    });
+  });
+
+  group('private BLE support code', () {
+    test('contains only the closed phase and sanitized BLE failure', () {
+      final failure = BleFailure(
+        kind: BleFailureKind.deviceDisconnected,
+        operation: BleOperation.connect,
+        diagnosticCode: 'aidex.connection.disconnected',
+      );
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.discovery,
+          ...failure.toMetadata(),
+          'deviceId': 'AA:BB:CC:DD:EE:FF',
+          'serial': 'PRIVATE-SERIAL',
+          'nativeError': 'secret native text',
+          'rawHex': 'deadbeef',
+          'reading': '112',
+          'timestamp': '2026-08-15T12:34:56Z',
+        },
+        lastError: 'secret error text',
+      );
+
+      final code = privateBleSupportCodeForSnapshot(snapshot);
+
+      expect(
+        code,
+        'OGSUP1 phase=P04 op=connect kind=deviceDisconnected '
+        'code=aidex.connection.disconnected',
+      );
+      expect(
+        code,
+        isNot(
+          anyOf(
+            contains('AA:BB'),
+            contains('PRIVATE-SERIAL'),
+            contains('secret'),
+            contains('deadbeef'),
+            contains('112'),
+            contains('2026-08-15'),
+          ),
+        ),
+      );
+      expect(shouldOfferPrivateBleSupportCode(snapshot), isTrue);
+    });
+
+    test('connecting code contains a phase without invented failure data', () {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.connecting,
+        statusText: 'Connecting',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: const <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.connect,
+        },
+      );
+
+      expect(privateBleSupportCodeForSnapshot(snapshot), 'OGSUP1 phase=P01');
+      expect(shouldOfferPrivateBleSupportCode(snapshot), isTrue);
+    });
+
+    test('malformed phase is rejected rather than copied', () {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: const <String, String>{
+          aidexSetupPhaseMetadataKey: 'P04 device=AA:BB:CC:DD:EE:FF',
+        },
+        lastError: 'Failed',
+      );
+
+      expect(privateBleSupportCodeForSnapshot(snapshot), isNull);
+      expect(shouldOfferPrivateBleSupportCode(snapshot), isFalse);
+    });
+
+    test('malformed BLE diagnostic is redacted by BleFailure parser', () {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: const <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.subscribe,
+          bleFailureKindMetadataKey: 'bondRejected',
+          bleFailureOperationMetadataKey: 'subscribe',
+          bleFailureDiagnosticCodeMetadataKey:
+              'native failure AA:BB:CC:DD:EE:FF',
+        },
+        lastError: 'Failed',
+      );
+
+      expect(
+        privateBleSupportCodeForSnapshot(snapshot),
+        'OGSUP1 phase=P05 op=subscribe kind=bondRejected '
+        'code=ble.redacted',
+      );
+    });
+
+    test('ready sessions never offer a copy action', () {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'Connected',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: const <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.finalization,
+        },
+      );
+
+      expect(shouldOfferPrivateBleSupportCode(snapshot), isFalse);
     });
   });
 
@@ -288,10 +406,7 @@ void main() {
           source: CgmRecordSource.standard,
           recordedAt: sessionStart.add(const Duration(minutes: 60)),
         ),
-        const CgmReading(
-          valueMgdl: 106,
-          source: CgmRecordSource.standard,
-        ),
+        const CgmReading(valueMgdl: 106, source: CgmRecordSource.standard),
       ];
 
       final visible = readingsAfterWarmup(
@@ -300,10 +415,11 @@ void main() {
         warmupMinutes: 60,
       );
 
-      expect(
-        visible.map((reading) => reading.valueMgdl),
-        <double>[103, 105, 106],
-      );
+      expect(visible.map((reading) => reading.valueMgdl), <double>[
+        103,
+        105,
+        106,
+      ]);
     });
   });
 

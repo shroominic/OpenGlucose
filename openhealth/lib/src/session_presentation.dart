@@ -1,3 +1,4 @@
+import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:intl/intl.dart';
@@ -409,6 +410,50 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
   return bleFailure == null
       ? snapshot.lastError
       : userMessageForBleFailure(bleFailure);
+}
+
+/// Compile-time gate for privacy-safe support codes in explicitly marked
+/// private test builds. Normal release builds compile this to false.
+const bool kOgPrivateSupport = bool.fromEnvironment(
+  'OG_PRIVATE_SUPPORT',
+  defaultValue: false,
+);
+
+/// Returns a copyable, identifier-free setup code for a known AiDEX phase.
+///
+/// No general snapshot metadata is copied. BLE fields come exclusively from
+/// [BleFailure.fromMetadata], which rejects unknown enum values and sanitizes
+/// diagnostic codes before returning them.
+String? privateBleSupportCodeForSnapshot(CgmSessionSnapshot snapshot) {
+  final phase = snapshot.metadata[aidexSetupPhaseMetadataKey];
+  if (phase == null || !AidexSetupPhase.values.contains(phase)) {
+    return null;
+  }
+  final fields = <String>['OGSUP1', 'phase=$phase'];
+  final failure = BleFailure.fromMetadata(snapshot.metadata);
+  if (failure != null) {
+    fields
+      ..add('op=${failure.operation.name}')
+      ..add('kind=${failure.kind.name}')
+      ..add('code=${failure.diagnosticCode}');
+  }
+  return fields.join(' ');
+}
+
+bool shouldOfferPrivateBleSupportCode(CgmSessionSnapshot snapshot) {
+  if (privateBleSupportCodeForSnapshot(snapshot) == null) {
+    return false;
+  }
+  return switch (snapshot.stage) {
+    CgmSyncStage.connecting ||
+    CgmSyncStage.bonding ||
+    CgmSyncStage.pairing ||
+    CgmSyncStage.activating ||
+    CgmSyncStage.syncing ||
+    CgmSyncStage.error ||
+    CgmSyncStage.disconnected => true,
+    CgmSyncStage.scanning || CgmSyncStage.ready => false,
+  };
 }
 
 String? userMessageForBleError(Object error) {

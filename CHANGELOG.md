@@ -44,6 +44,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - The dashboard now opens with a compact "Today at a glance" cockpit showing
   the latest reading, 24-hour context, freshness, and a conservative sparse-
   data explanation before longer history and pattern views.
+## [0.1.2] - 2026-08-15
+
+### Changed
+
 - During the sensor's initial 60-minute warmup, the dashboard now hides
   History, Patterns, and Weekly recap. Warmup readings remain retained for a
   complete disclosed archive export but are excluded from displayed history,
@@ -51,6 +55,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Fixed
 
+- Android sensor setup now stops active Bluetooth scanning before every
+  connection attempt, refreshes already-paired GATT sessions before discovery,
+  and avoids an unused Service Changed subscription that could interrupt setup
+  on stricter Android Bluetooth stacks.
 - Android live notifications and iOS Live Activities can again show ongoing
   post-warmup glucose updates after the user explicitly opts in from current
   sensor settings; the default remains redacted and disabling fails closed.
@@ -159,7 +167,8 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.2
 [0.1.1]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.1
 [0.1.0]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.0
 [0.0.1+10]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.0.1%2B10
