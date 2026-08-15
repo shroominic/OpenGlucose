@@ -1,6 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
+import 'body_timeline.dart';
 import 'display_preferences.dart';
 import 'evidence_observation_card.dart';
 
@@ -19,6 +20,9 @@ class TodayCockpit extends StatelessWidget {
     this.journalSummary,
     this.journalSummaryBuilder,
     this.journalListenable,
+    this.bodyTimelineContext,
+    this.bodyTimelineObservations = const <MetabolicObservation>[],
+    this.showBodyTimeline = false,
     this.observations = const <MetabolicObservation>[],
     this.safetyBoundary = AiDisclaimer.short,
   });
@@ -30,6 +34,9 @@ class TodayCockpit extends StatelessWidget {
   final String? journalSummary;
   final String? Function()? journalSummaryBuilder;
   final Listenable? journalListenable;
+  final JournalContext? bodyTimelineContext;
+  final List<MetabolicObservation> bodyTimelineObservations;
+  final bool showBodyTimeline;
   final List<MetabolicObservation> observations;
   final String safetyBoundary;
 
@@ -197,6 +204,16 @@ class TodayCockpit extends StatelessWidget {
           EvidenceObservationCard(
             observations: effectiveObservations,
             safetyBoundary: safetyBoundary,
+          ),
+        ],
+        if (showBodyTimeline) ...<Widget>[
+          const SizedBox(height: 10),
+          BodyTimelineCard(
+            readings: readings,
+            context: bodyTimelineContext,
+            observations: bodyTimelineObservations,
+            now: reference,
+            preferences: preferences,
           ),
         ],
       ],

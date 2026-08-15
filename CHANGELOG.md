@@ -23,6 +23,9 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - Added a compact Today quick-add sheet for meals, exercise, and notes. Entries
   stay in the local journal, validate before saving, and show a same-day count
   in the Today cockpit; no background or network sync is introduced.
+- Added a compact local Body timeline that interleaves glucose, journal,
+  imported activity/sleep/heart-rate rows, and evidence-backed observations
+  with source and freshness labels.
 
 ### Changed
 
