@@ -140,7 +140,7 @@ void main() {
             controller: controller,
             onEnable: () {
               enabled = true;
-              controller.setEnabled(true);
+              controller.enabled = true;
             },
           ),
         ),

@@ -67,7 +67,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _modelController.text = settings.model;
       _loading = false;
     });
-    _surfaceController.setEnabled(settings.enabled && hasKey);
+    _surfaceController.enabled = settings.enabled && hasKey;
   }
 
   @override
@@ -97,7 +97,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _settings = next;
       _hasKey = hasKey;
     });
-    _surfaceController.setEnabled(next.enabled && hasKey);
+    _surfaceController.enabled = next.enabled && hasKey;
     return true;
   }
 
@@ -121,7 +121,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _hasKey = false;
       _status = 'API key removed.';
     });
-    _surfaceController.setEnabled(false);
+    _surfaceController.enabled = false;
   }
 
   Future<AiInsight?> _generateInsight() async {
@@ -242,7 +242,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                         setState(
                           () => _settings = _settings.copyWith(enabled: value),
                         );
-                        _surfaceController.setEnabled(value && _hasKey);
+                        _surfaceController.enabled = value && _hasKey;
                       },
               ),
               TextField(
@@ -340,7 +340,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
           controller: _surfaceController,
           onEnable: () {
             setState(() => _settings = _settings.copyWith(enabled: true));
-            _surfaceController.setEnabled(_hasKey);
+            _surfaceController.enabled = _hasKey;
           },
           onGenerate: _busy ? null : () => unawaited(_generateNow()),
         ),

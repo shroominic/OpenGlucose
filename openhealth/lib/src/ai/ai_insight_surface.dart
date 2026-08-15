@@ -1,5 +1,4 @@
 import 'package:cgm_core/cgm_core.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// The lifecycle of the optional Today AI surface.
@@ -28,7 +27,7 @@ class AiInsightSurfaceState {
 /// This controller never creates a provider and never starts network work on
 /// its own. The optional [generate] callback is invoked only after the user
 /// taps an explicit generate/retry action. The callback should be wired to the
-/// app's existing [AiController] when cloud AI is enabled; leaving it null is
+/// app's existing AI controller when cloud AI is enabled; leaving it null is
 /// a safe, local-only configuration.
 class AiInsightSurfaceController extends ChangeNotifier {
   AiInsightSurfaceController({
@@ -56,13 +55,14 @@ class AiInsightSurfaceController extends ChangeNotifier {
   bool get enabled => _enabled;
 
   /// Replaces the explicit generator seam without invoking it.
+  // ignore: use_setters_to_change_properties
   void setGenerator(Future<AiInsight?> Function()? generate) {
     _generate = generate;
   }
 
   /// Updates the opt-in gate. AI is disabled by default and disabling it clears
   /// any transient error/loading state while retaining local observations.
-  void setEnabled(bool enabled) {
+  set enabled(bool enabled) {
     if (_enabled == enabled &&
         (_state.status != AiInsightSurfaceStatus.loading || enabled)) {
       return;

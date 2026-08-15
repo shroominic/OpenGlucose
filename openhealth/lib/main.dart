@@ -1171,7 +1171,8 @@ class _DashboardView extends StatelessWidget {
                   mealResponseBuilder: bodyTimelineController == null
                       ? null
                       : () {
-                          final context = bodyTimelineController.context;
+                          final timelineController = bodyTimelineController;
+                          final context = timelineController?.context;
                           if (context == null) return null;
                           return MealResponseAnalytics.analyze(
                             events: context.events,
