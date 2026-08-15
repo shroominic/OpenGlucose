@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,16 +16,23 @@ import 'mock_scenarios.dart';
 import 'sensor_archive.dart';
 import 'session_presentation.dart';
 
+typedef LiveActivityPrivacySetter =
+    Future<void> Function({required bool enabled});
+
 class CgmAppController extends ChangeNotifier {
   CgmAppController({
     required SharedPreferences preferences,
     required CgmDriver driver,
     HealthStateStore? healthStateStore,
     Duration reconnectDelay = const Duration(seconds: 3),
+    @visibleForTesting LiveActivityPrivacySetter? liveActivityPrivacySetter,
+    @visibleForTesting Future<void> Function()? liveActivityPrivacyRefresh,
   }) : _preferences = preferences,
        _healthStateStore =
            healthStateStore ?? PreferencesHealthStateStore(preferences),
        _reconnectDelay = reconnectDelay,
+       _liveActivityPrivacySetter = liveActivityPrivacySetter,
+       _liveActivityPrivacyRefresh = liveActivityPrivacyRefresh,
        _driver = driver;
 
   static const _displayPreferencesKey = 'openHealth.displayPreferences';
@@ -43,6 +51,8 @@ class CgmAppController extends ChangeNotifier {
   final HealthStateStore _healthStateStore;
   final Duration _reconnectDelay;
   final CgmDriver _driver;
+  final LiveActivityPrivacySetter? _liveActivityPrivacySetter;
+  final Future<void> Function()? _liveActivityPrivacyRefresh;
   final Map<String, DiscoveredSensor> _sensorsById =
       <String, DiscoveredSensor>{};
   final List<CgmLogEntry> _logs = <CgmLogEntry>[];
@@ -58,7 +68,12 @@ class CgmAppController extends ChangeNotifier {
   List<ArchivedSensorSession> _archivedSensors =
       const <ArchivedSensorSession>[];
   DisplayPreferences _displayPreferences = const DisplayPreferences();
+  bool _sensitiveLiveActivityContentEnabled = false;
+  bool _liveActivityPrivacyUpdateInFlight = false;
   bool _scanning = false;
+  BleFailure? _scanFailure;
+  int _scanGeneration = 0;
+  bool _disposed = false;
   bool _connectInProgress = false;
   bool _freshnessInFlight = false;
   bool _retiringExpiredSensor = false;
@@ -78,6 +93,13 @@ class CgmAppController extends ChangeNotifier {
 
   bool get scanning => _scanning;
 
+  BleFailure? get scanFailure => _scanFailure;
+
+  String? get scanFailureMessage => switch (_scanFailure) {
+    final failure? => userMessageForBleFailure(failure),
+    null => null,
+  };
+
   String? get lastError {
     final persistenceError = _persistenceErrors.values.join('. ');
     if (_lastError != null && persistenceError.isNotEmpty) {
@@ -87,6 +109,12 @@ class CgmAppController extends ChangeNotifier {
   }
 
   DisplayPreferences get displayPreferences => _displayPreferences;
+
+  bool get sensitiveLiveActivityContentEnabled =>
+      _sensitiveLiveActivityContentEnabled;
+
+  bool get liveActivityPrivacyUpdateInFlight =>
+      _liveActivityPrivacyUpdateInFlight;
 
   List<ArchivedSensorSession> get archivedSensors {
     final sessions = List<ArchivedSensorSession>.of(_archivedSensors);
@@ -105,6 +133,20 @@ class CgmAppController extends ChangeNotifier {
     return List<CgmReading>.unmodifiable(_loadHistoryAtKey(session.historyKey));
   }
 
+  /// Archived readings suitable for charts and wellness analytics.
+  ///
+  /// The raw retained history remains available through
+  /// [readingsForArchivedSensor] so data export stays complete.
+  List<CgmReading> displayReadingsForArchivedSensor(
+    ArchivedSensorSession session,
+  ) {
+    return readingsAfterWarmup(
+      _loadHistoryAtKey(session.historyKey),
+      sessionStart: session.startedAt,
+      warmupMinutes: const CgmSessionInfo().warmupMinutes,
+    );
+  }
+
   /// All retained readings across previous sensors plus the active sensor.
   /// Duplicate records are collapsed so an archive hand-off cannot inflate
   /// long-range summaries.
@@ -121,9 +163,26 @@ class CgmAppController extends ChangeNotifier {
     }
 
     for (final session in _archivedSensors) {
-      addAll(_loadHistoryAtKey(session.historyKey));
+      addAll(displayReadingsForArchivedSensor(session));
     }
-    addAll(snapshot?.history ?? _persistedHistory);
+    final current = snapshot;
+    if (current != null) {
+      addAll(
+        readingsAfterWarmup(
+          current.history,
+          sessionStart: current.sessionInfo.sessionStart,
+          warmupMinutes: current.sessionInfo.warmupMinutes,
+        ),
+      );
+    } else {
+      addAll(
+        readingsAfterWarmup(
+          _persistedHistory,
+          sessionStart: inferSensorStart(_persistedHistory),
+          warmupMinutes: const CgmSessionInfo().warmupMinutes,
+        ),
+      );
+    }
     final readings = byIdentity.values.toList(growable: false)
       ..sort(
         (left, right) =>
@@ -157,8 +216,42 @@ class CgmAppController extends ChangeNotifier {
         (current.history.isEmpty ? null : current.history.last);
   }
 
+  /// Latest reading suitable for user-facing values and messaging.
+  ///
+  /// Operational freshness and reconnect logic continue to use
+  /// [latestReading], which intentionally retains the sensor's raw state.
+  CgmReading? get displayLatestReading {
+    final current = snapshot;
+    if (current == null) {
+      return null;
+    }
+    final latest = current.latestReading;
+    if (latest != null &&
+        readingsAfterWarmup(
+          <CgmReading>[latest],
+          sessionStart: current.sessionInfo.sessionStart,
+          warmupMinutes: current.sessionInfo.warmupMinutes,
+        ).isNotEmpty) {
+      return latest;
+    }
+    final history = readingsAfterWarmup(
+      current.history,
+      sessionStart: current.sessionInfo.sessionStart,
+      warmupMinutes: current.sessionInfo.warmupMinutes,
+    );
+    return history.isEmpty ? null : history.last;
+  }
+
   List<CgmReading> get visibleHistory {
-    final history = snapshot?.history ?? const <CgmReading>[];
+    final current = snapshot;
+    if (current == null) {
+      return const <CgmReading>[];
+    }
+    final history = readingsAfterWarmup(
+      current.history,
+      sessionStart: current.sessionInfo.sessionStart,
+      warmupMinutes: current.sessionInfo.warmupMinutes,
+    );
     final crop = _displayPreferences.cropFirstSamples;
     if (crop <= 0 || crop >= history.length) {
       return history;
@@ -178,6 +271,10 @@ class CgmAppController extends ChangeNotifier {
       if (decoded is Map<String, Object?>) {
         _displayPreferences = DisplayPreferences.fromJson(decoded);
       }
+    }
+
+    if (!isMockDriver) {
+      await _restoreLiveActivityPrivacyPreference();
     }
 
     if (isMockDriver) {
@@ -243,21 +340,42 @@ class CgmAppController extends ChangeNotifier {
   }
 
   Future<void> scan() async {
+    if (_disposed) {
+      return;
+    }
+    final generation = ++_scanGeneration;
     _scanning = true;
+    _scanFailure = null;
     _lastError = null;
     _sensorsById.clear();
     notifyListeners();
 
     try {
       await for (final sensor in _driver.scan(timeout: _scanTimeout)) {
+        if (!_ownsScan(generation)) {
+          break;
+        }
         _sensorsById[sensor.deviceId] = sensor;
         notifyListeners();
       }
     } catch (error) {
-      _lastError = _safeError('Sensor scan', error);
+      if (!_ownsScan(generation)) {
+        return;
+      }
+      if (error is BleFailure) {
+        _scanFailure = error;
+        _lastError = userMessageForBleFailure(error);
+      } else {
+        _scanFailure = null;
+        _lastError =
+            'Sensor scan could not be completed. Check Bluetooth and try '
+            'again.';
+      }
     } finally {
-      _scanning = false;
-      notifyListeners();
+      if (_ownsScan(generation)) {
+        _scanning = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -265,6 +383,7 @@ class CgmAppController extends ChangeNotifier {
     DiscoveredSensor sensor, {
     bool allowSessionActivation = true,
   }) async {
+    _invalidateScan();
     if (_connectInProgress) {
       return;
     }
@@ -586,6 +705,7 @@ class CgmAppController extends ChangeNotifier {
     SensorArchiveReason archiveReason = SensorArchiveReason.disconnected,
     bool archiveWhenClearing = true,
   }) async {
+    _invalidateScan();
     _cancelReconnect();
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
@@ -702,12 +822,22 @@ class CgmAppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _invalidateScan();
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     _cancelReconnect();
     unawaited(_snapshotSubscription?.cancel());
     unawaited(_logSubscription?.cancel());
     super.dispose();
+  }
+
+  bool _ownsScan(int generation) => !_disposed && generation == _scanGeneration;
+
+  void _invalidateScan() {
+    _scanGeneration += 1;
+    _scanning = false;
+    _scanFailure = null;
   }
 
   void updateDisplayPreferences(DisplayPreferences preferences) {
@@ -723,6 +853,80 @@ class CgmAppController extends ChangeNotifier {
       'Updating private lock-screen state',
     );
     notifyListeners();
+  }
+
+  Future<bool> updateSensitiveLiveActivityContent({
+    required bool enabled,
+  }) async {
+    if (_liveActivityPrivacyUpdateInFlight) {
+      return false;
+    }
+    if (_sensitiveLiveActivityContentEnabled == enabled) {
+      return true;
+    }
+    _liveActivityPrivacyUpdateInFlight = true;
+    notifyListeners();
+    var nativePreferenceChanged = false;
+    try {
+      await _setSensitiveLiveActivityContentOnPlatform(enabled);
+      nativePreferenceChanged = true;
+      await (_liveActivityPrivacyRefresh?.call() ?? _pushLiveActivity());
+      _sensitiveLiveActivityContentEnabled = enabled;
+      _clearPersistenceFailure('Updating lock-screen privacy');
+      return true;
+    } catch (error) {
+      if (!enabled) {
+        // Native implementations remove sensitive surfaces even when
+        // persisting withdrawal fails. Mirror that fail-closed state in the
+        // UI so a failed write can never make consent appear to remain on.
+        _sensitiveLiveActivityContentEnabled = false;
+      }
+      if (nativePreferenceChanged) {
+        if (enabled) {
+          // Enabling is transactional: publishing failure rolls native
+          // consent back before Flutter reports failure to the user.
+          try {
+            await _setSensitiveLiveActivityContentOnPlatform(false);
+          } catch (_) {
+            // Both native setters independently fail closed. Preserve the
+            // original publish error for the user-facing diagnostic.
+          }
+        }
+        // Withdrawal remains effective even if recreating a redacted surface
+        // fails. For enable failures, this mirrors the rollback above.
+        _sensitiveLiveActivityContentEnabled = false;
+      }
+      _recordPersistenceFailure('Updating lock-screen privacy', error);
+      return false;
+    } finally {
+      _liveActivityPrivacyUpdateInFlight = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _setSensitiveLiveActivityContentOnPlatform(bool enabled) async {
+    final override = _liveActivityPrivacySetter;
+    if (override != null) {
+      await override(enabled: enabled);
+      return;
+    }
+    await AndroidLiveUpdateBridge.setSensitiveContentEnabled(enabled: enabled);
+    await IosLiveActivityBridge.setSensitiveContentEnabled(enabled: enabled);
+  }
+
+  Future<void> _restoreLiveActivityPrivacyPreference() async {
+    try {
+      final androidEnabled =
+          await AndroidLiveUpdateBridge.sensitiveContentEnabled();
+      final iosEnabled = await IosLiveActivityBridge.sensitiveContentEnabled();
+      _sensitiveLiveActivityContentEnabled = androidEnabled || iosEnabled;
+      _clearPersistenceFailure('Reading lock-screen privacy');
+    } catch (error) {
+      // Consent is fail-closed. A bridge/read failure must never opt the user
+      // into exposing glucose on a lock-screen surface.
+      _sensitiveLiveActivityContentEnabled = false;
+      _recordPersistenceFailure('Reading lock-screen privacy', error);
+    }
   }
 
   /// Whether the active driver is the OG_DEMO mock driver, i.e. the Developer
@@ -1064,7 +1268,7 @@ class CgmAppController extends ChangeNotifier {
     }
     final payload = buildLiveActivityPayload(
       snapshot: snapshot,
-      latestReading: latestReading,
+      latestReading: displayLatestReading,
       preferences: _displayPreferences,
     );
     if (_shouldPublishIosLiveActivity(snapshot)) {
@@ -1091,16 +1295,10 @@ class CgmAppController extends ChangeNotifier {
   }
 
   bool _shouldPublishIosLiveActivity(CgmSessionSnapshot snapshot) {
-    if (snapshot.stage != CgmSyncStage.ready) {
-      return false;
-    }
-    final reading = latestReading;
-    final recordedAt = reading?.recordedAt;
-    if (reading == null || recordedAt == null) {
-      return false;
-    }
-    final age = DateTime.now().difference(recordedAt.toLocal());
-    return !age.isNegative && age <= const Duration(minutes: 15);
+    return shouldPublishLiveActivity(
+      snapshot: snapshot,
+      latestReading: displayLatestReading,
+    );
   }
 
   void _schedulePersistHistory(String storageKey, List<CgmReading> history) {

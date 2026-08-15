@@ -12,7 +12,7 @@ MessageContext buildMessageContext(
 }) {
   final snapshot = controller.snapshot;
   final hasSession = snapshot != null;
-  final latest = controller.latestReading;
+  final latest = controller.displayLatestReading;
   final warmup = snapshot == null
       ? null
       : computeWarmupStatus(snapshot, latestReading: latest, now: now);

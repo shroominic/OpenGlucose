@@ -13,6 +13,7 @@ class AidexTimingProfile {
     this.postSessionStartWrite = const Duration(milliseconds: 250),
     this.vendorPairTimeout = const Duration(seconds: 10),
     this.vendorCommandTimeout = const Duration(seconds: 15),
+    this.warmupResumePollInterval = const Duration(minutes: 1),
   });
 
   final Duration gattGap;
@@ -20,6 +21,7 @@ class AidexTimingProfile {
   final Duration postSessionStartWrite;
   final Duration vendorPairTimeout;
   final Duration vendorCommandTimeout;
+  final Duration warmupResumePollInterval;
 
   static const production = AidexTimingProfile();
 }

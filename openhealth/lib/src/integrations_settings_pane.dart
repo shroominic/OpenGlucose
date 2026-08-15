@@ -23,8 +23,7 @@ class IntegrationsSettingsPane extends StatelessWidget {
   final HealthExportController healthExport;
   final CgmAppController controller;
 
-  List<CgmReading> get _readings =>
-      controller.snapshot?.history ?? const <CgmReading>[];
+  List<CgmReading> get _readings => controller.visibleHistory;
 
   @override
   Widget build(BuildContext context) {

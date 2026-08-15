@@ -37,7 +37,7 @@ public final class GlucoseLiveUpdateService extends Service {
   private static final String CHANNEL_NAME = "Live glucose";
   static final String PREF_LAST_PAYLOAD = "last_payload";
   private static final String EXTRA_PAYLOAD = "payload";
-  private static final int NOTIFICATION_ID = 64102;
+  static final int NOTIFICATION_ID = 64102;
   private static final int COLOR_TEAL = 0xFF2E7D74;
 
   @Override
@@ -126,11 +126,10 @@ public final class GlucoseLiveUpdateService extends Service {
     final String trendSymbol = stringValue(payload, "trendSymbol", "");
     final String deltaText = stringValue(payload, "deltaText", "");
 
-    // Fail closed: the app has no opt-in UI yet, so this preference is false
-    // unless a future reviewed settings flow deliberately records consent.
+    // Fail closed until the reviewed Flutter settings flow records consent.
     final SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
     if (!preferences.getBoolean(PREF_SENSITIVE_LOCK_SCREEN_OPT_IN, false)) {
-      return buildRedactedNotification(stageLabel);
+      return buildRedactedNotification(payload);
     }
 
     final boolean hasValue = valueText != null && !"--".equals(valueText) && !valueText.isEmpty();
@@ -141,7 +140,7 @@ public final class GlucoseLiveUpdateService extends Service {
             : fallbackDetail(stageLabel, lastReadingText);
     final String subText = hasValue ? sensorName : stageLabel;
     final String bigText = buildBigText(sensorName, text, trendSymbol, deltaText);
-    final Notification publicVersion = buildRedactedNotification(stageLabel);
+    final Notification publicVersion = buildRedactedNotification(payload);
 
     final Notification.Builder builder;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -201,9 +200,49 @@ public final class GlucoseLiveUpdateService extends Service {
         .build();
   }
 
-  private Notification buildRedactedNotification(String stageLabel) {
+  private Notification buildRedactedNotification(Map<String, Object> payload) {
+    final Integer remainingMinutes = validatedWarmupMinutes(payload);
+    if (remainingMinutes != null) {
+      final Notification.Builder builder;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        builder = new Notification.Builder(this, CHANNEL_ID);
+      } else {
+        builder = new Notification.Builder(this);
+      }
+      return builder
+          .setSmallIcon(R.drawable.ic_glucose_notification)
+          .setContentTitle(remainingMinutes + " min")
+          .setContentText("Sensor warming up")
+          .setSubText("Warmup")
+          .setContentIntent(buildLaunchIntent())
+          .setCategory(Notification.CATEGORY_STATUS)
+          .setVisibility(Notification.VISIBILITY_PUBLIC)
+          .setOngoing(true)
+          .setOnlyAlertOnce(true)
+          .setShowWhen(false)
+          .setColor(COLOR_TEAL)
+          .build();
+    }
     return buildRedactedNotificationForTest(
-        this, CHANNEL_ID, buildLaunchIntent(), stageLabel);
+        this,
+        CHANNEL_ID,
+        buildLaunchIntent(),
+        stringValue(payload, "stageLabel", "Sensor active"));
+  }
+
+  static Integer validatedWarmupMinutes(Map<String, Object> payload) {
+    if (!"progress".equals(stringValue(payload, "stageCode", ""))
+        || !"WARMUP".equalsIgnoreCase(stringValue(payload, "stageLabel", "").trim())
+        || !"min".equals(stringValue(payload, "unitText", ""))) {
+      return null;
+    }
+    final String valueText = stringValue(payload, "valueText", "");
+    try {
+      final int remainingMinutes = Integer.parseInt(valueText);
+      return remainingMinutes >= 1 && remainingMinutes <= 180 ? remainingMinutes : null;
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
   }
 
   private PendingIntent buildLaunchIntent() {
@@ -325,6 +364,27 @@ public final class GlucoseLiveUpdateService extends Service {
     return preferences.edit().remove(PREF_LAST_PAYLOAD).commit();
   }
 
+  static boolean sensitiveContentEnabled(Context context) {
+    return context
+        .getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .getBoolean(PREF_SENSITIVE_LOCK_SCREEN_OPT_IN, false);
+  }
+
+  static boolean setSensitiveContentEnabled(Context context, boolean enabled) {
+    return context
+        .getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .edit()
+        .putBoolean(PREF_SENSITIVE_LOCK_SCREEN_OPT_IN, enabled)
+        .commit();
+  }
+
+  static boolean hasPersistedPayload(Context context) {
+    final String payload = context
+        .getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        .getString(PREF_LAST_PAYLOAD, null);
+    return payload != null && !payload.isEmpty();
+  }
+
   private String buildBigText(
       String sensorName, String detailText, String trendSymbol, String deltaText) {
     final StringBuilder builder = new StringBuilder(sensorName);
@@ -353,7 +413,8 @@ public final class GlucoseLiveUpdateService extends Service {
     return stageLabel == null || stageLabel.isEmpty() ? "Waiting for glucose update" : stageLabel;
   }
 
-  private String stringValue(Map<String, Object> payload, String key, String fallback) {
+  private static String stringValue(
+      Map<String, Object> payload, String key, String fallback) {
     final Object value = payload.get(key);
     if (value == null) {
       return fallback;

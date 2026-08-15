@@ -18,6 +18,23 @@ class IosLiveActivityBridge {
     await _channel.invokeMethod<void>('upsert', payload.toMap());
   }
 
+  static Future<bool> sensitiveContentEnabled() async {
+    if (!Platform.isIOS) {
+      return false;
+    }
+    return await _channel.invokeMethod<bool>('getSensitiveContentEnabled') ??
+        false;
+  }
+
+  static Future<void> setSensitiveContentEnabled({
+    required bool enabled,
+  }) async {
+    if (!Platform.isIOS) {
+      return;
+    }
+    await _channel.invokeMethod<void>('setSensitiveContentEnabled', enabled);
+  }
+
   static Future<void> setBackgroundSensor({
     required String sensorName,
     String? serial,
