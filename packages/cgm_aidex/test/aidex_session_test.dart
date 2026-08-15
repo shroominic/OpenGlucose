@@ -98,10 +98,11 @@ void main() {
     expect(transport.lastConnection.didClearBondViaBms, isFalse);
     expect(transport.lastConnection.didRemoveBond, isFalse);
     expect(
-      transport.lastConnection.operations,
+      transport.operations,
       containsAllInOrder(<String>[
-        'discoverServices',
         'ensureBonded',
+        'disconnect',
+        'discoverServices',
         'setNotify:${AidexUuids.f001}',
         'setNotify:${AidexUuids.f003}',
       ]),
@@ -462,6 +463,10 @@ void main() {
     await session.initialize();
 
     expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(
+      session.currentSnapshot.metadata[aidexSetupPhaseMetadataKey],
+      AidexSetupPhase.activation,
+    );
     expect(transport.lastConnection.didRequestStartSession, isFalse);
     expect(transport.lastConnection.didWriteSessionStart, isFalse);
     await session.disconnect();
@@ -529,8 +534,15 @@ void main() {
       await session.initialize();
 
       expect(session.currentSnapshot.stage, CgmSyncStage.error);
-      expect(transport.connections, hasLength(1));
-      expect(transport.connections.single.didRemoveBond, isFalse);
+      expect(
+        session.currentSnapshot.metadata[aidexSetupPhaseMetadataKey],
+        AidexSetupPhase.discovery,
+      );
+      expect(transport.connections, hasLength(2));
+      expect(
+        transport.connections.every((connection) => !connection.didRemoveBond),
+        isTrue,
+      );
       expect(
         BleFailure.fromMetadata(
           session.currentSnapshot.metadata,
@@ -542,8 +554,11 @@ void main() {
     },
   );
 
-  test('session bonds before protected notification subscriptions', () async {
-    final transport = _FakeBleTransport(requireBondBeforeNotifications: true);
+  test('session bonds before discovery and refreshes the GATT link', () async {
+    final transport = _FakeBleTransport(
+      requireBondBeforeDiscovery: true,
+      requireBondBeforeNotifications: true,
+    );
     final session =
         await _activationTestDriver(
               transport,
@@ -552,18 +567,325 @@ void main() {
 
     await session.initialize();
 
-    final operations = transport.lastConnection.operations;
+    final operations = transport.operations;
     expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+    expect(transport.connections, hasLength(2));
+    expect(
+      transport.connections.first.operations,
+      isNot(contains('discoverServices')),
+      reason: 'The pre-bond GATT link must never perform service discovery.',
+    );
     expect(
       operations.indexOf('ensureBonded'),
-      lessThan(operations.indexOf('setNotify:${AidexUuids.f001}')),
+      lessThan(operations.indexOf('disconnect')),
+    );
+    expect(
+      operations,
+      containsAllInOrder(<String>[
+        'connect:1',
+        'currentBondState',
+        'ensureBonded',
+        'currentBondState',
+        'disconnect',
+        'connect:2',
+        'currentBondState',
+        'discoverServices',
+        'setNotify:${AidexUuids.f001}',
+      ]),
     );
     expect(
       operations.where((operation) => operation == 'discoverServices'),
-      hasLength(2),
-      reason: 'A newly established bond requires fresh GATT references.',
+      hasLength(1),
+      reason: 'Discovery must use only the fresh post-bond GATT connection.',
     );
     await session.disconnect();
+  });
+
+  test(
+    'a pre-existing Android bond still refreshes GATT before discovery',
+    () async {
+      final transport = _FakeBleTransport();
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      expect(transport.connections, hasLength(2));
+      expect(
+        transport.connections.first.operations,
+        isNot(contains('discoverServices')),
+      );
+      expect(
+        transport.operations,
+        containsAllInOrder(<String>[
+          'connect:1',
+          'currentBondState',
+          'ensureBonded',
+          'currentBondState',
+          'disconnect',
+          'connect:2',
+          'currentBondState',
+          'discoverServices',
+        ]),
+      );
+      expect(
+        transport.connections.where(
+          (connection) => connection.didRequestStartSession,
+        ),
+        isEmpty,
+      );
+      expect(
+        transport.connections.where(
+          (connection) => connection.didWriteSessionStart,
+        ),
+        isEmpty,
+      );
+      await session.disconnect();
+    },
+  );
+
+  test('setup emits only the closed phase set at exact boundaries', () async {
+    expect(AidexSetupPhase.values, const <String>{
+      'P01',
+      'P02',
+      'P03',
+      'P04',
+      'P05',
+      'P06',
+      'P07',
+      'P08',
+      'P09',
+      'P10',
+    });
+    final transport = _FakeBleTransport(
+      requireBondBeforeDiscovery: true,
+      requireBondBeforeNotifications: true,
+    );
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+    final observed = <String>{
+      if (session.currentSnapshot.metadata[aidexSetupPhaseMetadataKey]
+          case final String initialPhase)
+        initialPhase,
+    };
+    final subscription = session.snapshots.listen((snapshot) {
+      final phase = snapshot.metadata[aidexSetupPhaseMetadataKey];
+      if (phase != null) {
+        observed.add(phase);
+      }
+    });
+
+    await session.initialize();
+
+    expect(observed, AidexSetupPhase.values);
+    expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+    expect(
+      session.currentSnapshot.metadata,
+      isNot(contains(aidexSetupPhaseMetadataKey)),
+      reason: 'Completed setup phases must not mislabel runtime failures.',
+    );
+    await subscription.cancel();
+    await session.disconnect();
+  });
+
+  test(
+    'post-bond reconnect failure preserves a non-retryable BLE failure',
+    () async {
+      final transport = _FakeBleTransport(
+        requireBondBeforeDiscovery: true,
+        reconnectFailure: BleFailure(
+          kind: BleFailureKind.sensorPossiblyInUse,
+          operation: BleOperation.connect,
+          diagnosticCode: 'fake.reconnect.in-use',
+        ),
+      );
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+
+      await session.initialize();
+
+      final failure = BleFailure.fromMetadata(session.currentSnapshot.metadata);
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      expect(failure?.kind, BleFailureKind.sensorPossiblyInUse);
+      expect(failure?.operation, BleOperation.connect);
+      expect(failure?.diagnosticCode, 'fake.reconnect.in-use');
+      expect(failure?.allowsAutomaticRetry, isFalse);
+      expect(
+        session.currentSnapshot.metadata[aidexSetupPhaseMetadataKey],
+        AidexSetupPhase.reconnect,
+      );
+      expect(transport.operations, isNot(contains('discoverServices')));
+      expect(transport.connections.single.didRemoveBond, isFalse);
+      expect(transport.connections.single.didRequestStartSession, isFalse);
+
+      await session.disconnect();
+    },
+  );
+
+  test(
+    'bond-time disconnect event is ignored until the fresh GATT link',
+    () async {
+      final transport = _FakeBleTransport(
+        requireBondBeforeDiscovery: true,
+        disconnectDuringBonding: true,
+      );
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      expect(transport.connections, hasLength(2));
+      expect(
+        BleFailure.fromMetadata(session.currentSnapshot.metadata),
+        isNull,
+        reason: 'The intentional bond transition is not a lost connection.',
+      );
+      expect(
+        transport.operations,
+        containsAllInOrder(<String>[
+          'ensureBonded',
+          'bondConnectionDropped',
+          'disconnect',
+          'connect:2',
+          'discoverServices',
+        ]),
+      );
+
+      await session.disconnect();
+    },
+  );
+
+  test(
+    'post-bond reconnect cannot repeat explicit sensor activation',
+    () async {
+      final transport = _FakeBleTransport(
+        requireBondBeforeDiscovery: true,
+        uninitialized: true,
+      );
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+
+      await session.initialize();
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      expect(transport.connections, hasLength(2));
+      expect(
+        transport.connections
+            .where((connection) => connection.didRequestStartSession)
+            .length,
+        1,
+      );
+      expect(
+        transport.connections
+            .where((connection) => connection.didWriteSessionStart)
+            .length,
+        1,
+      );
+      await session.disconnect();
+    },
+  );
+
+  test('disconnect cancels a pending post-bond reconnect', () async {
+    final disconnectStarted = Completer<void>();
+    final allowDisconnect = Completer<void>();
+    final transport = _FakeBleTransport(
+      requireBondBeforeDiscovery: true,
+      uninitialized: true,
+      firstDisconnectStarted: disconnectStarted,
+      firstDisconnectRelease: allowDisconnect,
+    );
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+
+    await disconnectStarted.future.timeout(const Duration(seconds: 1));
+    final disconnectFuture = session.disconnect();
+    allowDisconnect.complete();
+    await disconnectFuture;
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+    expect(transport.connections, hasLength(1));
+    expect(transport.operations, isNot(contains('connect:2')));
+    expect(transport.operations, isNot(contains('discoverServices')));
+    expect(transport.connections.single.didRequestStartSession, isFalse);
+    expect(transport.connections.single.didWriteSessionStart, isFalse);
+  });
+
+  test(
+    'disconnect cancels setup while the initial connection is pending',
+    () async {
+      final connectStarted = Completer<void>();
+      final allowConnect = Completer<void>();
+      final transport = _FakeBleTransport(
+        initialConnectStarted: connectStarted,
+        initialConnectRelease: allowConnect,
+      );
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor(allowSessionActivation: true))
+              as AidexSession;
+
+      await connectStarted.future.timeout(const Duration(seconds: 1));
+      final disconnectFuture = session.disconnect();
+      allowConnect.complete();
+      await disconnectFuture;
+
+      expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+      expect(transport.connections, hasLength(1));
+      expect(
+        transport.operations,
+        containsAllInOrder(<String>['connect:1', 'disconnect']),
+      );
+      expect(transport.operations, isNot(contains('ensureBonded')));
+      expect(transport.operations, isNot(contains('discoverServices')));
+      expect(transport.connections.single.didRequestStartSession, isFalse);
+      expect(transport.connections.single.didWriteSessionStart, isFalse);
+    },
+  );
+
+  test('disconnect cancels setup before pairing can start', () async {
+    final bondStateReadStarted = Completer<void>();
+    final allowBondStateRead = Completer<void>();
+    final transport = _FakeBleTransport(
+      initialBondStateReadStarted: bondStateReadStarted,
+      initialBondStateReadRelease: allowBondStateRead,
+    );
+    final session =
+        await _activationTestDriver(
+              transport,
+            ).connect(_activationTestSensor(allowSessionActivation: true))
+            as AidexSession;
+
+    await bondStateReadStarted.future.timeout(const Duration(seconds: 1));
+    final disconnectFuture = session.disconnect();
+    allowBondStateRead.complete();
+    await disconnectFuture;
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+    expect(transport.operations, isNot(contains('ensureBonded')));
+    expect(transport.operations, isNot(contains('discoverServices')));
+    expect(transport.connections.single.didRequestStartSession, isFalse);
+    expect(transport.connections.single.didWriteSessionStart, isFalse);
   });
 
   test('bond failure exposes only safe structured recovery metadata', () async {
@@ -589,6 +911,7 @@ void main() {
     final failure = BleFailure.fromMetadata(snapshot.metadata);
     expect(snapshot.stage, CgmSyncStage.error);
     expect(snapshot.lastError, 'Bluetooth setup could not be completed.');
+    expect(snapshot.metadata[aidexSetupPhaseMetadataKey], AidexSetupPhase.bond);
     expect(failure?.kind, BleFailureKind.sensorPossiblyInUse);
     expect(failure?.allowsAutomaticRetry, isFalse);
     expect(transport.lastConnection.didRemoveBond, isFalse);
@@ -646,6 +969,7 @@ void main() {
     final snapshot = session.currentSnapshot;
     final failure = BleFailure.fromMetadata(snapshot.metadata);
     expect(snapshot.stage, CgmSyncStage.disconnected);
+    expect(snapshot.metadata, isNot(contains(aidexSetupPhaseMetadataKey)));
     expect(failure?.kind, BleFailureKind.deviceDisconnected);
     expect(failure?.operation, BleOperation.connect);
     expect(failure?.diagnosticCode, 'aidex.connection.disconnected');
@@ -679,6 +1003,7 @@ void main() {
       final snapshot = session.currentSnapshot;
       final failure = BleFailure.fromMetadata(snapshot.metadata);
       expect(snapshot.stage, CgmSyncStage.disconnected);
+      expect(snapshot.metadata, isNot(contains(aidexSetupPhaseMetadataKey)));
       expect(failure?.kind, BleFailureKind.bondRejected);
       expect(failure?.operation, BleOperation.bond);
       expect(failure?.diagnosticCode, diagnosticCode);
@@ -761,10 +1086,23 @@ class _FakeBleTransport implements BleTransport {
     this.initialSessionStopped,
     this.uninitialized = false,
     this.malformedSessionStart = false,
+    this.requireBondBeforeDiscovery = false,
     this.requireBondBeforeNotifications = false,
+    this.disconnectDuringBonding = false,
     this.bondFailure,
     this.historyRangePayload,
-  });
+    this.reconnectFailure,
+    this.initialConnectStarted,
+    this.initialConnectRelease,
+    this.initialBondStateReadStarted,
+    this.initialBondStateReadRelease,
+    this.firstDisconnectStarted,
+    this.firstDisconnectRelease,
+  }) : _isBonded =
+           !requireBondBeforeDiscovery &&
+           !requireBondBeforeNotifications &&
+           bondFailure == null,
+       _discoverServicesFailurePending = failDiscoverServicesOnce;
 
   final bool failDiscoverServicesOnce;
   final bool autoUpdateEnabled;
@@ -773,10 +1111,22 @@ class _FakeBleTransport implements BleTransport {
   final bool? initialSessionStopped;
   final bool uninitialized;
   final bool malformedSessionStart;
+  final bool requireBondBeforeDiscovery;
   final bool requireBondBeforeNotifications;
+  final bool disconnectDuringBonding;
   final BleFailure? bondFailure;
   final List<int>? historyRangePayload;
+  final BleFailure? reconnectFailure;
+  final Completer<void>? initialConnectStarted;
+  final Completer<void>? initialConnectRelease;
+  final Completer<void>? initialBondStateReadStarted;
+  final Completer<void>? initialBondStateReadRelease;
+  final Completer<void>? firstDisconnectStarted;
+  final Completer<void>? firstDisconnectRelease;
   final List<_FakeBleConnection> connections = <_FakeBleConnection>[];
+  final List<String> operations = <String>[];
+  bool _discoverServicesFailurePending;
+  bool _isBonded;
   late _FakeBleConnection lastConnection;
 
   @override
@@ -784,20 +1134,49 @@ class _FakeBleTransport implements BleTransport {
     String deviceId, {
     Duration timeout = const Duration(seconds: 10),
   }) async {
+    final attempt = connections.length + 1;
+    operations.add('connect:$attempt');
+    final failure = reconnectFailure;
+    if (attempt == 2 && failure != null) {
+      throw failure;
+    }
     lastConnection = _FakeBleConnection(
       deviceId,
-      failDiscoverServices: failDiscoverServicesOnce && connections.isEmpty,
+      failDiscoverServices: _discoverServicesFailurePending,
       autoUpdateEnabled: autoUpdateEnabled,
       initialSessionStart: initialSessionStart,
       initialElapsedMinutes: initialElapsedMinutes,
       initialSessionStopped: initialSessionStopped,
       uninitialized: uninitialized,
       malformedSessionStart: malformedSessionStart,
+      initiallyBonded: _isBonded,
+      requireBondBeforeDiscovery: requireBondBeforeDiscovery,
       requireBondBeforeNotifications: requireBondBeforeNotifications,
+      disconnectDuringBonding: disconnectDuringBonding,
       bondFailure: bondFailure,
       historyRangePayload: historyRangePayload,
+      sharedOperations: operations,
+      onDiscoverServicesFailure: () {
+        _discoverServicesFailurePending = false;
+      },
+      onBonded: () => _isBonded = true,
+      disconnectStarted: connections.isEmpty ? firstDisconnectStarted : null,
+      disconnectRelease: connections.isEmpty ? firstDisconnectRelease : null,
+      bondStateReadStarted: connections.isEmpty
+          ? initialBondStateReadStarted
+          : null,
+      bondStateReadRelease: connections.isEmpty
+          ? initialBondStateReadRelease
+          : null,
     );
     connections.add(lastConnection);
+    if (attempt == 1) {
+      final connectStarted = initialConnectStarted;
+      if (connectStarted != null && !connectStarted.isCompleted) {
+        connectStarted.complete();
+      }
+      await initialConnectRelease?.future;
+    }
     return lastConnection;
   }
 
@@ -847,15 +1226,34 @@ class _FakeBleConnection implements BleConnection {
     bool? initialSessionStopped,
     bool uninitialized = false,
     bool malformedSessionStart = false,
+    required bool initiallyBonded,
+    bool requireBondBeforeDiscovery = false,
     bool requireBondBeforeNotifications = false,
+    bool disconnectDuringBonding = false,
     BleFailure? bondFailure,
     List<int>? historyRangePayload,
+    required List<String> sharedOperations,
+    required void Function() onDiscoverServicesFailure,
+    required void Function() onBonded,
+    Completer<void>? disconnectStarted,
+    Completer<void>? disconnectRelease,
+    Completer<void>? bondStateReadStarted,
+    Completer<void>? bondStateReadRelease,
   }) : _failDiscoverServices = failDiscoverServices,
        _autoUpdateEnabled = autoUpdateEnabled,
+       _requireBondBeforeDiscovery = requireBondBeforeDiscovery,
        _requireBondBeforeNotifications = requireBondBeforeNotifications,
+       _disconnectDuringBonding = disconnectDuringBonding,
        _bondFailure = bondFailure,
        _historyRangePayload = historyRangePayload,
-       _isBonded = !requireBondBeforeNotifications && bondFailure == null {
+       _sharedOperations = sharedOperations,
+       _onDiscoverServicesFailure = onDiscoverServicesFailure,
+       _onBonded = onBonded,
+       _disconnectStarted = disconnectStarted,
+       _disconnectRelease = disconnectRelease,
+       _bondStateReadStarted = bondStateReadStarted,
+       _bondStateReadRelease = bondStateReadRelease,
+       _isBonded = initiallyBonded {
     _services = <BleService>[
       const BleService(
         uuid: AidexUuids.deviceInfoService,
@@ -1014,9 +1412,19 @@ class _FakeBleConnection implements BleConnection {
   late final Uint8List _pairResponse;
   bool _failDiscoverServices;
   bool _autoUpdateEnabled;
+  final bool _requireBondBeforeDiscovery;
   final bool _requireBondBeforeNotifications;
+  final bool _disconnectDuringBonding;
   final BleFailure? _bondFailure;
   final List<int>? _historyRangePayload;
+  final List<String> _sharedOperations;
+  final void Function() _onDiscoverServicesFailure;
+  final void Function() _onBonded;
+  final Completer<void>? _disconnectStarted;
+  final Completer<void>? _disconnectRelease;
+  final Completer<void>? _bondStateReadStarted;
+  final Completer<void>? _bondStateReadRelease;
+  bool _didPauseBondStateRead = false;
   bool _isBonded;
   bool _didInjectInvalidHistoryFrame = false;
   bool didVendorUnpair = false;
@@ -1060,14 +1468,28 @@ class _FakeBleConnection implements BleConnection {
   bool get supportsBondLifecycle => true;
 
   @override
-  Future<BleBondState> currentBondState() async =>
-      _isBonded ? BleBondState.bonded : BleBondState.unbonded;
+  Future<BleBondState> currentBondState() async {
+    _recordOperation('currentBondState');
+    if (!_didPauseBondStateRead) {
+      _didPauseBondStateRead = true;
+      final bondStateReadStarted = _bondStateReadStarted;
+      if (bondStateReadStarted != null && !bondStateReadStarted.isCompleted) {
+        bondStateReadStarted.complete();
+      }
+      await _bondStateReadRelease?.future;
+    }
+    return _isBonded ? BleBondState.bonded : BleBondState.unbonded;
+  }
 
   @override
   Future<List<BleService>> discoverServices() async {
-    operations.add('discoverServices');
+    _recordOperation('discoverServices');
+    if (_requireBondBeforeDiscovery && !_isBonded) {
+      throw StateError('Service discovery attempted before bonding');
+    }
     if (_failDiscoverServices) {
       _failDiscoverServices = false;
+      _onDiscoverServicesFailure();
       throw StateError('Device is disconnected');
     }
     return _services;
@@ -1075,6 +1497,12 @@ class _FakeBleConnection implements BleConnection {
 
   @override
   Future<void> disconnect() async {
+    _recordOperation('disconnect');
+    final disconnectStarted = _disconnectStarted;
+    if (disconnectStarted != null && !disconnectStarted.isCompleted) {
+      disconnectStarted.complete();
+    }
+    await _disconnectRelease?.future;
     await _connectionStates.close();
     for (final controller in _notifications.values) {
       await controller.close();
@@ -1083,12 +1511,18 @@ class _FakeBleConnection implements BleConnection {
 
   @override
   Future<void> ensureBonded() async {
-    operations.add('ensureBonded');
+    _recordOperation('ensureBonded');
     final failure = _bondFailure;
     if (failure != null) {
       throw failure;
     }
+    if (_disconnectDuringBonding) {
+      _recordOperation('bondConnectionDropped');
+      _connectionStates.add(BleConnectionState.disconnected);
+      await Future<void>.delayed(Duration.zero);
+    }
     _isBonded = true;
+    _onBonded();
   }
 
   @override
@@ -1113,7 +1547,7 @@ class _FakeBleConnection implements BleConnection {
 
   @override
   Future<void> requestMtu(int mtu) async {
-    operations.add('requestMtu:$mtu');
+    _recordOperation('requestMtu:$mtu');
   }
 
   @override
@@ -1121,7 +1555,7 @@ class _FakeBleConnection implements BleConnection {
     BleCharacteristicRef characteristic,
     bool enabled,
   ) async {
-    operations.add('setNotify:${characteristic.characteristicUuid}');
+    _recordOperation('setNotify:${characteristic.characteristicUuid}');
     if (_requireBondBeforeNotifications && !_isBonded) {
       throw BleFailure(
         kind: BleFailureKind.bondRejected,
@@ -1133,6 +1567,11 @@ class _FakeBleConnection implements BleConnection {
       characteristic.characteristicUuid,
       () => StreamController<List<int>>.broadcast(),
     );
+  }
+
+  void _recordOperation(String operation) {
+    operations.add(operation);
+    _sharedOperations.add(operation);
   }
 
   @override

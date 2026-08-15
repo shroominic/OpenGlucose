@@ -141,50 +141,31 @@ class FlutterBluePlusTransport implements BleTransport {
   }) async {
     try {
       await _ensureAdapterReady();
-      final device = fbp.BluetoothDevice.fromId(deviceId);
-      await device.connect(
-        // Keep compatibility with the app's locked flutter_blue_plus 2.2.x.
-        // ignore: deprecated_member_use
-        license: fbp.License.free,
-        timeout: timeout,
-        mtu: null,
+      final device = await connectWithScanStoppedRetry<fbp.BluetoothDevice>(
+        stopScan: fbp.FlutterBluePlus.stopScan,
+        connect: () async {
+          final device = fbp.BluetoothDevice.fromId(deviceId);
+          await device.connect(
+            // Keep compatibility with the app's locked flutter_blue_plus 2.2.x.
+            // ignore: deprecated_member_use
+            license: fbp.License.free,
+            timeout: timeout,
+            mtu: null,
+          );
+          return device;
+        },
+        shouldRetry: _shouldRetryAndroidConnect,
+        waitBeforeRetry: () =>
+            Future<void>.delayed(const Duration(milliseconds: 800)),
       );
       return _FlutterBluePlusConnection(
         device,
         operationTimeout: operationTimeout,
       );
     } catch (error, stackTrace) {
-      if (!_shouldRetryAndroidConnect(error)) {
-        Error.throwWithStackTrace(
-          classifyFlutterBluePlusFailure(
-            error,
-            operation: BleOperation.connect,
-          ),
-          stackTrace,
-        );
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 800));
-      final device = fbp.BluetoothDevice.fromId(deviceId);
-      try {
-        await device.connect(
-          // Keep compatibility with the app's locked flutter_blue_plus 2.2.x.
-          // ignore: deprecated_member_use
-          license: fbp.License.free,
-          timeout: timeout,
-          mtu: null,
-        );
-      } catch (retryError, retryStackTrace) {
-        Error.throwWithStackTrace(
-          classifyFlutterBluePlusFailure(
-            retryError,
-            operation: BleOperation.connect,
-          ),
-          retryStackTrace,
-        );
-      }
-      return _FlutterBluePlusConnection(
-        device,
-        operationTimeout: operationTimeout,
+      Error.throwWithStackTrace(
+        classifyFlutterBluePlusFailure(error, operation: BleOperation.connect),
+        stackTrace,
       );
     }
   }
@@ -292,6 +273,48 @@ class FlutterBluePlusTransport implements BleTransport {
   }
 }
 
+/// Runs both the initial connection attempt and its optional retry only after
+/// FlutterBluePlus has finished stopping its scanner.
+///
+/// Some Android Bluetooth stacks cannot establish GATT while a BLE scan is
+/// active. Calling [stopScan] unconditionally also serializes against a scan
+/// that is still starting inside FlutterBluePlus.
+@visibleForTesting
+Future<T> connectWithScanStoppedRetry<T>({
+  required Future<void> Function() stopScan,
+  required Future<T> Function() connect,
+  required bool Function(Object error) shouldRetry,
+  required Future<void> Function() waitBeforeRetry,
+}) async {
+  Future<T> attempt() async {
+    await stopScan();
+    return connect();
+  }
+
+  try {
+    return await attempt();
+  } catch (error, stackTrace) {
+    if (!shouldRetry(error)) {
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
+  await waitBeforeRetry();
+  return attempt();
+}
+
+/// Discovers the GATT table without subscribing to the optional Service
+/// Changed characteristic.
+///
+/// OpenGlucose does not consume FlutterBluePlus' service-reset stream, and the
+/// extra protected subscription can fail on stricter Android BLE stacks.
+@visibleForTesting
+Future<T> discoverServicesWithoutServiceChanged<T>(
+  Future<T> Function(bool subscribeToServicesChanged) discoverServices,
+) {
+  return discoverServices(false);
+}
+
 class _FlutterBluePlusConnection implements BleConnection {
   _FlutterBluePlusConnection(this._device, {required this.operationTimeout});
 
@@ -335,25 +358,17 @@ class _FlutterBluePlusConnection implements BleConnection {
       if (kIsWeb || !Platform.isAndroid) {
         return;
       }
-      final currentState = await currentBondState();
-      if (currentState == BleBondState.bonded) {
-        return;
-      }
-      if (currentState == BleBondState.bonding) {
-        final settledState = await _device.bondState
-            .where((state) => state != fbp.BluetoothBondState.bonding)
-            .first
-            .timeout(operationTimeout);
-        if (settledState != fbp.BluetoothBondState.bonded) {
-          throw BleFailure(
-            kind: BleFailureKind.bondRejected,
-            operation: BleOperation.bond,
-            diagnosticCode: 'fbp.bond.not-completed',
-          );
-        }
-        return;
-      }
-      await _device.createBond();
+      await ensureAndroidBond(
+        currentState: currentBondState,
+        bondStates: _device.bondState.map(
+          (state) => (
+            state: _mapBondState(state),
+            previousState: _mapOptionalBondState(_device.prevBondState),
+          ),
+        ),
+        createBond: () => _device.createBond(),
+        reconciliationTimeout: const Duration(seconds: 90),
+      );
     });
   }
 
@@ -364,11 +379,7 @@ class _FlutterBluePlusConnection implements BleConnection {
         return BleBondState.bonded;
       }
       final bondState = await _device.bondState.first;
-      return switch (bondState) {
-        fbp.BluetoothBondState.none => BleBondState.unbonded,
-        fbp.BluetoothBondState.bonding => BleBondState.bonding,
-        fbp.BluetoothBondState.bonded => BleBondState.bonded,
-      };
+      return _mapBondState(bondState);
     });
   }
 
@@ -387,9 +398,11 @@ class _FlutterBluePlusConnection implements BleConnection {
     return _runBleOperation<List<BleService>>(
       BleOperation.discoverServices,
       () async {
-        final services = await _device.discoverServices().timeout(
-          operationTimeout,
-        );
+        final services = await discoverServicesWithoutServiceChanged(
+          (subscribeToServicesChanged) => _device.discoverServices(
+            subscribeToServicesChanged: subscribeToServicesChanged,
+          ),
+        ).timeout(operationTimeout);
         _cacheServices(services);
         return services
             .where((service) => service.isPrimary)
@@ -560,6 +573,92 @@ class _FlutterBluePlusConnection implements BleConnection {
   String _characteristicKey(String serviceUuid, String characteristicUuid) {
     return '${_normalizeUuid(serviceUuid)}|${_normalizeUuid(characteristicUuid)}';
   }
+}
+
+/// Completes Android bonding even when the plugin loses its GATT connection
+/// after Android has already persisted the OS bond.
+///
+/// flutter_blue_plus races its bond-state response with the GATT connection
+/// stream. Some Android stacks disconnect GATT as the bond completes, causing
+/// `createBond` to throw `deviceIsDisconnected` even though the cached OS bond
+/// state is already `bonded`. Only that exact plugin failure is reconciled;
+/// rejection, timeout, and all other failures retain their original meaning.
+Future<void> ensureAndroidBond({
+  required Future<BleBondState> Function() currentState,
+  required Stream<AndroidBondStateObservation> bondStates,
+  required Future<void> Function() createBond,
+  required Duration reconciliationTimeout,
+}) async {
+  final initialState = await currentState();
+  if (initialState == BleBondState.bonded) {
+    return;
+  }
+  if (initialState == BleBondState.bonding) {
+    await _awaitBondOutcome(bondStates, reconciliationTimeout);
+    return;
+  }
+
+  try {
+    await createBond();
+  } catch (error, stackTrace) {
+    if (!_isGattDisconnectDuringCreateBond(error)) {
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+    await _awaitBondOutcome(bondStates, reconciliationTimeout);
+  }
+}
+
+typedef AndroidBondStateObservation = ({
+  BleBondState state,
+  BleBondState? previousState,
+});
+
+Future<void> _awaitBondOutcome(
+  Stream<AndroidBondStateObservation> bondStates,
+  Duration timeout,
+) async {
+  late final AndroidBondStateObservation outcome;
+  try {
+    outcome = await bondStates
+        .where(
+          (observation) =>
+              observation.state == BleBondState.bonded ||
+              observation.state == BleBondState.unbonded &&
+                  observation.previousState == BleBondState.bonding,
+        )
+        .first
+        .timeout(timeout);
+  } on TimeoutException {
+    throw BleFailure(
+      kind: BleFailureKind.bondTimedOut,
+      operation: BleOperation.bond,
+      diagnosticCode: 'fbp.bond.reconcile-timeout',
+    );
+  }
+  if (outcome.state != BleBondState.bonded) {
+    throw BleFailure(
+      kind: BleFailureKind.bondRejected,
+      operation: BleOperation.bond,
+      diagnosticCode: 'fbp.bond.not-completed',
+    );
+  }
+}
+
+bool _isGattDisconnectDuringCreateBond(Object error) {
+  return error is fbp.FlutterBluePlusException &&
+      error.platform == fbp.ErrorPlatform.fbp &&
+      error.function == 'createBond' &&
+      error.code == fbp.FbpErrorCode.deviceIsDisconnected.index;
+}
+
+BleBondState _mapBondState(fbp.BluetoothBondState state) => switch (state) {
+  fbp.BluetoothBondState.none => BleBondState.unbonded,
+  fbp.BluetoothBondState.bonding => BleBondState.bonding,
+  fbp.BluetoothBondState.bonded => BleBondState.bonded,
+};
+
+BleBondState? _mapOptionalBondState(fbp.BluetoothBondState? state) {
+  return state == null ? null : _mapBondState(state);
 }
 
 String _normalizeUuid(String value) => value.toUpperCase();

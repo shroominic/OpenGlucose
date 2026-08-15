@@ -1,16 +1,79 @@
 import 'dart:convert';
 
+import 'package:cgm_aidex/cgm_aidex.dart';
+import 'package:cgm_ble/cgm_ble.dart';
+import 'package:cgm_core/cgm_core.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
-import 'package:cgm_core/cgm_core.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets('BLE support copy action is private-build gated', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _PrivateSupportDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+    );
+    await controller.initialize();
+    await controller.connect(driver.sensor);
+
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+
+    final copyButton = find.byKey(
+      const ValueKey<String>('copyBleSupportCodeButton'),
+    );
+    if (kOgPrivateSupport) {
+      expect(copyButton, findsOneWidget);
+      String? copiedText;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await tester.tap(copyButton);
+      await tester.pumpAndSettle();
+      expect(find.text('Support code copied'), findsOneWidget);
+      expect(
+        copiedText,
+        'OGSUP1 phase=P05 op=subscribe kind=bondRejected '
+        'code=fake.subscribe.authentication-required',
+      );
+    } else {
+      expect(copyButton, findsNothing);
+    }
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
   testWidgets('advanced settings route exposes the scenario picker', (
     tester,
   ) async {
@@ -53,10 +116,7 @@ void main() {
     );
     expect(find.byType(TabBar), findsNothing);
     expect(find.byType(BottomSheet), findsNothing);
-    await tester.drag(
-      find.byType(CustomScrollView),
-      const Offset(0, -700),
-    );
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -700));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Advanced'));
     await tester.pumpAndSettle();
@@ -75,10 +135,7 @@ void main() {
     // inside a nested destination without requiring the route to be reopened.
     Navigator.of(tester.element(picker)).pop();
     await tester.pumpAndSettle();
-    await tester.drag(
-      find.byType(CustomScrollView),
-      const Offset(0, 900),
-    );
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 900));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Glucose & display'));
     await tester.tap(find.text('Glucose & display'));
@@ -88,10 +145,7 @@ void main() {
     expect(find.text('Clear cache'), findsNothing);
     Navigator.of(tester.element(find.text('Display settings'))).pop();
     await tester.pumpAndSettle();
-    await tester.drag(
-      find.byType(CustomScrollView),
-      const Offset(0, 900),
-    );
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 900));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Current sensor'));
     await tester.pumpAndSettle();
@@ -285,4 +339,95 @@ void main() {
     controller.dispose();
     expect(preferences.getString('openHealth.lastSensor'), rememberedJson);
   });
+}
+
+class _PrivateSupportDriver implements CgmDriver {
+  final DiscoveredSensor sensor = const DiscoveredSensor(
+    driverId: 'private-support-test',
+    deviceId: 'sensitive-device-id',
+    displayName: 'Sensitive Sensor Name',
+    storageKey: 'sensitive-storage-key',
+    rssi: -50,
+    capabilities: CgmCapabilities(supportsDirectBle: true),
+  );
+
+  @override
+  String get driverId => sensor.driverId;
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async {
+    return _PrivateSupportSession(sensor);
+  }
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) => const Stream<DiscoveredSensor>.empty();
+}
+
+class _PrivateSupportSession implements CgmSession {
+  _PrivateSupportSession(this.sensor)
+    : currentSnapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.subscribe,
+          ...BleFailure(
+            kind: BleFailureKind.bondRejected,
+            operation: BleOperation.subscribe,
+            diagnosticCode: 'fake.subscribe.authentication-required',
+          ).toMetadata(),
+          'deviceId': sensor.deviceId,
+        },
+        lastError: 'Bluetooth setup could not be completed.',
+      );
+
+  @override
+  final DiscoveredSensor sensor;
+
+  @override
+  final CgmSessionSnapshot currentSnapshot;
+
+  @override
+  Stream<CgmLogEntry> get logs => const Stream<CgmLogEntry>.empty();
+
+  @override
+  Stream<CgmSessionSnapshot> get snapshots =>
+      const Stream<CgmSessionSnapshot>.empty();
+
+  @override
+  CgmUnsafeAdmin? get unsafeAdmin => null;
+
+  @override
+  Future<void> disconnect() async {}
+
+  @override
+  Future<List<CgmCalibrationEntry>> fetchCalibrations() async =>
+      const <CgmCalibrationEntry>[];
+
+  @override
+  Future<void> refresh() async {}
+
+  @override
+  Future<List<CgmDiagnosticItem>> refreshDiagnostics() async =>
+      const <CgmDiagnosticItem>[];
+
+  @override
+  Future<void> refreshLiveData() async {}
+
+  @override
+  Future<void> submitCalibration({
+    required int glucoseMgdl,
+    int? sensorMinute,
+    DateTime? recordedAt,
+  }) async {}
+
+  @override
+  Future<void> syncHistory({
+    bool includeRawHistory = false,
+    int? requestedStartOffset,
+  }) async {}
 }

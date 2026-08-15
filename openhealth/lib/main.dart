@@ -28,6 +28,7 @@ import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -661,9 +662,7 @@ class _ScanView extends StatelessWidget {
         if (controller.sensors.isNotEmpty &&
             !controller.scanning &&
             controller.scanFailure != null)
-          SliverToBoxAdapter(
-            child: _ScanFailureBanner(controller: controller),
-          ),
+          SliverToBoxAdapter(child: _ScanFailureBanner(controller: controller)),
         if (controller.sensors.isEmpty &&
             !controller.scanning &&
             controller.scanFailure != null)
@@ -1242,6 +1241,16 @@ class _DashboardHeroCard extends StatefulWidget {
 class _DashboardHeroCardState extends State<_DashboardHeroCard> {
   Timer? _ticker;
 
+  Future<void> _copySupportCode(String supportCode) async {
+    await Clipboard.setData(ClipboardData(text: supportCode));
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Support code copied')));
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1268,6 +1277,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final latest = widget.controller.displayLatestReading;
     final warmup = computeWarmupStatus(snapshot, latestReading: latest);
     final primaryError = primaryErrorTextForSnapshot(snapshot);
+    final privateSupportCode =
+        kOgPrivateSupport && shouldOfferPrivateBleSupportCode(snapshot)
+        ? privateBleSupportCodeForSnapshot(snapshot)
+        : null;
 
     final String bigValue;
     final String unitLabel;
@@ -1387,6 +1400,20 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                     ],
                   ),
                 ],
+              ],
+              if (privateSupportCode != null) ...<Widget>[
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  key: const ValueKey<String>('copyBleSupportCodeButton'),
+                  onPressed: () =>
+                      unawaited(_copySupportCode(privateSupportCode)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFD6ECE7),
+                    side: const BorderSide(color: Color(0xFF9CC9C1)),
+                  ),
+                  icon: const Icon(Icons.copy_rounded),
+                  label: const Text('Copy support code'),
+                ),
               ],
             ],
           ),
@@ -2193,9 +2220,7 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
                   '${hiddenWarmupCount == 1 ? 'reading is' : 'readings are'} '
                   'included for a complete export. These remain hidden from '
                   'charts, recaps, and Apple Health.',
-                  key: const ValueKey<String>(
-                    'archivedExportWarmupDisclosure',
-                  ),
+                  key: const ValueKey<String>('archivedExportWarmupDisclosure'),
                 ),
               ],
               const SizedBox(height: 4),
