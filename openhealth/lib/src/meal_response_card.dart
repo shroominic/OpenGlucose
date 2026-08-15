@@ -115,7 +115,7 @@ class MealResponseCard extends StatelessWidget {
                     const SizedBox(width: 7),
                     Expanded(
                       child: Text(
-                        summary.safetyBoundary,
+                        _safetyBoundary,
                         key: const ValueKey<String>('mealResponseSafety'),
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: const Color(0xFF49615D),
@@ -148,6 +148,11 @@ class MealResponseCard extends StatelessWidget {
       'Across ${summary.mealCount} logged '
           '${summary.mealCount == 1 ? 'meal' : 'meals'} · local timing only.',
   };
+
+  String get _safetyBoundary {
+    final value = summary.safetyBoundary.trim();
+    return value.isEmpty ? mealResponseSafetyBoundary : value;
+  }
 
   String _formatDelta(double valueMgdl) {
     final value = unit.convertFromMgdl(valueMgdl);
