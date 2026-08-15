@@ -49,9 +49,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
   @override
   void initState() {
     super.initState();
-    _surfaceController = AiInsightSurfaceController(
-      generate: _generateInsight,
-    );
+    _surfaceController = AiInsightSurfaceController(generate: _generateInsight);
     unawaited(_load());
   }
 
@@ -341,9 +339,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
         AiInsightSurface(
           controller: _surfaceController,
           onEnable: () {
-            setState(
-              () => _settings = _settings.copyWith(enabled: true),
-            );
+            setState(() => _settings = _settings.copyWith(enabled: true));
             _surfaceController.setEnabled(_hasKey);
           },
           onGenerate: _busy ? null : () => unawaited(_generateNow()),

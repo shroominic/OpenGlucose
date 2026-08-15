@@ -19,9 +19,8 @@ class AiInsightSurfaceState {
   final List<MetabolicObservation> observations;
   final String? errorMessage;
 
-  bool get hasEvidence => observations.any(
-    (observation) => observation.isEvidenceBacked,
-  );
+  bool get hasEvidence =>
+      observations.any((observation) => observation.isEvidenceBacked);
 }
 
 /// Presentation/controller seam for the opt-in AI product layer.
@@ -474,7 +473,9 @@ class _ReadyState extends StatelessWidget {
 
 String _safeError(String message) {
   final cleaned = _redactSensitiveText(message).trim();
-  return cleaned.isEmpty ? 'Could not create the insight. Try again later.' : cleaned;
+  return cleaned.isEmpty
+      ? 'Could not create the insight. Try again later.'
+      : cleaned;
 }
 
 /// Removes likely journal lines and common secret-shaped strings before model
@@ -483,7 +484,11 @@ String _safeError(String message) {
 String _redactSensitiveText(String text) {
   var sanitized = text;
   sanitized = sanitized.replaceAll(
-    RegExp(r'^\s*(?:note|journal|memo|comment|text)\s*[:\-].*$', multiLine: true, caseSensitive: false),
+    RegExp(
+      r'^\s*(?:note|journal|memo|comment|text)\s*[:\-].*$',
+      multiLine: true,
+      caseSensitive: false,
+    ),
     '[Journal text hidden]',
   );
   sanitized = sanitized.replaceAll(

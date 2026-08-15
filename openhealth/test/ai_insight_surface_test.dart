@@ -31,55 +31,66 @@ void main() {
     ],
   );
 
-  AiInsight insight({String body = 'Your mornings look steadier.'}) => AiInsight(
-    id: 'insight-1',
-    createdAt: windowEnd,
-    category: AiInsightCategory.summary,
-    title: 'A small pattern to explore',
-    body: body,
-    windowStart: windowStart,
-    windowEnd: windowEnd,
-    evidence: observation().evidence,
+  AiInsight insight({String body = 'Your mornings look steadier.'}) =>
+      AiInsight(
+        id: 'insight-1',
+        createdAt: windowEnd,
+        category: AiInsightCategory.summary,
+        title: 'A small pattern to explore',
+        body: body,
+        windowStart: windowStart,
+        windowEnd: windowEnd,
+        evidence: observation().evidence,
+      );
+
+  test(
+    'starts disabled by default and never calls a missing generator',
+    () async {
+      var calls = 0;
+      final controller = AiInsightSurfaceController(
+        generate: () async {
+          calls++;
+          return insight();
+        },
+      );
+
+      expect(controller.state.status, AiInsightSurfaceStatus.disabled);
+      await controller.generate();
+
+      expect(calls, 0);
+      expect(controller.state.status, AiInsightSurfaceStatus.disabled);
+    },
   );
 
-  test('starts disabled by default and never calls a missing generator', () async {
-    var calls = 0;
-    final controller = AiInsightSurfaceController(
-      generate: () async {
-        calls++;
-        return insight();
-      },
-    );
+  test(
+    'exposes loading and ready states while consuming local observations',
+    () async {
+      final completer = Completer<AiInsight?>();
+      final controller = AiInsightSurfaceController(
+        enabled: true,
+        observations: <MetabolicObservation>[observation()],
+        generate: () => completer.future,
+      );
 
-    expect(controller.state.status, AiInsightSurfaceStatus.disabled);
-    await controller.generate();
+      final generation = controller.generate();
+      expect(controller.state.status, AiInsightSurfaceStatus.loading);
+      completer.complete(insight());
+      await generation;
 
-    expect(calls, 0);
-    expect(controller.state.status, AiInsightSurfaceStatus.disabled);
-  });
-
-  test('exposes loading and ready states while consuming local observations', () async {
-    final completer = Completer<AiInsight?>();
-    final controller = AiInsightSurfaceController(
-      enabled: true,
-      observations: <MetabolicObservation>[observation()],
-      generate: () => completer.future,
-    );
-
-    final generation = controller.generate();
-    expect(controller.state.status, AiInsightSurfaceStatus.loading);
-    completer.complete(insight());
-    await generation;
-
-    expect(controller.state.status, AiInsightSurfaceStatus.ready);
-    expect(controller.state.observations.single.title, 'Typical glucose level');
-    expect(controller.state.insight?.title, 'A small pattern to explore');
-  });
+      expect(controller.state.status, AiInsightSurfaceStatus.ready);
+      expect(
+        controller.state.observations.single.title,
+        'Typical glucose level',
+      );
+      expect(controller.state.insight?.title, 'A small pattern to explore');
+    },
+  );
 
   test('converts generation failures into a retryable error state', () async {
     final controller = AiInsightSurfaceController(
       enabled: true,
-      generate: () async => throw const AiGenerationException('provider unavailable'),
+      generate: () async =>
+          throw const AiGenerationException('provider unavailable'),
     );
 
     await controller.generate();
@@ -103,13 +114,14 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(
-          body: AiInsightSurface(controller: controller),
-        ),
+        home: Scaffold(body: AiInsightSurface(controller: controller)),
       ),
     );
 
-    expect(find.byKey(const ValueKey<String>('aiInsightSurface')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('aiInsightSurface')),
+      findsOneWidget,
+    );
     expect(find.text('A small pattern to explore'), findsOneWidget);
     expect(find.textContaining('private journal says hello'), findsNothing);
     expect(find.textContaining('sk-test_123456789'), findsNothing);
@@ -136,7 +148,9 @@ void main() {
     );
 
     expect(find.text('AI insights are off'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey<String>('aiInsightEnableButton')));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('aiInsightEnableButton')),
+    );
     expect(enabled, isTrue);
     await tester.pump();
     expect(find.text('AI insights need a little more data'), findsOneWidget);
