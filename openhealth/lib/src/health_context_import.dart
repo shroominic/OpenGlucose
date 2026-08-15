@@ -190,6 +190,8 @@ class HealthPackageContextReader implements HealthContextReader {
           units[type] = HealthDataUnit.BEATS_PER_MINUTE;
         case HealthDataType.STEPS:
           units[type] = HealthDataUnit.COUNT;
+        // The plugin enum has many values outside the importer contract.
+        // ignore: no_default_cases
         default:
           break;
       }
@@ -420,6 +422,8 @@ class HealthContextImporter {
           source: source,
           metadata: metadata,
         );
+      // Unsupported platform records fail closed rather than being guessed.
+      // ignore: no_default_cases
       default:
         return null;
     }
@@ -442,6 +446,8 @@ class HealthContextImporter {
       case HealthDataType.SLEEP_UNKNOWN:
       case HealthDataType.SLEEP_OUT_OF_BED:
         return SleepStage.asleep;
+      // Sleep categories are intentionally the only values mapped here.
+      // ignore: no_default_cases
       default:
         return SleepStage.asleep;
     }
