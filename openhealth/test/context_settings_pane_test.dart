@@ -42,12 +42,11 @@ void main() {
 
   testWidgets(
     'sync passes selected categories and a bounded seven-day window',
-    (
-      tester,
-    ) async {
+    (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final reader = _RecordingReader();
       var factoryCalls = 0;
+      var refreshCalls = 0;
       final now = DateTime.utc(2026, 8, 15, 12);
 
       await tester.pumpWidget(
@@ -61,6 +60,9 @@ void main() {
                   reader: reader,
                   repository: InMemoryHealthRepository(),
                 );
+              },
+              onSyncCompleted: () async {
+                refreshCalls += 1;
               },
             ),
           ),
@@ -80,6 +82,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(factoryCalls, 1);
+      expect(refreshCalls, 1);
       expect(reader.start, now.subtract(const Duration(days: 7)));
       expect(reader.end, now);
       expect(reader.lastRequestedTypes, <HealthDataType>[

@@ -1,6 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
+import 'body_timeline_context.dart';
 import 'display_preferences.dart';
 
 /// Renderable categories in the local body timeline.
@@ -227,6 +228,8 @@ class BodyTimelineCard extends StatelessWidget {
     this.now,
     this.preferences = const DisplayPreferences(),
     this.maxItems = 8,
+    this.contextStatus = BodyTimelineContextStatus.ready,
+    this.contextError,
   });
 
   final List<CgmReading> readings;
@@ -235,6 +238,8 @@ class BodyTimelineCard extends StatelessWidget {
   final DateTime? now;
   final DisplayPreferences preferences;
   final int maxItems;
+  final BodyTimelineContextStatus contextStatus;
+  final String? contextError;
 
   @override
   Widget build(BuildContext context) {
@@ -283,6 +288,10 @@ class BodyTimelineCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
+            if (contextStatus != BodyTimelineContextStatus.ready) ...<Widget>[
+              _ContextStatusMessage(status: contextStatus, error: contextError),
+              const SizedBox(height: 10),
+            ],
             if (items.isEmpty)
               const Text(
                 'No body context yet. Add a meal, exercise, or note, or sync '
@@ -292,15 +301,73 @@ class BodyTimelineCard extends StatelessWidget {
             else
               for (var index = 0; index < items.length; index++) ...<Widget>[
                 if (index > 0) const Divider(height: 16),
-                _BodyTimelineRow(
-                  item: items[index],
-                  preferences: preferences,
-                ),
+                _BodyTimelineRow(item: items[index], preferences: preferences),
               ],
             const SizedBox(height: 10),
             const Text(
               'Local wellness context—not medical advice.',
               style: TextStyle(color: Color(0xFF5B6E6A), fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ContextStatusMessage extends StatelessWidget {
+  const _ContextStatusMessage({required this.status, this.error});
+
+  final BodyTimelineContextStatus status;
+  final String? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final (IconData icon, String message) = switch (status) {
+      BodyTimelineContextStatus.idle => (
+        Icons.sync_outlined,
+        'Local context will appear after the first foreground refresh.',
+      ),
+      BodyTimelineContextStatus.loading => (
+        Icons.hourglass_top_rounded,
+        'Loading local context…',
+      ),
+      BodyTimelineContextStatus.empty => (
+        Icons.insights_outlined,
+        'No activity, sleep, heart-rate, or journal context for today yet.',
+      ),
+      BodyTimelineContextStatus.error => (
+        Icons.warning_amber_rounded,
+        error ?? 'Local context is unavailable right now. Try again.',
+      ),
+      BodyTimelineContextStatus.ready => (Icons.check_rounded, ''),
+    };
+    if (message.isEmpty) return const SizedBox.shrink();
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: status == BodyTimelineContextStatus.error
+            ? const Color(0xFFFFF3E8)
+            : const Color(0xFFF1F5F4),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Icon(
+              icon,
+              size: 18,
+              color: status == BodyTimelineContextStatus.error
+                  ? const Color(0xFF9A4D00)
+                  : const Color(0xFF0B6E69),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(color: Color(0xFF49615D)),
+              ),
             ),
           ],
         ),
@@ -346,10 +413,7 @@ class _BodyTimelineRow extends StatelessWidget {
               const SizedBox(height: 4),
               Text(
                 '${item.sourceLabel} · ${item.freshnessLabel}',
-                style: const TextStyle(
-                  color: Color(0xFF5B6E6A),
-                  fontSize: 11,
-                ),
+                style: const TextStyle(color: Color(0xFF5B6E6A), fontSize: 11),
               ),
             ],
           ),

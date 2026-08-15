@@ -18,6 +18,7 @@ import 'persistence/health_store.dart';
 /// repository and reader, while production opens the protected local store
 /// only after the user explicitly taps "Sync context".
 typedef HealthContextImporterFactory = Future<HealthContextImporter> Function();
+typedef HealthContextSyncCompleted = Future<void> Function();
 
 const _healthContextSettingsKey = 'openHealth.healthContextImportSettings';
 const _healthContextSyncWindow = Duration(days: 7);
@@ -35,12 +36,14 @@ class IntegrationsSettingsPane extends StatelessWidget {
     required this.controller,
     this.healthContextImporterFactory,
     this.healthContextNow,
+    this.onHealthContextSyncCompleted,
   });
 
   final HealthExportController healthExport;
   final CgmAppController controller;
   final HealthContextImporterFactory? healthContextImporterFactory;
   final DateTime Function()? healthContextNow;
+  final HealthContextSyncCompleted? onHealthContextSyncCompleted;
 
   List<CgmReading> get _readings => controller.visibleHistory;
 
@@ -77,6 +80,7 @@ class IntegrationsSettingsPane extends StatelessWidget {
             HealthContextSettingsCard(
               importerFactory: healthContextImporterFactory,
               now: healthContextNow,
+              onSyncCompleted: onHealthContextSyncCompleted,
             ),
           ],
         );
@@ -92,6 +96,7 @@ class HealthContextSettingsCard extends StatefulWidget {
     super.key,
     this.importerFactory,
     this.now,
+    this.onSyncCompleted,
   });
 
   /// Optional seam for deterministic widget tests and demo surfaces.
@@ -99,6 +104,10 @@ class HealthContextSettingsCard extends StatefulWidget {
 
   /// Optional clock seam; production uses the device clock in UTC.
   final DateTime Function()? now;
+
+  /// Called after the bounded import completes so the foreground timeline can
+  /// reload local records. It is deliberately not a background callback.
+  final HealthContextSyncCompleted? onSyncCompleted;
 
   @override
   State<HealthContextSettingsCard> createState() =>
@@ -156,6 +165,7 @@ class _HealthContextSettingsCardState extends State<HealthContextSettingsCard> {
       _status = null;
     });
     HealthContextImporter? importer;
+    var didSync = false;
     try {
       importer = await (widget.importerFactory ?? _defaultImporterFactory)();
       final end = (widget.now ?? DateTime.now)().toUtc();
@@ -164,6 +174,7 @@ class _HealthContextSettingsCardState extends State<HealthContextSettingsCard> {
         end: end,
         settings: _settings,
       );
+      didSync = true;
       if (mounted) {
         setState(() => _status = _statusForResult(result));
       }
@@ -180,6 +191,14 @@ class _HealthContextSettingsCardState extends State<HealthContextSettingsCard> {
         await importer?.repository.close();
       } on Object {
         // Closing is best-effort after a bounded foreground operation.
+      }
+      if (didSync) {
+        try {
+          await widget.onSyncCompleted?.call();
+        } on Object {
+          // A timeline refresh is best-effort and must not turn a completed
+          // import into a misleading health-sync failure.
+        }
       }
       if (mounted) setState(() => _busy = false);
     }
@@ -252,49 +271,43 @@ class _HealthContextSettingsCardState extends State<HealthContextSettingsCard> {
               key: const ValueKey<String>('contextStepsSwitch'),
               title: 'Steps',
               value: _settings.steps,
-              onChanged: (value) => _updateSettings(
-                _settings.copyWith(steps: value),
-              ),
+              onChanged: (value) =>
+                  _updateSettings(_settings.copyWith(steps: value)),
             ),
             _switchTile(
               key: const ValueKey<String>('contextWorkoutsSwitch'),
               title: 'Workouts',
               value: _settings.workouts,
-              onChanged: (value) => _updateSettings(
-                _settings.copyWith(workouts: value),
-              ),
+              onChanged: (value) =>
+                  _updateSettings(_settings.copyWith(workouts: value)),
             ),
             _switchTile(
               key: const ValueKey<String>('contextSleepSwitch'),
               title: 'Sleep',
               value: _settings.sleep,
-              onChanged: (value) => _updateSettings(
-                _settings.copyWith(sleep: value),
-              ),
+              onChanged: (value) =>
+                  _updateSettings(_settings.copyWith(sleep: value)),
             ),
             _switchTile(
               key: const ValueKey<String>('contextHeartRateSwitch'),
               title: 'Heart rate',
               value: _settings.heartRate,
-              onChanged: (value) => _updateSettings(
-                _settings.copyWith(heartRate: value),
-              ),
+              onChanged: (value) =>
+                  _updateSettings(_settings.copyWith(heartRate: value)),
             ),
             _switchTile(
               key: const ValueKey<String>('contextActiveEnergySwitch'),
               title: 'Active energy',
               value: _settings.activeEnergy,
-              onChanged: (value) => _updateSettings(
-                _settings.copyWith(activeEnergy: value),
-              ),
+              onChanged: (value) =>
+                  _updateSettings(_settings.copyWith(activeEnergy: value)),
             ),
             _switchTile(
               key: const ValueKey<String>('contextDistanceSwitch'),
               title: 'Walking distance',
               value: _settings.distance,
-              onChanged: (value) => _updateSettings(
-                _settings.copyWith(distance: value),
-              ),
+              onChanged: (value) =>
+                  _updateSettings(_settings.copyWith(distance: value)),
             ),
             const SizedBox(height: 8),
             FilledButton.icon(

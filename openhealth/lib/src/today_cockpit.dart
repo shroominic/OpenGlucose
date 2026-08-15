@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
 import 'body_timeline.dart';
+import 'body_timeline_context.dart';
 import 'display_preferences.dart';
 import 'evidence_observation_card.dart';
 
@@ -23,6 +24,9 @@ class TodayCockpit extends StatelessWidget {
     this.bodyTimelineContext,
     this.bodyTimelineContextBuilder,
     this.bodyTimelineObservations = const <MetabolicObservation>[],
+    this.bodyTimelineContextStatus = BodyTimelineContextStatus.ready,
+    this.bodyTimelineContextError,
+    this.bodyTimelineListenable,
     this.showBodyTimeline = false,
     this.observations = const <MetabolicObservation>[],
     this.safetyBoundary = AiDisclaimer.short,
@@ -38,6 +42,9 @@ class TodayCockpit extends StatelessWidget {
   final JournalContext? bodyTimelineContext;
   final JournalContext? Function()? bodyTimelineContextBuilder;
   final List<MetabolicObservation> bodyTimelineObservations;
+  final BodyTimelineContextStatus bodyTimelineContextStatus;
+  final String? bodyTimelineContextError;
+  final Listenable? bodyTimelineListenable;
   final bool showBodyTimeline;
   final List<MetabolicObservation> observations;
   final String safetyBoundary;
@@ -50,10 +57,13 @@ class TodayCockpit extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final listenable = journalListenable;
-    if (listenable != null) {
+    final listenables = <Listenable>[
+      if (journalListenable != null) journalListenable!,
+      if (bodyTimelineListenable != null) bodyTimelineListenable!,
+    ];
+    if (listenables.isNotEmpty) {
       return AnimatedBuilder(
-        animation: listenable,
+        animation: Listenable.merge(listenables),
         builder: (context, _) => _buildCockpit(context),
       );
     }
@@ -218,6 +228,8 @@ class TodayCockpit extends StatelessWidget {
             observations: bodyTimelineObservations,
             now: reference,
             preferences: preferences,
+            contextStatus: bodyTimelineContextStatus,
+            contextError: bodyTimelineContextError,
           ),
         ],
       ],

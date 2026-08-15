@@ -26,6 +26,9 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - Added a compact local Body timeline that interleaves glucose, journal,
   imported activity/sleep/heart-rate rows, and evidence-backed observations
   with source and freshness labels.
+- Added foreground-only context loading for the Today body timeline, including
+  explicit loading, empty, and fail-closed error states after Health sync,
+  journal capture, app resume, and pull-to-refresh.
 - Added a redacted-by-default, adapter-neutral glanceable surface contract for
   current glucose, freshness, warmup, context summary, and alert state. Native
   notification/widget payloads remain unchanged until a platform mapping is

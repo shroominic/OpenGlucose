@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/body_timeline.dart';
+import 'package:openglucose/src/body_timeline_context.dart';
 import 'package:openglucose/src/display_preferences.dart';
 
 void main() {
@@ -141,5 +142,35 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('diagnos'), findsNothing);
+  });
+
+  testWidgets('shows local context loading and error states', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: BodyTimelineCard(
+            readings: const <CgmReading>[],
+            contextStatus: BodyTimelineContextStatus.loading,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('Loading local context…'), findsOneWidget);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: BodyTimelineCard(
+            readings: const <CgmReading>[],
+            contextStatus: BodyTimelineContextStatus.error,
+            contextError: 'Could not load local body context. Try again.',
+          ),
+        ),
+      ),
+    );
+    expect(
+      find.text('Could not load local body context. Try again.'),
+      findsOneWidget,
+    );
   });
 }
