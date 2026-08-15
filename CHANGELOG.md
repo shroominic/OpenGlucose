@@ -14,8 +14,9 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 - Added a local-only glucose alert evaluator and bounded episode history for
   low, high, and stale-reading conditions. The foreground monitor persists
-  transitions without producing native notification or lock-screen payloads;
-  platform surfaces can consume the same deterministic contract later.
+  transitions in the restricted local-state store without producing native
+  notification or lock-screen payloads; platform surfaces can consume the
+  same deterministic contract later.
 
 ### Changed
 

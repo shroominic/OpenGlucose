@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/alerts/glucose_alerts.dart';
+import 'package:openglucose/src/health_state_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cgm_core/cgm_core.dart';
 
@@ -217,12 +218,12 @@ void main() {
     });
   });
 
-  group('SharedPreferencesGlucoseAlertHistory', () {
+  group('HealthStateGlucoseAlertHistory', () {
     test('persists locally and caps retained records', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final preferences = await SharedPreferences.getInstance();
-      final store = SharedPreferencesGlucoseAlertHistory(
-        preferences,
+      final store = HealthStateGlucoseAlertHistory(
+        PreferencesHealthStateStore(preferences),
         maxRecords: 1,
       );
       final history = GlucoseAlertHistory(<GlucoseAlertRecord>[

@@ -1,7 +1,8 @@
 import 'dart:convert';
 
 import 'package:cgm_core/cgm_core.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+
+import '../health_state_store.dart';
 
 /// A user-visible, wellness-only glucose freshness/threshold condition.
 enum GlucoseAlertType { low, high, stale }
@@ -300,22 +301,25 @@ abstract interface class GlucoseAlertHistoryPersistence {
   Future<void> clear();
 }
 
-/// SharedPreferences-backed local history with a bounded retention window.
-class SharedPreferencesGlucoseAlertHistory
-    implements GlucoseAlertHistoryPersistence {
-  SharedPreferencesGlucoseAlertHistory(
-    this.preferences, {
+/// Restricted local-state-backed history with a bounded retention window.
+///
+/// Native builds should pass the app's restricted file-backed state store so entries stay
+/// in the backup-excluded health-state directory. The preferences-backed store
+/// remains suitable for the web demo and deterministic tests.
+class HealthStateGlucoseAlertHistory implements GlucoseAlertHistoryPersistence {
+  HealthStateGlucoseAlertHistory(
+    this.store, {
     this.maxRecords = 200,
   }) : assert(maxRecords > 0, 'maxRecords must be greater than zero');
 
-  static const storageKey = 'openHealth.glucoseAlertHistory.v1';
+  static const storageKey = 'openHealth.glucoseAlertHistory';
 
-  final SharedPreferences preferences;
+  final HealthStateStore store;
   final int maxRecords;
 
   @override
   Future<GlucoseAlertHistory> load() async {
-    final raw = preferences.getString(storageKey);
+    final raw = store.getString(storageKey);
     if (raw == null || raw.isEmpty) return GlucoseAlertHistory.empty();
     final decoded = jsonDecode(raw);
     if (decoded is! List<Object?>) {
@@ -332,17 +336,12 @@ class SharedPreferencesGlucoseAlertHistory
     final encoded = jsonEncode(
       records.map((record) => record.toJson()).toList(growable: false),
     );
-    if (!await preferences.setString(storageKey, encoded)) {
-      throw StateError('Could not persist local glucose alert history.');
-    }
+    await store.setString(storageKey, encoded);
   }
 
   @override
   Future<void> clear() async {
-    if (!await preferences.remove(storageKey) &&
-        preferences.containsKey(storageKey)) {
-      throw StateError('Could not clear local glucose alert history.');
-    }
+    await store.remove(storageKey);
   }
 }
 
