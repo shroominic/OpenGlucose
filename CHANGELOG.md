@@ -17,6 +17,9 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   transitions in the restricted local-state store without producing native
   notification or lock-screen payloads; platform surfaces can consume the
   same deterministic contract later.
+- Added bounded, read-only Apple Health and Health Connect context import for
+  user-selected activity, sleep, heart-rate, energy, and distance categories,
+  with source-aware local deduplication and explicit permission handling.
 
 ### Changed
 
