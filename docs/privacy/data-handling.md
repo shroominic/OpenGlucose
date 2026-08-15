@@ -75,6 +75,13 @@ after relaunch. See `docs/runbooks/data-recovery.md`.
 The current app does not provide a verified delete-all flow. Disconnecting or
 clearing one selected sensor is not equivalent to complete erasure.
 
+Foreground glucose alert episodes are stored locally in the same application
+preferences boundary, capped at the most recent 200 transitions. The evaluator
+records only alert type, timestamps, and the associated glucose value; it does
+not send notifications, create lock-screen payloads, or upload data. A future
+complete delete-all flow must clear this history alongside the journal and
+database.
+
 ## Sharing and export
 
 The iOS app implements an opt-in Apple Health integration. The glucose export

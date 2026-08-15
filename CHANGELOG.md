@@ -10,6 +10,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- Added a local-only glucose alert evaluator and bounded episode history for
+  low, high, and stale-reading conditions. The foreground monitor persists
+  transitions without producing native notification or lock-screen payloads;
+  platform surfaces can consume the same deterministic contract later.
+
 ### Changed
 
 - The dashboard now opens with a compact "Today at a glance" cockpit showing
