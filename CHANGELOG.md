@@ -12,6 +12,9 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Changed
 
+- The dashboard now opens with a compact "Today at a glance" cockpit showing
+  the latest reading, 24-hour context, freshness, and a conservative sparse-
+  data explanation before longer history and pattern views.
 - During the sensor's initial 60-minute warmup, the dashboard now hides
   History, Patterns, and Weekly recap. Warmup readings remain retained for a
   complete disclosed archive export but are excluded from displayed history,
