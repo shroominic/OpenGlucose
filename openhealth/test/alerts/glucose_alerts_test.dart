@@ -87,6 +87,19 @@ void main() {
       expect(suppressed.valueMgdl, 200);
     });
 
+    test('warmup suppression also hides stale conditions', () {
+      final result = evaluator.evaluate(
+        readings: <CgmReading>[
+          reading(200, first.subtract(const Duration(minutes: 30))),
+        ],
+        now: first,
+        suppressGlucoseAlerts: true,
+      );
+
+      expect(result.activeType, isNull);
+      expect(result.readingAt, isNotNull);
+    });
+
     test('ignores non-finite and non-positive readings', () {
       final result = evaluator.evaluate(
         readings: <CgmReading>[

@@ -29,7 +29,8 @@ void main() {
     );
 
     expect(find.byKey(const ValueKey<String>('todayCockpit')), findsOneWidget);
-    expect(find.text('112 mg/dL'), findsOneWidget);
+    // With one sparse reading, the latest and 24-hour average are identical.
+    expect(find.text('112 mg/dL'), findsNWidgets(2));
     expect(find.text('Today at a glance'), findsOneWidget);
     await tester.tap(
       find.byKey(const ValueKey<String>('todayAddContextButton')),

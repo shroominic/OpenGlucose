@@ -57,6 +57,18 @@ class TodayCockpit extends StatelessWidget {
       AnalyticsTimeframe.last24h,
       now: reference,
     );
+    final effectiveObservations = observations.isNotEmpty
+        ? observations
+        : coverage.isSufficient
+        ? MetabolicObservationEngine.generate(
+            readings: readings,
+            events: const <HealthEvent>[],
+            windowStart: reference.subtract(const Duration(hours: 24)),
+            windowEnd: reference,
+            bounds: preferences.targetRange,
+            unit: preferences.unit,
+          )
+        : const <MetabolicObservation>[];
     final theme = Theme.of(context);
 
     return Column(
@@ -151,10 +163,10 @@ class TodayCockpit extends StatelessWidget {
             ),
           ),
         ),
-        if (observations.isNotEmpty) ...<Widget>[
+        if (effectiveObservations.isNotEmpty) ...<Widget>[
           const SizedBox(height: 10),
           EvidenceObservationCard(
-            observations: observations,
+            observations: effectiveObservations,
             safetyBoundary: safetyBoundary,
           ),
         ],

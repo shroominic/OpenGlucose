@@ -107,6 +107,16 @@ class GlucoseAlertEvaluator {
     final readingAt = latest.recordedAt!.toUtc();
     final age = evaluatedAt.difference(readingAt);
     final nonNegativeAge = age.isNegative ? Duration.zero : age;
+    // Warmup and other explicitly provisional windows suppress every alert,
+    // including stale, so initialization data cannot create an episode.
+    if (suppressGlucoseAlerts) {
+      return GlucoseAlertEvaluation(
+        evaluatedAt: evaluatedAt,
+        readingAt: readingAt,
+        valueMgdl: latest.valueMgdl,
+        age: nonNegativeAge,
+      );
+    }
     if (nonNegativeAge > staleAfter) {
       return GlucoseAlertEvaluation(
         evaluatedAt: evaluatedAt,
@@ -116,7 +126,7 @@ class GlucoseAlertEvaluator {
         age: nonNegativeAge,
       );
     }
-    if (suppressGlucoseAlerts || latest.isDisplayProvisional) {
+    if (latest.isDisplayProvisional) {
       return GlucoseAlertEvaluation(
         evaluatedAt: evaluatedAt,
         readingAt: readingAt,
