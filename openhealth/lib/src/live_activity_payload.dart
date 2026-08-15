@@ -48,6 +48,31 @@ class LiveActivityPayload {
   };
 }
 
+bool shouldPublishLiveActivity({
+  required CgmSessionSnapshot snapshot,
+  required CgmReading? latestReading,
+  DateTime? now,
+}) {
+  final effectiveNow = now ?? DateTime.now();
+  final warmup = computeWarmupStatus(
+    snapshot,
+    latestReading: latestReading,
+    now: effectiveNow,
+  );
+  if (warmup?.phase == WarmupPhase.warming) {
+    return true;
+  }
+  if (snapshot.stage != CgmSyncStage.ready) {
+    return false;
+  }
+  final recordedAt = latestReading?.recordedAt;
+  if (recordedAt == null) {
+    return false;
+  }
+  final age = effectiveNow.difference(recordedAt.toLocal());
+  return !age.isNegative && age <= const Duration(minutes: 15);
+}
+
 LiveActivityPayload buildLiveActivityPayload({
   required CgmSessionSnapshot snapshot,
   required CgmReading? latestReading,

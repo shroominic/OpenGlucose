@@ -1102,6 +1102,20 @@ class AidexSession implements CgmSession {
   }) async {
     _historyResumeTimer?.cancel();
     _historyResumeTimer = null;
+    final warmupRemaining = _warmupRemaining;
+    if (warmupRemaining != null) {
+      _liveCatchUpQueued = false;
+      _emitLog(
+        CgmLogLevel.debug,
+        'Deferring Aidex history sync during sensor warmup',
+      );
+      _scheduleHistoryResume(
+        startOffset: _normalizeResumeOffset(requestedStartOffset),
+        reason: 'Aidex warmup in progress',
+        delay: _warmupResumeDelay(warmupRemaining),
+      );
+      return;
+    }
     final shouldPreserveReadyStage = _snapshot.stage == CgmSyncStage.ready;
     _setSnapshot(
       _snapshot.copyWith(
@@ -1707,6 +1721,37 @@ class AidexSession implements CgmSession {
     return _snapshot.latestReading?.recordedAt;
   }
 
+  Duration? get _warmupRemaining {
+    final sessionInfo = _snapshot.sessionInfo;
+    if (sessionInfo.sessionStopped || sessionInfo.warmupMinutes <= 0) {
+      return null;
+    }
+    final elapsedMinutes = sessionInfo.elapsedMinutes;
+    if (elapsedMinutes != null) {
+      if (elapsedMinutes >= sessionInfo.warmupMinutes) {
+        return null;
+      }
+      return Duration(minutes: sessionInfo.warmupMinutes - elapsedMinutes);
+    }
+    final sessionStart = sessionInfo.sessionStart;
+    if (sessionStart != null) {
+      final warmupEndsAt = sessionStart.add(
+        Duration(minutes: sessionInfo.warmupMinutes),
+      );
+      final remaining = warmupEndsAt.difference(_clock());
+      return remaining > Duration.zero ? remaining : null;
+    }
+    return null;
+  }
+
+  Duration _warmupResumeDelay(Duration remaining) {
+    final pollInterval = _timings.warmupResumePollInterval;
+    if (pollInterval <= Duration.zero || pollInterval >= remaining) {
+      return remaining;
+    }
+    return pollInterval;
+  }
+
   int? _latestKnownMinute() {
     final candidates = <int>[
       if (_snapshot.latestReading?.sensorMinute != null)
@@ -1754,6 +1799,15 @@ class AidexSession implements CgmSession {
         _liveCatchUpQueued) {
       return;
     }
+    final warmupRemaining = _warmupRemaining;
+    if (warmupRemaining != null) {
+      _scheduleHistoryResume(
+        startOffset: _normalizeResumeOffset(requestedStartOffset),
+        reason: reason,
+        delay: _warmupResumeDelay(warmupRemaining),
+      );
+      return;
+    }
     final latestStoredOffset = _latestStoredOffset();
     final effectiveStartOffset =
         requestedStartOffset ??
@@ -1766,7 +1820,9 @@ class AidexSession implements CgmSession {
           includeRawHistory: false,
           requestedStartOffset: effectiveStartOffset,
         ),
-      ),
+      ).catchError((Object error, StackTrace stackTrace) {
+        _handleError(error, stackTrace, context: 'syncing history');
+      }),
     );
   }
 
@@ -1804,13 +1860,14 @@ class AidexSession implements CgmSession {
   void _scheduleHistoryResume({
     required int startOffset,
     required String reason,
+    Duration delay = _historyResumeDelay,
   }) {
     if (_disconnecting) {
       return;
     }
     _historyResumeTimer?.cancel();
     _emitLog(CgmLogLevel.info, '$reason; scheduling history sync resume');
-    _historyResumeTimer = Timer(_historyResumeDelay, () {
+    _historyResumeTimer = Timer(delay, () {
       _historyResumeTimer = null;
       if (_disconnecting) {
         return;

@@ -153,6 +153,68 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('warmup hides every history-derived dashboard section', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: DemoCgmDriver(initialScenario: MockScenario.warmup),
+    );
+    await controller.initialize();
+    await controller.connect(MockScenarioCatalog.sensor);
+
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Warming up'), findsWidgets);
+    expect(
+      find.byKey(const ValueKey<String>('dashboardHistorySection')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('dashboardPatternsSection')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('dashboardWeeklyRecapSection')),
+      findsNothing,
+    );
+
+    controller.applyMockScenario(MockScenario.activeNormal);
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey<String>('dashboardHistorySection')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('dashboardPatternsSection')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('dashboardWeeklyRecapSection')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
   testWidgets('demo mode never reads or overwrites a real saved sensor', (
     tester,
   ) async {

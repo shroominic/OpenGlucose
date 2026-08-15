@@ -10,6 +10,24 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Changed
+
+- During the sensor's initial 60-minute warmup, the dashboard now hides
+  History, Patterns, and Weekly recap. Warmup readings remain retained for a
+  complete disclosed archive export but are excluded from displayed history,
+  wellness analytics, and Apple Health export.
+
+### Fixed
+
+- Android live notifications and iOS Live Activities can again show ongoing
+  post-warmup glucose updates after the user explicitly opts in from current
+  sensor settings; the default remains redacted and disabling fails closed.
+- iOS Live Activities now start during sensor warmup and continue showing the
+  private countdown until the first post-warmup reading is available.
+- Sensor discovery now presents a safe Bluetooth-off state with enable and
+  retry guidance instead of exposing native exception types or an unrelated
+  no-sensors message.
+
 ## [0.1.1] - 2026-08-14
 
 ### Fixed

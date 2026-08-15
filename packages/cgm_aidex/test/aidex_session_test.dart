@@ -109,6 +109,98 @@ void main() {
   });
 
   test(
+    'session automatically resumes deferred history sync after warmup',
+    () async {
+      final warmupEndsAt = DateTime.parse('2026-04-02T04:28:10Z');
+      final now = warmupEndsAt.subtract(const Duration(minutes: 15));
+      final transport = _FakeBleTransport(
+        initialSessionStart: warmupEndsAt.subtract(const Duration(minutes: 60)),
+        initialElapsedMinutes: 59,
+      );
+      final driver = AidexSensorDriver(
+        transport,
+        clock: () => now,
+        timingProfile: const AidexTimingProfile(
+          gattGap: Duration.zero,
+          postStartSession: Duration.zero,
+          postSessionStartWrite: Duration.zero,
+          vendorPairTimeout: Duration(seconds: 1),
+          vendorCommandTimeout: Duration(seconds: 1),
+          warmupResumePollInterval: Duration(milliseconds: 100),
+        ),
+      );
+      final session =
+          await driver.connect(_activationTestSensor()) as AidexSession;
+      final syncedSnapshot = session.snapshots.firstWhere(
+        (snapshot) => snapshot.historySync.lastSyncAt != null,
+      );
+
+      await session.initialize();
+
+      expect(transport.lastConnection.requestedHistoryRangeCount, 0);
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      expect(session.currentSnapshot.lastError, isNull);
+      expect(session.currentSnapshot.historySync.inProgress, isFalse);
+
+      // The first scheduled poll still sees the authoritative minute 59. It
+      // must reschedule rather than dropping the deferred catch-up.
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(transport.lastConnection.requestedHistoryRangeCount, 0);
+
+      transport.lastConnection.emitMeasurementMinute(60);
+      final synced = await syncedSnapshot.timeout(const Duration(seconds: 1));
+
+      expect(transport.lastConnection.requestedHistoryRangeCount, 1);
+      expect(synced.history, isNotEmpty);
+
+      await session.disconnect();
+    },
+  );
+
+  test(
+    'automatic post-warmup history failures become safe session errors',
+    () async {
+      final warmupEndsAt = DateTime.parse('2026-04-02T04:28:10Z');
+      final now = warmupEndsAt.subtract(const Duration(minutes: 15));
+      final transport = _FakeBleTransport(
+        initialSessionStart: warmupEndsAt.subtract(const Duration(minutes: 60)),
+        initialElapsedMinutes: 59,
+        historyRangePayload: const <int>[],
+      );
+      final driver = AidexSensorDriver(
+        transport,
+        clock: () => now,
+        timingProfile: const AidexTimingProfile(
+          gattGap: Duration.zero,
+          postStartSession: Duration.zero,
+          postSessionStartWrite: Duration.zero,
+          vendorPairTimeout: Duration(seconds: 1),
+          vendorCommandTimeout: Duration(seconds: 1),
+          warmupResumePollInterval: Duration(milliseconds: 100),
+        ),
+      );
+      final session =
+          await driver.connect(_activationTestSensor()) as AidexSession;
+      final errorSnapshot = session.snapshots.firstWhere(
+        (snapshot) => snapshot.stage == CgmSyncStage.error,
+      );
+
+      await session.initialize();
+      expect(transport.lastConnection.requestedHistoryRangeCount, 0);
+
+      Timer(const Duration(milliseconds: 50), () {
+        transport.lastConnection.emitMeasurementMinute(60);
+      });
+      final failed = await errorSnapshot.timeout(const Duration(seconds: 1));
+
+      expect(transport.lastConnection.requestedHistoryRangeCount, 1);
+      expect(failed.lastError, 'syncing history failed (StateError)');
+
+      await session.disconnect();
+    },
+  );
+
+  test(
     'session enables vendor auto-update when the sensor reports disabled',
     () async {
       final transport = _FakeBleTransport(autoUpdateEnabled: false);
@@ -665,21 +757,25 @@ class _FakeBleTransport implements BleTransport {
     this.failDiscoverServicesOnce = false,
     this.autoUpdateEnabled = true,
     this.initialSessionStart,
+    this.initialElapsedMinutes,
     this.initialSessionStopped,
     this.uninitialized = false,
     this.malformedSessionStart = false,
     this.requireBondBeforeNotifications = false,
     this.bondFailure,
+    this.historyRangePayload,
   });
 
   final bool failDiscoverServicesOnce;
   final bool autoUpdateEnabled;
   final DateTime? initialSessionStart;
+  final int? initialElapsedMinutes;
   final bool? initialSessionStopped;
   final bool uninitialized;
   final bool malformedSessionStart;
   final bool requireBondBeforeNotifications;
   final BleFailure? bondFailure;
+  final List<int>? historyRangePayload;
   final List<_FakeBleConnection> connections = <_FakeBleConnection>[];
   late _FakeBleConnection lastConnection;
 
@@ -693,11 +789,13 @@ class _FakeBleTransport implements BleTransport {
       failDiscoverServices: failDiscoverServicesOnce && connections.isEmpty,
       autoUpdateEnabled: autoUpdateEnabled,
       initialSessionStart: initialSessionStart,
+      initialElapsedMinutes: initialElapsedMinutes,
       initialSessionStopped: initialSessionStopped,
       uninitialized: uninitialized,
       malformedSessionStart: malformedSessionStart,
       requireBondBeforeNotifications: requireBondBeforeNotifications,
       bondFailure: bondFailure,
+      historyRangePayload: historyRangePayload,
     );
     connections.add(lastConnection);
     return lastConnection;
@@ -745,15 +843,18 @@ class _FakeBleConnection implements BleConnection {
     bool failDiscoverServices = false,
     bool autoUpdateEnabled = true,
     DateTime? initialSessionStart,
+    int? initialElapsedMinutes,
     bool? initialSessionStopped,
     bool uninitialized = false,
     bool malformedSessionStart = false,
     bool requireBondBeforeNotifications = false,
     BleFailure? bondFailure,
+    List<int>? historyRangePayload,
   }) : _failDiscoverServices = failDiscoverServices,
        _autoUpdateEnabled = autoUpdateEnabled,
        _requireBondBeforeNotifications = requireBondBeforeNotifications,
        _bondFailure = bondFailure,
+       _historyRangePayload = historyRangePayload,
        _isBonded = !requireBondBeforeNotifications && bondFailure == null {
     _services = <BleService>[
       const BleService(
@@ -868,7 +969,8 @@ class _FakeBleConnection implements BleConnection {
             ]);
           }()
         : buildAidexSessionStartPayload(effectiveInitialStart);
-    final initialElapsedMinute = effectiveInitialStart == null ? 0 : 61;
+    final initialElapsedMinute =
+        initialElapsedMinutes ?? (effectiveInitialStart == null ? 0 : 61);
     _reads[AidexUuids.manufacturerName] = Uint8List.fromList(
       'Microtech Medical'.codeUnits,
     );
@@ -914,6 +1016,7 @@ class _FakeBleConnection implements BleConnection {
   bool _autoUpdateEnabled;
   final bool _requireBondBeforeNotifications;
   final BleFailure? _bondFailure;
+  final List<int>? _historyRangePayload;
   bool _isBonded;
   bool _didInjectInvalidHistoryFrame = false;
   bool didVendorUnpair = false;
@@ -922,6 +1025,7 @@ class _FakeBleConnection implements BleConnection {
   bool didSetAutoUpdate = false;
   bool didRequestStartSession = false;
   bool didWriteSessionStart = false;
+  int requestedHistoryRangeCount = 0;
   final List<int> requestedHistoryIndices = <int>[];
   final List<String> operations = <String>[];
 
@@ -938,6 +1042,18 @@ class _FakeBleConnection implements BleConnection {
 
   void emitNotificationError(String uuid, Object error) {
     _notifications[uuid]!.addError(error, StackTrace.current);
+  }
+
+  void emitMeasurementMinute(int minute) {
+    _notifications[AidexUuids.measurement]!.add(<int>[
+      0x07,
+      0x00,
+      100,
+      0x00,
+      minute & 0xFF,
+      (minute >> 8) & 0xFF,
+      0x80,
+    ]);
   }
 
   @override
@@ -1102,8 +1218,14 @@ class _FakeBleConnection implements BleConnection {
     if (opcode == AidexVendorOpcode.getHistories && requestIndex != null) {
       requestedHistoryIndices.add(requestIndex);
     }
+    if (opcode == AidexVendorOpcode.getHistoryRange) {
+      requestedHistoryRangeCount += 1;
+    }
     final payload = switch (opcode) {
-      AidexVendorOpcode.getHistoryRange => bytesFromHex('01010001000300'),
+      AidexVendorOpcode.getHistoryRange =>
+        _historyRangePayload == null
+            ? bytesFromHex('01010001000300')
+            : Uint8List.fromList(_historyRangePayload),
       AidexVendorOpcode.getHistories => _historyPage(request.payload),
       AidexVendorOpcode.getRawHistories => _rawHistoryPage(request.payload),
       AidexVendorOpcode.getDeviceInfo => bytesFromHex('01020304'),

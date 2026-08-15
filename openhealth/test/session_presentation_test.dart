@@ -126,6 +126,7 @@ void main() {
   group('computeWarmupStatus', () {
     CgmSessionSnapshot snapshotWith({
       DateTime? sessionStart,
+      int? elapsedMinutes,
       int warmupMinutes = 60,
     }) {
       return CgmSessionSnapshot(
@@ -135,6 +136,7 @@ void main() {
         capabilities: sensor.capabilities,
         sessionInfo: CgmSessionInfo(
           sessionStart: sessionStart,
+          elapsedMinutes: elapsedMinutes,
           warmupMinutes: warmupMinutes,
         ),
       );
@@ -142,6 +144,31 @@ void main() {
 
     test('returns null when session start is unknown', () {
       expect(computeWarmupStatus(snapshotWith()), isNull);
+    });
+
+    test('uses reported elapsed minutes when session start is unknown', () {
+      final status = computeWarmupStatus(snapshotWith(elapsedMinutes: 17));
+
+      expect(status, isNotNull);
+      expect(status!.phase, WarmupPhase.warming);
+      expect(status.elapsedMinutes, 17);
+      expect(status.remainingMinutes, 43);
+    });
+
+    test('prefers reported elapsed minutes over a drifting phone clock', () {
+      final now = DateTime.parse('2026-04-17T10:00:00Z');
+      final status = computeWarmupStatus(
+        snapshotWith(
+          sessionStart: now.subtract(const Duration(minutes: 90)),
+          elapsedMinutes: 17,
+        ),
+        now: now,
+      );
+
+      expect(status, isNotNull);
+      expect(status!.phase, WarmupPhase.warming);
+      expect(status.elapsedMinutes, 17);
+      expect(status.remainingMinutes, 43);
     });
 
     test(
@@ -226,6 +253,57 @@ void main() {
   group('sensor life constant', () {
     test('Aidex X is a 15-day sensor (TASK-043)', () {
       expect(kSensorLifeDuration, const Duration(days: 15));
+    });
+  });
+
+  group('readingsAfterWarmup', () {
+    test('excludes minutes 0..<warmup and includes the boundary', () {
+      final sessionStart = DateTime.utc(2026, 4, 17, 10);
+      final readings = <CgmReading>[
+        CgmReading(
+          valueMgdl: 101,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 0,
+          recordedAt: sessionStart,
+        ),
+        CgmReading(
+          valueMgdl: 102,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 59,
+          recordedAt: sessionStart.add(const Duration(hours: 2)),
+        ),
+        CgmReading(
+          valueMgdl: 103,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 60,
+          recordedAt: sessionStart.add(const Duration(minutes: 60)),
+        ),
+        CgmReading(
+          valueMgdl: 104,
+          source: CgmRecordSource.standard,
+          recordedAt: sessionStart.add(const Duration(minutes: 59)),
+        ),
+        CgmReading(
+          valueMgdl: 105,
+          source: CgmRecordSource.standard,
+          recordedAt: sessionStart.add(const Duration(minutes: 60)),
+        ),
+        const CgmReading(
+          valueMgdl: 106,
+          source: CgmRecordSource.standard,
+        ),
+      ];
+
+      final visible = readingsAfterWarmup(
+        readings,
+        sessionStart: sessionStart,
+        warmupMinutes: 60,
+      );
+
+      expect(
+        visible.map((reading) => reading.valueMgdl),
+        <double>[103, 105, 106],
+      );
     });
   });
 

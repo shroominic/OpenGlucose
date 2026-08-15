@@ -1,6 +1,7 @@
 package com.aidex.aidex_flutter;
 
 import android.Manifest;
+import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -85,6 +86,45 @@ public final class MainActivity extends FlutterActivity {
               null);
         }
         return;
+      case "getSensitiveContentEnabled":
+        result.success(GlucoseLiveUpdateService.sensitiveContentEnabled(this));
+        return;
+      case "setSensitiveContentEnabled":
+        if (!(call.arguments instanceof Boolean)) {
+          result.error("bad_args", "Expected a sensitive-content boolean.", null);
+          return;
+        }
+        final boolean enabled = (Boolean) call.arguments;
+        if (!GlucoseLiveUpdateService.setSensitiveContentEnabled(this, enabled)) {
+          // Any failed privacy write fails closed. This also handles consent
+          // withdrawal: never leave an existing glucose notification visible
+          // merely because SharedPreferences could not persist the opt-out.
+          GlucoseLiveUpdateService.setSensitiveContentEnabled(this, false);
+          stopLiveUpdateService();
+          result.error(
+              "restricted_storage_failed",
+              "Could not save the live-notification privacy setting.",
+              null);
+          return;
+        }
+        if (enabled) {
+          // Flutter publishes the current payload only after this preference
+          // write succeeds. Keeping that second step separate lets Flutter
+          // roll consent back if publishing fails.
+          result.success(null);
+          return;
+        }
+        try {
+          removeVisibleLiveUpdateForPrivacy();
+          refreshLiveUpdateServiceIfActive();
+        } catch (RuntimeException error) {
+          // Consent has already been withdrawn. If the notification cannot
+          // be rebuilt redacted, remove it and its cached payload rather than
+          // surfacing a failure that could make Flutter restore consent.
+          stopLiveUpdateService();
+        }
+        result.success(null);
+        return;
       default:
         result.notImplemented();
     }
@@ -99,6 +139,22 @@ public final class MainActivity extends FlutterActivity {
       return;
     }
     startService(intent);
+  }
+
+  private void refreshLiveUpdateServiceIfActive() {
+    if (!GlucoseLiveUpdateService.hasPersistedPayload(this)) {
+      return;
+    }
+    startLiveUpdateService(Collections.emptyMap());
+  }
+
+  private void removeVisibleLiveUpdateForPrivacy() {
+    stopService(new Intent(this, GlucoseLiveUpdateService.class));
+    final NotificationManager manager =
+        (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+    if (manager != null) {
+      manager.cancel(GlucoseLiveUpdateService.NOTIFICATION_ID);
+    }
   }
 
   private boolean stopLiveUpdateService() {

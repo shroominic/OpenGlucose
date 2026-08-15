@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Defer history-range and catch-up requests while the sensor-reported elapsed
+  time is still inside AiDEX's 60-minute warmup, preventing the expected lack
+  of history from becoming a session-wide `StateError`. Deferred work resumes
+  automatically at the warmup boundary, while genuine post-warmup protocol
+  failures still become safe session errors.
 - Establish the Android OS bond before subscribing to protected
   characteristics, rediscover services after a new bond, and retain only
   privacy-safe BLE failure metadata. Initialization no longer removes a local

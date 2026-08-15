@@ -53,14 +53,26 @@ void main() {
         android,
         contains('getBoolean(PREF_SENSITIVE_LOCK_SCREEN_OPT_IN, false)'),
       );
-      expect(android, contains('buildRedactedNotification(stageLabel)'));
+      expect(android, contains('buildRedactedNotification(payload)'));
+      expect(android, contains('validatedWarmupMinutes(payload)'));
       expect(android, contains('.setPublicVersion(publicVersion)'));
       expect(android, contains('Open the app to view your glucose'));
       expect(android, contains('.commit()'));
       expect(android, isNot(contains('.apply()')));
 
       expect(ios, contains('sensitiveLockScreenOptInKey'));
-      expect(ios, contains('guard defaults.bool(forKey:'));
+      expect(
+        ios,
+        contains('sensitiveContentEnabled: defaults.bool(forKey:'),
+      );
+      expect(ios, contains('case "getSensitiveContentEnabled"'));
+      expect(ios, contains('case "setSensitiveContentEnabled"'));
+      expect(ios, contains('defaults.synchronize()'));
+      expect(ios, contains('failClosedAfterPreferenceFailure('));
+      expect(
+        ios,
+        contains('defaults.set(false, forKey: sensitiveLockScreenOptInKey)'),
+      );
       expect(ios, contains('"sensorName": "OpenGlucose"'));
       expect(ios, contains('let sensorName = displayPayload["sensorName"]'));
       expect(ios, contains('sensorName: displaySensorName'));
@@ -70,6 +82,31 @@ void main() {
         isNot(contains('catch (_)')),
         reason: 'Native restricted-storage failures must reach the controller.',
       );
+      expect(iosBridge, contains("'setSensitiveContentEnabled'"));
+      expect(android, contains('setSensitiveContentEnabled'));
+      expect(android, contains('.putBoolean('));
+      expect(android, contains('.commit()'));
+      expect(android, contains('validatedWarmupMinutes(payload)'));
+      expect(android, contains('.setContentText("Sensor warming up")'));
+      expect(android, contains('remainingMinutes >= 1'));
+      expect(android, contains('remainingMinutes <= 180'));
+      final androidBridge = _read('lib/src/android_live_update_bridge.dart');
+      expect(androidBridge, contains("'setSensitiveContentEnabled'"));
+      final androidActivity = _read(
+        'android/app/src/main/java/com/aidex/aidex_flutter/MainActivity.java',
+      );
+      expect(androidActivity, contains('removeVisibleLiveUpdateForPrivacy()'));
+      expect(androidActivity, contains('manager.cancel('));
+      expect(
+        androidActivity,
+        contains(
+          'GlucoseLiveUpdateService.setSensitiveContentEnabled(this, false)',
+        ),
+      );
+      final app = _read('lib/main.dart');
+      expect(app, contains('Show glucose in live notification'));
+      expect(app, contains('Anyone '));
+      expect(app, contains('who can view your lock screen'));
       expect(ios, contains('func enforceLaunchPrivacy()'));
       expect(
         ios,

@@ -128,10 +128,77 @@ final class GlucoseLiveActivityController {
       } else {
         result(true)
       }
+    case "getSensitiveContentEnabled":
+      result(defaults.bool(forKey: sensitiveLockScreenOptInKey))
+    case "setSensitiveContentEnabled":
+      guard let enabled = call.arguments as? Bool else {
+        result(
+          FlutterError(
+            code: "bad_args",
+            message: "Expected a sensitive-content boolean.",
+            details: nil
+          )
+        )
+        return
+      }
+      setSensitiveContentEnabled(enabled, result: result)
     case "end":
       end(result: result)
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func setSensitiveContentEnabled(
+    _ enabled: Bool,
+    result: @escaping FlutterResult
+  ) {
+    defaults.set(enabled, forKey: sensitiveLockScreenOptInKey)
+    guard defaults.synchronize() else {
+      failClosedAfterPreferenceFailure(
+        result: result,
+        error: FlutterError(
+          code: "privacy_preference_failed",
+          message: "Could not save the Live Activity privacy setting.",
+          details: nil
+        )
+      )
+      return
+    }
+    guard !enabled, #available(iOS 16.1, *) else {
+      result(true)
+      return
+    }
+
+    // Fail closed before Flutter recreates the activity with a redacted
+    // payload. This prevents a crash between consent withdrawal and upsert
+    // from leaving the previous glucose value visible.
+    serializeActivityWork {
+      for activity in Activity<GlucoseLiveActivityAttributes>.activities {
+        await self.end(activity, immediately: true)
+      }
+      result(true)
+    }
+  }
+
+  private func failClosedAfterPreferenceFailure(
+    result: @escaping FlutterResult,
+    error: FlutterError
+  ) {
+    // UserDefaults may have accepted the in-memory mutation even when the
+    // durable write failed. Force the process back to the private default and
+    // remove any activity that might still contain sensitive content.
+    defaults.set(false, forKey: sensitiveLockScreenOptInKey)
+    _ = defaults.synchronize()
+    guard #available(iOS 16.1, *) else {
+      result(error)
+      return
+    }
+    serializeActivityWork {
+      for activity in Activity<GlucoseLiveActivityAttributes>.activities {
+        await self.end(activity, immediately: true)
+      }
+      result(error)
     }
   }
 
@@ -283,24 +350,10 @@ final class GlucoseLiveActivityController {
   /// an explicit user opt-in, Live Activities show only a generic sensor state.
   /// The opt-in key deliberately defaults to false.
   private func lockScreenPayload(from payload: [String: Any]) -> [String: Any] {
-    guard defaults.bool(forKey: sensitiveLockScreenOptInKey) else {
-      let stageCode = payload["stageCode"] as? String ?? "pending"
-      let stageLabel = payload["stageLabel"] as? String ?? "SENSOR ACTIVE"
-      return [
-        "sensorName": "OpenGlucose",
-        "stageCode": stageCode,
-        "stageLabel": stageLabel,
-        "valueText": "--",
-        "unitText": "",
-        "lastReadingText": "--",
-        "lifeText": "",
-        "detailText": "Open the app to view your glucose",
-        "trendSymbol": "",
-        "deltaText": "",
-        "isStale": payload["isStale"] as? Bool ?? false,
-      ]
-    }
-    return payload
+    LiveActivityLockScreenRedaction.apply(
+      to: payload,
+      sensitiveContentEnabled: defaults.bool(forKey: sensitiveLockScreenOptInKey)
+    )
   }
 
   private func clearPersistedBackgroundPayload() throws {
@@ -396,5 +449,67 @@ final class GlucoseLiveActivityController {
       return nil
     }
     return iso8601.date(from: iso8601String)
+  }
+}
+
+/// Removes health and sensor identifiers before content reaches ActivityKit.
+/// A validated warmup countdown is device state rather than a glucose value,
+/// so it remains useful on the lock screen without requiring the separate
+/// sensitive-glucose opt-in.
+enum LiveActivityLockScreenRedaction {
+  static func apply(
+    to payload: [String: Any],
+    sensitiveContentEnabled: Bool
+  ) -> [String: Any] {
+    sensitiveContentEnabled ? payload : redact(payload)
+  }
+
+  static func redact(_ payload: [String: Any]) -> [String: Any] {
+    let stageCode = payload["stageCode"] as? String ?? "pending"
+    let stageLabel = payload["stageLabel"] as? String ?? "SENSOR ACTIVE"
+
+    if let remainingMinutes = validatedWarmupMinutes(in: payload) {
+      return [
+        "sensorName": "OpenGlucose",
+        "stageCode": "progress",
+        "stageLabel": "WARMUP",
+        "valueText": String(remainingMinutes),
+        "unitText": "min",
+        "lastReadingText": "--",
+        "lifeText": "",
+        "detailText": "Sensor warming up",
+        "trendSymbol": "",
+        "deltaText": "",
+        "isStale": false,
+      ]
+    }
+
+    return [
+      "sensorName": "OpenGlucose",
+      "stageCode": stageCode,
+      "stageLabel": stageLabel,
+      "valueText": "--",
+      "unitText": "",
+      "lastReadingText": "--",
+      "lifeText": "",
+      "detailText": "Open the app to view your glucose",
+      "trendSymbol": "",
+      "deltaText": "",
+      "isStale": payload["isStale"] as? Bool ?? false,
+    ]
+  }
+
+  private static func validatedWarmupMinutes(in payload: [String: Any]) -> Int? {
+    guard payload["stageCode"] as? String == "progress",
+          (payload["stageLabel"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased() == "WARMUP",
+          payload["unitText"] as? String == "min",
+          let valueText = payload["valueText"] as? String,
+          let remainingMinutes = Int(valueText),
+          (1...180).contains(remainingMinutes) else {
+      return nil
+    }
+    return remainingMinutes
   }
 }

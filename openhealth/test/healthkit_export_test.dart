@@ -9,6 +9,7 @@ import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _lastSyncedKey = 'openHealth.healthExport.lastSyncedMs';
@@ -521,5 +522,52 @@ void main() {
           .onPressed,
       isNull,
     );
+  });
+
+  testWidgets('Apple Health receives only presentation-safe history', (
+    tester,
+  ) async {
+    final preferences = await prefs();
+    final exporter = _FakeExporter();
+    final healthExport = HealthExportController(
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
+      service: exporter,
+    )..initialize();
+    final appController = CgmAppController(
+      preferences: preferences,
+      driver: DemoCgmDriver(initialScenario: MockScenario.multiSensorHistory),
+    );
+    await appController.initialize();
+    await appController.connect(MockScenarioCatalog.sensor);
+    await healthExport.setEnabled(enabled: true);
+
+    expect(appController.snapshot!.history, hasLength(108));
+    expect(appController.visibleHistory, hasLength(60));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: IntegrationsSettingsPane(
+          healthExport: healthExport,
+          controller: appController,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('60 reading(s)'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Sync now'));
+    await tester.pumpAndSettle();
+
+    expect(exporter.exported, hasLength(60));
+    expect(
+      exporter.exported.every(
+        (reading) => (reading.sensorMinute ?? -1) >= 60,
+      ),
+      isTrue,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    appController.dispose();
   });
 }

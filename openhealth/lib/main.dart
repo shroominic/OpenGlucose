@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
@@ -615,7 +616,8 @@ class _ScanView extends StatelessWidget {
                           ),
                       ],
                     ),
-                    if (controller.lastError != null) ...<Widget>[
+                    if (controller.lastError != null &&
+                        controller.scanFailure == null) ...<Widget>[
                       const SizedBox(height: 16),
                       Text(
                         controller.lastError!,
@@ -656,7 +658,20 @@ class _ScanView extends StatelessWidget {
             ),
           ),
         ),
-        if (controller.sensors.isEmpty && !controller.scanning)
+        if (controller.sensors.isNotEmpty &&
+            !controller.scanning &&
+            controller.scanFailure != null)
+          SliverToBoxAdapter(
+            child: _ScanFailureBanner(controller: controller),
+          ),
+        if (controller.sensors.isEmpty &&
+            !controller.scanning &&
+            controller.scanFailure != null)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: _ScanFailureState(controller: controller),
+          )
+        else if (controller.sensors.isEmpty && !controller.scanning)
           const SliverFillRemaining(
             hasScrollBody: false,
             child: Center(
@@ -760,6 +775,127 @@ class _ScanView extends StatelessWidget {
     );
   }
 }
+
+class _ScanFailureState extends StatelessWidget {
+  const _ScanFailureState({required this.controller});
+
+  final CgmAppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final failure = controller.scanFailure!;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(28, 16, 28, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Icon(
+              Icons.bluetooth_disabled_rounded,
+              size: 48,
+              color: Color(0xFF0B6E69),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              _scanFailureTitle(failure),
+              key: const ValueKey<String>('sensorScanFailureTitle'),
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              controller.scanFailureMessage ??
+                  'Check Bluetooth, keep the sensor nearby, and try again.',
+              key: const ValueKey<String>('sensorScanFailureMessage'),
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: const Color(0xFF5B6E6A),
+                height: 1.35,
+              ),
+            ),
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              key: const ValueKey<String>('retrySensorScanButton'),
+              onPressed: controller.scanning
+                  ? null
+                  : () => unawaited(controller.scan()),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Try again'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScanFailureBanner extends StatelessWidget {
+  const _ScanFailureBanner({required this.controller});
+
+  final CgmAppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final failure = controller.scanFailure!;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+      child: Card(
+        key: const ValueKey<String>('sensorScanInlineFailure'),
+        color: const Color(0xFFFFF3E8),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  const Icon(
+                    Icons.bluetooth_disabled_rounded,
+                    color: Color(0xFF9A4D00),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _scanFailureTitle(failure),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                controller.scanFailureMessage ??
+                    'Check Bluetooth and try scanning again.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF6B5542),
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 10),
+              FilledButton.tonalIcon(
+                key: const ValueKey<String>('retryPartialSensorScanButton'),
+                onPressed: () => unawaited(controller.scan()),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Scan again'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _scanFailureTitle(BleFailure failure) => switch (failure.kind) {
+  BleFailureKind.bluetoothOff => 'Bluetooth is off',
+  BleFailureKind.permissionRequired => 'Bluetooth access needed',
+  BleFailureKind.bluetoothUnavailable => 'Bluetooth is unavailable',
+  _ => 'Could not scan for sensors',
+};
 
 class _HistoricalOverviewCard extends StatelessWidget {
   const _HistoricalOverviewCard({required this.controller});
@@ -889,15 +1025,12 @@ class _DashboardView extends StatelessWidget {
     final theme = Theme.of(context);
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
+    final warmup = computeWarmupStatus(
+      snapshot,
+      latestReading: controller.displayLatestReading,
+    );
+    final isWarmingUp = warmup?.phase == WarmupPhase.warming;
     final remainingLife = sensorLifeText(snapshot.sessionInfo.sessionStart);
-    final totalReadingCount =
-        snapshot.historySync.totalAvailable > history.length
-        ? snapshot.historySync.totalAvailable
-        : history.length;
-    final totalReadingsText =
-        snapshot.historySync.inProgress && totalReadingCount > history.length
-        ? '${history.length} / $totalReadingCount'
-        : '$totalReadingCount';
 
     return RefreshIndicator(
       onRefresh: controller.sync,
@@ -983,80 +1116,85 @@ class _DashboardView extends StatelessWidget {
               snapshot: snapshot,
             ),
           ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Row(
-                        children: <Widget>[
-                          Expanded(
-                            child: Text(
-                              'History',
-                              style: theme.textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.w900,
+          if (!isWarmingUp)
+            SliverToBoxAdapter(
+              key: const ValueKey<String>('dashboardHistorySection'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: Text(
+                                'History',
+                                style: theme.textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                ),
                               ),
                             ),
-                          ),
-                          Text(
-                            '$totalReadingsText readings',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: const Color(0xFF5B6E6A),
+                            Text(
+                              '${history.length} readings',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: const Color(0xFF5B6E6A),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        height: 336,
-                        child: CgmDashboardChart(
-                          readings: history,
-                          preferences: preferences,
-                          historySync: snapshot.historySync,
+                          ],
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          // --- TASK-012 metrics pack (explainable wellness patterns) ---
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-              child: MetricsSection(
-                readings: history,
-                preferences: preferences,
-              ),
-            ),
-          ),
-          // --- end TASK-012 metrics pack ---
-          // --- TASK-028 weekly recap entry point ---
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-              child: FilledButton.tonalIcon(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => WeeklyRecapScreen(
-                      readings: history,
-                      preferences: preferences,
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 336,
+                          child: CgmDashboardChart(
+                            readings: history,
+                            preferences: preferences,
+                            historySync: snapshot.historySync,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-                icon: const Icon(Icons.insights_rounded),
-                label: const Text('Weekly recap'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
+              ),
+            ),
+          // History-derived UI stays hidden until the sensor finishes warmup;
+          // early equilibration values are excluded from its shared input.
+          if (!isWarmingUp)
+            SliverToBoxAdapter(
+              key: const ValueKey<String>('dashboardPatternsSection'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: MetricsSection(
+                  readings: history,
+                  preferences: preferences,
                 ),
               ),
             ),
-          ),
+          if (!isWarmingUp)
+            SliverToBoxAdapter(
+              key: const ValueKey<String>('dashboardWeeklyRecapSection'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: FilledButton.tonalIcon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => WeeklyRecapScreen(
+                        readings: history,
+                        preferences: preferences,
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(Icons.insights_rounded),
+                  label: const Text('Weekly recap'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                ),
+              ),
+            ),
           // --- end TASK-028 weekly recap entry point ---
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
@@ -1127,7 +1265,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final theme = Theme.of(context);
     final preferences = widget.controller.displayPreferences;
     final snapshot = widget.snapshot;
-    final latest = widget.controller.latestReading;
+    final latest = widget.controller.displayLatestReading;
     final warmup = computeWarmupStatus(snapshot, latestReading: latest);
     final primaryError = primaryErrorTextForSnapshot(snapshot);
 
@@ -1841,6 +1979,9 @@ class _SensorArchivePane extends StatelessWidget {
       itemBuilder: (context, index) {
         final session = sessions[index];
         final date = session.endedAt ?? session.lastReadingAt;
+        final displayReadingCount = controller
+            .displayReadingsForArchivedSensor(session)
+            .length;
         return Card(
           child: ListTile(
             minTileHeight: 76,
@@ -1851,7 +1992,7 @@ class _SensorArchivePane extends StatelessWidget {
             ),
             subtitle: Text(
               '${_archiveReasonLabel(session.reason)} · '
-              '${session.readingCount} readings'
+              '$displayReadingCount readings'
               '${date == null ? '' : ' · ${DateFormat('MMM d, y').format(date)}'}',
             ),
             trailing: const Icon(Icons.chevron_right_rounded),
@@ -1882,7 +2023,8 @@ class _ArchivedSensorDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final readings = controller.readingsForArchivedSensor(session);
+    final rawReadings = controller.readingsForArchivedSensor(session);
+    final readings = controller.displayReadingsForArchivedSensor(session);
     final theme = Theme.of(context);
     var recapAnchor = session.lastReadingAt;
     for (final reading in readings) {
@@ -1967,7 +2109,9 @@ class _ArchivedSensorDetail extends StatelessWidget {
               icon: const Icon(Icons.insights_rounded),
               label: const Text('Recap this sensor'),
             ),
-            const SizedBox(height: 10),
+          ],
+          if (rawReadings.isNotEmpty) ...<Widget>[
+            SizedBox(height: readings.isNotEmpty ? 10 : 16),
             Builder(
               builder: (buttonContext) => SizedBox(
                 width: double.infinity,
@@ -1977,7 +2121,8 @@ class _ArchivedSensorDetail extends StatelessWidget {
                     final format = await _chooseArchivedSensorExportFormat(
                       buttonContext,
                       session: session,
-                      readings: readings,
+                      readings: rawReadings,
+                      displayReadingCount: readings.length,
                     );
                     if (format == null || !buttonContext.mounted) {
                       return;
@@ -1986,7 +2131,7 @@ class _ArchivedSensorDetail extends StatelessWidget {
                       buttonContext,
                       format: format,
                       session: session,
-                      readings: readings,
+                      readings: rawReadings,
                     );
                   },
                   icon: const Icon(Icons.ios_share_rounded),
@@ -2005,7 +2150,9 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
   BuildContext context, {
   required ArchivedSensorSession session,
   required List<CgmReading> readings,
+  required int displayReadingCount,
 }) async {
+  final hiddenWarmupCount = readings.length - displayReadingCount;
   DateTime? firstReadingAt;
   DateTime? lastReadingAt;
   for (final reading in readings) {
@@ -2038,7 +2185,19 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Text('${readings.length} glucose readings'),
+              Text('${readings.length} stored glucose readings'),
+              if (hiddenWarmupCount > 0) ...<Widget>[
+                const SizedBox(height: 4),
+                Text(
+                  '$hiddenWarmupCount warmup '
+                  '${hiddenWarmupCount == 1 ? 'reading is' : 'readings are'} '
+                  'included for a complete export. These remain hidden from '
+                  'charts, recaps, and Apple Health.',
+                  key: const ValueKey<String>(
+                    'archivedExportWarmupDisclosure',
+                  ),
+                ),
+              ],
               const SizedBox(height: 4),
               Text(dateRange),
               const SizedBox(height: 18),
@@ -2381,15 +2540,42 @@ Widget _buildSensorSettingsPane(
   CgmSessionSnapshot snapshot,
 ) {
   final sessionStart = snapshot.sessionInfo.sessionStart;
+  final supportsLiveGlucoseConsent =
+      !kIsWeb &&
+      !controller.isMockDriver &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
   return ListView(
     padding: const EdgeInsets.all(20),
     children: <Widget>[
       SensorLifecycleCard(
         snapshot: snapshot,
-        latestReading: controller.latestReading,
+        latestReading: controller.displayLatestReading,
         onReplaceSensor: () => unawaited(controller.replaceCurrentSensor()),
         outerPadding: EdgeInsets.zero,
       ),
+      if (supportsLiveGlucoseConsent) ...<Widget>[
+        const SizedBox(height: 18),
+        Card(
+          child: SwitchListTile.adaptive(
+            key: const ValueKey<String>('sensitiveLiveActivityContentToggle'),
+            title: const Text('Show glucose in live notification'),
+            subtitle: const Text(
+              'Allows glucose values, trends, and update times to appear in '
+              'the Android live notification or iOS Live Activity. Anyone '
+              'who can view your lock screen may see this health data.',
+            ),
+            value: controller.sensitiveLiveActivityContentEnabled,
+            onChanged: controller.liveActivityPrivacyUpdateInFlight
+                ? null
+                : (enabled) => unawaited(
+                    controller.updateSensitiveLiveActivityContent(
+                      enabled: enabled,
+                    ),
+                  ),
+          ),
+        ),
+      ],
       const SizedBox(height: 18),
       Text(
         'Sensor details',

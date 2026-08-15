@@ -52,8 +52,12 @@ as a private or supported health-data retention surface.
 Lock-screen implementations default to redacted glucose on Android and iOS.
 On iOS launch, any pre-upgrade Live Activity is ended when sensitive display has
 not been explicitly enabled, preventing old unredacted state from surviving an
-upgrade. Final device verification remains outstanding. There is intentionally
-no user opt-in UI yet; adding one is a privacy-triggered feature.
+upgrade. The current-sensor settings provide an explicit opt-in for showing
+glucose, trend, and update time in the Android live notification or iOS Live
+Activity, with a warning that anyone who can view the lock screen may see the
+health data. Disabling the setting rebuilds or removes the existing surface
+before a redacted update is published. Final device verification remains
+outstanding.
 
 ## Retention and deletion
 

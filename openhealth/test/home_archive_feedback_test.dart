@@ -67,7 +67,7 @@ void main() {
         'openHealth.onboarding.completed': true,
       });
       final preferences = await SharedPreferences.getInstance();
-      final fixture = _archivedHistoryFixture();
+      final fixture = _archivedHistoryFixture(includePostWarmup: false);
       final store = _MemoryHealthStateStore(fixture.values);
       final controller = CgmAppController(
         preferences: preferences,
@@ -116,6 +116,19 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Export archived sensor data'), findsOneWidget);
+      expect(find.text('1 stored glucose readings'), findsOneWidget);
+      expect(
+        find.byKey(
+          const ValueKey<String>('archivedExportWarmupDisclosure'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          '1 warmup reading is included for a complete export',
+        ),
+        findsOneWidget,
+      );
       expect(
         find.byKey(
           const ValueKey<String>('archivedSensorExportFormatPicker'),
@@ -251,16 +264,25 @@ Finder _compactExpiryText() => find.byWidgetPredicate((widget) {
 });
 
 ({ArchivedSensorSession session, Map<String, String> values})
-_archivedHistoryFixture() {
+_archivedHistoryFixture({bool includePostWarmup = true}) {
   final startedAt = DateTime(2026, 7, 1, 8);
   final endedAt = startedAt.add(const Duration(days: 15));
   const historyKey = 'openHealth.history.archive.feedback-session';
-  final reading = CgmReading(
-    valueMgdl: 112,
-    source: CgmRecordSource.vendor,
-    sensorMinute: 60,
-    recordedAt: startedAt.add(const Duration(hours: 1)),
-  );
+  final readings = <CgmReading>[
+    CgmReading(
+      valueMgdl: 171,
+      source: CgmRecordSource.vendor,
+      sensorMinute: 59,
+      recordedAt: startedAt.add(const Duration(minutes: 59)),
+    ),
+    if (includePostWarmup)
+      CgmReading(
+        valueMgdl: 112,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 60,
+        recordedAt: startedAt.add(const Duration(hours: 1)),
+      ),
+  ];
   final session = ArchivedSensorSession(
     id: 'feedback-session',
     historyKey: historyKey,
@@ -271,16 +293,18 @@ _archivedHistoryFixture() {
     serial: 'ARCHIVE-CSV-001',
     model: 'AiDEX',
     reason: SensorArchiveReason.expired,
-    readingCount: 1,
+    readingCount: readings.length,
     startedAt: startedAt,
     endedAt: endedAt,
-    lastReadingAt: reading.recordedAt,
+    lastReadingAt: readings.last.recordedAt,
   );
   return (
     session: session,
     values: <String, String>{
       'openHealth.sensorArchive': jsonEncode(<Object?>[session.toJson()]),
-      historyKey: jsonEncode(<Object?>[reading.toJson()]),
+      historyKey: jsonEncode(
+        readings.map((reading) => reading.toJson()).toList(growable: false),
+      ),
     },
   );
 }

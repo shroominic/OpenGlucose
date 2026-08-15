@@ -47,7 +47,8 @@ WarmupStatus? computeWarmupStatus(
   DateTime? now,
 }) {
   final sessionStart = snapshot.sessionInfo.sessionStart;
-  if (sessionStart == null) {
+  final reportedElapsed = snapshot.sessionInfo.elapsedMinutes;
+  if (sessionStart == null && reportedElapsed == null) {
     return null;
   }
   final total = snapshot.sessionInfo.warmupMinutes;
@@ -55,7 +56,11 @@ WarmupStatus? computeWarmupStatus(
     return null;
   }
   final effectiveNow = now ?? DateTime.now();
-  final elapsed = effectiveNow.difference(sessionStart).inMinutes;
+  // Prefer the sensor's monotonic session counter over wall-clock arithmetic.
+  // Phone clock changes and delayed session-start discovery must not shorten or
+  // extend the warmup shown to the user.
+  final elapsed =
+      reportedElapsed ?? effectiveNow.difference(sessionStart!).inMinutes;
   if (elapsed < 0) {
     return WarmupStatus(
       phase: WarmupPhase.warming,
@@ -83,6 +88,38 @@ WarmupStatus? computeWarmupStatus(
     elapsedMinutes: elapsed,
     remainingMinutes: 0,
     totalMinutes: total,
+  );
+}
+
+/// Returns the readings suitable for charts and wellness analytics after the
+/// sensor's initial warmup window.
+///
+/// Sensor-relative minutes are authoritative when present because they remain
+/// stable across wall-clock corrections. Timestamp comparison is a fallback
+/// for normalized readings that do not carry a sensor minute. If neither can
+/// place a reading relative to activation, the reading is retained rather than
+/// silently discarding data of unknown provenance.
+List<CgmReading> readingsAfterWarmup(
+  Iterable<CgmReading> readings, {
+  required int warmupMinutes,
+  DateTime? sessionStart,
+}) {
+  if (warmupMinutes <= 0) {
+    return List<CgmReading>.unmodifiable(readings);
+  }
+  final warmupEndsAt = sessionStart?.add(Duration(minutes: warmupMinutes));
+  return List<CgmReading>.unmodifiable(
+    readings.where((reading) {
+      final sensorMinute = reading.sensorMinute;
+      if (sensorMinute != null) {
+        return sensorMinute >= warmupMinutes;
+      }
+      final recordedAt = reading.recordedAt;
+      if (recordedAt != null && warmupEndsAt != null) {
+        return !recordedAt.isBefore(warmupEndsAt);
+      }
+      return true;
+    }),
   );
 }
 
@@ -386,7 +423,8 @@ String userMessageForBleFailure(BleFailure failure) {
           'Some phones also require Location to be allowed and turned on for '
           'scanning. Then try again.',
     BleFailureKind.bluetoothOff =>
-      'Bluetooth is off. Turn it on, then try again.',
+      "Bluetooth is off. Turn it on in your phone's quick settings or "
+          'Settings, then try scanning again.',
     BleFailureKind.bluetoothUnavailable =>
       'Bluetooth is not available on this phone right now. Restart Bluetooth '
           'or the phone, then try again.',

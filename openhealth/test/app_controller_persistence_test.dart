@@ -10,10 +10,141 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/messaging/message_context_builder.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'live-notification glucose consent stays explicit and reversible',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _ProductionTestDriver(),
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+
+      await controller.initialize();
+
+      expect(controller.sensitiveLiveActivityContentEnabled, isFalse);
+      expect(
+        await controller.updateSensitiveLiveActivityContent(enabled: true),
+        isTrue,
+      );
+      expect(controller.sensitiveLiveActivityContentEnabled, isTrue);
+      expect(
+        await controller.updateSensitiveLiveActivityContent(enabled: false),
+        isTrue,
+      );
+      expect(controller.sensitiveLiveActivityContentEnabled, isFalse);
+
+      controller.dispose();
+    },
+  );
+
+  test('failed live-notification publish rolls consent back closed', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final nativeWrites = <bool>[];
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _ProductionTestDriver(),
+      healthStateStore: _ControllableHealthStateStore(),
+      liveActivityPrivacySetter: ({required enabled}) async {
+        nativeWrites.add(enabled);
+      },
+      liveActivityPrivacyRefresh: () async {
+        throw StateError('simulated publish failure');
+      },
+    );
+
+    await controller.initialize();
+
+    expect(
+      await controller.updateSensitiveLiveActivityContent(enabled: true),
+      isFalse,
+    );
+    expect(nativeWrites, <bool>[true, false]);
+    expect(controller.sensitiveLiveActivityContentEnabled, isFalse);
+    expect(controller.liveActivityPrivacyUpdateInFlight, isFalse);
+    expect(controller.lastError, contains('Updating lock-screen privacy'));
+
+    controller.dispose();
+  });
+
+  test('failed redacted refresh keeps withdrawn consent disabled', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final nativeWrites = <bool>[];
+    var failRefresh = false;
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _ProductionTestDriver(),
+      healthStateStore: _ControllableHealthStateStore(),
+      liveActivityPrivacySetter: ({required enabled}) async {
+        nativeWrites.add(enabled);
+      },
+      liveActivityPrivacyRefresh: () async {
+        if (failRefresh) {
+          throw StateError('simulated redacted refresh failure');
+        }
+      },
+    );
+
+    await controller.initialize();
+    expect(
+      await controller.updateSensitiveLiveActivityContent(enabled: true),
+      isTrue,
+    );
+    failRefresh = true;
+
+    expect(
+      await controller.updateSensitiveLiveActivityContent(enabled: false),
+      isFalse,
+    );
+    expect(nativeWrites, <bool>[true, false]);
+    expect(controller.sensitiveLiveActivityContentEnabled, isFalse);
+
+    controller.dispose();
+  });
+
+  test('failed native withdrawal still fails closed in Flutter', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    var nativeEnabled = false;
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _ProductionTestDriver(),
+      healthStateStore: _ControllableHealthStateStore(),
+      liveActivityPrivacySetter: ({required enabled}) async {
+        if (!enabled) {
+          throw StateError('simulated withdrawal persistence failure');
+        }
+        nativeEnabled = enabled;
+      },
+      liveActivityPrivacyRefresh: () async {},
+    );
+
+    await controller.initialize();
+    expect(
+      await controller.updateSensitiveLiveActivityContent(enabled: true),
+      isTrue,
+    );
+    expect(nativeEnabled, isTrue);
+    expect(controller.sensitiveLiveActivityContentEnabled, isTrue);
+
+    expect(
+      await controller.updateSensitiveLiveActivityContent(enabled: false),
+      isFalse,
+    );
+    expect(controller.sensitiveLiveActivityContentEnabled, isFalse);
+    expect(controller.liveActivityPrivacyUpdateInFlight, isFalse);
+
+    controller.dispose();
+  });
+
   test('does not persist an unverified sensor selection', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -424,6 +555,121 @@ void main() {
   );
 
   test(
+    'minute 59 stays out of presentation at the minute 60 boundary',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final boundary = DateTime.now();
+      final sessionStart = boundary.subtract(const Duration(minutes: 60));
+      final minute59 = _reading(
+        valueMgdl: 171,
+        sensorMinute: 59,
+        recordedAt: sessionStart.add(const Duration(minutes: 59)),
+      );
+      final minute60 = _reading(
+        valueMgdl: 112,
+        sensorMinute: 60,
+        recordedAt: boundary,
+      );
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: <CgmReading>[minute59],
+          sessionInfo: CgmSessionInfo(sessionStart: sessionStart),
+        ),
+      );
+      final driver = _ControlledDriver(<_ControlledSession>[session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+
+      await controller.initialize();
+      await controller.connect(sensor);
+      await _drainEventQueue();
+
+      expect(controller.latestReading?.sensorMinute, 59);
+      expect(controller.displayLatestReading, isNull);
+      final waitingContext = buildMessageContext(controller, now: boundary);
+      expect(waitingContext.isWarmingUp, isFalse);
+      expect(waitingContext.hasReadings, isFalse);
+
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: <CgmReading>[minute59, minute60],
+          sessionInfo: CgmSessionInfo(sessionStart: sessionStart),
+        ),
+      );
+      await _drainEventQueue();
+
+      expect(controller.displayLatestReading?.sensorMinute, 60);
+      expect(
+        buildMessageContext(controller, now: boundary).hasReadings,
+        isTrue,
+      );
+
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test(
+    'active presentation history excludes the sensor warmup window',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final sessionStart = DateTime.now().subtract(const Duration(hours: 2));
+      final history = <CgmReading>[
+        for (final minute in <int>[0, 59, 60, 61])
+          _reading(
+            valueMgdl: 100 + minute.toDouble(),
+            sensorMinute: minute,
+            recordedAt: sessionStart.add(Duration(minutes: minute)),
+          ),
+      ];
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: history,
+          sessionInfo: CgmSessionInfo(sessionStart: sessionStart),
+        ),
+      );
+      final driver = _ControlledDriver(<_ControlledSession>[session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+
+      await controller.initialize();
+      await controller.connect(sensor);
+      await _drainEventQueue();
+
+      expect(controller.snapshot!.history, hasLength(4));
+      expect(
+        controller.visibleHistory.map((reading) => reading.sensorMinute),
+        <int?>[60, 61],
+      );
+      expect(
+        controller.allHistoricalReadings.map(
+          (reading) => reading.sensorMinute,
+        ),
+        <int?>[60, 61],
+      );
+
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test(
     'same-id rearchive merges history and preserves session metadata',
     () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -432,8 +678,8 @@ void main() {
       final sessionStart = DateTime.now().subtract(const Duration(days: 1));
       final firstReading = _reading(
         valueMgdl: 101,
-        sensorMinute: 60,
-        recordedAt: sessionStart.add(const Duration(minutes: 60)),
+        sensorMinute: 30,
+        recordedAt: sessionStart.add(const Duration(minutes: 30)),
       );
       final secondReading = _reading(
         valueMgdl: 139,
@@ -491,6 +737,18 @@ void main() {
             .readingsForArchivedSensor(archived)
             .map((reading) => reading.valueMgdl),
         <double>[101, 139],
+      );
+      expect(
+        controller
+            .displayReadingsForArchivedSensor(archived)
+            .map((reading) => reading.valueMgdl),
+        <double>[139],
+      );
+      expect(
+        controller.allHistoricalReadings.map(
+          (reading) => reading.valueMgdl,
+        ),
+        <double>[139],
       );
 
       controller.dispose();

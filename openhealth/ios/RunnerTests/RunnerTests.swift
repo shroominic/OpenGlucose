@@ -236,3 +236,97 @@ final class RunnerTests: XCTestCase {
     )
   }
 }
+
+final class LiveActivityLockScreenRedactionTests: XCTestCase {
+  func testLiveGlucoseRequiresExplicitSensitiveContentConsent() throws {
+    let payload: [String: Any] = [
+      "sensorName": "Private sensor name",
+      "stageCode": "live",
+      "stageLabel": "LIVE",
+      "valueText": "112",
+      "unitText": "mg/dL",
+      "lastReadingText": "14:55",
+      "detailText": "Updated 14:55",
+      "trendSymbol": "up",
+      "deltaText": "+4",
+      "isStale": false,
+    ]
+
+    let redacted = LiveActivityLockScreenRedaction.apply(
+      to: payload,
+      sensitiveContentEnabled: false
+    )
+    XCTAssertEqual(redacted["sensorName"] as? String, "OpenGlucose")
+    XCTAssertEqual(redacted["valueText"] as? String, "--")
+    XCTAssertEqual(redacted["unitText"] as? String, "")
+    XCTAssertEqual(redacted["lastReadingText"] as? String, "--")
+    XCTAssertEqual(redacted["trendSymbol"] as? String, "")
+    XCTAssertEqual(redacted["deltaText"] as? String, "")
+
+    let consented = LiveActivityLockScreenRedaction.apply(
+      to: payload,
+      sensitiveContentEnabled: true
+    )
+    XCTAssertEqual(consented["sensorName"] as? String, "Private sensor name")
+    XCTAssertEqual(consented["valueText"] as? String, "112")
+    XCTAssertEqual(consented["unitText"] as? String, "mg/dL")
+    XCTAssertEqual(consented["lastReadingText"] as? String, "14:55")
+    XCTAssertEqual(consented["trendSymbol"] as? String, "up")
+    XCTAssertEqual(consented["deltaText"] as? String, "+4")
+  }
+
+  func testWarmupCountdownSurvivesDefaultRedaction() throws {
+    let redacted = LiveActivityLockScreenRedaction.redact([
+      "sensorName": "Private sensor name",
+      "stageCode": "progress",
+      "stageLabel": "WARMUP",
+      "valueText": "57",
+      "unitText": "min",
+      "lastReadingText": "14:55",
+      "lifeText": "15 days left",
+      "detailText": "Warming up",
+      "trendSymbol": "up",
+      "deltaText": "+12",
+      "isStale": true,
+    ])
+
+    XCTAssertEqual(redacted["sensorName"] as? String, "OpenGlucose")
+    XCTAssertEqual(redacted["stageCode"] as? String, "progress")
+    XCTAssertEqual(redacted["stageLabel"] as? String, "WARMUP")
+    XCTAssertEqual(redacted["valueText"] as? String, "57")
+    XCTAssertEqual(redacted["unitText"] as? String, "min")
+    XCTAssertEqual(redacted["lastReadingText"] as? String, "--")
+    XCTAssertEqual(redacted["lifeText"] as? String, "")
+    XCTAssertEqual(redacted["trendSymbol"] as? String, "")
+    XCTAssertEqual(redacted["deltaText"] as? String, "")
+    XCTAssertEqual(redacted["isStale"] as? Bool, false)
+  }
+
+  func testMalformedWarmupPayloadFailsClosed() throws {
+    for payload in [
+      [
+        "stageCode": "live",
+        "stageLabel": "WARMUP",
+        "valueText": "123",
+        "unitText": "min",
+      ],
+      [
+        "stageCode": "progress",
+        "stageLabel": "WARMUP",
+        "valueText": "123",
+        "unitText": "mg/dL",
+      ],
+      [
+        "stageCode": "progress",
+        "stageLabel": "WARMUP",
+        "valueText": "glucose: 123",
+        "unitText": "min",
+      ],
+    ] {
+      let redacted = LiveActivityLockScreenRedaction.redact(payload)
+
+      XCTAssertEqual(redacted["valueText"] as? String, "--")
+      XCTAssertEqual(redacted["unitText"] as? String, "")
+    }
+  }
+}
