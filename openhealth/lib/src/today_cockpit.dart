@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
 import 'display_preferences.dart';
+import 'evidence_observation_card.dart';
 
 /// A compact, non-clinical summary of the current day.
 ///
@@ -15,12 +16,16 @@ class TodayCockpit extends StatelessWidget {
     required this.preferences,
     this.now,
     this.onAddContext,
+    this.observations = const <MetabolicObservation>[],
+    this.safetyBoundary = AiDisclaimer.short,
   });
 
   final List<CgmReading> readings;
   final DisplayPreferences preferences;
   final DateTime? now;
   final VoidCallback? onAddContext;
+  final List<MetabolicObservation> observations;
+  final String safetyBoundary;
 
   String _formatGlucose(double valueMgdl) {
     final value = preferences.unit.convertFromMgdl(valueMgdl);
@@ -54,95 +59,106 @@ class TodayCockpit extends StatelessWidget {
     );
     final theme = Theme.of(context);
 
-    return Card(
+    return Column(
       key: const ValueKey<String>('todayCockpit'),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(
+      children: <Widget>[
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Expanded(
-                  child: Text(
-                    'Today at a glance',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ),
-                if (onAddContext != null)
-                  IconButton.filledTonal(
-                    key: const ValueKey<String>('todayAddContextButton'),
-                    tooltip: 'Add context',
-                    onPressed: onAddContext,
-                    icon: const Icon(Icons.add_rounded),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: _TodayTile(
-                    label: 'Latest',
-                    value: current == null
-                        ? '--'
-                        : _formatGlucose(current.valueMgdl),
-                    detail: current == null
-                        ? 'Waiting for a reading'
-                        : _relativeAge(current.recordedAt!, reference),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _TodayTile(
-                    label: '24h average',
-                    value: stats.averageMgdl == null
-                        ? '--'
-                        : _formatGlucose(stats.averageMgdl!),
-                    detail: coverage.isSufficient
-                        ? '${stats.readingCount} readings'
-                        : 'More context needed',
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: const Color(0xFFF1F5F4),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
-                ),
-                child: Row(
+                Row(
                   children: <Widget>[
-                    const Icon(
-                      Icons.auto_awesome_outlined,
-                      size: 18,
-                      color: Color(0xFF0B6E69),
-                    ),
-                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        _summaryText(stats, coverage),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: const Color(0xFF49615D),
-                          height: 1.3,
+                        'Today at a glance',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
                         ),
+                      ),
+                    ),
+                    if (onAddContext != null)
+                      IconButton.filledTonal(
+                        key: const ValueKey<String>('todayAddContextButton'),
+                        tooltip: 'Add context',
+                        onPressed: onAddContext,
+                        icon: const Icon(Icons.add_rounded),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: _TodayTile(
+                        label: 'Latest',
+                        value: current == null
+                            ? '--'
+                            : _formatGlucose(current.valueMgdl),
+                        detail: current == null
+                            ? 'Waiting for a reading'
+                            : _relativeAge(current.recordedAt!, reference),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _TodayTile(
+                        label: '24h average',
+                        value: stats.averageMgdl == null
+                            ? '--'
+                            : _formatGlucose(stats.averageMgdl!),
+                        detail: coverage.isSufficient
+                            ? '${stats.readingCount} readings'
+                            : 'More context needed',
                       ),
                     ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 10),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F5F4),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    child: Row(
+                      children: <Widget>[
+                        const Icon(
+                          Icons.auto_awesome_outlined,
+                          size: 18,
+                          color: Color(0xFF0B6E69),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _summaryText(stats, coverage),
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: const Color(0xFF49615D),
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        if (observations.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 10),
+          EvidenceObservationCard(
+            observations: observations,
+            safetyBoundary: safetyBoundary,
+          ),
+        ],
+      ],
     );
   }
 
