@@ -10,6 +10,14 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Android AiDEX setup now avoids unnecessary reconnects for existing healthy
+  bonds. If service discovery times out or the device disconnects, setup waits
+  for that operation to finish and makes one bounded fresh-connection retry.
+  The retry preserves the bond and cannot repeat sensor activation. A second
+  failure stops automatic session retries.
+
 ## [0.1.2] - 2026-08-15
 
 ### Changed

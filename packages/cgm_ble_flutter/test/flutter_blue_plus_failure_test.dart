@@ -64,18 +64,66 @@ void main() {
     });
   });
 
-  test('discovery disables the Service Changed subscription', () async {
+  test('discovery uses the plugin-owned 30 second timeout', () async {
     bool? subscribeToServicesChanged;
+    int? timeoutSeconds;
+    final source = Completer<List<String>>();
 
-    final services = await discoverServicesWithoutServiceChanged<List<String>>((
+    const transport = FlutterBluePlusTransport();
+    expect(transport.discoveryTimeout, const Duration(seconds: 30));
+
+    final discovery = discoverServicesWithoutServiceChanged<List<String>>((
       subscribe,
-    ) async {
+      timeout,
+    ) {
       subscribeToServicesChanged = subscribe;
-      return <String>['service'];
-    });
+      timeoutSeconds = timeout;
+      return source.future;
+    }, timeout: transport.discoveryTimeout);
 
     expect(subscribeToServicesChanged, isFalse);
+    expect(timeoutSeconds, 30);
+    // Returning the plugin Future directly ensures that a shorter Dart
+    // Future.timeout cannot complete while FlutterBluePlus still owns its
+    // operation mutex.
+    expect(identical(discovery, source.future), isTrue);
+
+    source.complete(<String>['service']);
+    final services = await discovery;
     expect(services, <String>['service']);
+  });
+
+  test('discovery timeout rounds up to whole plugin seconds', () async {
+    int? timeoutSeconds;
+
+    await discoverServicesWithoutServiceChanged<void>((
+      subscribe,
+      timeout,
+    ) async {
+      timeoutSeconds = timeout;
+    }, timeout: const Duration(milliseconds: 12501));
+
+    expect(timeoutSeconds, 13);
+  });
+
+  test('plugin discovery timeout remains a retryable BLE timeout', () {
+    final failure = classifyFlutterBluePlusFailure(
+      fbp.FlutterBluePlusException(
+        fbp.ErrorPlatform.fbp,
+        'discoverServices',
+        fbp.FbpErrorCode.timeout.index,
+        'Timed out after 30s',
+      ),
+      operation: BleOperation.discoverServices,
+    );
+
+    expect(failure.kind, BleFailureKind.operationTimedOut);
+    expect(failure.operation, BleOperation.discoverServices);
+    expect(failure.allowsAutomaticRetry, isTrue);
+    expect(
+      failure.diagnosticCode,
+      'fbp.fbp.discover-services.1.operationtimedout',
+    );
   });
 
   group('Android bond reconciliation', () {

@@ -383,9 +383,10 @@ class AidexSession implements CgmSession {
       _setSetupPhase(AidexSetupPhase.bond);
       var conn = _connection;
       if (conn == null) throw StateError('Disconnected during setup');
-      if (conn.supportsBondLifecycle) {
-        await conn.currentBondState();
-      }
+      final bondStateBeforeSetup = conn.supportsBondLifecycle
+          ? await conn.currentBondState()
+          : BleBondState.bonded;
+      _throwIfDisconnectingDuringSetup();
       _setSnapshot(
         _snapshot.copyWith(
           stage: CgmSyncStage.bonding,
@@ -403,6 +404,7 @@ class AidexSession implements CgmSession {
       final bondStateAfterSetup = conn.supportsBondLifecycle
           ? await conn.currentBondState()
           : BleBondState.bonded;
+      _throwIfDisconnectingDuringSetup();
       if (conn.supportsBondLifecycle &&
           bondStateAfterSetup != BleBondState.bonded) {
         throw BleFailure(
@@ -411,23 +413,27 @@ class AidexSession implements CgmSession {
           diagnosticCode: 'aidex.bond.not-completed',
         );
       }
-      final shouldRefreshBondedGatt =
+      final establishedBondDuringSetup =
           conn.supportsBondLifecycle &&
+          bondStateBeforeSetup != BleBondState.bonded &&
           bondStateAfterSetup == BleBondState.bonded;
-      _throwIfDisconnectingDuringSetup();
-      if (shouldRefreshBondedGatt) {
+      if (establishedBondDuringSetup) {
         _setSetupPhase(AidexSetupPhase.reconnect);
-        await _reconnectGattAfterBond(conn);
+        await _refreshGattConnection(
+          conn,
+          closeGap: _timings.gattGap,
+          postConnectSettle: Duration.zero,
+          statusText: 'Refreshing Bluetooth link',
+          logReason: 'after bond',
+        );
       } else {
         _monitorConnectionState();
       }
-      // flutter_blue_plus service discovery can subscribe to the protected
-      // GAP Service Changed characteristic as an implementation detail. Bond
-      // before the first discovery so Android can present pairing before any
-      // protected CCCD write. Refresh every confirmed Android-style bond,
-      // including a bond from an earlier app run: OEM stacks can preserve a
-      // stale unauthenticated GATT link even when the bond already exists.
-      // Discovery therefore runs only on the fresh bonded GATT link.
+      // Keep bonding before discovery. A bond created on this connection can
+      // leave OEM Android stacks with stale unauthenticated handles, so give
+      // only that new bond a fresh GATT connection. A healthy bond from an
+      // earlier app run stays on its first connection to avoid unnecessary
+      // disconnect/reconnect churn before service discovery.
       _setSnapshot(
         _snapshot.copyWith(
           stage: CgmSyncStage.bonding,
@@ -437,7 +443,7 @@ class AidexSession implements CgmSession {
       _setSetupPhase(AidexSetupPhase.discovery);
       _emitLog(CgmLogLevel.debug, 'Discovering services');
       _throwIfDisconnectingDuringSetup();
-      await _discoverServices();
+      await _discoverServicesWithRecovery();
       _throwIfDisconnectingDuringSetup();
       _setSetupPhase(AidexSetupPhase.subscribe);
       _emitLog(CgmLogLevel.debug, 'Subscribing to notifications');
@@ -531,7 +537,10 @@ class AidexSession implements CgmSession {
       await _refreshVendorStartTimeInternal();
       await _ensureLiveUpdateConfiguration();
       final readyMetadata = <String, String>{..._snapshot.metadata}
-        ..remove(aidexSetupPhaseMetadataKey);
+        ..remove(aidexSetupPhaseMetadataKey)
+        ..remove(bleFailureKindMetadataKey)
+        ..remove(bleFailureOperationMetadataKey)
+        ..remove(bleFailureDiagnosticCodeMetadataKey);
       _setSnapshot(
         _snapshot.copyWith(
           stage: CgmSyncStage.ready,
@@ -547,47 +556,120 @@ class AidexSession implements CgmSession {
     }
   }
 
-  Future<void> _reconnectGattAfterBond(BleConnection bondedConnection) async {
-    _throwIfDisconnectingDuringSetup();
-    if (!identical(_connection, bondedConnection)) {
-      throw StateError('BLE connection changed during bonding');
+  Future<void> _discoverServicesWithRecovery() async {
+    final discoveryConnection = _connection;
+    if (discoveryConnection == null) {
+      throw StateError('Disconnected before service discovery');
     }
+
+    try {
+      await _discoverServices();
+      return;
+    } on BleFailure catch (error) {
+      if (!_isRecoverableDiscoveryFailure(error)) {
+        rethrow;
+      }
+    }
+
+    // The first discovery future is terminal before recovery starts. This is
+    // important for transports that serialize BLE plugin operations.
+    _throwIfDisconnectingDuringSetup();
+    _setSetupPhase(AidexSetupPhase.reconnect);
+    await _refreshGattConnection(
+      discoveryConnection,
+      closeGap: _timings.discoveryRecoveryCloseGap,
+      postConnectSettle: _timings.discoveryRecoveryPostConnectSettle,
+      statusText: 'Recovering Bluetooth setup',
+      logReason: 'for service discovery recovery',
+    );
+    _throwIfDisconnectingDuringSetup();
+
     _setSnapshot(
       _snapshot.copyWith(
         stage: CgmSyncStage.bonding,
-        statusText: 'Refreshing Bluetooth link',
+        statusText: 'Discovering services',
       ),
     );
-    _emitLog(CgmLogLevel.debug, 'Refreshing GATT link after bond');
+    _setSetupPhase(AidexSetupPhase.discovery);
+    _emitLog(CgmLogLevel.debug, 'Retrying service discovery');
+    _throwIfDisconnectingDuringSetup();
+    // One retry only. Any second failure is final and remains in phase P04.
+    try {
+      await _discoverServices();
+    } on BleFailure catch (error, stackTrace) {
+      if (!_isRecoverableDiscoveryFailure(error)) {
+        rethrow;
+      }
+      Error.throwWithStackTrace(
+        BleFailure(
+          kind: BleFailureKind.unexpected,
+          operation: BleOperation.discoverServices,
+          diagnosticCode:
+              'aidex.discovery.${error.kind.name}.recovery-exhausted',
+        ),
+        stackTrace,
+      );
+    }
+  }
 
-    // Android vendors can retain stale, unauthenticated GATT handles across a
-    // newly established bond. Cancel monitoring before this intentional
+  bool _isRecoverableDiscoveryFailure(BleFailure failure) {
+    return failure.operation == BleOperation.discoverServices &&
+        (failure.kind == BleFailureKind.operationTimedOut ||
+            failure.kind == BleFailureKind.deviceDisconnected);
+  }
+
+  Future<void> _refreshGattConnection(
+    BleConnection priorConnection, {
+    required Duration closeGap,
+    required Duration postConnectSettle,
+    required String statusText,
+    required String logReason,
+  }) async {
+    _throwIfDisconnectingDuringSetup();
+    final activeConnection = _connection;
+    if (activeConnection != null &&
+        !identical(activeConnection, priorConnection)) {
+      throw StateError('BLE connection changed during GATT refresh');
+    }
+    _setSnapshot(
+      _snapshot.copyWith(stage: CgmSyncStage.bonding, statusText: statusText),
+    );
+    _emitLog(CgmLogLevel.debug, 'Refreshing GATT link $logReason');
+
+    // Android vendors can retain a stale GATT client after a bond transition
+    // or failed discovery. Cancel monitoring before this intentional
     // disconnect so it cannot be reported as a user-visible link loss.
     await _connectionStateSubscription?.cancel();
     _connectionStateSubscription = null;
     _throwIfDisconnectingDuringSetup();
-    await bondedConnection.disconnect();
+    await priorConnection.disconnect();
     _connection = null;
     _connectionState = BleConnectionState.disconnected;
 
     _throwIfDisconnectingDuringSetup();
-    await Future<void>.delayed(_timings.gattGap);
+    await Future<void>.delayed(closeGap);
     _throwIfDisconnectingDuringSetup();
     final refreshedConnection = await _transport.connect(sensor.deviceId);
     _connection = refreshedConnection;
     _connectionState = BleConnectionState.connected;
     _throwIfDisconnectingDuringSetup();
 
-    if (refreshedConnection.supportsBondLifecycle &&
-        await refreshedConnection.currentBondState() != BleBondState.bonded) {
-      throw BleFailure(
-        kind: BleFailureKind.bondRejected,
-        operation: BleOperation.bond,
-        diagnosticCode: 'aidex.bond.not-persisted',
-      );
+    if (refreshedConnection.supportsBondLifecycle) {
+      final refreshedBondState = await refreshedConnection.currentBondState();
+      _throwIfDisconnectingDuringSetup();
+      if (refreshedBondState != BleBondState.bonded) {
+        throw BleFailure(
+          kind: BleFailureKind.bondRejected,
+          operation: BleOperation.bond,
+          diagnosticCode: 'aidex.bond.not-persisted',
+        );
+      }
     }
+
+    await Future<void>.delayed(postConnectSettle);
+    _throwIfDisconnectingDuringSetup();
     _monitorConnectionState();
-    _emitLog(CgmLogLevel.debug, 'GATT link refreshed after bond');
+    _emitLog(CgmLogLevel.debug, 'GATT link refreshed $logReason');
   }
 
   void _throwIfDisconnectingDuringSetup() {
