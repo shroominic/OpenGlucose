@@ -270,6 +270,15 @@ void main() {
       expect(gradle, contains('never falls back to debug signing'));
     });
 
+    test('Android USB debug builds stay separate from tester installs', () {
+      final gradle = _read('android/app/build.gradle.kts');
+      final debugManifest = _read('android/app/src/debug/AndroidManifest.xml');
+
+      expect(gradle, contains('applicationIdSuffix = ".debug"'));
+      expect(gradle, contains('versionNameSuffix = "-debug"'));
+      expect(debugManifest, contains('android:label="OpenGlucose Debug"'));
+    });
+
     test('Android release is source-bound and draft-first', () {
       final workflow = _read(
         '../.github/workflows/release-android.yml',

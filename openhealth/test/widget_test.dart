@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -339,6 +341,429 @@ void main() {
     controller.dispose();
     expect(preferences.getString('openHealth.lastSensor'), rememberedJson);
   });
+
+  testWidgets('Android sensor move locks Disconnect until the transfer ends', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final driver = _TransferWidgetDriver(
+      plan: const CgmBondTransferPlan(CgmBondTransferScope.allLe),
+      executeStarted: started,
+      executeRelease: release,
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+    );
+    await controller.initialize();
+    await controller.connect(driver.sensor);
+
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Current sensor'));
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('moveSensorToAnotherPhoneButton')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Remove all sensor phone bonds?'), findsOneWidget);
+    expect(find.textContaining('all other phones'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('confirmMoveSensorButton')),
+    );
+    await tester.pump();
+    expect(started.isCompleted, isTrue);
+    final disconnectButton = tester.widget<FilledButton>(
+      find.byKey(const ValueKey<String>('disconnectSensorButton')),
+    );
+    expect(disconnectButton.onPressed, isNull);
+    expect(driver.session.executeCalls, 1);
+    expect(driver.session.disconnectCalls, 0);
+
+    await tester.runAsync(() async {
+      release.complete();
+      for (var attempt = 0; attempt < 40; attempt += 1) {
+        if (driver.session.disconnectCalls == 1) {
+          return;
+        }
+        await Future<void>.delayed(Duration.zero);
+      }
+    });
+    await tester.pumpAndSettle();
+    expect(driver.session.disconnectCalls, 1);
+    expect(controller.snapshot, isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets(
+    'restored accepted move needs explicit Bluetooth acknowledgment',
+    (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      await tester.binding.setSurfaceSize(const Size(800, 1800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final driver = _TransferWidgetDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+      );
+      final tombstoneKey =
+          'openHealth.bondTransfer.${driver.sensor.storageKey}';
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+        'openHealth.lastSensor': jsonEncode(driver.sensor.toJson()),
+        tombstoneKey: 'sensor-accepted',
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+      );
+      await controller.initialize();
+
+      await controller.disconnect();
+      expect(controller.snapshot, isNotNull);
+      expect(preferences.getString(tombstoneKey), 'sensor-accepted');
+
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.tune_rounded));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Current sensor'));
+      await tester.tap(find.text('Current sensor'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('reviewSelectedInterruptedMoveButton'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('not listed as paired'), findsOneWidget);
+      expect(find.textContaining('choose Forget'), findsOneWidget);
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('confirmSelectedInterruptedMoveRecovery'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(preferences.getString(tombstoneKey), isNull);
+      expect(controller.snapshot, isNull);
+      expect(driver.connectCalls, 0);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets(
+    'orphan accepted move requires local confirmation before Connect',
+    (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _TransferWidgetDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+      );
+      final tombstoneKey =
+          'openHealth.bondTransfer.${driver.sensor.storageKey}';
+      await preferences.setString(tombstoneKey, 'sensor-accepted');
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+      );
+      await controller.initialize();
+
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.text('Find my sensor'));
+      await tester.pumpAndSettle();
+
+      final connectFinder = find.byKey(
+        ValueKey<String>('connectButton-${driver.sensor.deviceId}'),
+      );
+      expect(tester.widget<FilledButton>(connectFinder).onPressed, isNull);
+      await tester.tap(
+        find.byKey(
+          ValueKey<String>('resolveInterruptedMove-${driver.sensor.deviceId}'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('not listed as paired'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey<String>('confirmInterruptedMoveRecovery')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(preferences.getString(tombstoneKey), isNull);
+      expect(driver.connectCalls, 0);
+      expect(tester.widget<FilledButton>(connectFinder).onPressed, isNotNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets('unknown move stays fail closed with support guidance', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final driver = _TransferWidgetDriver(
+      plan: const CgmBondTransferPlan(
+        CgmBondTransferScope.requestingDeviceLe,
+      ),
+    );
+    final tombstoneKey = 'openHealth.bondTransfer.${driver.sensor.storageKey}';
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+      'openHealth.lastSensor': jsonEncode(driver.sensor.toJson()),
+      tombstoneKey: 'outcome-unknown',
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+    );
+    await controller.initialize();
+
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Current sensor'));
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+
+    final blockedAction = tester.widget<FilledButton>(
+      find.byKey(
+        const ValueKey<String>('reviewSelectedInterruptedMoveButton'),
+      ),
+    );
+    expect(blockedAction.onPressed, isNull);
+    expect(find.text('Move needs support'), findsOneWidget);
+    expect(find.textContaining('Do not reconnect'), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey<String>('confirmSelectedInterruptedMoveRecovery'),
+      ),
+      findsNothing,
+    );
+    expect(preferences.getString(tombstoneKey), 'outcome-unknown');
+    expect(driver.connectCalls, 0);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    debugDefaultTargetPlatformOverride = null;
+  });
+}
+
+class _TransferWidgetDriver implements CgmDriver {
+  _TransferWidgetDriver({
+    required this.plan,
+    this.executeStarted,
+    this.executeRelease,
+  }) : session = _TransferWidgetSession(
+         sensor: sensorDefinition,
+         plan: plan,
+         executeStarted: executeStarted,
+         executeRelease: executeRelease,
+       );
+
+  static const sensorDefinition = DiscoveredSensor(
+    driverId: 'transfer-widget-test',
+    deviceId: 'transfer-widget-device',
+    displayName: 'AiDEX Transfer Test',
+    storageKey: 'aidex:transfer-widget-test',
+    rssi: -45,
+    capabilities: CgmCapabilities(
+      supportsDirectBle: true,
+      supportsVendorPairing: true,
+      supportsHistory: true,
+    ),
+    metadata: <String, String>{'serial': 'TRANSFERTEST'},
+  );
+
+  final CgmBondTransferPlan plan;
+  final Completer<void>? executeStarted;
+  final Completer<void>? executeRelease;
+  final _TransferWidgetSession session;
+  int connectCalls = 0;
+
+  DiscoveredSensor get sensor => sensorDefinition;
+
+  @override
+  String get driverId => sensor.driverId;
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async {
+    connectCalls += 1;
+    return session;
+  }
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) async* {
+    yield sensor;
+  }
+}
+
+class _TransferWidgetSession implements CgmSession, CgmBondTransferSession {
+  _TransferWidgetSession({
+    required this.sensor,
+    required this.plan,
+    this.executeStarted,
+    this.executeRelease,
+  }) : currentSnapshot = CgmSessionSnapshot(
+         stage: CgmSyncStage.ready,
+         statusText: 'Connected',
+         sensor: sensor,
+         capabilities: sensor.capabilities,
+         metadata: <String, String>{'serial': sensor.metadata['serial']!},
+       );
+
+  @override
+  final DiscoveredSensor sensor;
+  final CgmBondTransferPlan plan;
+  final Completer<void>? executeStarted;
+  final Completer<void>? executeRelease;
+  int executeCalls = 0;
+  int disconnectCalls = 0;
+
+  @override
+  final CgmSessionSnapshot currentSnapshot;
+
+  @override
+  Future<CgmBondTransferPlan> inspectBondTransfer() async => plan;
+
+  @override
+  Future<void> executeBondTransfer(
+    CgmBondTransferPlan plan, {
+    required Future<void> Function() onSensorAccepted,
+  }) async {
+    executeCalls += 1;
+    expect(plan, this.plan);
+    final started = executeStarted;
+    if (started != null && !started.isCompleted) {
+      started.complete();
+    }
+    final release = executeRelease;
+    if (release != null) {
+      await release.future;
+    }
+    await onSensorAccepted();
+  }
+
+  @override
+  Stream<CgmLogEntry> get logs => const Stream<CgmLogEntry>.empty();
+
+  @override
+  Stream<CgmSessionSnapshot> get snapshots =>
+      const Stream<CgmSessionSnapshot>.empty();
+
+  @override
+  CgmUnsafeAdmin? get unsafeAdmin => null;
+
+  @override
+  Future<void> disconnect() async {
+    disconnectCalls += 1;
+  }
+
+  @override
+  Future<List<CgmCalibrationEntry>> fetchCalibrations() async =>
+      const <CgmCalibrationEntry>[];
+
+  @override
+  Future<void> refresh() async {}
+
+  @override
+  Future<List<CgmDiagnosticItem>> refreshDiagnostics() async =>
+      const <CgmDiagnosticItem>[];
+
+  @override
+  Future<void> refreshLiveData() async {}
+
+  @override
+  Future<void> submitCalibration({
+    required int glucoseMgdl,
+    int? sensorMinute,
+    DateTime? recordedAt,
+  }) async {}
+
+  @override
+  Future<void> syncHistory({
+    bool includeRawHistory = false,
+    int? requestedStartOffset,
+  }) async {}
 }
 
 class _PrivateSupportDriver implements CgmDriver {

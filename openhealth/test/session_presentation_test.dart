@@ -122,6 +122,26 @@ void main() {
       expect(bleFailureRequiresUserAction(snapshot), isFalse);
       expect(snapshotAllowsAutomaticReconnect(snapshot), isTrue);
     });
+
+    for (final transferState in const <String>[
+      'unknown',
+      'sensor-accepted',
+      'complete',
+    ]) {
+      test('$transferState transfer state never reconnects automatically', () {
+        final snapshot = CgmSessionSnapshot(
+          stage: CgmSyncStage.disconnected,
+          statusText: 'Sensor transfer stopped',
+          sensor: sensor,
+          capabilities: sensor.capabilities,
+          metadata: <String, String>{
+            cgmBondTransferStateMetadataKey: transferState,
+          },
+        );
+
+        expect(snapshotAllowsAutomaticReconnect(snapshot), isFalse);
+      });
+    }
   });
 
   group('private BLE support code', () {
@@ -224,6 +244,53 @@ void main() {
         'OGSUP1 phase=P05 op=subscribe kind=bondRejected '
         'code=ble.redacted',
       );
+    });
+
+    test('P05 code includes only closed notification progress values', () {
+      final failure = BleFailure(
+        kind: BleFailureKind.deviceDisconnected,
+        operation: BleOperation.subscribe,
+        diagnosticCode: 'fbp.fbp.subscribe.6.devicedisconnected',
+      );
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.subscribe,
+          aidexSubscribeStepMetadataKey: AidexSubscribeStep.specificOps,
+          aidexSubscribeAttemptMetadataKey: AidexSubscribeAttempt.recovery,
+          ...failure.toMetadata(),
+        },
+        lastError: 'Failed',
+      );
+
+      expect(
+        privateBleSupportCodeForSnapshot(snapshot),
+        'OGSUP1 phase=P05 step=N04 attempt=A02 op=subscribe '
+        'kind=deviceDisconnected code=fbp.fbp.subscribe.6.devicedisconnected',
+      );
+    });
+
+    test('malformed notification progress is omitted from support code', () {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        metadata: const <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.subscribe,
+          aidexSubscribeStepMetadataKey: 'N04 device=AA:BB:CC:DD:EE:FF',
+          aidexSubscribeAttemptMetadataKey: 'A02 secret',
+        },
+        lastError: 'Failed',
+      );
+
+      final code = privateBleSupportCodeForSnapshot(snapshot);
+      expect(code, 'OGSUP1 phase=P05');
+      expect(code, isNot(contains('AA:BB')));
+      expect(code, isNot(contains('secret')));
     });
 
     test('ready sessions never offer a copy action', () {

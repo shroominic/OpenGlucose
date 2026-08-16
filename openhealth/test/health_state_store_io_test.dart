@@ -12,6 +12,7 @@ const _storageDirectory = 'OpenGlucose/RestrictedHealthState';
 const _historyDirectory = '$_storageDirectory/HistoryBlobs';
 const _historyBlobExtension = '.blob';
 const _lastSensorKey = 'openHealth.lastSensor';
+const _bondTransferKey = 'openHealth.bondTransfer.serial:SENSOR-1';
 const _healthExportLastSyncedKey = 'openHealth.healthExport.lastSyncedMs';
 const _healthExportWatermarkKey = 'openHealth.healthExport.watermarkMs';
 
@@ -24,6 +25,7 @@ void main() {
       final directory = await _temporaryDirectory('migration');
       SharedPreferences.setMockInitialValues(<String, Object>{
         _lastSensorKey: '{"deviceId":"sensor-1"}',
+        _bondTransferKey: 'outcome-unknown',
         'openHealth.history.sensor-1': '[{"valueMgdl":100}]',
         'openHealth.displayPreferences': '{"unit":"mgdl"}',
       });
@@ -39,11 +41,13 @@ void main() {
       await store.initialize();
 
       expect(store.getString(_lastSensorKey), contains('sensor-1'));
+      expect(store.getString(_bondTransferKey), 'outcome-unknown');
       expect(
         store.getString('openHealth.history.sensor-1'),
         contains('valueMgdl'),
       );
       expect(preferences.containsKey(_lastSensorKey), isFalse);
+      expect(preferences.containsKey(_bondTransferKey), isFalse);
       expect(preferences.containsKey('openHealth.history.sensor-1'), isFalse);
       expect(preferences.containsKey('openHealth.displayPreferences'), isTrue);
       expect(excludedPaths, isNotEmpty);
@@ -55,6 +59,10 @@ void main() {
       expect(
         envelope['values'],
         containsPair(_lastSensorKey, '{"deviceId":"sensor-1"}'),
+      );
+      expect(
+        envelope['values'],
+        containsPair(_bondTransferKey, 'outcome-unknown'),
       );
       expect(
         envelope['values'] as Map<String, dynamic>,

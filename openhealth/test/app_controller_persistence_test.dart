@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
@@ -223,6 +224,180 @@ void main() {
       await driver.close();
     },
   );
+
+  test(
+    'terminal P02 snapshot survives forced freshness during listener attachment',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final failure = BleFailure(
+        kind: BleFailureKind.bondRejected,
+        operation: BleOperation.bond,
+        diagnosticCode: 'aidex.bond.sensor-paired-os-unbonded',
+      );
+      final terminalSnapshot = _testSnapshot(
+        sensor,
+        stage: CgmSyncStage.error,
+        metadata: <String, String>{
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.bond,
+          ...failure.toMetadata(),
+        },
+        lastError: 'Bluetooth setup could not be completed.',
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+        snapshotOnSnapshotsAccess: terminalSnapshot,
+      );
+      final driver = _ControlledDriver(<_ControlledSession>[session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+        reconnectDelay: Duration.zero,
+      );
+
+      await controller.initialize();
+      await controller
+          .connect(sensor)
+          .timeout(
+            const Duration(milliseconds: 100),
+          );
+
+      expect(controller.snapshot?.stage, CgmSyncStage.error);
+      expect(
+        controller.snapshot?.metadata[aidexSetupPhaseMetadataKey],
+        AidexSetupPhase.bond,
+      );
+      expect(
+        BleFailure.fromMetadata(controller.snapshot!.metadata)?.diagnosticCode,
+        'aidex.bond.sensor-paired-os-unbonded',
+      );
+      expect(controller.connectionRequiresUserAction, isTrue);
+      expect(controller.lastError, isNotNull);
+      expect(driver.connectedSensors, hasLength(1));
+
+      await controller.ensureFreshData(force: true);
+
+      expect(controller.snapshot?.stage, CgmSyncStage.error);
+      expect(
+        controller.snapshot?.metadata[aidexSetupPhaseMetadataKey],
+        AidexSetupPhase.bond,
+      );
+      expect(
+        BleFailure.fromMetadata(controller.snapshot!.metadata)?.diagnosticCode,
+        'aidex.bond.sensor-paired-os-unbonded',
+      );
+      expect(session.refreshLiveDataCalls, 0);
+      expect(session.syncHistoryCalls, 0);
+
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test('attached terminal P02 snapshot blocks forced freshness', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _testSensor();
+    final failure = BleFailure(
+      kind: BleFailureKind.bondRejected,
+      operation: BleOperation.bond,
+      diagnosticCode: 'aidex.bond.sensor-paired-os-unbonded',
+    );
+    final terminalSnapshot = _testSnapshot(
+      sensor,
+      stage: CgmSyncStage.error,
+      metadata: <String, String>{
+        aidexSetupPhaseMetadataKey: AidexSetupPhase.bond,
+        ...failure.toMetadata(),
+      },
+      lastError: 'Bluetooth setup could not be completed.',
+    );
+    final session = _ControlledSession(
+      _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+    );
+    final driver = _ControlledDriver(<_ControlledSession>[session]);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+      reconnectDelay: Duration.zero,
+    );
+
+    await controller.initialize();
+    await controller.connect(sensor);
+    session.emit(terminalSnapshot);
+    await _drainEventQueue();
+    await controller.ensureFreshData(force: true);
+
+    expect(controller.snapshot?.stage, CgmSyncStage.error);
+    expect(
+      controller.snapshot?.metadata[aidexSetupPhaseMetadataKey],
+      AidexSetupPhase.bond,
+    );
+    expect(
+      BleFailure.fromMetadata(controller.snapshot!.metadata)?.diagnosticCode,
+      'aidex.bond.sensor-paired-os-unbonded',
+    );
+    expect(session.refreshLiveDataCalls, 0);
+    expect(session.syncHistoryCalls, 0);
+
+    controller.dispose();
+    await driver.close();
+  });
+
+  test('refresh transition to P02 error cannot start history sync', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _testSensor();
+    final failure = BleFailure(
+      kind: BleFailureKind.bondRejected,
+      operation: BleOperation.bond,
+      diagnosticCode: 'aidex.bond.sensor-paired-os-unbonded',
+    );
+    final terminalSnapshot = _testSnapshot(
+      sensor,
+      stage: CgmSyncStage.error,
+      metadata: <String, String>{
+        aidexSetupPhaseMetadataKey: AidexSetupPhase.bond,
+        ...failure.toMetadata(),
+      },
+      lastError: 'Bluetooth setup could not be completed.',
+    );
+    final session = _ControlledSession(
+      _testSnapshot(sensor, stage: CgmSyncStage.ready),
+      snapshotOnRefreshLiveData: terminalSnapshot,
+    );
+    final driver = _ControlledDriver(<_ControlledSession>[session]);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+      reconnectDelay: Duration.zero,
+    );
+
+    await controller.initialize();
+    await controller.connect(sensor);
+    await _drainEventQueue();
+    await controller.ensureFreshData(force: true);
+
+    expect(controller.snapshot?.stage, CgmSyncStage.error);
+    expect(
+      controller.snapshot?.metadata[aidexSetupPhaseMetadataKey],
+      AidexSetupPhase.bond,
+    );
+    expect(
+      BleFailure.fromMetadata(controller.snapshot!.metadata)?.diagnosticCode,
+      'aidex.bond.sensor-paired-os-unbonded',
+    );
+    expect(session.refreshLiveDataCalls, 1);
+    expect(session.syncHistoryCalls, 0);
+
+    await _drainEventQueue();
+    controller.dispose();
+    await driver.close();
+  });
 
   test('unclassified initial BLE setup failure does not auto-retry', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -878,6 +1053,442 @@ void main() {
       controller.dispose();
     },
   );
+
+  test(
+    'confirmed sensor transfer uses the capability then clears selection',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(CgmBondTransferScope.allLe),
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+      await controller.initialize();
+      await controller.scan();
+      await controller.connect(controller.sensors.single);
+
+      expect(controller.canMoveSensorToAnotherPhone, isTrue);
+      final plan = await controller.inspectSensorTransfer();
+      expect(plan.removesAllLeBonds, isTrue);
+      expect(driver.session!.inspectCalls, 1);
+
+      await controller.moveSensorToAnotherPhone(plan);
+
+      expect(driver.session!.executeCalls, 1);
+      expect(driver.session!.normalDisconnectCalls, 1);
+      expect(controller.snapshot, isNull);
+      expect(controller.canMoveSensorToAnotherPhone, isFalse);
+      controller.dispose();
+    },
+  );
+
+  test(
+    'unknown sensor transfer outcome stays selected and is privacy safe',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+        executeFailure: const CgmBondTransferException(
+          CgmBondTransferFailureKind.sensorResponseUnknown,
+          outcome: CgmBondTransferOutcome.unknown,
+        ),
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+      await controller.initialize();
+      await controller.scan();
+      await controller.connect(controller.sensors.single);
+      final plan = await controller.inspectSensorTransfer();
+
+      await expectLater(
+        controller.moveSensorToAnotherPhone(plan),
+        throwsA(isA<CgmBondTransferException>()),
+      );
+
+      expect(driver.session!.executeCalls, 1);
+      expect(driver.session!.normalDisconnectCalls, 0);
+      expect(controller.snapshot, isNotNull);
+      expect(controller.lastError, contains('Do not retry'));
+      expect(controller.lastError, isNot(contains('device-id-private')));
+      await controller.disconnect();
+      controller.dispose();
+    },
+  );
+
+  test('transfer state must persist before the driver can write', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final store = _ControllableHealthStateStore(
+      failSetPrefix: 'openHealth.bondTransfer.',
+    );
+    final driver = _BondTransferDriver(
+      plan: const CgmBondTransferPlan(
+        CgmBondTransferScope.requestingDeviceLe,
+      ),
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: store,
+    );
+    await controller.initialize();
+    await controller.scan();
+    await controller.connect(controller.sensors.single);
+    final plan = await controller.inspectSensorTransfer();
+
+    await expectLater(
+      controller.moveSensorToAnotherPhone(plan),
+      throwsA(
+        isA<CgmBondTransferException>()
+            .having(
+              (failure) => failure.kind,
+              'kind',
+              CgmBondTransferFailureKind.statePersistenceFailed,
+            )
+            .having(
+              (failure) => failure.outcome,
+              'outcome',
+              CgmBondTransferOutcome.notStarted,
+            ),
+      ),
+    );
+
+    expect(driver.session!.executeCalls, 0);
+    expect(controller.snapshot, isNotNull);
+    expect(controller.lastError, contains('Do not retry'));
+    await controller.disconnect();
+    controller.dispose();
+  });
+
+  test(
+    'accepted transfer tombstone blocks reconnect after process death',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final driver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+        executeFailureAfterAccepted: const CgmBondTransferException(
+          CgmBondTransferFailureKind.disconnectUnconfirmed,
+          outcome: CgmBondTransferOutcome.sensorAccepted,
+        ),
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      await controller.initialize();
+      await controller.scan();
+      final sensor = controller.sensors.single;
+      await controller.connect(sensor);
+      await _drainEventQueue();
+      final plan = await controller.inspectSensorTransfer();
+
+      await expectLater(
+        controller.moveSensorToAnotherPhone(plan),
+        throwsA(isA<CgmBondTransferException>()),
+      );
+
+      final tombstoneKey = 'openHealth.bondTransfer.${sensor.storageKey}';
+      expect(store.getString(tombstoneKey), 'sensor-accepted');
+      expect(store.getString('openHealth.lastSensor'), isNotNull);
+      controller.dispose();
+
+      final restoredDriver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+      );
+      final restored = CgmAppController(
+        preferences: preferences,
+        driver: restoredDriver,
+        healthStateStore: store,
+        reconnectDelay: Duration.zero,
+      );
+      await restored.initialize();
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+
+      expect(restoredDriver.connectCalls, 0);
+      expect(restored.snapshot?.stage, CgmSyncStage.error);
+      expect(
+        restored.snapshot?.metadata[cgmBondTransferStateMetadataKey],
+        'sensor-accepted',
+      );
+      expect(restored.lastError, contains('Do not retry'));
+
+      await restored.disconnect();
+      expect(store.getString(tombstoneKey), 'sensor-accepted');
+      expect(restored.snapshot, isNotNull);
+
+      await restored.acknowledgeInterruptedSelectedSensorTransfer();
+      expect(store.getString(tombstoneKey), isNull);
+      expect(restored.snapshot, isNull);
+      restored.dispose();
+    },
+  );
+
+  test('normal disconnect cannot interrupt an executing transfer', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final started = Completer<void>();
+    final release = Completer<void>();
+    final driver = _BondTransferDriver(
+      plan: const CgmBondTransferPlan(CgmBondTransferScope.allLe),
+      executeStarted: started,
+      executeRelease: release,
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+    );
+    await controller.initialize();
+    await controller.scan();
+    await controller.connect(controller.sensors.single);
+    final plan = await controller.inspectSensorTransfer();
+
+    final transfer = controller.moveSensorToAnotherPhone(plan);
+    await started.future;
+    expect(controller.bondTransferInFlight, isTrue);
+
+    await controller.disconnect();
+
+    expect(driver.session!.normalDisconnectCalls, 0);
+    expect(controller.snapshot, isNotNull);
+    release.complete();
+    await transfer;
+
+    expect(driver.session!.normalDisconnectCalls, 1);
+    expect(controller.snapshot, isNull);
+    controller.dispose();
+  });
+
+  test('transfer confirmation cannot target a replacement session', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _BondTransferDriver(
+      plan: const CgmBondTransferPlan(
+        CgmBondTransferScope.requestingDeviceLe,
+      ),
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+    );
+    await controller.initialize();
+    await controller.scan();
+    final sensor = controller.sensors.single;
+    await controller.connect(sensor);
+    final inspectedSession = driver.session!;
+    final plan = await controller.inspectSensorTransfer();
+
+    await controller.disconnect();
+    await controller.connect(sensor);
+    final replacementSession = driver.session!;
+    expect(replacementSession, isNot(same(inspectedSession)));
+
+    await expectLater(
+      controller.moveSensorToAnotherPhone(plan),
+      throwsA(
+        isA<CgmBondTransferException>().having(
+          (failure) => failure.kind,
+          'kind',
+          CgmBondTransferFailureKind.sessionNotReady,
+        ),
+      ),
+    );
+
+    expect(inspectedSession.executeCalls, 0);
+    expect(replacementSession.executeCalls, 0);
+    await controller.disconnect();
+    controller.dispose();
+  });
+
+  test(
+    'orphan unknown marker stays fail closed without a clear action',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+      );
+      final sensor = driver._delegate.scenarioSensor;
+      final tombstoneKey = 'openHealth.bondTransfer.${sensor.storageKey}';
+      final store = _ControllableHealthStateStore(
+        initialValues: <String, String>{tombstoneKey: 'outcome-unknown'},
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      await controller.initialize();
+      await controller.scan();
+      final scannedSensor = controller.sensors.single;
+
+      expect(controller.sensorHasInterruptedTransfer(scannedSensor), isTrue);
+      expect(
+        controller.canAcknowledgeInterruptedSensorTransfer(scannedSensor),
+        isFalse,
+      );
+      await controller.connect(scannedSensor);
+      expect(driver.connectCalls, 0);
+
+      await expectLater(
+        controller.acknowledgeInterruptedSensorTransfer(scannedSensor),
+        throwsA(
+          isA<CgmBondTransferException>()
+              .having(
+                (failure) => failure.kind,
+                'kind',
+                CgmBondTransferFailureKind.sensorResponseUnknown,
+              )
+              .having(
+                (failure) => failure.outcome,
+                'outcome',
+                CgmBondTransferOutcome.unknown,
+              ),
+        ),
+      );
+
+      expect(driver.connectCalls, 0);
+      expect(store.getString(tombstoneKey), 'outcome-unknown');
+      controller.dispose();
+    },
+  );
+
+  test(
+    'unknown selected marker cannot use the accepted-state bypass',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+      );
+      final sensor = driver._delegate.scenarioSensor;
+      final tombstoneKey = 'openHealth.bondTransfer.${sensor.storageKey}';
+      final store = _ControllableHealthStateStore(
+        initialValues: <String, String>{
+          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+          tombstoneKey: 'outcome-unknown',
+        },
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+        reconnectDelay: Duration.zero,
+      );
+      await controller.initialize();
+
+      await controller.disconnect(acknowledgeInterruptedTransfer: true);
+
+      expect(store.getString(tombstoneKey), 'outcome-unknown');
+      expect(store.getString('openHealth.lastSensor'), isNotNull);
+      expect(controller.snapshot, isNotNull);
+      expect(controller.lastError, contains('Do not reconnect'));
+      expect(driver.connectCalls, 0);
+      await expectLater(
+        controller.acknowledgeInterruptedSelectedSensorTransfer(),
+        throwsA(
+          isA<CgmBondTransferException>().having(
+            (failure) => failure.kind,
+            'kind',
+            CgmBondTransferFailureKind.sensorResponseUnknown,
+          ),
+        ),
+      );
+      controller.dispose();
+    },
+  );
+
+  test(
+    'orphan accepted marker requires explicit local acknowledgment',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _BondTransferDriver(
+        plan: const CgmBondTransferPlan(
+          CgmBondTransferScope.requestingDeviceLe,
+        ),
+      );
+      final sensor = driver._delegate.scenarioSensor;
+      final tombstoneKey = 'openHealth.bondTransfer.${sensor.storageKey}';
+      final store = _ControllableHealthStateStore(
+        initialValues: <String, String>{tombstoneKey: 'sensor-accepted'},
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      await controller.initialize();
+      await controller.scan();
+      final scannedSensor = controller.sensors.single;
+
+      expect(controller.sensorHasInterruptedTransfer(scannedSensor), isTrue);
+      expect(
+        controller.canAcknowledgeInterruptedSensorTransfer(scannedSensor),
+        isTrue,
+      );
+      await controller.connect(scannedSensor);
+      expect(driver.connectCalls, 0);
+      expect(store.getString(tombstoneKey), 'sensor-accepted');
+
+      await controller.acknowledgeInterruptedSensorTransfer(scannedSensor);
+
+      expect(driver.connectCalls, 0);
+      expect(store.getString(tombstoneKey), isNull);
+      expect(controller.sensorHasInterruptedTransfer(scannedSensor), isFalse);
+      await controller.connect(scannedSensor);
+      expect(driver.connectCalls, 1);
+      await controller.disconnect();
+      controller.dispose();
+    },
+  );
+
+  test('normal disconnect never invokes sensor bond transfer', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _BondTransferDriver(
+      plan: const CgmBondTransferPlan(
+        CgmBondTransferScope.requestingDeviceLe,
+      ),
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+    );
+    await controller.initialize();
+    await controller.scan();
+    await controller.connect(controller.sensors.single);
+
+    await controller.disconnect();
+
+    expect(driver.session!.inspectCalls, 0);
+    expect(driver.session!.executeCalls, 0);
+    expect(driver.session!.normalDisconnectCalls, 1);
+    controller.dispose();
+  });
 }
 
 class _ProductionTestDriver implements CgmDriver {
@@ -905,6 +1516,145 @@ class _DisconnectFailingDriver extends _ProductionTestDriver {
   Future<CgmSession> connect(DiscoveredSensor sensor) async {
     return _DisconnectFailingSession(await super.connect(sensor));
   }
+}
+
+class _BondTransferDriver extends _ProductionTestDriver {
+  _BondTransferDriver({
+    required this.plan,
+    this.executeFailure,
+    this.executeFailureAfterAccepted,
+    this.executeStarted,
+    this.executeRelease,
+  });
+
+  final CgmBondTransferPlan plan;
+  final Exception? executeFailure;
+  final Exception? executeFailureAfterAccepted;
+  final Completer<void>? executeStarted;
+  final Completer<void>? executeRelease;
+  _BondTransferSession? session;
+  int connectCalls = 0;
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async {
+    connectCalls += 1;
+    return session = _BondTransferSession(
+      await super.connect(sensor),
+      plan: plan,
+      executeFailure: executeFailure,
+      executeFailureAfterAccepted: executeFailureAfterAccepted,
+      executeStarted: executeStarted,
+      executeRelease: executeRelease,
+    );
+  }
+}
+
+class _BondTransferSession implements CgmSession, CgmBondTransferSession {
+  _BondTransferSession(
+    this._delegate, {
+    required this.plan,
+    this.executeFailure,
+    this.executeFailureAfterAccepted,
+    this.executeStarted,
+    this.executeRelease,
+  });
+
+  final CgmSession _delegate;
+  final CgmBondTransferPlan plan;
+  final Exception? executeFailure;
+  final Exception? executeFailureAfterAccepted;
+  final Completer<void>? executeStarted;
+  final Completer<void>? executeRelease;
+  int inspectCalls = 0;
+  int executeCalls = 0;
+  int normalDisconnectCalls = 0;
+
+  @override
+  Future<CgmBondTransferPlan> inspectBondTransfer() async {
+    inspectCalls += 1;
+    return plan;
+  }
+
+  @override
+  Future<void> executeBondTransfer(
+    CgmBondTransferPlan plan, {
+    required Future<void> Function() onSensorAccepted,
+  }) async {
+    executeCalls += 1;
+    expect(plan, this.plan);
+    final started = executeStarted;
+    if (started != null && !started.isCompleted) {
+      started.complete();
+    }
+    final release = executeRelease;
+    if (release != null) {
+      await release.future;
+    }
+    final failure = executeFailure;
+    if (failure != null) {
+      throw failure;
+    }
+    await onSensorAccepted();
+    final acceptedFailure = executeFailureAfterAccepted;
+    if (acceptedFailure != null) {
+      throw acceptedFailure;
+    }
+  }
+
+  @override
+  CgmSessionSnapshot get currentSnapshot => _delegate.currentSnapshot;
+
+  @override
+  Stream<CgmLogEntry> get logs => _delegate.logs;
+
+  @override
+  DiscoveredSensor get sensor => _delegate.sensor;
+
+  @override
+  Stream<CgmSessionSnapshot> get snapshots => _delegate.snapshots;
+
+  @override
+  CgmUnsafeAdmin? get unsafeAdmin => _delegate.unsafeAdmin;
+
+  @override
+  Future<void> disconnect() async {
+    normalDisconnectCalls += 1;
+    await _delegate.disconnect();
+  }
+
+  @override
+  Future<List<CgmCalibrationEntry>> fetchCalibrations() =>
+      _delegate.fetchCalibrations();
+
+  @override
+  Future<void> refresh() => _delegate.refresh();
+
+  @override
+  Future<List<CgmDiagnosticItem>> refreshDiagnostics() =>
+      _delegate.refreshDiagnostics();
+
+  @override
+  Future<void> refreshLiveData() => _delegate.refreshLiveData();
+
+  @override
+  Future<void> submitCalibration({
+    required int glucoseMgdl,
+    int? sensorMinute,
+    DateTime? recordedAt,
+  }) => _delegate.submitCalibration(
+    glucoseMgdl: glucoseMgdl,
+    sensorMinute: sensorMinute,
+    recordedAt: recordedAt,
+  );
+
+  @override
+  Future<void> syncHistory({
+    bool includeRawHistory = false,
+    int? requestedStartOffset,
+  }) => _delegate.syncHistory(
+    includeRawHistory: includeRawHistory,
+    requestedStartOffset: requestedStartOffset,
+  );
 }
 
 class _DisconnectFailingSession implements CgmSession {
@@ -975,7 +1725,13 @@ class _DisconnectFailingSession implements CgmSession {
 }
 
 class _ControllableHealthStateStore implements HealthStateStore {
-  _ControllableHealthStateStore({this.failSetPrefix, this.failRemovePrefix});
+  _ControllableHealthStateStore({
+    this.failSetPrefix,
+    this.failRemovePrefix,
+    Map<String, String> initialValues = const <String, String>{},
+  }) {
+    _values.addAll(initialValues);
+  }
 
   String? failSetPrefix;
   String? failRemovePrefix;
@@ -1092,9 +1848,18 @@ class _ControlledDriver implements CgmDriver {
 }
 
 class _ControlledSession implements CgmSession {
-  _ControlledSession(this._current);
+  _ControlledSession(
+    this._current, {
+    CgmSessionSnapshot? snapshotOnSnapshotsAccess,
+    CgmSessionSnapshot? snapshotOnRefreshLiveData,
+  }) : _snapshotOnSnapshotsAccess = snapshotOnSnapshotsAccess,
+       _snapshotOnRefreshLiveData = snapshotOnRefreshLiveData;
 
   CgmSessionSnapshot _current;
+  CgmSessionSnapshot? _snapshotOnSnapshotsAccess;
+  CgmSessionSnapshot? _snapshotOnRefreshLiveData;
+  int refreshLiveDataCalls = 0;
+  int syncHistoryCalls = 0;
   final StreamController<CgmSessionSnapshot> _snapshots =
       StreamController<CgmSessionSnapshot>.broadcast(sync: true);
 
@@ -1115,7 +1880,14 @@ class _ControlledSession implements CgmSession {
   DiscoveredSensor get sensor => _current.sensor;
 
   @override
-  Stream<CgmSessionSnapshot> get snapshots => _snapshots.stream;
+  Stream<CgmSessionSnapshot> get snapshots {
+    final racedSnapshot = _snapshotOnSnapshotsAccess;
+    if (racedSnapshot != null) {
+      _snapshotOnSnapshotsAccess = null;
+      emit(racedSnapshot);
+    }
+    return _snapshots.stream;
+  }
 
   @override
   CgmUnsafeAdmin? get unsafeAdmin => null;
@@ -1135,7 +1907,14 @@ class _ControlledSession implements CgmSession {
       const <CgmDiagnosticItem>[];
 
   @override
-  Future<void> refreshLiveData() async {}
+  Future<void> refreshLiveData() async {
+    refreshLiveDataCalls += 1;
+    final refreshedSnapshot = _snapshotOnRefreshLiveData;
+    if (refreshedSnapshot != null) {
+      _snapshotOnRefreshLiveData = null;
+      emit(refreshedSnapshot);
+    }
+  }
 
   @override
   Future<void> submitCalibration({
@@ -1148,5 +1927,7 @@ class _ControlledSession implements CgmSession {
   Future<void> syncHistory({
     bool includeRawHistory = false,
     int? requestedStartOffset,
-  }) async {}
+  }) async {
+    syncHistoryCalls += 1;
+  }
 }

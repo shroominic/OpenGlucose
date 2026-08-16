@@ -62,6 +62,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Keep USB development builds separate from a tester's signed
+            // OpenGlucose install so `flutter run` never replaces user data.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
         }
