@@ -103,6 +103,23 @@ jobs:
         shell: bash
         run: ./scripts/flutter-workspace.sh build-windows
 
+      - name: Diagnose Windows install failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $buildDirectory = 'openhealth/build/windows/x64'
+          $installScript = Join-Path $buildDirectory 'cmake_install.cmake'
+          if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
+            Write-Error "CMake install script was not generated: $installScript"
+            exit 0
+          }
+
+          Write-Host 'Retrying only the generated CMake install script.'
+          & cmake --install $buildDirectory --config Release --verbose
+          $installExitCode = $LASTEXITCODE
+          Write-Host "Diagnostic CMake install exit code: $installExitCode"
+          exit 0
+
       - name: Read application version
         id: version
         shell: pwsh

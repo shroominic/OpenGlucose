@@ -46,6 +46,16 @@ assert(workflow.include?("${{ steps.package.outputs.archive }}"), "upload must s
 assert(workflow.include?("${{ steps.package.outputs.checksum }}"), "upload must select the exact packaged checksum")
 assert(!workflow.include?("dist/windows/*.zip"), "artifact upload must not use a broad ZIP glob")
 assert(workflow.include?("git diff --exit-code"), "build must preserve reviewed source")
+assert(
+  workflow.include?("cmake --install $buildDirectory --config Release --verbose"),
+  "install failures must expose the direct CMake diagnostic"
+)
+assert(
+  File.read(File.expand_path("flutter-workspace.sh", __dir__)).include?(
+    "flutter build windows --release --no-pub --verbose"
+  ),
+  "Windows builds must retain verbose Flutter and CMake diagnostics"
+)
 
 %w[
   OpenGlucose.exe

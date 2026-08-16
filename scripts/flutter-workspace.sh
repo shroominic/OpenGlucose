@@ -273,7 +273,7 @@ case "$command_name" in
       *) die 'Windows builds are available only on a Windows host' ;;
     esac
     cd "$repo_root/openhealth"
-    flutter build windows --release --no-pub
+    flutter build windows --release --no-pub --verbose
     ;;
   build-ios)
     verify_runtime
