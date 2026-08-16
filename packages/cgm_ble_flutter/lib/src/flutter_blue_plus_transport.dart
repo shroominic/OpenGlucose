@@ -320,6 +320,50 @@ Future<T> discoverServicesWithoutServiceChanged<T>(
   return discoverServices(false, _flutterBluePlusTimeoutSeconds(timeout));
 }
 
+/// Runs a notification subscription with FlutterBluePlus owning its timeout.
+///
+/// The plugin serializes BLE operations behind a global mutex. Returning its
+/// Future directly ensures the mutex is released before setup recovery starts.
+@visibleForTesting
+Future<T> setNotifyWithPluginTimeout<T>(
+  Future<T> Function(int timeoutSeconds) setNotifyValue, {
+  required Duration timeout,
+}) {
+  return setNotifyValue(_flutterBluePlusTimeoutSeconds(timeout));
+}
+
+/// Runs a characteristic write with FlutterBluePlus owning its timeout.
+///
+/// In with-response mode, the returned plugin Future completes only after the
+/// ATT Write Response. Returning that Future directly prevents a late,
+/// irreversible write from completing after an outer Dart timeout fires.
+@visibleForTesting
+Future<T> writeWithPluginTimeout<T>(
+  Future<T> Function(bool withoutResponse, int timeoutSeconds) write, {
+  required bool withoutResponse,
+  required Duration timeout,
+}) {
+  return write(withoutResponse, _flutterBluePlusTimeoutSeconds(timeout));
+}
+
+/// Runs a bond removal with FlutterBluePlus owning its operation timeout.
+@visibleForTesting
+Future<T> removeBondWithPluginTimeout<T>(
+  Future<T> Function(int timeoutSeconds) removeBond, {
+  required Duration timeout,
+}) {
+  return removeBond(_flutterBluePlusTimeoutSeconds(timeout));
+}
+
+/// Runs a disconnect with FlutterBluePlus owning its operation timeout.
+@visibleForTesting
+Future<T> disconnectWithPluginTimeout<T>(
+  Future<T> Function(int timeoutSeconds) disconnect, {
+  required Duration timeout,
+}) {
+  return disconnect(_flutterBluePlusTimeoutSeconds(timeout));
+}
+
 class _FlutterBluePlusConnection implements BleConnection {
   _FlutterBluePlusConnection(
     this._device, {
@@ -463,9 +507,15 @@ class _FlutterBluePlusConnection implements BleConnection {
   }) async {
     await _runBleOperation<void>(BleOperation.write, () async {
       final resolved = await _resolveCharacteristic(characteristic);
-      await resolved
-          .write(value, withoutResponse: withoutResponse)
-          .timeout(operationTimeout);
+      await writeWithPluginTimeout<void>(
+        (writeWithoutResponse, timeoutSeconds) => resolved.write(
+          value,
+          withoutResponse: writeWithoutResponse,
+          timeout: timeoutSeconds,
+        ),
+        withoutResponse: withoutResponse,
+        timeout: operationTimeout,
+      );
     });
   }
 
@@ -476,7 +526,9 @@ class _FlutterBluePlusConnection implements BleConnection {
   ) async {
     await _runBleOperation<void>(BleOperation.subscribe, () async {
       final resolved = await _resolveCharacteristic(characteristic);
-      await resolved.setNotifyValue(enabled).timeout(operationTimeout);
+      await setNotifyWithPluginTimeout<void>((timeoutSeconds) async {
+        await resolved.setNotifyValue(enabled, timeout: timeoutSeconds);
+      }, timeout: operationTimeout);
     });
   }
 
@@ -506,7 +558,10 @@ class _FlutterBluePlusConnection implements BleConnection {
       if (state == BleBondState.unbonded) {
         return;
       }
-      await _device.removeBond().timeout(operationTimeout);
+      await removeBondWithPluginTimeout<void>(
+        (timeoutSeconds) => _device.removeBond(timeout: timeoutSeconds),
+        timeout: operationTimeout,
+      );
     });
   }
 
@@ -514,7 +569,10 @@ class _FlutterBluePlusConnection implements BleConnection {
   Future<void> disconnect() async {
     await _runBleOperation<void>(BleOperation.disconnect, () async {
       if (_device.isConnected) {
-        await _device.disconnect().timeout(operationTimeout);
+        await disconnectWithPluginTimeout<void>(
+          (timeoutSeconds) => _device.disconnect(timeout: timeoutSeconds),
+          timeout: operationTimeout,
+        );
       }
     });
   }
@@ -606,18 +664,26 @@ Future<void> ensureAndroidBond({
   if (initialState == BleBondState.bonded) {
     return;
   }
-  if (initialState == BleBondState.bonding) {
-    await _awaitBondOutcome(bondStates, reconciliationTimeout);
-    return;
-  }
-
+  final outcomeObserver = _AndroidBondOutcomeObserver(
+    bondStates,
+    reconciliationTimeout,
+  );
   try {
-    await createBond();
-  } catch (error, stackTrace) {
-    if (!_isGattDisconnectDuringCreateBond(error)) {
-      Error.throwWithStackTrace(error, stackTrace);
+    if (initialState == BleBondState.bonding) {
+      _throwIfBondDidNotComplete(await outcomeObserver.result);
+      return;
     }
-    await _awaitBondOutcome(bondStates, reconciliationTimeout);
+
+    try {
+      await createBond();
+    } catch (error, stackTrace) {
+      if (!_isGattDisconnectDuringCreateBond(error)) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      _throwIfBondDidNotComplete(await outcomeObserver.result);
+    }
+  } finally {
+    await outcomeObserver.cancel();
   }
 }
 
@@ -626,27 +692,84 @@ typedef AndroidBondStateObservation = ({
   BleBondState? previousState,
 });
 
-Future<void> _awaitBondOutcome(
-  Stream<AndroidBondStateObservation> bondStates,
-  Duration timeout,
-) async {
-  late final AndroidBondStateObservation outcome;
-  try {
-    outcome = await bondStates
-        .where(
-          (observation) =>
-              observation.state == BleBondState.bonded ||
-              observation.state == BleBondState.unbonded &&
-                  observation.previousState == BleBondState.bonding,
-        )
-        .first
-        .timeout(timeout);
-  } on TimeoutException {
-    throw BleFailure(
-      kind: BleFailureKind.bondTimedOut,
-      operation: BleOperation.bond,
-      diagnosticCode: 'fbp.bond.reconcile-timeout',
+typedef _AndroidBondOutcomeResult = ({
+  AndroidBondStateObservation? outcome,
+  Object? error,
+  StackTrace? stackTrace,
+});
+
+class _AndroidBondOutcomeObserver {
+  _AndroidBondOutcomeObserver(
+    Stream<AndroidBondStateObservation> bondStates,
+    Duration timeout,
+  ) {
+    _timer = Timer(timeout, () {
+      _complete(
+        error: BleFailure(
+          kind: BleFailureKind.bondTimedOut,
+          operation: BleOperation.bond,
+          diagnosticCode: 'fbp.bond.reconcile-timeout',
+        ),
+        stackTrace: StackTrace.current,
+      );
+    });
+    _subscription = bondStates.listen(
+      _handleObservation,
+      onError: _handleError,
     );
+  }
+
+  final Completer<_AndroidBondOutcomeResult> _result =
+      Completer<_AndroidBondOutcomeResult>();
+  late final StreamSubscription<AndroidBondStateObservation> _subscription;
+  late final Timer _timer;
+  bool _sawBonding = false;
+
+  Future<_AndroidBondOutcomeResult> get result => _result.future;
+
+  void _handleObservation(AndroidBondStateObservation observation) {
+    if (observation.state == BleBondState.bonding) {
+      _sawBonding = true;
+      return;
+    }
+    if (observation.state == BleBondState.bonded ||
+        observation.state == BleBondState.unbonded &&
+            (_sawBonding ||
+                observation.previousState == BleBondState.bonding)) {
+      _complete(outcome: observation);
+    }
+  }
+
+  void _handleError(Object error, StackTrace stackTrace) {
+    _complete(error: error, stackTrace: stackTrace);
+  }
+
+  void _complete({
+    AndroidBondStateObservation? outcome,
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    if (_result.isCompleted) {
+      return;
+    }
+    _timer.cancel();
+    _result.complete((outcome: outcome, error: error, stackTrace: stackTrace));
+  }
+
+  Future<void> cancel() async {
+    _timer.cancel();
+    await _subscription.cancel();
+  }
+}
+
+void _throwIfBondDidNotComplete(_AndroidBondOutcomeResult result) {
+  final error = result.error;
+  if (error != null) {
+    Error.throwWithStackTrace(error, result.stackTrace ?? StackTrace.current);
+  }
+  final outcome = result.outcome;
+  if (outcome == null) {
+    throw StateError('Bond outcome completed without a value');
   }
   if (outcome.state != BleBondState.bonded) {
     throw BleFailure(

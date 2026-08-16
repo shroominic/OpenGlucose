@@ -106,6 +106,75 @@ void main() {
     expect(timeoutSeconds, 13);
   });
 
+  test('notification setup uses the plugin-owned operation timeout', () async {
+    int? timeoutSeconds;
+    final source = Completer<void>();
+
+    final notification = setNotifyWithPluginTimeout<void>((timeout) {
+      timeoutSeconds = timeout;
+      return source.future;
+    }, timeout: const Duration(milliseconds: 12501));
+
+    expect(timeoutSeconds, 13);
+    // An outer Future.timeout would return a different Future and could allow
+    // recovery to start while FlutterBluePlus still owns its operation mutex.
+    expect(identical(notification, source.future), isTrue);
+
+    source.complete();
+    await notification;
+  });
+
+  test('write with response uses the plugin-owned operation timeout', () async {
+    bool? withoutResponse;
+    int? timeoutSeconds;
+    final source = Completer<void>();
+
+    final write = writeWithPluginTimeout<void>(
+      (writeMode, timeout) {
+        withoutResponse = writeMode;
+        timeoutSeconds = timeout;
+        return source.future;
+      },
+      withoutResponse: false,
+      timeout: const Duration(milliseconds: 12501),
+    );
+
+    expect(withoutResponse, isFalse);
+    expect(timeoutSeconds, 13);
+    // The exact plugin Future owns both the ATT response and timeout. An
+    // irreversible control-point write cannot complete after our caller has
+    // already started recovery.
+    expect(identical(write, source.future), isTrue);
+
+    source.complete();
+    await write;
+  });
+
+  test('disconnect and remove-bond retain plugin timeout ownership', () async {
+    int? disconnectTimeout;
+    int? removeBondTimeout;
+    final disconnectSource = Completer<void>();
+    final removeBondSource = Completer<void>();
+
+    final disconnect = disconnectWithPluginTimeout<void>((timeout) {
+      disconnectTimeout = timeout;
+      return disconnectSource.future;
+    }, timeout: const Duration(milliseconds: 12001));
+    final removeBond = removeBondWithPluginTimeout<void>((timeout) {
+      removeBondTimeout = timeout;
+      return removeBondSource.future;
+    }, timeout: const Duration(milliseconds: 12001));
+
+    expect(disconnectTimeout, 13);
+    expect(removeBondTimeout, 13);
+    expect(identical(disconnect, disconnectSource.future), isTrue);
+    expect(identical(removeBond, removeBondSource.future), isTrue);
+
+    disconnectSource.complete();
+    removeBondSource.complete();
+    await Future.wait(<Future<void>>[disconnect, removeBond]);
+  });
+
   test('plugin discovery timeout remains a retryable BLE timeout', () {
     final failure = classifyFlutterBluePlusFailure(
       fbp.FlutterBluePlusException(
@@ -137,23 +206,79 @@ void main() {
           'Device is disconnected',
         );
         var createBondCalls = 0;
+        final observations =
+            StreamController<AndroidBondStateObservation>.broadcast(sync: true);
 
         await ensureAndroidBond(
           currentState: () async => BleBondState.unbonded,
-          bondStates: Stream<AndroidBondStateObservation>.fromIterable(
-            const <AndroidBondStateObservation>[
-              (state: BleBondState.unbonded, previousState: null),
-              (state: BleBondState.bonded, previousState: BleBondState.bonding),
-            ],
-          ),
+          bondStates: observations.stream,
           createBond: () async {
             createBondCalls += 1;
+            observations.add((
+              state: BleBondState.bonding,
+              previousState: BleBondState.unbonded,
+            ));
+            observations.add((
+              state: BleBondState.bonded,
+              previousState: BleBondState.bonding,
+            ));
             throw disconnect;
           },
           reconciliationTimeout: const Duration(milliseconds: 50),
         );
 
         expect(createBondCalls, 1);
+        expect(observations.hasListener, isFalse);
+        await observations.close();
+      },
+    );
+
+    test(
+      'buffers immediate BONDING to NONE before createBond code 6',
+      () async {
+        final disconnect = fbp.FlutterBluePlusException(
+          fbp.ErrorPlatform.fbp,
+          'createBond',
+          fbp.FbpErrorCode.deviceIsDisconnected.index,
+          'Device is disconnected',
+        );
+        final observations =
+            StreamController<AndroidBondStateObservation>.broadcast(sync: true);
+
+        await expectLater(
+          ensureAndroidBond(
+            currentState: () async => BleBondState.unbonded,
+            bondStates: observations.stream,
+            createBond: () async {
+              observations.add((
+                state: BleBondState.bonding,
+                previousState: BleBondState.unbonded,
+              ));
+              observations.add((
+                state: BleBondState.unbonded,
+                previousState: BleBondState.bonding,
+              ));
+              throw disconnect;
+            },
+            reconciliationTimeout: const Duration(seconds: 1),
+          ).timeout(const Duration(milliseconds: 50)),
+          throwsA(
+            isA<BleFailure>()
+                .having(
+                  (failure) => failure.kind,
+                  'kind',
+                  BleFailureKind.bondRejected,
+                )
+                .having(
+                  (failure) => failure.diagnosticCode,
+                  'diagnosticCode',
+                  'fbp.bond.not-completed',
+                ),
+          ),
+        );
+
+        expect(observations.hasListener, isFalse);
+        await observations.close();
       },
     );
 

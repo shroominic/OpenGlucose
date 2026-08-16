@@ -430,6 +430,18 @@ String? privateBleSupportCodeForSnapshot(CgmSessionSnapshot snapshot) {
     return null;
   }
   final fields = <String>['OGSUP1', 'phase=$phase'];
+  if (phase == AidexSetupPhase.subscribe) {
+    final step = snapshot.metadata[aidexSubscribeStepMetadataKey];
+    final attempt = snapshot.metadata[aidexSubscribeAttemptMetadataKey];
+    if (step != null &&
+        AidexSubscribeStep.values.contains(step) &&
+        attempt != null &&
+        AidexSubscribeAttempt.values.contains(attempt)) {
+      fields
+        ..add('step=$step')
+        ..add('attempt=$attempt');
+    }
+  }
   final failure = BleFailure.fromMetadata(snapshot.metadata);
   if (failure != null) {
     fields
@@ -507,6 +519,9 @@ bool snapshotHasBleFailure(CgmSessionSnapshot snapshot) {
 }
 
 bool snapshotAllowsAutomaticReconnect(CgmSessionSnapshot snapshot) {
+  if (snapshot.metadata.containsKey(cgmBondTransferStateMetadataKey)) {
+    return false;
+  }
   return BleFailure.fromMetadata(snapshot.metadata)?.allowsAutomaticRetry ??
       true;
 }

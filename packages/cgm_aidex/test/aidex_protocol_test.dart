@@ -259,4 +259,62 @@ void main() {
     expect(result, isNotNull);
     expect(result!.sessionKey, expectedSessionKey);
   });
+
+  group('BMS sensor transfer feature', () {
+    test('prefers requesting-device LE deletion when advertised', () {
+      final plan = parseAidexBondTransferFeature(const <int>[0x10]);
+
+      expect(plan.scope, CgmBondTransferScope.requestingDeviceLe);
+      expect(plan.removesAllLeBonds, isFalse);
+      expect(aidexBondTransferOpcode(plan), 0x03);
+    });
+
+    test('uses all-LE deletion only when it is advertised without a code', () {
+      final plan = parseAidexBondTransferFeature(const <int>[0x00, 0x04]);
+
+      expect(plan.scope, CgmBondTransferScope.allLe);
+      expect(plan.removesAllLeBonds, isTrue);
+      expect(aidexBondTransferOpcode(plan), 0x06);
+    });
+
+    test('rejects authorization-code-only procedures', () {
+      for (final feature in const <List<int>>[
+        <int>[0x20],
+        <int>[0x00, 0x08],
+      ]) {
+        expect(
+          () => parseAidexBondTransferFeature(feature),
+          throwsA(
+            isA<CgmBondTransferException>().having(
+              (failure) => failure.kind,
+              'kind',
+              CgmBondTransferFailureKind.authorizationCodeRequired,
+            ),
+          ),
+        );
+      }
+    });
+
+    test('rejects contradictory, empty, and unsupported values', () {
+      final cases = <(List<int>, CgmBondTransferFailureKind)>[
+        (const <int>[0x30], CgmBondTransferFailureKind.featureMalformed),
+        (const <int>[0x00, 0x0c], CgmBondTransferFailureKind.featureMalformed),
+        (const <int>[], CgmBondTransferFailureKind.featureUnavailable),
+        (const <int>[0x00], CgmBondTransferFailureKind.procedureUnsupported),
+      ];
+
+      for (final testCase in cases) {
+        expect(
+          () => parseAidexBondTransferFeature(testCase.$1),
+          throwsA(
+            isA<CgmBondTransferException>().having(
+              (failure) => failure.kind,
+              'kind',
+              testCase.$2,
+            ),
+          ),
+        );
+      }
+    });
+  });
 }

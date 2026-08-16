@@ -11,6 +11,8 @@ class AidexTimingProfile {
     this.gattGap = const Duration(milliseconds: 800),
     this.discoveryRecoveryCloseGap = const Duration(seconds: 2),
     this.discoveryRecoveryPostConnectSettle = const Duration(seconds: 1),
+    this.subscriptionRecoveryCloseGap = const Duration(seconds: 2),
+    this.subscriptionRecoveryPostConnectSettle = const Duration(seconds: 1),
     this.postStartSession = const Duration(milliseconds: 350),
     this.postSessionStartWrite = const Duration(milliseconds: 250),
     this.vendorPairTimeout = const Duration(seconds: 10),
@@ -21,6 +23,8 @@ class AidexTimingProfile {
   final Duration gattGap;
   final Duration discoveryRecoveryCloseGap;
   final Duration discoveryRecoveryPostConnectSettle;
+  final Duration subscriptionRecoveryCloseGap;
+  final Duration subscriptionRecoveryPostConnectSettle;
   final Duration postStartSession;
   final Duration postSessionStartWrite;
   final Duration vendorPairTimeout;
@@ -55,6 +59,53 @@ class AidexUuids {
   static const f003 = 'F003';
   static const f005 = 'F005';
 }
+
+/// Selects the narrowest Bluetooth BMS procedure whose exact, no-
+/// authorization-code semantics are advertised by the current connection.
+CgmBondTransferPlan parseAidexBondTransferFeature(List<int> feature) {
+  if (feature.isEmpty) {
+    throw const CgmBondTransferException(
+      CgmBondTransferFailureKind.featureUnavailable,
+      outcome: CgmBondTransferOutcome.notStarted,
+    );
+  }
+
+  final octet0 = feature[0];
+  final octet1 = feature.length > 1 ? feature[1] : 0;
+  final requestingDeviceLe = (octet0 & 0x10) != 0;
+  final requestingDeviceLeWithAuthorizationCode = (octet0 & 0x20) != 0;
+  final allLe = (octet1 & 0x04) != 0;
+  final allLeWithAuthorizationCode = (octet1 & 0x08) != 0;
+
+  if (requestingDeviceLe && requestingDeviceLeWithAuthorizationCode ||
+      allLe && allLeWithAuthorizationCode) {
+    throw const CgmBondTransferException(
+      CgmBondTransferFailureKind.featureMalformed,
+      outcome: CgmBondTransferOutcome.notStarted,
+    );
+  }
+  if (requestingDeviceLe) {
+    return const CgmBondTransferPlan(CgmBondTransferScope.requestingDeviceLe);
+  }
+  if (allLe) {
+    return const CgmBondTransferPlan(CgmBondTransferScope.allLe);
+  }
+  if (requestingDeviceLeWithAuthorizationCode || allLeWithAuthorizationCode) {
+    throw const CgmBondTransferException(
+      CgmBondTransferFailureKind.authorizationCodeRequired,
+      outcome: CgmBondTransferOutcome.notStarted,
+    );
+  }
+  throw const CgmBondTransferException(
+    CgmBondTransferFailureKind.procedureUnsupported,
+    outcome: CgmBondTransferOutcome.notStarted,
+  );
+}
+
+int aidexBondTransferOpcode(CgmBondTransferPlan plan) => switch (plan.scope) {
+  CgmBondTransferScope.requestingDeviceLe => 0x03,
+  CgmBondTransferScope.allLe => 0x06,
+};
 
 enum AidexVendorOpcode {
   getDeviceInfo(0x10, 'getDeviceInfo'),

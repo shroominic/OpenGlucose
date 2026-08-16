@@ -693,6 +693,10 @@ class _ScanView extends StatelessWidget {
                 final advertisement = sensor.advertisement;
                 final serial = sensor.metadata['serial'];
                 final hasValue = advertisement?.displayValueMgdl != null;
+                final hasInterruptedTransfer = controller
+                    .sensorHasInterruptedTransfer(sensor);
+                final canAcknowledgeInterruptedTransfer = controller
+                    .canAcknowledgeInterruptedSensorTransfer(sensor);
                 return Card(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
@@ -723,14 +727,44 @@ class _ScanView extends StatelessWidget {
                                 ],
                               ),
                             ),
-                            FilledButton(
-                              key: ValueKey<String>(
-                                'connectButton-${sensor.deviceId}',
-                              ),
-                              onPressed: sensor.capabilities.supportsDirectBle
-                                  ? () => unawaited(controller.connect(sensor))
-                                  : null,
-                              child: const Text('Connect'),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: <Widget>[
+                                if (hasInterruptedTransfer)
+                                  OutlinedButton(
+                                    key: ValueKey<String>(
+                                      'resolveInterruptedMove-'
+                                      '${sensor.deviceId}',
+                                    ),
+                                    onPressed: canAcknowledgeInterruptedTransfer
+                                        ? () => unawaited(
+                                            _confirmInterruptedSensorTransferRecovery(
+                                              context,
+                                              controller,
+                                              sensor,
+                                            ),
+                                          )
+                                        : null,
+                                    child: Text(
+                                      canAcknowledgeInterruptedTransfer
+                                          ? 'Review move'
+                                          : 'Move needs support',
+                                    ),
+                                  ),
+                                FilledButton(
+                                  key: ValueKey<String>(
+                                    'connectButton-${sensor.deviceId}',
+                                  ),
+                                  onPressed:
+                                      sensor.capabilities.supportsDirectBle &&
+                                          !hasInterruptedTransfer
+                                      ? () => unawaited(
+                                          controller.connect(sensor),
+                                        )
+                                      : null,
+                                  child: const Text('Connect'),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -753,6 +787,19 @@ class _ScanView extends StatelessWidget {
                               const _MetricChip(label: 'Demo transport'),
                           ],
                         ),
+                        if (hasInterruptedTransfer &&
+                            !canAcknowledgeInterruptedTransfer) ...<Widget>[
+                          const SizedBox(height: 12),
+                          Text(
+                            'The sensor response is unknown. Do not reconnect '
+                            'or forget the Android bond. Contact support for a '
+                            'reviewed recovery.',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: const Color(0xFF9A4D00),
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
                         if (sensor.notes?.isNotEmpty == true) ...<Widget>[
                           const SizedBox(height: 12),
                           Text(
@@ -772,6 +819,53 @@ class _ScanView extends StatelessWidget {
           ),
       ],
     );
+  }
+}
+
+Future<void> _confirmInterruptedSensorTransferRecovery(
+  BuildContext context,
+  CgmAppController controller,
+  DiscoveredSensor sensor,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Review interrupted sensor move'),
+      content: const Text(
+        'Open Android Bluetooth settings before you continue. Confirm that '
+        'the sensor is not listed as paired. If it is listed, choose Forget '
+        'first. This action only clears the app safety marker. It does not '
+        'contact the sensor or change a Bluetooth bond.',
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const ValueKey<String>('confirmInterruptedMoveRecovery'),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('I checked Bluetooth'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) {
+    return;
+  }
+  try {
+    await controller.acknowledgeInterruptedSensorTransfer(sensor);
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.lastError ??
+                'The interrupted sensor move could not be cleared.',
+          ),
+        ),
+      );
+    }
   }
 }
 
@@ -2565,6 +2659,13 @@ Widget _buildSensorSettingsPane(
   CgmSessionSnapshot snapshot,
 ) {
   final sessionStart = snapshot.sessionInfo.sessionStart;
+  final interruptedTransferState =
+      snapshot.metadata[cgmBondTransferStateMetadataKey];
+  final hasInterruptedTransfer = interruptedTransferState != null;
+  final canAcknowledgeInterruptedTransfer =
+      interruptedTransferState == 'sensor-accepted';
+  final supportsAndroidSensorTransfer =
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   final supportsLiveGlucoseConsent =
       !kIsWeb &&
       !controller.isMockDriver &&
@@ -2628,18 +2729,200 @@ Widget _buildSensorSettingsPane(
         runSpacing: 12,
         children: <Widget>[
           FilledButton(
-            onPressed: () async {
-              await controller.disconnect();
-              if (context.mounted) {
-                Navigator.of(context).pop();
-              }
-            },
-            child: const Text('Disconnect'),
+            key: ValueKey<String>(
+              hasInterruptedTransfer
+                  ? 'reviewSelectedInterruptedMoveButton'
+                  : 'disconnectSensorButton',
+            ),
+            onPressed:
+                controller.bondTransferInFlight ||
+                    (hasInterruptedTransfer &&
+                        !canAcknowledgeInterruptedTransfer)
+                ? null
+                : canAcknowledgeInterruptedTransfer
+                ? () => unawaited(
+                    _confirmInterruptedSelectedSensorTransferRecovery(
+                      context,
+                      controller,
+                    ),
+                  )
+                : () async {
+                    await controller.disconnect();
+                    if (context.mounted) {
+                      Navigator.of(context).pop();
+                    }
+                  },
+            child: Text(
+              hasInterruptedTransfer
+                  ? canAcknowledgeInterruptedTransfer
+                        ? 'Review interrupted move'
+                        : 'Move needs support'
+                  : 'Disconnect',
+            ),
           ),
+          if (supportsAndroidSensorTransfer &&
+              (controller.canMoveSensorToAnotherPhone ||
+                  controller.bondTransferInFlight))
+            OutlinedButton.icon(
+              key: const ValueKey<String>('moveSensorToAnotherPhoneButton'),
+              onPressed: controller.canMoveSensorToAnotherPhone
+                  ? () => unawaited(
+                      _confirmAndMoveSensorToAnotherPhone(
+                        context,
+                        controller,
+                      ),
+                    )
+                  : null,
+              icon: const Icon(Icons.phonelink_erase_rounded),
+              label: const Text('Move sensor to another phone'),
+            ),
         ],
       ),
+      if (hasInterruptedTransfer &&
+          !canAcknowledgeInterruptedTransfer) ...<Widget>[
+        const SizedBox(height: 12),
+        const Text(
+          'The sensor response is unknown. Do not reconnect, forget the '
+          'Android bond, disconnect, or retry. Contact support for a reviewed '
+          'recovery.',
+          style: TextStyle(color: Color(0xFF9A4D00), height: 1.35),
+        ),
+      ],
     ],
   );
+}
+
+Future<void> _confirmInterruptedSelectedSensorTransferRecovery(
+  BuildContext context,
+  CgmAppController controller,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Review interrupted sensor move'),
+      content: const Text(
+        'Open Android Bluetooth settings. Confirm that the sensor is not '
+        'listed as paired. If it is listed, choose Forget first. Continuing '
+        'clears the app safety marker and archives this selection. It does '
+        'not contact the sensor or change a Bluetooth bond.',
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const ValueKey<String>(
+            'confirmSelectedInterruptedMoveRecovery',
+          ),
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('I checked Bluetooth'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) {
+    return;
+  }
+  try {
+    await controller.acknowledgeInterruptedSelectedSensorTransfer();
+    if (context.mounted) {
+      Navigator.of(context).pop();
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.lastError ??
+                'The interrupted sensor move could not be cleared.',
+          ),
+        ),
+      );
+    }
+  }
+}
+
+Future<void> _confirmAndMoveSensorToAnotherPhone(
+  BuildContext context,
+  CgmAppController controller,
+) async {
+  CgmBondTransferPlan plan;
+  try {
+    plan = await controller.inspectSensorTransfer();
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.lastError ?? 'The sensor cannot be moved safely.',
+          ),
+        ),
+      );
+    }
+    return;
+  }
+  if (!context.mounted) {
+    return;
+  }
+
+  final removesAllBonds = plan.removesAllLeBonds;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(
+        removesAllBonds
+            ? 'Remove all sensor phone bonds?'
+            : 'Move sensor to another phone?',
+      ),
+      content: Text(
+        removesAllBonds
+            ? 'This sensor only supports removing every phone bond stored by '
+                  'the transmitter. It will disconnect from this phone and '
+                  'all other phones. The sensor session is not reset. Keep '
+                  'the sensor close and do not retry if an error appears.'
+            : "This removes this phone's bond from the sensor and Android, "
+                  'then disconnects. The sensor session is not reset. Keep '
+                  'the sensor close and do not retry if an error appears.',
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const ValueKey<String>('confirmMoveSensorButton'),
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('Move sensor'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) {
+    return;
+  }
+
+  try {
+    await controller.moveSensorToAnotherPhone(plan);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sensor is ready to pair with another phone.'),
+        ),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            controller.lastError ??
+                'Sensor transfer stopped. Do not retry automatically.',
+          ),
+        ),
+      );
+    }
+  }
 }
 
 Widget _buildDeveloperSettingsPane({
