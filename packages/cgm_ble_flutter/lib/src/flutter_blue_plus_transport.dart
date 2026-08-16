@@ -12,6 +12,7 @@ class FlutterBluePlusTransport implements BleTransport {
     this.androidCheckLocationServices = true,
     this.adapterReadyTimeout = const Duration(seconds: 10),
     this.operationTimeout = const Duration(seconds: 12),
+    this.discoveryTimeout = const Duration(seconds: 30),
     this.showPowerAlert = true,
     this.restoreState = false,
   });
@@ -20,6 +21,7 @@ class FlutterBluePlusTransport implements BleTransport {
   final bool androidCheckLocationServices;
   final Duration adapterReadyTimeout;
   final Duration operationTimeout;
+  final Duration discoveryTimeout;
   final bool showPowerAlert;
   final bool restoreState;
 
@@ -161,6 +163,7 @@ class FlutterBluePlusTransport implements BleTransport {
       return _FlutterBluePlusConnection(
         device,
         operationTimeout: operationTimeout,
+        discoveryTimeout: discoveryTimeout,
       );
     } catch (error, stackTrace) {
       Error.throwWithStackTrace(
@@ -310,16 +313,23 @@ Future<T> connectWithScanStoppedRetry<T>({
 /// extra protected subscription can fail on stricter Android BLE stacks.
 @visibleForTesting
 Future<T> discoverServicesWithoutServiceChanged<T>(
-  Future<T> Function(bool subscribeToServicesChanged) discoverServices,
-) {
-  return discoverServices(false);
+  Future<T> Function(bool subscribeToServicesChanged, int timeoutSeconds)
+  discoverServices, {
+  required Duration timeout,
+}) {
+  return discoverServices(false, _flutterBluePlusTimeoutSeconds(timeout));
 }
 
 class _FlutterBluePlusConnection implements BleConnection {
-  _FlutterBluePlusConnection(this._device, {required this.operationTimeout});
+  _FlutterBluePlusConnection(
+    this._device, {
+    required this.operationTimeout,
+    required this.discoveryTimeout,
+  });
 
   final fbp.BluetoothDevice _device;
   final Duration operationTimeout;
+  final Duration discoveryTimeout;
   final Map<String, fbp.BluetoothCharacteristic> _characteristics =
       <String, fbp.BluetoothCharacteristic>{};
 
@@ -399,10 +409,13 @@ class _FlutterBluePlusConnection implements BleConnection {
       BleOperation.discoverServices,
       () async {
         final services = await discoverServicesWithoutServiceChanged(
-          (subscribeToServicesChanged) => _device.discoverServices(
-            subscribeToServicesChanged: subscribeToServicesChanged,
-          ),
-        ).timeout(operationTimeout);
+          (subscribeToServicesChanged, timeoutSeconds) =>
+              _device.discoverServices(
+                subscribeToServicesChanged: subscribeToServicesChanged,
+                timeout: timeoutSeconds,
+              ),
+          timeout: discoveryTimeout,
+        );
         _cacheServices(services);
         return services
             .where((service) => service.isPrimary)
@@ -662,6 +675,14 @@ BleBondState? _mapOptionalBondState(fbp.BluetoothBondState? state) {
 }
 
 String _normalizeUuid(String value) => value.toUpperCase();
+
+int _flutterBluePlusTimeoutSeconds(Duration timeout) {
+  if (timeout <= Duration.zero) {
+    throw ArgumentError.value(timeout, 'timeout', 'must be greater than zero');
+  }
+  return (timeout.inMicroseconds + Duration.microsecondsPerSecond - 1) ~/
+      Duration.microsecondsPerSecond;
+}
 
 /// Converts plugin/native failures into identifier-free transport failures.
 ///
