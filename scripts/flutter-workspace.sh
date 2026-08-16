@@ -219,6 +219,17 @@ run_ios_native_tests() {
     -only-testing:RunnerTests
 }
 
+run_macos_native_tests() {
+  verify_runtime
+  "$native_tooling_verifier" ios
+  cd "$repo_root/openhealth/macos"
+  xcodebuild test -quiet \
+    -workspace Runner.xcworkspace \
+    -scheme Runner \
+    -destination 'platform=macOS' \
+    -only-testing:RunnerTests
+}
+
 outdated_dependencies() {
   verify_runtime
   for project_dir in $project_dirs; do
@@ -277,11 +288,25 @@ case "$command_name" in
       die 'the iOS build changed ios/Podfile.lock; update and review the lockfile explicitly'
     fi
     ;;
+  build-macos)
+    verify_runtime
+    require_tool git
+    "$native_tooling_verifier" ios
+    cd "$repo_root/openhealth"
+    flutter build macos --release --no-pub
+    if [ -n "$(git status --porcelain -- macos/Podfile.lock)" ]; then
+      git diff -- macos/Podfile.lock >&2
+      die 'the macOS build changed macos/Podfile.lock; update and review the lockfile explicitly'
+    fi
+    ;;
   verify-android-release-signing)
     verify_android_release_signing_guard
     ;;
   test-ios-native)
     run_ios_native_tests
+    ;;
+  test-macos-native)
+    run_macos_native_tests
     ;;
   *)
     die "unknown command: $command_name"

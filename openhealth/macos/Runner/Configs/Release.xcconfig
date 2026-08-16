@@ -1,0 +1,13 @@
+#include "../../Flutter/Flutter-Release.xcconfig"
+#include "Warnings.xcconfig"
+
+// Reviewer preview artifacts are ad-hoc signed. Keep the release bundle out of
+// development-signing mode so get-task-allow cannot be injected implicitly.
+CODE_SIGN_IDENTITY = -
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM =
+
+// The locked native-assets output is currently arm64-only. Do not expose an
+// Intel slice that can fail when storage initializes at application startup.
+ARCHS = arm64

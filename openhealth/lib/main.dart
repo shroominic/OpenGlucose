@@ -11,6 +11,7 @@ import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
@@ -633,6 +634,16 @@ class _ScanView extends StatelessWidget {
             ),
           ),
         ),
+        if (shouldShowMacosPreviewNotice(
+          platform: defaultTargetPlatform,
+          isWeb: kIsWeb,
+        ))
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              child: MacosPreviewNotice(),
+            ),
+          ),
         if (controller.archivedSensors.isNotEmpty)
           SliverToBoxAdapter(
             child: _HistoricalOverviewCard(controller: controller),
@@ -1694,6 +1705,10 @@ class _SettingsOverview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final archivedCount = controller.archivedSensors.length;
+    final macosSecureStorageDisabled = shouldDisableMacosSecureStorage(
+      platform: defaultTargetPlatform,
+      isWeb: kIsWeb,
+    );
     return Column(
       key: const ValueKey<String>('settingsOverview'),
       children: <Widget>[
@@ -1786,15 +1801,23 @@ class _SettingsOverview extends StatelessWidget {
                   controller: controller,
                 ),
               ),
-              _SettingsDestination(
-                icon: Icons.auto_awesome_outlined,
-                title: 'AI & models',
-                subtitle: 'Experimental · off until you enable it',
-                child: AiSettingsPane(
-                  recentReadings: controller.allHistoricalReadings,
-                  unit: controller.displayPreferences.unit,
+              if (macosSecureStorageDisabled)
+                const _SettingsDestination(
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'AI & models',
+                  subtitle: 'Unavailable in this reviewer preview',
+                  child: MacosPreviewUnavailableAiPane(),
+                )
+              else
+                _SettingsDestination(
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'AI & models',
+                  subtitle: 'Experimental · off until you enable it',
+                  child: AiSettingsPane(
+                    recentReadings: controller.allHistoricalReadings,
+                    unit: controller.displayPreferences.unit,
+                  ),
                 ),
-              ),
               const _SettingsDestination(
                 icon: Icons.shield_outlined,
                 title: 'Privacy & data',
@@ -2478,19 +2501,30 @@ class _PrivacyDataPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMacosPreview =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+    final storageTitle = isMacosPreview
+        ? 'Stored in this Mac app container'
+        : 'Stored on this iPhone';
+    final storageDescription = isMacosPreview
+        ? 'Sensor identity and glucose history remain local. Backup exclusion '
+              "is not verified for this preview; check this Mac's backup policy."
+        : 'Sensor identity and glucose history remain local and are excluded '
+              'from device backups.';
     return ListView(
       padding: const EdgeInsets.all(20),
-      children: const <Widget>[
+      children: <Widget>[
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.phone_iphone_rounded),
-          title: Text('Stored on this iPhone'),
-          subtitle: Text(
-            'Sensor identity and glucose history remain local and are excluded '
-            'from device backups.',
+          leading: Icon(
+            isMacosPreview
+                ? Icons.desktop_mac_outlined
+                : Icons.phone_iphone_rounded,
           ),
+          title: Text(storageTitle),
+          subtitle: Text(storageDescription),
         ),
-        ListTile(
+        const ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(Icons.cloud_off_rounded),
           title: Text('No OpenGlucose cloud'),

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
@@ -67,4 +68,52 @@ void main() {
       controller.dispose();
     },
   );
+
+  testWidgets('macOS preview routes AI settings to a fail-closed pane', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: DemoCgmDriver(),
+    );
+    await controller.initialize();
+
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('AI & models'),
+      250,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.ensureVisible(find.text('AI & models'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Unavailable in this reviewer preview'), findsOneWidget);
+    await tester.tap(find.text('AI & models'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('AI unavailable in macOS preview'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+
+    debugDefaultTargetPlatformOverride = null;
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
 }

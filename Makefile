@@ -4,12 +4,13 @@ SHELL := /bin/sh
 
 .PHONY: help bootstrap tooling-bootstrap tooling-check hooks format \
 	format-check lint typecheck test-unit test-integration test-e2e test \
-	build build-android build-web build-ios test-ios-native \
+	build build-android build-web build-ios build-macos test-ios-native \
+	test-macos-native \
 	verify-android-release-signing check
 
 platform_checks :=
 ifeq ($(shell uname -s),Darwin)
-platform_checks := build-ios test-ios-native
+platform_checks := build-ios test-ios-native build-macos test-macos-native
 endif
 
 help: ## Show the repository command contract.
@@ -62,8 +63,14 @@ build-web: ## Build the web demo.
 build-ios: ## Build unsigned iOS and verify the native lockfile is unchanged.
 	@./scripts/flutter-workspace.sh build-ios
 
+build-macos: ## Build the ad-hoc-signed, non-notarized macOS preview.
+	@./scripts/flutter-workspace.sh build-macos
+
 test-ios-native: ## Run RunnerTests on the pinned iOS simulator destination.
 	@./scripts/flutter-workspace.sh test-ios-native
+
+test-macos-native: ## Run the macOS RunnerTests on this Mac.
+	@./scripts/flutter-workspace.sh test-macos-native
 
 verify-android-release-signing: ## Prove Android release signing fails closed without credentials.
 	@./scripts/flutter-workspace.sh verify-android-release-signing
