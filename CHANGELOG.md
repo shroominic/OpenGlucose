@@ -10,6 +10,16 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- Add a source-bound Windows 10/11 x64 preview lane that builds a complete
+  portable ZIP with notices, source evidence, and a SHA-256 checksum. Windows
+  remains unsupported until a clean hosted build and redacted physical AiDEX
+  verification are recorded.
+- Add explicit Windows sensor-transfer guidance before pairing and expose the
+  same confirmed Bond Management Service transfer action used by Android.
+  Normal disconnect and retry still preserve the active sensor bond.
+
 ### Fixed
 
 - Android AiDEX setup now avoids unnecessary reconnects for existing healthy

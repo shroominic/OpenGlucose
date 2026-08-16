@@ -1,0 +1,176 @@
+name: Windows Preview
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-preview.yml"
+      - "openhealth/**"
+      - "packages/**"
+      - "scripts/**"
+      - "pubspec.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/windows-preview.yml"
+      - "openhealth/**"
+      - "packages/**"
+      - "scripts/**"
+      - "pubspec.yaml"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing strict vMAJOR.MINOR.PATCH tag to build
+        required: true
+        type: string
+
+concurrency:
+  group: windows-preview-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.41.6"
+
+jobs:
+  build:
+    name: Build portable Windows preview
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: >-
+            ${{
+              github.event_name == 'workflow_dispatch' && inputs.release_tag ||
+              github.sha
+            }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Bind build to immutable source
+        id: source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          source_commit=$(git rev-parse HEAD)
+          source_ref="ci:$source_commit"
+          if test "$GITHUB_EVENT_NAME" = workflow_dispatch; then
+            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              printf 'Release tag must be strict vMAJOR.MINOR.PATCH; found %s\n' "$RELEASE_TAG" >&2
+              exit 1
+            fi
+            tag_commit=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+            test "$source_commit" = "$tag_commit"
+
+            version_record=$(sed -n 's/^version: \([0-9][0-9.]*+[0-9][0-9]*\)$/\1/p' openhealth/pubspec.yaml)
+            test -n "$version_record"
+            test "$RELEASE_TAG" = "v${version_record%%+*}"
+            source_ref="refs/tags/$RELEASE_TAG"
+          fi
+
+          printf 'commit=%s\n' "$source_commit" >> "$GITHUB_OUTPUT"
+          printf 'ref=%s\n' "$source_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Restore locked app and resolve package dependencies
+        shell: bash
+        run: |
+          ./scripts/flutter-workspace.sh doctor
+          ./scripts/flutter-workspace.sh pub-get
+
+      - name: Run Windows-relevant checks
+        shell: bash
+        run: |
+          ./scripts/flutter-workspace.sh format-check
+          ./scripts/flutter-workspace.sh analyze
+          ./scripts/flutter-workspace.sh test-unit
+
+      - name: Build Windows release bundle
+        shell: bash
+        run: ./scripts/flutter-workspace.sh build-windows
+
+      - name: Diagnose Windows install failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $buildDirectory = 'openhealth/build/windows/x64'
+          $installScript = Join-Path $buildDirectory 'cmake_install.cmake'
+          if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
+            Write-Error "CMake install script was not generated: $installScript"
+            exit 0
+          }
+
+          Write-Host 'Retrying only the generated CMake install script.'
+          & cmake --install $buildDirectory --config Release --verbose
+          $installExitCode = $LASTEXITCODE
+          Write-Host "Diagnostic CMake install exit code: $installExitCode"
+          exit 0
+
+      - name: Read application version
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String `
+            -Path openhealth/pubspec.yaml `
+            -Pattern '^version: ([0-9]+\.[0-9]+\.[0-9]+\+[0-9]+)$'
+          if ($null -eq $match -or $match.Matches.Count -ne 1) {
+            throw 'openhealth/pubspec.yaml must contain one strict version record.'
+          }
+          "record=$($match.Matches[0].Groups[1].Value)" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "safe_record=$($match.Matches[0].Groups[1].Value.Replace('+', '-'))" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Package complete portable bundle
+        id: package
+        shell: pwsh
+        run: |
+          ./scripts/package-windows-preview.ps1 `
+            -ReleaseDirectory openhealth/build/windows/x64/runner/Release `
+            -OutputDirectory dist/windows `
+            -VersionRecord '${{ steps.version.outputs.record }}' `
+            -SourceCommit '${{ steps.source.outputs.commit }}' `
+            -SourceRef '${{ steps.source.outputs.ref }}'
+
+      - name: Record package evidence
+        shell: pwsh
+        run: |
+          @(
+            '### Windows preview build'
+            ''
+            "- Source commit: `${{ steps.source.outputs.commit }}`"
+            "- Source ref: `${{ steps.source.outputs.ref }}`"
+            "- Application version: `${{ steps.version.outputs.record }}`"
+            "- SHA-256: `${{ steps.package.outputs.sha256 }}`"
+            '- Signing: unsigned preview'
+            '- Physical AiDEX verification: required before a support claim'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Verify source tree remained unchanged
+        shell: bash
+        run: git diff --exit-code
+
+      - name: Upload manual preview artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openglucose-${{ steps.version.outputs.safe_record }}-windows-x64-preview
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 14

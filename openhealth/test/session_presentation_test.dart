@@ -98,7 +98,7 @@ void main() {
       final snapshot = snapshotFor(BleFailureKind.permissionRequired);
       final message = primaryErrorTextForSnapshot(snapshot)!;
 
-      expect(message, contains('phone settings'));
+      expect(message, contains('device settings'));
       expect(message, contains('Bluetooth'));
       expect(message, contains('Location'));
       expect(message, isNot(contains('Android')));
@@ -106,12 +106,12 @@ void main() {
       expect(snapshotAllowsAutomaticReconnect(snapshot), isFalse);
     });
 
-    test('pairing failure cautiously explains possible other-phone use', () {
+    test('pairing failure cautiously explains possible other-device use', () {
       final snapshot = snapshotFor(BleFailureKind.sensorPossiblyInUse);
       final message = primaryErrorTextForSnapshot(snapshot)!;
 
       expect(message, contains('may be'));
-      expect(message, contains('another phone'));
+      expect(message, contains('another device'));
       expect(message, contains('Do not reset'));
       expect(message, isNot(contains('test.sensorPossiblyInUse')));
     });

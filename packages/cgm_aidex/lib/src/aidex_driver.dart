@@ -1784,7 +1784,7 @@ class AidexSession implements CgmSession, CgmBondTransferSession {
     _setSnapshot(
       _snapshot.copyWith(
         stage: CgmSyncStage.disconnected,
-        statusText: 'Ready to pair with another phone',
+        statusText: 'Ready to pair with another device',
         clearLastError: true,
         metadata: <String, String>{
           ..._snapshot.metadata,

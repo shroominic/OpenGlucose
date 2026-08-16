@@ -4,6 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 String _read(String path) => File(path).readAsStringSync();
 
+String _withLfLineEndings(String value) =>
+    value.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
 void main() {
   group('privacy-safe platform defaults', () {
     test('Android excludes app data from backup and device transfer', () {
@@ -280,8 +283,8 @@ void main() {
     });
 
     test('Android release is source-bound and draft-first', () {
-      final workflow = _read(
-        '../.github/workflows/release-android.yml',
+      final workflow = _withLfLineEndings(
+        _read('../.github/workflows/release-android.yml'),
       );
       final verifier = _read(
         '../scripts/verify-android-release-artifact.sh',

@@ -342,84 +342,90 @@ void main() {
     expect(preferences.getString('openHealth.lastSensor'), rememberedJson);
   });
 
-  testWidgets('Android sensor move locks Disconnect until the transfer ends', (
-    tester,
-  ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
-    await tester.binding.setSurfaceSize(const Size(800, 1800));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    SharedPreferences.setMockInitialValues(<String, Object>{
-      'openHealth.onboarding.completed': true,
-    });
-    final preferences = await SharedPreferences.getInstance();
-    final started = Completer<void>();
-    final release = Completer<void>();
-    final driver = _TransferWidgetDriver(
-      plan: const CgmBondTransferPlan(CgmBondTransferScope.allLe),
-      executeStarted: started,
-      executeRelease: release,
-    );
-    final controller = CgmAppController(
-      preferences: preferences,
-      driver: driver,
-    );
-    await controller.initialize();
-    await controller.connect(driver.sensor);
-
-    await tester.pumpWidget(
-      OpenGlucoseApp(
-        controller: controller,
-        healthExport: HealthExportController(
+  for (final platform in <TargetPlatform>[
+    TargetPlatform.android,
+    TargetPlatform.windows,
+  ]) {
+    testWidgets(
+      '${platform.name} sensor move locks Disconnect until the transfer ends',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = platform;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        await tester.binding.setSurfaceSize(const Size(800, 1800));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        SharedPreferences.setMockInitialValues(<String, Object>{
+          'openHealth.onboarding.completed': true,
+        });
+        final preferences = await SharedPreferences.getInstance();
+        final started = Completer<void>();
+        final release = Completer<void>();
+        final driver = _TransferWidgetDriver(
+          plan: const CgmBondTransferPlan(CgmBondTransferScope.allLe),
+          executeStarted: started,
+          executeRelease: release,
+        );
+        final controller = CgmAppController(
           preferences: preferences,
-          writesAllowed: false,
-        )..initialize(),
-        preferences: preferences,
-      ),
-    );
-    await tester.pump();
-    await tester.tap(find.byIcon(Icons.tune_rounded));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Current sensor'));
-    await tester.tap(find.text('Current sensor'));
-    await tester.pumpAndSettle();
+          driver: driver,
+        );
+        await controller.initialize();
+        await controller.connect(driver.sensor);
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('moveSensorToAnotherPhoneButton')),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('Remove all sensor phone bonds?'), findsOneWidget);
-    expect(find.textContaining('all other phones'), findsOneWidget);
+        await tester.pumpWidget(
+          OpenGlucoseApp(
+            controller: controller,
+            healthExport: HealthExportController(
+              preferences: preferences,
+              writesAllowed: false,
+            )..initialize(),
+            preferences: preferences,
+          ),
+        );
+        await tester.pump();
+        await tester.tap(find.byIcon(Icons.tune_rounded));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Current sensor'));
+        await tester.tap(find.text('Current sensor'));
+        await tester.pumpAndSettle();
 
-    await tester.tap(
-      find.byKey(const ValueKey<String>('confirmMoveSensorButton')),
-    );
-    await tester.pump();
-    expect(started.isCompleted, isTrue);
-    final disconnectButton = tester.widget<FilledButton>(
-      find.byKey(const ValueKey<String>('disconnectSensorButton')),
-    );
-    expect(disconnectButton.onPressed, isNull);
-    expect(driver.session.executeCalls, 1);
-    expect(driver.session.disconnectCalls, 0);
+        await tester.tap(
+          find.byKey(const ValueKey<String>('moveSensorToAnotherPhoneButton')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Remove all sensor device bonds?'), findsOneWidget);
+        expect(find.textContaining('all other devices'), findsOneWidget);
 
-    await tester.runAsync(() async {
-      release.complete();
-      for (var attempt = 0; attempt < 40; attempt += 1) {
-        if (driver.session.disconnectCalls == 1) {
-          return;
-        }
-        await Future<void>.delayed(Duration.zero);
-      }
-    });
-    await tester.pumpAndSettle();
-    expect(driver.session.disconnectCalls, 1);
-    expect(controller.snapshot, isNull);
+        await tester.tap(
+          find.byKey(const ValueKey<String>('confirmMoveSensorButton')),
+        );
+        await tester.pump();
+        expect(started.isCompleted, isTrue);
+        final disconnectButton = tester.widget<FilledButton>(
+          find.byKey(const ValueKey<String>('disconnectSensorButton')),
+        );
+        expect(disconnectButton.onPressed, isNull);
+        expect(driver.session.executeCalls, 1);
+        expect(driver.session.disconnectCalls, 0);
 
-    await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-    debugDefaultTargetPlatformOverride = null;
-  });
+        await tester.runAsync(() async {
+          release.complete();
+          for (var attempt = 0; attempt < 40; attempt += 1) {
+            if (driver.session.disconnectCalls == 1) {
+              return;
+            }
+            await Future<void>.delayed(Duration.zero);
+          }
+        });
+        await tester.pumpAndSettle();
+        expect(driver.session.disconnectCalls, 1);
+        expect(controller.snapshot, isNull);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        debugDefaultTargetPlatformOverride = null;
+      },
+    );
+  }
 
   testWidgets(
     'restored accepted move needs explicit Bluetooth acknowledgment',

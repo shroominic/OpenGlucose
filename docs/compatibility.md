@@ -11,16 +11,22 @@ Manifests currently declare Dart `^3.11.4` and Flutter `>=3.35.0`; CI validates
 the pinned baseline and should add an explicit compatibility lane before
 claiming support for a wider range.
 
-The current native project configuration targets:
+The current supported native project configuration targets:
 
 - Android API 26 and newer; and
 - iOS 14 and newer for the app, with iOS 16.1 and newer required for the Live
   Activity widget extension.
 
+The repository also contains an unsigned Windows 10/11 x64 preview target for
+computers with Bluetooth Low Energy. Windows is not a supported product target
+until a clean CI bundle build and redacted physical AiDEX evidence satisfy the
+sensor-compatibility gate below. The preview is a complete portable ZIP; its
+executable, DLLs, and `data` directory must remain together.
+
 These are build floors, not promises that every device, OS release, Bluetooth
 stack, background mode, or sensor firmware has been exercised. Web is a demo
-and UI-test surface, not a supported physical-CGM transport. Desktop platforms
-are not currently product targets.
+and UI-test surface, not a supported physical-CGM transport. Other desktop
+platforms are not current product targets.
 
 Changes to a platform floor require a user-impact assessment, updated manifests
 and docs, affected platform builds, and an entry in the root changelog.

@@ -90,3 +90,7 @@ package's popularity.
 See [NOTICE.md](../NOTICE.md) for distribution guidance and
 [docs/compatibility.md](compatibility.md) for dependency-related support-floor
 changes.
+
+Recorded high-risk reviews:
+
+- [FlutterBluePlus WinRT](dependency-reviews/flutter-blue-plus-winrt.md)

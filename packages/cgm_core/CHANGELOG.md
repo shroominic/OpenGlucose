@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Add the sensor-neutral, explicitly confirmed bond-transfer session contract,
+  plans, outcomes, and identifier-free failures used by Android and Windows.
 - Add validated health events and samples, repository contracts and in-memory
   implementation, timeline composition, explainable glucose analytics, weekly
   recap aggregation, and privacy-minimized AI provider/insight APIs.

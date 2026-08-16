@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Add the standard Bond Management Service transfer procedure behind the
+  public confirmed-transfer contract. It validates the advertised feature,
+  issues one write-with-response, disconnects, then removes and verifies the
+  local operating-system bond without using the unsafe-admin API.
 - Subscribe only to the two pre-authentication AiDEX channels before the
   vendor handshake, then enable the remaining channels after authentication.
   A notification timeout or disconnect gets one bounded fresh-GATT recovery

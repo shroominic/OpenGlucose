@@ -12,11 +12,13 @@ import 'health_state_store.dart';
 typedef HealthStateDirectoryProvider = Future<Directory> Function();
 typedef BackupExclusionMarker = Future<void> Function(String path);
 
-/// Native restricted-state store backed by explicitly backup-excluded files.
+/// Native restricted-state store backed by platform-local files.
 ///
 /// Small metadata values live in a versioned snapshot. Each glucose-history
 /// key lives in its own atomically replaced blob, so updating the active sensor
-/// never rewrites archived sensor histories.
+/// never rewrites archived sensor histories. iOS requires and verifies backup
+/// exclusion here; Android applies its manifest backup policy. The unsigned
+/// Windows preview discloses that equivalent backup exclusion is not verified.
 class FileHealthStateStore implements HealthStateStore {
   FileHealthStateStore({
     required SharedPreferences legacyPreferences,

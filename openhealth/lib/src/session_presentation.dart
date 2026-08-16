@@ -475,34 +475,34 @@ String? userMessageForBleError(Object error) {
 String userMessageForBleFailure(BleFailure failure) {
   return switch (failure.kind) {
     BleFailureKind.permissionRequired =>
-      'OpenGlucose needs Bluetooth access. In your phone settings, allow '
+      'OpenGlucose needs Bluetooth access. In your device settings, allow '
           'Bluetooth and any nearby-device permissions requested by the app. '
           'Some phones also require Location to be allowed and turned on for '
           'scanning. Then try again.',
     BleFailureKind.bluetoothOff =>
-      "Bluetooth is off. Turn it on in your phone's quick settings or "
+      "Bluetooth is off. Turn it on in your device's quick settings or "
           'Settings, then try scanning again.',
     BleFailureKind.bluetoothUnavailable =>
-      'Bluetooth is not available on this phone right now. Restart Bluetooth '
-          'or the phone, then try again.',
+      'Bluetooth is not available on this device right now. Restart Bluetooth '
+          'or the device, then try again.',
     BleFailureKind.bondRejected =>
-      'The phone did not complete pairing. Keep it close and accept the '
+      'The device did not complete pairing. Keep it close and accept the '
           'pairing prompt. If this sensor is already bonded or connected to '
-          'another phone, stop that connection before trying again. Do not '
+          'another device, stop that connection before trying again. Do not '
           'reset an active sensor.',
     BleFailureKind.bondTimedOut =>
-      'Pairing timed out. Keep the phone close and accept the system pairing '
-          'prompt. If another phone is using this sensor, stop that connection '
+      'Pairing timed out. Keep the device close and accept the system pairing '
+          'prompt. If another device is using this sensor, stop that connection '
           'before trying again.',
     BleFailureKind.sensorPossiblyInUse =>
       'The sensor became unavailable during setup. It may be out of range or '
-          'already bonded or connected to another phone. Keep it close and '
+          'already bonded or connected to another device. Keep it close and '
           'stop the other connection, if applicable, before trying again. Do '
           'not reset an active sensor.',
     BleFailureKind.deviceDisconnected =>
-      'The sensor disconnected. Keep the phone close and try again.',
+      'The sensor disconnected. Keep the device close and try again.',
     BleFailureKind.operationTimedOut =>
-      'Bluetooth setup timed out. Keep the phone close and try again.',
+      'Bluetooth setup timed out. Keep the device close and try again.',
     BleFailureKind.unexpected =>
       'Bluetooth setup could not be completed. Restart Bluetooth and try '
           'again.',

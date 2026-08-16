@@ -39,6 +39,7 @@ command -v ruby >/dev/null 2>&1 || {
   exit 1
 }
 ruby "$repo_root/scripts/test-android-release-workflow-contract.rb"
+ruby "$repo_root/scripts/test-windows-preview-workflow-contract.rb"
 
 if [ -f "$repo_root/openhealth/fastlane/Fastfile" ]; then
   ruby -c "$repo_root/openhealth/fastlane/Fastfile" >/dev/null

@@ -351,10 +351,10 @@ class CgmAppController extends ChangeNotifier {
         lastError: sensorAccepted
             ? 'The sensor accepted a move, but app cleanup was interrupted. '
                   'Do not retry. '
-                  'Check Android Bluetooth settings and forget the old bond '
+                  'Check the device Bluetooth settings and forget the old bond '
                   'if it is still listed. Then review the move in Settings.'
             : 'The sensor response to a move is unknown. Do not reconnect, '
-                  'forget the Android bond, disconnect, or retry. Contact '
+                  'forget the local Bluetooth bond, disconnect, or retry. Contact '
                   'support for a reviewed recovery.',
       );
       _lastError = _snapshot!.lastError;
@@ -470,7 +470,7 @@ class CgmAppController extends ChangeNotifier {
       if (!isMockDriver && _bondTransferTombstone(sensor.storageKey) != null) {
         _lastError =
             'This sensor has an interrupted move. Do not reconnect or retry. '
-            'Check Android Bluetooth settings first.';
+            'Check the device Bluetooth settings first.';
         notifyListeners();
         return;
       }
@@ -816,7 +816,7 @@ class CgmAppController extends ChangeNotifier {
         ),
       );
       // The driver has confirmed the sensor-side response, disconnected the
-      // transport, and removed the local Android bond. This final teardown
+      // transport, and removed the local operating-system bond. This teardown
       // archives app data and closes session streams; it does not unpair.
       _finalizingBondTransfer = true;
       try {
@@ -1003,9 +1003,9 @@ class CgmAppController extends ChangeNotifier {
             interruptedTransfer != _bondTransferSensorAccepted)) {
       _lastError = interruptedTransfer == _bondTransferOutcomeUnknown
           ? 'The sensor response to the move is unknown. Do not reconnect, '
-                'forget the Android bond, disconnect, or retry. Contact '
+                'forget the local Bluetooth bond, disconnect, or retry. Contact '
                 'support for a reviewed recovery.'
-          : 'Review the interrupted sensor move and check Android Bluetooth '
+          : 'Review the interrupted sensor move and check Bluetooth settings '
                 'before clearing it from the app.';
       notifyListeners();
       return;

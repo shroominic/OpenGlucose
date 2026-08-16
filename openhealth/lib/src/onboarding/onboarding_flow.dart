@@ -440,7 +440,7 @@ class _HowItWorksStep extends StatelessWidget {
       title: 'How it works',
       body:
           'Apply your Aidex X sensor, pair it over Bluetooth, and let it warm '
-          'up. After that, readings stream straight to your phone.',
+          'up. After that, readings stream straight to this device.',
       bullets: <_Bullet>[
         _Bullet(
           icon: Icons.touch_app_rounded,
@@ -635,7 +635,7 @@ class _ConnectStep extends StatelessWidget {
         _Bullet(
           icon: Icons.bluetooth_rounded,
           title: 'Turn on Bluetooth',
-          body: 'Keep your phone close to the sensor while it pairs.',
+          body: 'Keep this device close to the sensor while it pairs.',
         ),
         _Bullet(
           icon: Icons.show_chart_rounded,

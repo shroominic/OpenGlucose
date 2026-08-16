@@ -216,7 +216,7 @@ class _ActiveLifecycle extends StatelessWidget {
             icon: Icons.hourglass_top_rounded,
             text:
                 'Warming up — readings stabilise after the first hour. Keep '
-                'the sensor on and your phone nearby.',
+                'the sensor on and this device nearby.',
           ),
         ] else if (lifecycle.isExpiringSoon) ...<Widget>[
           const SizedBox(height: 14),

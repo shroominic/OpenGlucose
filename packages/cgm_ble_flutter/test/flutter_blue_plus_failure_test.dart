@@ -384,6 +384,116 @@ void main() {
     );
   });
 
+  group('Windows bond verification', () {
+    test('keeps an existing bond without opening a pairing prompt', () async {
+      var createBondCalls = 0;
+
+      await ensureWindowsBond(
+        currentState: () async => BleBondState.bonded,
+        createBond: () async {
+          createBondCalls += 1;
+          return true;
+        },
+      );
+
+      expect(createBondCalls, 0);
+    });
+
+    test('creates and verifies a missing Windows bond', () async {
+      var state = BleBondState.unbonded;
+      var createBondCalls = 0;
+
+      await ensureWindowsBond(
+        currentState: () async => state,
+        createBond: () async {
+          createBondCalls += 1;
+          state = BleBondState.bonded;
+          return true;
+        },
+      );
+
+      expect(createBondCalls, 1);
+      expect(state, BleBondState.bonded);
+    });
+
+    test('trusts the verified postcondition if the native result races', () {
+      var stateReads = 0;
+
+      return ensureWindowsBond(
+        currentState: () async {
+          stateReads += 1;
+          return stateReads == 1 ? BleBondState.unbonded : BleBondState.bonded;
+        },
+        createBond: () async => false,
+      );
+    });
+
+    test('reports rejection without exposing a device identifier', () async {
+      const privateAddress = 'AA:BB:CC:DD:EE:FF';
+
+      await expectLater(
+        ensureWindowsBond(
+          currentState: () async => BleBondState.unbonded,
+          createBond: () async => false,
+        ),
+        throwsA(
+          isA<BleFailure>()
+              .having(
+                (failure) => failure.kind,
+                'kind',
+                BleFailureKind.bondRejected,
+              )
+              .having(
+                (failure) => failure.operation,
+                'operation',
+                BleOperation.bond,
+              )
+              .having(
+                (failure) => failure.toString(),
+                'safe string',
+                isNot(contains(privateAddress)),
+              ),
+        ),
+      );
+    });
+
+    test('removes a bond only after its final state is verified', () async {
+      var state = BleBondState.bonded;
+
+      await removeWindowsBond(
+        removeBond: () async {
+          state = BleBondState.unbonded;
+          return true;
+        },
+        currentState: () async => state,
+      );
+
+      expect(state, BleBondState.unbonded);
+    });
+
+    test('fails closed when Windows still reports a bond', () async {
+      await expectLater(
+        removeWindowsBond(
+          removeBond: () async => false,
+          currentState: () async => BleBondState.bonded,
+        ),
+        throwsA(
+          isA<BleFailure>()
+              .having(
+                (failure) => failure.kind,
+                'kind',
+                BleFailureKind.unexpected,
+              )
+              .having(
+                (failure) => failure.operation,
+                'operation',
+                BleOperation.removeBond,
+              ),
+        ),
+      );
+    });
+  });
+
   test('classifies denied Android scan permissions', () {
     final failure = classifyFlutterBluePlusFailure(
       PlatformException(

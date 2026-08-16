@@ -266,6 +266,15 @@ case "$command_name" in
     cd "$repo_root/openhealth"
     flutter build web --no-pub
     ;;
+  build-windows)
+    verify_runtime
+    case "$(uname -s)" in
+      MINGW*|MSYS*|CYGWIN*) ;;
+      *) die 'Windows builds are available only on a Windows host' ;;
+    esac
+    cd "$repo_root/openhealth"
+    flutter build windows --release --no-pub --verbose
+    ;;
   build-ios)
     verify_runtime
     require_tool git

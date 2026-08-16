@@ -5,11 +5,13 @@ import 'dart:io';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/health_state_store_io.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _fileName = 'restricted-health-state.json';
-const _storageDirectory = 'OpenGlucose/RestrictedHealthState';
-const _historyDirectory = '$_storageDirectory/HistoryBlobs';
+const _productDirectoryName = 'OpenGlucose';
+const _storageDirectoryName = 'RestrictedHealthState';
+const _historyDirectoryName = 'HistoryBlobs';
 const _historyBlobExtension = '.blob';
 const _lastSensorKey = 'openHealth.lastSensor';
 const _bondTransferKey = 'openHealth.bondTransfer.serial:SENSOR-1';
@@ -51,8 +53,29 @@ void main() {
       expect(preferences.containsKey('openHealth.history.sensor-1'), isFalse);
       expect(preferences.containsKey('openHealth.displayPreferences'), isTrue);
       expect(excludedPaths, isNotEmpty);
-      expect(excludedPaths.first, endsWith(_storageDirectory));
-      expect(excludedPaths.last, endsWith(_fileName));
+      expect(
+        p.equals(
+          excludedPaths.first,
+          p.join(
+            directory.path,
+            _productDirectoryName,
+            _storageDirectoryName,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        p.equals(
+          excludedPaths.last,
+          p.join(
+            directory.path,
+            _productDirectoryName,
+            _storageDirectoryName,
+            _fileName,
+          ),
+        ),
+        isTrue,
+      );
 
       final envelope = await _readEnvelope(directory);
       expect(envelope['schemaVersion'], 3);
@@ -522,12 +545,14 @@ void main() {
     await legacyBlob.writeAsString('preserved-history');
     SharedPreferences.setMockInitialValues(const <String, Object>{});
     final preferences = await SharedPreferences.getInstance();
+    var migratedBlobVerificationAttempted = false;
     final failingStore = FileHealthStateStore(
       legacyPreferences: preferences,
       directoryProvider: () async => directory,
       requiresBackupExclusion: true,
       backupExclusionMarker: (path) async {
-        if (path == migratedBlob.path) {
+        if (p.equals(path, migratedBlob.path)) {
+          migratedBlobVerificationAttempted = true;
           throw StateError('verification denied');
         }
       },
@@ -535,6 +560,7 @@ void main() {
 
     await expectLater(failingStore.initialize(), throwsStateError);
 
+    expect(migratedBlobVerificationAttempted, isTrue);
     expect(legacyBlob.existsSync(), isFalse);
     expect(await migratedBlob.readAsString(), 'preserved-history');
     expect((await _readEnvelope(directory))['schemaVersion'], 2);
@@ -808,29 +834,46 @@ Future<Directory> _temporaryDirectory(String suffix) async {
 }
 
 File _stateFile(Directory directory) {
-  final storageDirectory = Directory('${directory.path}/$_storageDirectory')
-    ..createSync(recursive: true);
-  return File('${storageDirectory.path}/$_fileName');
+  final storageDirectory = Directory(
+    p.join(
+      directory.path,
+      _productDirectoryName,
+      _storageDirectoryName,
+    ),
+  )..createSync(recursive: true);
+  return File(p.join(storageDirectory.path, _fileName));
 }
 
 File _transactionFile(Directory directory, String suffix) =>
     File('${_stateFile(directory).path}$suffix');
 
 File _historyBlob(Directory directory, String key) {
-  final historyDirectory = Directory('${directory.path}/$_historyDirectory')
-    ..createSync(recursive: true);
+  final historyDirectory = Directory(
+    p.join(
+      directory.path,
+      _productDirectoryName,
+      _storageDirectoryName,
+      _historyDirectoryName,
+    ),
+  )..createSync(recursive: true);
   final digest = crypto.sha256.convert(utf8.encode(key));
   return File(
-    '${historyDirectory.path}/history-$digest$_historyBlobExtension',
+    p.join(historyDirectory.path, 'history-$digest$_historyBlobExtension'),
   );
 }
 
 File _legacyHistoryBlob(Directory directory, String key) {
-  final historyDirectory = Directory('${directory.path}/$_historyDirectory')
-    ..createSync(recursive: true);
+  final historyDirectory = Directory(
+    p.join(
+      directory.path,
+      _productDirectoryName,
+      _storageDirectoryName,
+      _historyDirectoryName,
+    ),
+  )..createSync(recursive: true);
   final encodedKey = base64Url.encode(utf8.encode(key));
   return File(
-    '${historyDirectory.path}/$encodedKey$_historyBlobExtension',
+    p.join(historyDirectory.path, '$encodedKey$_historyBlobExtension'),
   );
 }
 
