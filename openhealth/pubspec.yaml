@@ -1,7 +1,7 @@
 name: openglucose
 description: Your Open-source health and wellness app focused on local data and privacy.
 publish_to: none
-version: 0.1.2+22
+version: 0.1.3+24
 
 environment:
   sdk: ^3.11.4
