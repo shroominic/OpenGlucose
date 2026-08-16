@@ -10,6 +10,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-16
+
+### Changed
+
+- Android GitHub releases now build, verify, and attach the APK while hidden,
+  then publish one stable Latest release only after the download is complete.
+
 ### Fixed
 
 - Android AiDEX setup now avoids unnecessary reconnects for existing healthy
@@ -141,8 +148,9 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.2...HEAD
-[0.1.2]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.2
-[0.1.1]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.1
-[0.1.0]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.0
-[0.0.1+10]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.0.1%2B10
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.3
+[0.1.2]: https://github.com/shroominic/OpenGlucose/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/shroominic/OpenGlucose/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/shroominic/OpenGlucose/compare/v0.0.1%2B10...v0.1.0
+[0.0.1+10]: https://github.com/shroominic/OpenGlucose/tree/v0.0.1%2B10
