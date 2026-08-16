@@ -146,20 +146,20 @@ class CgmBondTransferException implements Exception {
 
   String get userMessage => switch (kind) {
     CgmBondTransferFailureKind.unsupportedPlatform =>
-      'Moving a sensor is available only on Android.',
+      'Moving a sensor is not available on this device.',
     CgmBondTransferFailureKind.sessionNotReady =>
-      'Connect this phone to the sensor before moving it.',
+      'Connect this device to the sensor before moving it.',
     CgmBondTransferFailureKind.linkNotAuthenticated =>
       'The sensor connection is not authenticated.',
     CgmBondTransferFailureKind.localBondMissing =>
-      'This phone does not own the active sensor bond.',
+      'This device does not own the active sensor bond.',
     CgmBondTransferFailureKind.bondStateUnavailable =>
-      'Android could not confirm the sensor bond.',
+      'The operating system could not confirm the sensor bond.',
     CgmBondTransferFailureKind.serviceUnavailable ||
     CgmBondTransferFailureKind.featureUnavailable ||
     CgmBondTransferFailureKind.featureMalformed ||
     CgmBondTransferFailureKind.procedureUnsupported =>
-      'This sensor does not advertise a safe phone-transfer procedure.',
+      'This sensor does not advertise a safe device-transfer procedure.',
     CgmBondTransferFailureKind.authorizationCodeRequired =>
       'This sensor requires an authorization code that the app does not have.',
     CgmBondTransferFailureKind.featureChanged =>
@@ -175,8 +175,8 @@ class CgmBondTransferException implements Exception {
           'Do not retry.',
     CgmBondTransferFailureKind.localBondRemovalFailed ||
     CgmBondTransferFailureKind.localBondRemovalUnconfirmed =>
-      'The sensor accepted the request, but Android still has the old bond. '
-          'Forget the sensor in Android Bluetooth settings. Do not retry.',
+      'The sensor accepted the request, but this device still has the old '
+          'bond. Forget the sensor in Bluetooth settings. Do not retry.',
   };
 
   @override
@@ -186,7 +186,7 @@ class CgmBondTransferException implements Exception {
 }
 
 /// Optional capability implemented by sessions that can safely move their
-/// current Bluetooth bond to another phone.
+/// current Bluetooth bond to another device.
 abstract interface class CgmBondTransferSession {
   /// Reads and validates the sensor's current BMS feature value.
   Future<CgmBondTransferPlan> inspectBondTransfer();

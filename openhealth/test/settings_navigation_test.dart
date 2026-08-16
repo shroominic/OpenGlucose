@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
@@ -67,4 +68,52 @@ void main() {
       controller.dispose();
     },
   );
+
+  testWidgets('Windows privacy pane discloses the backup-policy limit', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: DemoCgmDriver(),
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('AI & models'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Privacy & data'),
+      250,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.ensureVisible(find.text('Privacy & data'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Privacy & data'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('non-roaming LocalAppData'), findsOneWidget);
+    expect(
+      find.textContaining('Backup exclusion is not verified'),
+      findsOneWidget,
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
 }

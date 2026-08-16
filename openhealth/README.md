@@ -10,12 +10,14 @@ package name are OpenGlucose and `openglucose`.
 
 ## Driver selection
 
-- iOS and Android builds create `AidexSensorDriver` with the
+- iOS, Android, and Windows builds create `AidexSensorDriver` with the
   `FlutterBluePlusTransport` platform adapter.
 - Web builds and widget tests create `DemoCgmDriver`, allowing UI development
   without Bluetooth hardware.
 - A successful demo run does not validate a physical sensor or native
   background behavior.
+- Windows remains an unsigned preview until a clean Windows build and redacted
+  physical AiDEX evidence are recorded.
 
 ## Run locally
 
@@ -40,6 +42,18 @@ cd openhealth
 flutter devices
 flutter run -d <device-id>
 ```
+
+On a Windows development host, build the complete portable preview with:
+
+```sh
+make build-windows
+```
+
+Do not copy only the generated executable. Keep every DLL and the `data`
+directory from `openhealth/build/windows/x64/runner/Release` together. The
+manual GitHub Actions preview workflow packages those files, notices, source
+commit, and a checksum into one ZIP. See the
+[Windows preview guide](../docs/windows-preview.md).
 
 Mobile operation depends on Bluetooth availability, granted platform
 permissions, and a supported sensor. Never add provisioning profiles, signing
@@ -81,9 +95,10 @@ and web builds, and the negative Android release-signing gate. On macOS it also
 runs the unsigned iOS build and `RunnerTests` on the pinned simulator. Physical-
 device end-to-end automation is still deferred.
 
-Focused native iteration can use `make build-android`, `make build-ios`, or
-`make test-ios-native`. User-interface changes require behavior checks and screenshots on
-the affected form factors; see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Focused native iteration can use `make build-android`, `make build-ios`,
+`make build-windows`, or `make test-ios-native`. User-interface changes require
+behavior checks and screenshots on the affected form factors; see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Architecture and support
 

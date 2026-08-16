@@ -2402,7 +2402,7 @@ void main() {
     },
   );
 
-  test('accepted transfer verifies Android removed the local bond', () async {
+  test('accepted transfer verifies the local OS bond was removed', () async {
     final transport = _FakeBleTransport(
       bondManagementFeature: const <int>[0x10],
       removeBondLeavesBonded: true,
@@ -2439,31 +2439,36 @@ void main() {
     await session.disconnect();
   });
 
-  test('non-Android setup and transfer do not read F005 or BMS', () async {
-    final transport = _FakeBleTransport(supportsBondLifecycle: false);
-    final session =
-        await _activationTestDriver(transport).connect(_activationTestSensor())
-            as AidexSession;
-    await session.initialize();
+  test(
+    'a transport without bond lifecycle does not read F005 or BMS',
+    () async {
+      final transport = _FakeBleTransport(supportsBondLifecycle: false);
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor())
+              as AidexSession;
+      await session.initialize();
 
-    expect(transport.operations, isNot(contains('read:${AidexUuids.f005}')));
-    await expectLater(
-      session.inspectBondTransfer(),
-      throwsA(
-        isA<CgmBondTransferException>().having(
-          (failure) => failure.kind,
-          'kind',
-          CgmBondTransferFailureKind.unsupportedPlatform,
+      expect(transport.operations, isNot(contains('read:${AidexUuids.f005}')));
+      await expectLater(
+        session.inspectBondTransfer(),
+        throwsA(
+          isA<CgmBondTransferException>().having(
+            (failure) => failure.kind,
+            'kind',
+            CgmBondTransferFailureKind.unsupportedPlatform,
+          ),
         ),
-      ),
-    );
-    expect(
-      transport.operations,
-      isNot(contains('read:${AidexUuids.bondManagementFeature}')),
-    );
-    expect(transport.lastConnection.didRemoveBond, isFalse);
-    await session.disconnect();
-  });
+      );
+      expect(
+        transport.operations,
+        isNot(contains('read:${AidexUuids.bondManagementFeature}')),
+      );
+      expect(transport.lastConnection.didRemoveBond, isFalse);
+      await session.disconnect();
+    },
+  );
 
   test('connection-state stream errors become safe session errors', () async {
     final transport = _FakeBleTransport();

@@ -5,6 +5,8 @@ import 'package:cgm_ble/cgm_ble.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
+import 'package:flutter_blue_plus_platform_interface/flutter_blue_plus_platform_interface.dart'
+    as fbpi;
 
 class FlutterBluePlusTransport implements BleTransport {
   const FlutterBluePlusTransport({
@@ -381,7 +383,8 @@ class _FlutterBluePlusConnection implements BleConnection {
   String get deviceId => _device.remoteId.str;
 
   @override
-  bool get supportsBondLifecycle => !kIsWeb && Platform.isAndroid;
+  bool get supportsBondLifecycle =>
+      !kIsWeb && (Platform.isAndroid || Platform.isWindows);
 
   @override
   Stream<BleConnectionState> get connectionStates => _device.connectionState
@@ -409,31 +412,58 @@ class _FlutterBluePlusConnection implements BleConnection {
   @override
   Future<void> ensureBonded() async {
     await _runBleOperation<void>(BleOperation.bond, () async {
-      if (kIsWeb || !Platform.isAndroid) {
+      if (kIsWeb) {
         return;
       }
-      await ensureAndroidBond(
-        currentState: currentBondState,
-        bondStates: _device.bondState.map(
-          (state) => (
-            state: _mapBondState(state),
-            previousState: _mapOptionalBondState(_device.prevBondState),
+      if (Platform.isAndroid) {
+        await ensureAndroidBond(
+          currentState: currentBondState,
+          bondStates: _device.bondState.map(
+            (state) => (
+              state: _mapBondState(state),
+              previousState: _mapOptionalBondState(_device.prevBondState),
+            ),
           ),
-        ),
-        createBond: () => _device.createBond(),
-        reconciliationTimeout: const Duration(seconds: 90),
-      );
+          createBond: () => _device.createBond(),
+          reconciliationTimeout: const Duration(seconds: 90),
+        );
+        return;
+      }
+      if (Platform.isWindows) {
+        final remoteId = fbpi.DeviceIdentifier(deviceId);
+        await ensureWindowsBond(
+          currentState: currentBondState,
+          createBond: () => fbpi.FlutterBluePlusPlatform.instance
+              .createBond(
+                fbpi.BmCreateBondRequest(remoteId: remoteId, pin: null),
+              )
+              .timeout(const Duration(seconds: 90)),
+        );
+      }
     });
   }
 
   @override
   Future<BleBondState> currentBondState() async {
     return _runBleOperation<BleBondState>(BleOperation.bond, () async {
-      if (kIsWeb || !Platform.isAndroid) {
+      if (kIsWeb) {
         return BleBondState.bonded;
       }
-      final bondState = await _device.bondState.first;
-      return _mapBondState(bondState);
+      if (Platform.isAndroid) {
+        final bondState = await _device.bondState.first;
+        return _mapBondState(bondState);
+      }
+      if (Platform.isWindows) {
+        final response = await fbpi.FlutterBluePlusPlatform.instance
+            .getBondState(
+              fbpi.BmBondStateRequest(
+                remoteId: fbpi.DeviceIdentifier(deviceId),
+              ),
+            )
+            .timeout(operationTimeout);
+        return _mapWindowsBondState(response.bondState);
+      }
+      return BleBondState.bonded;
     });
   }
 
@@ -551,17 +581,29 @@ class _FlutterBluePlusConnection implements BleConnection {
   @override
   Future<void> removeBond() async {
     await _runBleOperation<void>(BleOperation.removeBond, () async {
-      if (kIsWeb || !Platform.isAndroid) {
+      if (kIsWeb) {
         return;
       }
       final state = await currentBondState();
       if (state == BleBondState.unbonded) {
         return;
       }
-      await removeBondWithPluginTimeout<void>(
-        (timeoutSeconds) => _device.removeBond(timeout: timeoutSeconds),
-        timeout: operationTimeout,
-      );
+      if (Platform.isAndroid) {
+        await removeBondWithPluginTimeout<void>(
+          (timeoutSeconds) => _device.removeBond(timeout: timeoutSeconds),
+          timeout: operationTimeout,
+        );
+        return;
+      }
+      if (Platform.isWindows) {
+        final remoteId = fbpi.DeviceIdentifier(deviceId);
+        await removeWindowsBond(
+          removeBond: () => fbpi.FlutterBluePlusPlatform.instance
+              .removeBond(fbpi.BmRemoveBondRequest(remoteId: remoteId))
+              .timeout(operationTimeout),
+          currentState: currentBondState,
+        );
+      }
     });
   }
 
@@ -687,6 +729,57 @@ Future<void> ensureAndroidBond({
   }
 }
 
+/// Establishes and verifies a Windows bond through the federated WinRT plugin.
+///
+/// FlutterBluePlus 2.2.x endorses a Windows implementation, but its public
+/// [fbp.BluetoothDevice.createBond] wrapper still rejects non-Android callers.
+/// The Windows plugin exposes the same operation through the public federated
+/// platform interface. Unlike Android, that plugin completes its native
+/// `PairAsync` call with a final result and does not emit intermediate bond
+/// events, so verification must use an explicit state read.
+@visibleForTesting
+Future<void> ensureWindowsBond({
+  required Future<BleBondState> Function() currentState,
+  required Future<bool> Function() createBond,
+}) async {
+  if (await currentState() == BleBondState.bonded) {
+    return;
+  }
+
+  await createBond();
+  final finalState = await currentState();
+  if (finalState == BleBondState.bonded) {
+    return;
+  }
+  throw BleFailure(
+    kind: BleFailureKind.bondRejected,
+    operation: BleOperation.bond,
+    diagnosticCode: 'fbp.windows.bond.not-completed',
+  );
+}
+
+/// Removes and verifies a Windows bond after a confirmed sensor transfer.
+///
+/// This helper is never part of normal disconnect or retry behavior. The
+/// protocol layer must clear the sensor-side bond first and call this local
+/// operation only through its public, separately confirmed transfer contract.
+@visibleForTesting
+Future<void> removeWindowsBond({
+  required Future<bool> Function() removeBond,
+  required Future<BleBondState> Function() currentState,
+}) async {
+  await removeBond();
+  final finalState = await currentState();
+  if (finalState == BleBondState.unbonded) {
+    return;
+  }
+  throw BleFailure(
+    kind: BleFailureKind.unexpected,
+    operation: BleOperation.removeBond,
+    diagnosticCode: 'fbp.windows.remove-bond.not-completed',
+  );
+}
+
 typedef AndroidBondStateObservation = ({
   BleBondState state,
   BleBondState? previousState,
@@ -792,6 +885,13 @@ BleBondState _mapBondState(fbp.BluetoothBondState state) => switch (state) {
   fbp.BluetoothBondState.bonding => BleBondState.bonding,
   fbp.BluetoothBondState.bonded => BleBondState.bonded,
 };
+
+BleBondState _mapWindowsBondState(fbpi.BmBondStateEnum state) =>
+    switch (state) {
+      fbpi.BmBondStateEnum.none => BleBondState.unbonded,
+      fbpi.BmBondStateEnum.bonding => BleBondState.bonding,
+      fbpi.BmBondStateEnum.bonded => BleBondState.bonded,
+    };
 
 BleBondState? _mapOptionalBondState(fbp.BluetoothBondState? state) {
   return state == null ? null : _mapBondState(state);

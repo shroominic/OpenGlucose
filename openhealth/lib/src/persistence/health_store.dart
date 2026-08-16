@@ -3,9 +3,9 @@ import 'dart:io';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../local_state_directory.dart';
 import 'sqflite_health_repository.dart';
 
 export 'sqflite_health_repository.dart';
@@ -30,7 +30,7 @@ const _databaseDirectoryName = 'HealthDatabase';
 const _productDirectoryName = 'OpenGlucose';
 
 /// Opens the app's local-first [HealthRepository], backed by sqflite in the
-/// platform Application Support directory.
+/// platform's persistent local-state directory.
 ///
 /// On iOS, a native privacy gate applies complete file protection and verified
 /// iCloud-backup exclusion to the dedicated directory, database, and SQLite
@@ -47,7 +47,7 @@ Future<HealthRepository> openHealthRepository({
   _validateDatabaseFileName(fileName);
 
   final applicationSupport =
-      await (directoryProvider ?? getApplicationSupportDirectory)();
+      await (directoryProvider ?? resolveLocalStateBaseDirectory)();
   final directory = Directory(
     p.join(
       applicationSupport.path,

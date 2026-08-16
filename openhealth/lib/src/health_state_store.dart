@@ -17,8 +17,9 @@ abstract interface class HealthStateStore {
 
 /// Preference-backed implementation for web and deterministic tests.
 ///
-/// Native production builds use the backup-excluded, per-history-blob file
-/// implementation selected by `createHealthStateStore`.
+/// Native production builds use the platform-local, per-history-blob file
+/// implementation selected by `createHealthStateStore`. Supported mobile
+/// builds also apply their platform backup-exclusion controls.
 class PreferencesHealthStateStore implements HealthStateStore {
   PreferencesHealthStateStore(this._preferences);
 

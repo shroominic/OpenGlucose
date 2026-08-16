@@ -4,7 +4,7 @@ SHELL := /bin/sh
 
 .PHONY: help bootstrap tooling-bootstrap tooling-check hooks format \
 	format-check lint typecheck test-unit test-integration test-e2e test \
-	build build-android build-web build-ios test-ios-native \
+	build build-android build-web build-ios build-windows test-ios-native \
 	verify-android-release-signing check
 
 platform_checks :=
@@ -61,6 +61,9 @@ build-web: ## Build the web demo.
 
 build-ios: ## Build unsigned iOS and verify the native lockfile is unchanged.
 	@./scripts/flutter-workspace.sh build-ios
+
+build-windows: ## Build the unsigned portable Windows preview on Windows.
+	@./scripts/flutter-workspace.sh build-windows
 
 test-ios-native: ## Run RunnerTests on the pinned iOS simulator destination.
 	@./scripts/flutter-workspace.sh test-ios-native

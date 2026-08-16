@@ -26,6 +26,7 @@ import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
+import 'package:openglucose/src/windows_sensor_transfer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -111,6 +112,24 @@ Future<void> _autoConnectDemoSensor(CgmAppController controller) async {
     return;
   }
   await controller.connect(sensors.first);
+}
+
+Future<void> _connectToSensor(
+  BuildContext context,
+  CgmAppController controller,
+  DiscoveredSensor sensor,
+) async {
+  final needsTransferWarning = requiresWindowsSensorTransferWarning(
+    platform: defaultTargetPlatform,
+    isMockDriver: controller.isMockDriver,
+  );
+  if (needsTransferWarning && !await confirmWindowsSensorTransfer(context)) {
+    return;
+  }
+  if (!context.mounted) {
+    return;
+  }
+  await controller.connect(sensor);
 }
 
 class _BootstrapApp extends StatefulWidget {
@@ -677,7 +696,7 @@ class _ScanView extends StatelessWidget {
               child: Padding(
                 padding: EdgeInsets.all(32),
                 child: Text(
-                  'No sensors found yet.\nHold your phone near your sensor and try again.',
+                  'No sensors found yet.\nHold this device near your sensor and try again.',
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -759,7 +778,11 @@ class _ScanView extends StatelessWidget {
                                       sensor.capabilities.supportsDirectBle &&
                                           !hasInterruptedTransfer
                                       ? () => unawaited(
-                                          controller.connect(sensor),
+                                          _connectToSensor(
+                                            context,
+                                            controller,
+                                            sensor,
+                                          ),
                                         )
                                       : null,
                                   child: const Text('Connect'),
@@ -792,8 +815,8 @@ class _ScanView extends StatelessWidget {
                           const SizedBox(height: 12),
                           Text(
                             'The sensor response is unknown. Do not reconnect '
-                            'or forget the Android bond. Contact support for a '
-                            'reviewed recovery.',
+                            'or forget the local Bluetooth bond. Contact '
+                            'support for a reviewed recovery.',
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: const Color(0xFF9A4D00),
                               height: 1.35,
@@ -832,7 +855,7 @@ Future<void> _confirmInterruptedSensorTransferRecovery(
     builder: (context) => AlertDialog(
       title: const Text('Review interrupted sensor move'),
       content: const Text(
-        'Open Android Bluetooth settings before you continue. Confirm that '
+        'Open the device Bluetooth settings before you continue. Confirm that '
         'the sensor is not listed as paired. If it is listed, choose Forget '
         'first. This action only clears the app safety marker. It does not '
         'contact the sensor or change a Bluetooth bond.',
@@ -1786,15 +1809,16 @@ class _SettingsOverview extends StatelessWidget {
                   controller: controller,
                 ),
               ),
-              _SettingsDestination(
-                icon: Icons.auto_awesome_outlined,
-                title: 'AI & models',
-                subtitle: 'Experimental · off until you enable it',
-                child: AiSettingsPane(
-                  recentReadings: controller.allHistoricalReadings,
-                  unit: controller.displayPreferences.unit,
+              if (defaultTargetPlatform != TargetPlatform.windows)
+                _SettingsDestination(
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'AI & models',
+                  subtitle: 'Experimental · off until you enable it',
+                  child: AiSettingsPane(
+                    recentReadings: controller.allHistoricalReadings,
+                    unit: controller.displayPreferences.unit,
+                  ),
                 ),
-              ),
               const _SettingsDestination(
                 icon: Icons.shield_outlined,
                 title: 'Privacy & data',
@@ -1879,7 +1903,7 @@ class _SettingsHero extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   snapshot == null
-                      ? 'Your previous data stays on this iPhone.'
+                      ? 'Your previous data stays on this device.'
                       : sensorLifeText(snapshot.sessionInfo.sessionStart),
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: const Color(0xFFD8EEE8),
@@ -2478,19 +2502,22 @@ class _PrivacyDataPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final storageDescription = defaultTargetPlatform == TargetPlatform.windows
+        ? 'Sensor identity and glucose history remain in non-roaming '
+              'LocalAppData. Backup exclusion is not verified for this '
+              "Windows preview; check this computer's backup policy."
+        : 'Sensor identity and glucose history remain local and are excluded '
+              'from device backups.';
     return ListView(
       padding: const EdgeInsets.all(20),
-      children: const <Widget>[
+      children: <Widget>[
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.phone_iphone_rounded),
-          title: Text('Stored on this iPhone'),
-          subtitle: Text(
-            'Sensor identity and glucose history remain local and are excluded '
-            'from device backups.',
-          ),
+          leading: const Icon(Icons.devices_rounded),
+          title: const Text('Stored on this device'),
+          subtitle: Text(storageDescription),
         ),
-        ListTile(
+        const ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(Icons.cloud_off_rounded),
           title: Text('No OpenGlucose cloud'),
@@ -2525,13 +2552,23 @@ class _AboutPane extends StatelessWidget {
           ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 6),
-        const Text('Version 0.0.1', textAlign: TextAlign.center),
         const SizedBox(height: 20),
         const Text(
           'A local-first, open-source wellness app for viewing your own glucose '
           'data. OpenGlucose is not a medical device and does not provide '
           'diagnosis or treatment advice.',
           textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 16),
+        Center(
+          child: FilledButton.tonalIcon(
+            onPressed: () => showLicensePage(
+              context: context,
+              applicationName: 'OpenGlucose',
+            ),
+            icon: const Icon(Icons.description_outlined),
+            label: const Text('Open-source licenses'),
+          ),
         ),
       ],
     );
@@ -2664,8 +2701,8 @@ Widget _buildSensorSettingsPane(
   final hasInterruptedTransfer = interruptedTransferState != null;
   final canAcknowledgeInterruptedTransfer =
       interruptedTransferState == 'sensor-accepted';
-  final supportsAndroidSensorTransfer =
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  final supportsSensorTransfer =
+      !kIsWeb && supportsConfirmedSensorTransfer(defaultTargetPlatform);
   final supportsLiveGlucoseConsent =
       !kIsWeb &&
       !controller.isMockDriver &&
@@ -2760,7 +2797,7 @@ Widget _buildSensorSettingsPane(
                   : 'Disconnect',
             ),
           ),
-          if (supportsAndroidSensorTransfer &&
+          if (supportsSensorTransfer &&
               (controller.canMoveSensorToAnotherPhone ||
                   controller.bondTransferInFlight))
             OutlinedButton.icon(
@@ -2774,7 +2811,9 @@ Widget _buildSensorSettingsPane(
                     )
                   : null,
               icon: const Icon(Icons.phonelink_erase_rounded),
-              label: const Text('Move sensor to another phone'),
+              label: Text(
+                confirmedSensorTransferLabel(defaultTargetPlatform),
+              ),
             ),
         ],
       ),
@@ -2782,9 +2821,9 @@ Widget _buildSensorSettingsPane(
           !canAcknowledgeInterruptedTransfer) ...<Widget>[
         const SizedBox(height: 12),
         const Text(
-          'The sensor response is unknown. Do not reconnect, forget the '
-          'Android bond, disconnect, or retry. Contact support for a reviewed '
-          'recovery.',
+          'The sensor response is unknown. Do not reconnect, forget the local '
+          'Bluetooth bond, disconnect, or retry. Contact support for a '
+          'reviewed recovery.',
           style: TextStyle(color: Color(0xFF9A4D00), height: 1.35),
         ),
       ],
@@ -2801,7 +2840,7 @@ Future<void> _confirmInterruptedSelectedSensorTransferRecovery(
     builder: (dialogContext) => AlertDialog(
       title: const Text('Review interrupted sensor move'),
       content: const Text(
-        'Open Android Bluetooth settings. Confirm that the sensor is not '
+        'Open the device Bluetooth settings. Confirm that the sensor is not '
         'listed as paired. If it is listed, choose Forget first. Continuing '
         'clears the app safety marker and archives this selection. It does '
         'not contact the sensor or change a Bluetooth bond.',
@@ -2872,18 +2911,19 @@ Future<void> _confirmAndMoveSensorToAnotherPhone(
     builder: (dialogContext) => AlertDialog(
       title: Text(
         removesAllBonds
-            ? 'Remove all sensor phone bonds?'
-            : 'Move sensor to another phone?',
+            ? 'Remove all sensor device bonds?'
+            : 'Move sensor to another device?',
       ),
       content: Text(
         removesAllBonds
-            ? 'This sensor only supports removing every phone bond stored by '
-                  'the transmitter. It will disconnect from this phone and '
-                  'all other phones. The sensor session is not reset. Keep '
+            ? 'This sensor only supports removing every device bond stored by '
+                  'the transmitter. It will disconnect from this device and '
+                  'all other devices. The sensor session is not reset. Keep '
                   'the sensor close and do not retry if an error appears.'
-            : "This removes this phone's bond from the sensor and Android, "
-                  'then disconnects. The sensor session is not reset. Keep '
-                  'the sensor close and do not retry if an error appears.',
+            : "This removes this device's bond from the sensor and the "
+                  'operating system, then disconnects. The sensor session is '
+                  'not reset. Keep the sensor close and do not retry if an '
+                  'error appears.',
       ),
       actions: <Widget>[
         TextButton(
@@ -2907,7 +2947,7 @@ Future<void> _confirmAndMoveSensorToAnotherPhone(
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Sensor is ready to pair with another phone.'),
+          content: Text('Sensor is ready to pair with another device.'),
         ),
       );
     }

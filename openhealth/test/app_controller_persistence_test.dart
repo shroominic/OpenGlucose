@@ -213,7 +213,7 @@ void main() {
       await _drainEventQueue();
 
       expect(controller.connectionRequiresUserAction, isTrue);
-      expect(controller.lastError, contains('another phone'));
+      expect(controller.lastError, contains('another device'));
       expect(driver.connectedSensors, hasLength(1));
 
       await controller.chooseAnotherSensor();
