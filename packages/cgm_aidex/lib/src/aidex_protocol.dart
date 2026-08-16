@@ -9,6 +9,8 @@ import 'package:pointycastle/export.dart';
 class AidexTimingProfile {
   const AidexTimingProfile({
     this.gattGap = const Duration(milliseconds: 800),
+    this.discoveryRecoveryCloseGap = const Duration(seconds: 2),
+    this.discoveryRecoveryPostConnectSettle = const Duration(seconds: 1),
     this.postStartSession = const Duration(milliseconds: 350),
     this.postSessionStartWrite = const Duration(milliseconds: 250),
     this.vendorPairTimeout = const Duration(seconds: 10),
@@ -17,6 +19,8 @@ class AidexTimingProfile {
   });
 
   final Duration gattGap;
+  final Duration discoveryRecoveryCloseGap;
+  final Duration discoveryRecoveryPostConnectSettle;
   final Duration postStartSession;
   final Duration postSessionStartWrite;
   final Duration vendorPairTimeout;

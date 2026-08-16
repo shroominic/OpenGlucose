@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Give service discovery a dedicated 30-second timeout owned by
+  FlutterBluePlus. This prevents an earlier Dart timeout from returning while
+  the plugin still holds its BLE operation mutex.
 - Stop active FlutterBluePlus scans before every connection attempt and avoid
   the unused Service Changed subscription during discovery, improving setup on
   Android Bluetooth stacks that cannot connect reliably while scanning.
