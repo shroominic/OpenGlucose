@@ -32,22 +32,38 @@ instead requires exactly five environment secrets:
 artifact. Verify the APK/AAB signer, certificate fingerprint, package ID,
 version, and checksum before upload.
 
-GitHub beta releases use `.github/workflows/release-android-beta.yml`. Publishing
-a GitHub prerelease with a strict `vMAJOR.MINOR.PATCH` tag triggers the lane. It
-checks that the tag matches the committed Flutter version and is reachable from
+GitHub Android releases use `.github/workflows/release-android.yml`. A new
+strict `vMAJOR.MINOR.PATCH` tag starts the lane. An accountable owner can also
+dispatch the same lane for an existing tag to rebuild the exact tagged source
+and continue a hidden draft. It checks
+that the tag matches the committed Flutter version and is reachable from
 `main`, then enters the protected `android-release` environment. Missing or
 partial signing secrets fail the run; the lane never warns and skips.
 
 The lane builds once, verifies the release signature and configured certificate
 fingerprint, package `com.openglucose.app`, committed version/build number,
 non-debuggable state, required network permission, clean dependency state, and
-SHA-256 digest. It creates GitHub build provenance and attaches those exact APK
-bytes without overwriting an existing asset. Because the release event occurs
-after publication, a failed lane can temporarily leave an assetless prerelease;
-do not delete, recreate, or overwrite it while the result is ambiguous.
-Repository immutable releases must remain disabled for this post-publication
-attachment lane. If immutable releases are enabled, replace it with a
-draft-first build-and-attach flow before publishing any release.
+SHA-256 digest. It creates GitHub build provenance, then creates or reuses a
+hidden draft, attaches those exact APK bytes without overwriting an existing
+asset, and re-fetches the remote asset to verify its name, state, size, and
+SHA-256 digest. Only after that verification does it publish the release as a
+stable Latest release. A build, signing, attestation, upload, or verification
+failure leaves no new public release. Re-running a failed job can resume its
+exact hidden draft with the same attested workflow artifact. A new dispatch can
+reliably resume an assetless draft or an empty GitHub `starter` residue. An
+uploaded asset from another run is accepted only if its name, size, and SHA-256
+digest are byte-for-byte equal to the newly built and attested artifact; no
+cross-run reproducibility is assumed. The lane removes a `starter` asset only
+when it is in a hidden draft, is empty, and has no digest. Any other unexpected
+or mismatched asset fails closed. The release workflow is the exclusive writer
+for assets under these version tags. Releases are globally serialized, and
+both the initial check and the final publish step require the target to remain
+the greatest valid version tag on `main`. The lane finishes by verifying that
+GitHub's public Latest route resolves to the exact release.
+
+Private device candidates are not Releases. Deliver them through a bounded
+private artifact channel with a unique build number, and never attach them to a
+stable version tag.
 
 The historical `v0.0.1+10` APK used the standard Android debug certificate.
 `v0.1.0` intentionally starts the dedicated OpenGlucose beta signing lineage

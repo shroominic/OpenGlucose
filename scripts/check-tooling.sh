@@ -34,11 +34,13 @@ workflow_files=$(
 # shellcheck disable=SC2086
 PATH="$tools_bin:$PATH" "$tools_bin/actionlint" -color=false $workflow_files
 
+command -v ruby >/dev/null 2>&1 || {
+  printf '%s\n' 'error: ruby is required to validate release tooling' >&2
+  exit 1
+}
+ruby "$repo_root/scripts/test-android-release-workflow-contract.rb"
+
 if [ -f "$repo_root/openhealth/fastlane/Fastfile" ]; then
-  command -v ruby >/dev/null 2>&1 || {
-    printf '%s\n' 'error: ruby is required to validate the Fastfile' >&2
-    exit 1
-  }
   ruby -c "$repo_root/openhealth/fastlane/Fastfile" >/dev/null
   ruby "$repo_root/scripts/test-external-testflight-release-contract.rb"
   ruby "$repo_root/scripts/test-notification-receipt.rb"
