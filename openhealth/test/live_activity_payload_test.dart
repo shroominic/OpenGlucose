@@ -145,6 +145,111 @@ void main() {
     );
   });
 
+  test(
+    'Watch presentation does not publish glucose outside the ready stage',
+    () {
+      final now = DateTime.utc(2026, 8, 16, 10);
+      final sensor = DiscoveredSensor(
+        driverId: 'aidex',
+        deviceId: 'sensor-watch-reconnect',
+        displayName: 'AiDEX sensor',
+        storageKey: 'aidex:sensor-watch-reconnect',
+        rssi: -47,
+        capabilities: const CgmCapabilities(supportsDirectBle: true),
+      );
+      final latest = CgmReading(
+        valueMgdl: 108,
+        source: CgmRecordSource.broadcast,
+        sensorMinute: 180,
+        recordedAt: now.subtract(const Duration(minutes: 5)),
+      );
+      final baseSnapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'Connected',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        latestReading: latest,
+        history: <CgmReading>[latest],
+        sessionInfo: CgmSessionInfo(
+          sessionStart: now.subtract(const Duration(hours: 3)),
+        ),
+      );
+
+      for (final stage in <CgmSyncStage>[
+        CgmSyncStage.scanning,
+        CgmSyncStage.connecting,
+        CgmSyncStage.bonding,
+        CgmSyncStage.pairing,
+        CgmSyncStage.activating,
+        CgmSyncStage.syncing,
+        CgmSyncStage.disconnected,
+        CgmSyncStage.error,
+      ]) {
+        expect(
+          shouldPublishLiveActivity(
+            snapshot: baseSnapshot.copyWith(stage: stage),
+            latestReading: latest,
+            now: now,
+          ),
+          isFalse,
+          reason: '$stage must not retain glucose outside an active session',
+        );
+      }
+    },
+  );
+
+  test('Watch presentation rejects expired and future values', () {
+    final now = DateTime.utc(2026, 8, 16, 10);
+    final sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'sensor-watch-expiry',
+      displayName: 'AiDEX sensor',
+      storageKey: 'aidex:sensor-watch-expiry',
+      rssi: -47,
+      capabilities: const CgmCapabilities(supportsDirectBle: true),
+    );
+    CgmSessionSnapshot snapshotFor(CgmReading reading, CgmSyncStage stage) {
+      return CgmSessionSnapshot(
+        stage: stage,
+        statusText: 'Reconnecting',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        latestReading: reading,
+        history: <CgmReading>[reading],
+        sessionInfo: CgmSessionInfo(
+          sessionStart: now.subtract(const Duration(hours: 3)),
+        ),
+      );
+    }
+
+    final expired = CgmReading(
+      valueMgdl: 108,
+      source: CgmRecordSource.broadcast,
+      recordedAt: now.subtract(const Duration(minutes: 16)),
+    );
+    final future = CgmReading(
+      valueMgdl: 109,
+      source: CgmRecordSource.broadcast,
+      recordedAt: now.add(const Duration(minutes: 3)),
+    );
+    expect(
+      shouldPublishLiveActivity(
+        snapshot: snapshotFor(expired, CgmSyncStage.ready),
+        latestReading: expired,
+        now: now,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldPublishLiveActivity(
+        snapshot: snapshotFor(future, CgmSyncStage.ready),
+        latestReading: future,
+        now: now,
+      ),
+      isFalse,
+    );
+  });
+
   test('minute 59 is not published after warmup reaches minute 60', () {
     final boundary = DateTime.utc(2026, 8, 14, 8);
     final sessionStart = boundary.subtract(const Duration(minutes: 60));

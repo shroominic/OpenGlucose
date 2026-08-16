@@ -436,7 +436,7 @@ final class GlucoseLiveActivityController {
   private func activityContent(
     for state: GlucoseLiveActivityAttributes.ContentState
   ) -> ActivityContent<GlucoseLiveActivityAttributes.ContentState> {
-    let staleDate = state.recordedAt?.addingTimeInterval(15 * 60)
+    let staleDate = state.recordedAt?.addingTimeInterval(10 * 60)
     return ActivityContent(
       state: state,
       staleDate: staleDate,

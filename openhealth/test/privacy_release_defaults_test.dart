@@ -130,6 +130,38 @@ void main() {
         appDelegate,
         contains('GlucoseLiveActivityController.shared.enforceLaunchPrivacy()'),
       );
+
+      expect(iosWidget, contains('GlucoseLiveCompactLeadingView'));
+      expect(iosWidget, contains('GlucoseLiveCompactTrailingView'));
+      expect(iosWidget, contains('Text(recordedAt, style: .relative)'));
+      expect(iosWidget, contains(r'@Environment(\.isLuminanceReduced)'));
+      expect(iosWidget, contains('return context.isStale'));
+      expect(
+        iosWidget,
+        contains(
+          '.privacySensitive(hasVisibleGlucoseValue(state, isStale: isStale))',
+        ),
+      );
+      expect(
+        iosWidget,
+        contains('return "Glucose unavailable, reading stale"'),
+      );
+      expect(ios, contains('addingTimeInterval(10 * 60)'));
+      expect(ios, isNot(contains('addingTimeInterval(15 * 60)')));
+      expect(iosWidget, contains('.accessibilityLabel('));
+      final compactStart = iosWidget.indexOf(
+        'private struct GlucoseLiveCompactLeadingView',
+      );
+      final compactEnd = iosWidget.indexOf(
+        'private struct GlucoseLiveActivityLockScreenView',
+      );
+      expect(compactStart, greaterThanOrEqualTo(0));
+      expect(compactEnd, greaterThan(compactStart));
+      expect(
+        iosWidget.substring(compactStart, compactEnd),
+        isNot(contains('sensorName')),
+        reason: 'The Watch compact presentation must not expose identifiers.',
+      );
     });
 
     test(
