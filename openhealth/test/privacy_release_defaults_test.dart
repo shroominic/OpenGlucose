@@ -270,23 +270,38 @@ void main() {
       expect(gradle, contains('never falls back to debug signing'));
     });
 
-    test('Android beta release is source-bound and fail-closed', () {
+    test('Android release is source-bound and draft-first', () {
       final workflow = _read(
-        '../.github/workflows/release-android-beta.yml',
+        '../.github/workflows/release-android.yml',
       );
       final verifier = _read(
         '../scripts/verify-android-release-artifact.sh',
       );
 
-      expect(workflow, contains('types:\n      - published'));
-      expect(workflow, contains('github.event.release.prerelease == true'));
+      expect(workflow, contains('push:\n    tags:'));
+      expect(workflow, contains('workflow_dispatch:'));
+      expect(workflow, isNot(contains('github.event.release')));
       expect(workflow, contains('permissions: {}'));
       expect(workflow, contains('environment: android-release'));
       expect(workflow, contains('persist-credentials: false'));
       expect(workflow, contains('git merge-base --is-ancestor'));
       expect(workflow, contains('ANDROID_KEYSTORE_BASE64'));
       expect(workflow, contains('ANDROID_SIGNING_CERT_SHA256'));
-      expect(workflow, contains('github.event.release.id'));
+      expect(workflow, contains('draft: true'));
+      expect(workflow, contains('prerelease: false'));
+      expect(workflow, contains('make_latest: "true"'));
+      expect(workflow, contains('group: android-release'));
+      expect(workflow, contains('greatest eligible release tag'));
+      expect(workflow, contains('asset_state" = starter'));
+      expect(
+        workflow,
+        contains('Refusing to discard a non-empty starter asset'),
+      );
+      expect(
+        workflow,
+        contains('Refusing to discard a starter asset with a digest'),
+      );
+      expect(workflow, contains('releases/latest'));
       expect(workflow, contains('https://uploads.github.com/repos/'));
       expect(workflow, contains("'.assets | length'"));
       expect(workflow, contains('verify-android-release-artifact.sh'));
@@ -298,7 +313,9 @@ void main() {
       expect(workflow, contains('resolve_release_tag_commit'));
       expect(
         workflow,
-        contains(r'test "$(resolve_release_tag_commit)" = "$GITHUB_SHA"'),
+        contains(
+          r'test "$(resolve_release_tag_commit)" = "$RELEASE_COMMIT"',
+        ),
       );
       expect(workflow, isNot(contains('--clobber')));
       expect(workflow, isNot(contains('softprops/action-gh-release')));
