@@ -14,6 +14,23 @@ import 'aidex_protocol.dart';
 /// operation was in progress; they never contain device or sensor data.
 const String aidexSetupPhaseMetadataKey = 'cgm.aidex.setup.phase';
 
+/// Metadata keys for the current privacy-safe notification setup position.
+///
+/// Values are from the closed sets below. They never contain UUIDs, device
+/// identifiers, sensor data, or native error descriptions.
+const String aidexSubscribeStepMetadataKey = 'cgm.aidex.setup.subscribe.step';
+const String aidexSubscribeAttemptMetadataKey =
+    'cgm.aidex.setup.subscribe.attempt';
+void _debugAidexSetupTrace(String milestone) {
+  assert(() {
+    // Debug-only closed milestones for USB setup diagnosis. No identifier,
+    // payload, native description, or sensor reading is included.
+    // ignore: avoid_print
+    print('OGBLE setup=$milestone');
+    return true;
+  }());
+}
+
 abstract final class AidexSetupPhase {
   static const String connect = 'P01';
   static const String bond = 'P02';
@@ -38,6 +55,31 @@ abstract final class AidexSetupPhase {
     activation,
     finalization,
   };
+}
+
+abstract final class AidexSubscribeStep {
+  static const String f001 = 'N01';
+  static const String f002 = 'N02';
+  static const String f003 = 'N03';
+  static const String specificOps = 'N04';
+  static const String racp = 'N05';
+  static const String measurement = 'N06';
+
+  static const Set<String> values = <String>{
+    f001,
+    f002,
+    f003,
+    specificOps,
+    racp,
+    measurement,
+  };
+}
+
+abstract final class AidexSubscribeAttempt {
+  static const String initial = 'A01';
+  static const String recovery = 'A02';
+
+  static const Set<String> values = <String>{initial, recovery};
 }
 
 class AidexSensorDriver implements CgmDriver {
@@ -145,7 +187,7 @@ class AidexSensorDriver implements CgmDriver {
   }
 }
 
-class AidexSession implements CgmSession {
+class AidexSession implements CgmSession, CgmBondTransferSession {
   // AiDEX-X sensors require a 60-minute warmup before reporting glucose. The
   // protocol does not expose this duration via any characteristic; elapsed-
   // since-start IS sensor-reported (2AA9 byte 0-1 -> sessionInfo.elapsedMinutes
@@ -232,6 +274,8 @@ class AidexSession implements CgmSession {
   Timer? _historyResumeTimer;
   bool _liveCatchUpQueued = false;
   bool _disconnecting = false;
+  bool _discoveryRecoveryUsed = false;
+  bool? _sensorPairedBeforeBond;
   String _lastF003Hex = '';
 
   @override
@@ -245,6 +289,28 @@ class AidexSession implements CgmSession {
 
   @override
   AidexUnsafeAdmin get unsafeAdmin => _unsafeAdmin;
+
+  @override
+  Future<CgmBondTransferPlan> inspectBondTransfer() {
+    return _runQueued<CgmBondTransferPlan>(
+      _inspectBondTransferInternal,
+      allowWhileDisconnecting: true,
+    );
+  }
+
+  @override
+  Future<void> executeBondTransfer(
+    CgmBondTransferPlan plan, {
+    required Future<void> Function() onSensorAccepted,
+  }) {
+    return _runQueued<void>(
+      () => _executeBondTransferInternal(
+        plan,
+        onSensorAccepted: onSensorAccepted,
+      ),
+      allowWhileDisconnecting: true,
+    );
+  }
 
   Future<void> initialize() {
     return _initializationFuture ??= _runQueued<void>(_initializeInternal);
@@ -380,13 +446,49 @@ class AidexSession implements CgmSession {
       _connectionState = BleConnectionState.connected;
       _throwIfDisconnectingDuringSetup();
       _emitLog(CgmLogLevel.debug, 'BLE link connected');
+
+      // AiDEX establishes BLE security after the client has enumerated the
+      // GATT table. This discovery does not subscribe to Service Changed, so
+      // it is safe before bonding and lets Android learn the protected
+      // services before createBond starts.
+      _setSnapshot(
+        _snapshot.copyWith(
+          stage: CgmSyncStage.bonding,
+          statusText: 'Discovering services',
+        ),
+      );
+      _setSetupPhase(AidexSetupPhase.discovery);
+      _emitLog(CgmLogLevel.debug, 'Discovering services');
+      await _discoverServicesWithRecovery(verifyPersistedBondOnRecovery: false);
+      _throwIfDisconnectingDuringSetup();
+
       _setSetupPhase(AidexSetupPhase.bond);
       var conn = _connection;
       if (conn == null) throw StateError('Disconnected during setup');
+      // F005 only informs Android's explicit bond-lifecycle recovery. Reading
+      // it on iOS is unnecessary and can trigger protected-link behavior.
+      if (conn.supportsBondLifecycle) {
+        await _capturePreBondSensorPairState();
+        _throwIfDisconnectingDuringSetup();
+      } else {
+        _sensorPairedBeforeBond = null;
+      }
       final bondStateBeforeSetup = conn.supportsBondLifecycle
           ? await conn.currentBondState()
           : BleBondState.bonded;
       _throwIfDisconnectingDuringSetup();
+      var debugBmsProbeEnabled = false;
+      assert(() {
+        debugBmsProbeEnabled = true;
+        return true;
+      }(), 'debug BMS feature probe');
+      if (debugBmsProbeEnabled &&
+          conn.supportsBondLifecycle &&
+          bondStateBeforeSetup == BleBondState.unbonded &&
+          _sensorPairedBeforeBond == true) {
+        await _probeDebugBmsFeature();
+        _throwIfDisconnectingDuringSetup();
+      }
       _setSnapshot(
         _snapshot.copyWith(
           stage: CgmSyncStage.bonding,
@@ -397,7 +499,24 @@ class AidexSession implements CgmSession {
       if (conn == null) throw StateError('Disconnected during setup');
       _throwIfDisconnectingDuringSetup();
       _emitLog(CgmLogLevel.debug, 'Ensuring BLE bond');
-      await conn.ensureBonded();
+      try {
+        await conn.ensureBonded();
+      } on BleFailure catch (error, stackTrace) {
+        if (bondStateBeforeSetup == BleBondState.unbonded &&
+            _sensorPairedBeforeBond == true &&
+            (error.kind == BleFailureKind.sensorPossiblyInUse ||
+                error.kind == BleFailureKind.bondRejected)) {
+          Error.throwWithStackTrace(
+            BleFailure(
+              kind: BleFailureKind.bondRejected,
+              operation: BleOperation.bond,
+              diagnosticCode: 'aidex.bond.sensor-paired-os-unbonded',
+            ),
+            stackTrace,
+          );
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      }
       _throwIfDisconnectingDuringSetup();
       conn = _connection;
       if (conn == null) throw StateError('Disconnected during setup');
@@ -425,40 +544,33 @@ class AidexSession implements CgmSession {
           postConnectSettle: Duration.zero,
           statusText: 'Refreshing Bluetooth link',
           logReason: 'after bond',
+          verifyPersistedBond: true,
         );
+        _setSnapshot(
+          _snapshot.copyWith(
+            stage: CgmSyncStage.bonding,
+            statusText: 'Discovering services',
+          ),
+        );
+        _setSetupPhase(AidexSetupPhase.discovery);
+        _emitLog(CgmLogLevel.debug, 'Rediscovering services after bond');
+        await _discoverServicesWithRecovery(
+          verifyPersistedBondOnRecovery: true,
+        );
+        _throwIfDisconnectingDuringSetup();
       } else {
         _monitorConnectionState();
       }
-      // Keep bonding before discovery. A bond created on this connection can
-      // leave OEM Android stacks with stale unauthenticated handles, so give
-      // only that new bond a fresh GATT connection. A healthy bond from an
-      // earlier app run stays on its first connection to avoid unnecessary
-      // disconnect/reconnect churn before service discovery.
-      _setSnapshot(
-        _snapshot.copyWith(
-          stage: CgmSyncStage.bonding,
-          statusText: 'Discovering services',
-        ),
+      // A newly created bond gets a fresh GATT connection and fresh handles.
+      // A bond retained from an earlier run keeps the first discovery and
+      // avoids unnecessary disconnect/reconnect churn.
+      final identityRequiredBeforeVendorPair =
+          _requiresGattIdentityForVendorPair();
+      await _initializeVendorNotificationsWithRecovery(
+        identityRequiredBeforeVendorPair: identityRequiredBeforeVendorPair,
       );
-      _setSetupPhase(AidexSetupPhase.discovery);
-      _emitLog(CgmLogLevel.debug, 'Discovering services');
       _throwIfDisconnectingDuringSetup();
-      await _discoverServicesWithRecovery();
-      _throwIfDisconnectingDuringSetup();
-      _setSetupPhase(AidexSetupPhase.subscribe);
-      _emitLog(CgmLogLevel.debug, 'Subscribing to notifications');
-      await _subscribeToNotifications();
-      _throwIfDisconnectingDuringSetup();
-      if (_requiresGattIdentityForVendorPair()) {
-        _setSetupPhase(AidexSetupPhase.identity);
-        _emitLog(CgmLogLevel.debug, 'Prefetching identity for vendor pair');
-        await _prefetchIdentity();
-      }
-      _setSetupPhase(AidexSetupPhase.vendorPair);
-      _emitLog(CgmLogLevel.debug, 'Running vendor pair handshake');
-      await _pairVendor();
-      _throwIfDisconnectingDuringSetup();
-      if (!_requiresGattIdentityForVendorPair()) {
+      if (!identityRequiredBeforeVendorPair) {
         _setSetupPhase(AidexSetupPhase.identity);
         _emitLog(CgmLogLevel.debug, 'Prefetching identity');
         await _prefetchIdentity();
@@ -538,6 +650,8 @@ class AidexSession implements CgmSession {
       await _ensureLiveUpdateConfiguration();
       final readyMetadata = <String, String>{..._snapshot.metadata}
         ..remove(aidexSetupPhaseMetadataKey)
+        ..remove(aidexSubscribeStepMetadataKey)
+        ..remove(aidexSubscribeAttemptMetadataKey)
         ..remove(bleFailureKindMetadataKey)
         ..remove(bleFailureOperationMetadataKey)
         ..remove(bleFailureDiagnosticCodeMetadataKey);
@@ -552,11 +666,110 @@ class AidexSession implements CgmSession {
       unawaited(_runInitialBackgroundSync());
       _scheduleLiveRefresh(const Duration(seconds: 1));
     } catch (error, stackTrace) {
+      if (!_disconnecting) {
+        await _teardownFailedSetupLink();
+      }
+      _debugAidexSetupTrace('handle-error-start');
       _handleError(error, stackTrace, context: 'initializing session');
+      _debugAidexSetupTrace('handle-error-complete');
     }
   }
 
-  Future<void> _discoverServicesWithRecovery() async {
+  Future<void> _teardownFailedSetupLink() async {
+    _debugAidexSetupTrace('teardown-start');
+    try {
+      await _connectionStateSubscription?.cancel();
+    } catch (error) {
+      _emitLog(
+        CgmLogLevel.warning,
+        'BLE monitor cleanup failed (${error.runtimeType})',
+      );
+    }
+    _connectionStateSubscription = null;
+    _debugAidexSetupTrace('teardown-monitor-cleared');
+    try {
+      await _clearNotificationSubscriptions();
+    } catch (error) {
+      _emitLog(
+        CgmLogLevel.warning,
+        'BLE notification cleanup failed (${error.runtimeType})',
+      );
+    }
+    _debugAidexSetupTrace('teardown-listeners-cleared');
+    final failedConnection = _connection;
+    _connection = null;
+    _connectionState = BleConnectionState.disconnected;
+    _debugAidexSetupTrace('teardown-link-released');
+    if (failedConnection == null) {
+      _debugAidexSetupTrace('teardown-no-link');
+      return;
+    }
+    try {
+      _debugAidexSetupTrace('teardown-disconnect-start');
+      await failedConnection.disconnect();
+      _debugAidexSetupTrace('teardown-disconnect-complete');
+    } catch (error) {
+      _debugAidexSetupTrace('teardown-disconnect-failed');
+      _emitLog(
+        CgmLogLevel.warning,
+        'BLE setup disconnect failed (${error.runtimeType})',
+      );
+    }
+  }
+
+  Future<void> _capturePreBondSensorPairState() async {
+    _sensorPairedBeforeBond = null;
+    try {
+      final state = await _read(_characteristic(AidexUuids.f005));
+      if (state.isNotEmpty && (state.first == 0x00 || state.first == 0x01)) {
+        _sensorPairedBeforeBond = state.first == 0x01;
+        _debugAidexSetupTrace(
+          _sensorPairedBeforeBond! ? 'f005-paired' : 'f005-unpaired',
+        );
+        _emitLog(CgmLogLevel.debug, 'Read sensor pairing state');
+      }
+    } catch (error) {
+      // This read is diagnostic only. Bonding remains authoritative, and
+      // setup must never reset either side when the value is unavailable.
+      _emitLog(
+        CgmLogLevel.debug,
+        'Sensor pairing state unavailable (${error.runtimeType})',
+      );
+    }
+  }
+
+  Future<void> _probeDebugBmsFeature() async {
+    final featureRef =
+        _characteristics[_normalizeUuid(AidexUuids.bondManagementFeature)];
+    if (featureRef == null) {
+      _debugAidexSetupTrace('bms-feature-unavailable');
+      return;
+    }
+    try {
+      final feature = await _read(featureRef);
+      if (feature.isEmpty) {
+        _debugAidexSetupTrace('bms-feature-unavailable');
+        return;
+      }
+      // Bluetooth SIG BMS Feature octet 1 bits 2 and 3 respectively
+      // advertise delete-all LE bonds and its authorization-code requirement.
+      final supportsDeleteAllLe =
+          feature.length >= 2 && (feature[1] & 0x04) != 0;
+      final requiresAuthorizationCode =
+          feature.length >= 2 && (feature[1] & 0x08) != 0;
+      _debugAidexSetupTrace(
+        supportsDeleteAllLe && !requiresAuthorizationCode
+            ? 'bms-delete-all-le-without-authorization-code-operand-supported'
+            : 'bms-delete-all-le-without-authorization-code-operand-unsupported',
+      );
+    } catch (_) {
+      _debugAidexSetupTrace('bms-feature-read-failed');
+    }
+  }
+
+  Future<void> _discoverServicesWithRecovery({
+    required bool verifyPersistedBondOnRecovery,
+  }) async {
     final discoveryConnection = _connection;
     if (discoveryConnection == null) {
       throw StateError('Disconnected before service discovery');
@@ -565,10 +778,14 @@ class AidexSession implements CgmSession {
     try {
       await _discoverServices();
       return;
-    } on BleFailure catch (error) {
+    } on BleFailure catch (error, stackTrace) {
       if (!_isRecoverableDiscoveryFailure(error)) {
         rethrow;
       }
+      if (_discoveryRecoveryUsed) {
+        _throwDiscoveryRecoveryExhausted(error, stackTrace);
+      }
+      _discoveryRecoveryUsed = true;
     }
 
     // The first discovery future is terminal before recovery starts. This is
@@ -581,6 +798,7 @@ class AidexSession implements CgmSession {
       postConnectSettle: _timings.discoveryRecoveryPostConnectSettle,
       statusText: 'Recovering Bluetooth setup',
       logReason: 'for service discovery recovery',
+      verifyPersistedBond: verifyPersistedBondOnRecovery,
     );
     _throwIfDisconnectingDuringSetup();
 
@@ -600,16 +818,22 @@ class AidexSession implements CgmSession {
       if (!_isRecoverableDiscoveryFailure(error)) {
         rethrow;
       }
-      Error.throwWithStackTrace(
-        BleFailure(
-          kind: BleFailureKind.unexpected,
-          operation: BleOperation.discoverServices,
-          diagnosticCode:
-              'aidex.discovery.${error.kind.name}.recovery-exhausted',
-        ),
-        stackTrace,
-      );
+      _throwDiscoveryRecoveryExhausted(error, stackTrace);
     }
+  }
+
+  Never _throwDiscoveryRecoveryExhausted(
+    BleFailure error,
+    StackTrace stackTrace,
+  ) {
+    Error.throwWithStackTrace(
+      BleFailure(
+        kind: BleFailureKind.unexpected,
+        operation: BleOperation.discoverServices,
+        diagnosticCode: 'aidex.discovery.${error.kind.name}.recovery-exhausted',
+      ),
+      stackTrace,
+    );
   }
 
   bool _isRecoverableDiscoveryFailure(BleFailure failure) {
@@ -618,12 +842,112 @@ class AidexSession implements CgmSession {
             failure.kind == BleFailureKind.deviceDisconnected);
   }
 
+  Future<void> _initializeVendorNotificationsWithRecovery({
+    required bool identityRequiredBeforeVendorPair,
+  }) async {
+    var attempt = AidexSubscribeAttempt.initial;
+    var recoveryUsed = false;
+
+    while (true) {
+      final attemptConnection = _connection;
+      if (attemptConnection == null) {
+        throw StateError('Disconnected before notification setup');
+      }
+
+      try {
+        await _subscribeBeforeVendorPair(attempt);
+        _throwIfDisconnectingDuringSetup();
+        if (identityRequiredBeforeVendorPair &&
+            _snapshot.sessionInfo.serial.trim().isEmpty) {
+          _setSetupPhase(AidexSetupPhase.identity);
+          _emitLog(CgmLogLevel.debug, 'Prefetching identity for vendor pair');
+          await _prefetchIdentity();
+        }
+        _setSetupPhase(AidexSetupPhase.vendorPair);
+        _emitLog(CgmLogLevel.debug, 'Running vendor pair handshake');
+        await _pairVendor();
+        _throwIfDisconnectingDuringSetup();
+        await _subscribeAfterVendorPair(attempt);
+        return;
+      } on BleFailure catch (error, stackTrace) {
+        await _clearNotificationSubscriptions();
+        if (!_isRecoverableSubscriptionFailure(error)) {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        if (recoveryUsed) {
+          Error.throwWithStackTrace(
+            BleFailure(
+              kind: BleFailureKind.unexpected,
+              operation: BleOperation.subscribe,
+              diagnosticCode:
+                  'aidex.subscribe.${error.kind.name}.recovery-exhausted',
+            ),
+            stackTrace,
+          );
+        }
+
+        // A fresh GATT link has a fresh F002 token. Discard the old
+        // connection-scoped vendor session and authenticate the replacement
+        // link before replaying post-authentication subscriptions.
+        recoveryUsed = true;
+        _clearVendorSessionState();
+        _throwIfDisconnectingDuringSetup();
+        _setSetupPhase(AidexSetupPhase.reconnect);
+        await _refreshGattConnection(
+          attemptConnection,
+          closeGap: _timings.subscriptionRecoveryCloseGap,
+          postConnectSettle: _timings.subscriptionRecoveryPostConnectSettle,
+          statusText: 'Recovering Bluetooth setup',
+          logReason: 'for notification recovery',
+          verifyPersistedBond: true,
+        );
+        _throwIfDisconnectingDuringSetup();
+
+        _setSnapshot(
+          _snapshot.copyWith(
+            stage: CgmSyncStage.bonding,
+            statusText: 'Discovering services',
+          ),
+        );
+        _setSetupPhase(AidexSetupPhase.discovery);
+        _emitLog(CgmLogLevel.debug, 'Rediscovering services after recovery');
+        await _discoverServices();
+        _throwIfDisconnectingDuringSetup();
+        attempt = AidexSubscribeAttempt.recovery;
+      } catch (error, stackTrace) {
+        await _clearNotificationSubscriptions();
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+    }
+  }
+
+  bool _isRecoverableSubscriptionFailure(BleFailure failure) {
+    return failure.operation == BleOperation.subscribe &&
+        (failure.kind == BleFailureKind.operationTimedOut ||
+            failure.kind == BleFailureKind.deviceDisconnected);
+  }
+
+  void _clearVendorSessionState() {
+    _sessionKey = null;
+    _sessionIv = null;
+    _rawVendorSeed = null;
+    _lastF003Hex = '';
+    _rawHex
+      ..remove(AidexUuids.f001)
+      ..remove(AidexUuids.f002)
+      ..remove(AidexUuids.f003);
+    final metadata = <String, String>{..._snapshot.metadata}
+      ..remove('vendorPaired');
+    _setSnapshot(_snapshot.copyWith(metadata: metadata));
+  }
+
   Future<void> _refreshGattConnection(
     BleConnection priorConnection, {
     required Duration closeGap,
     required Duration postConnectSettle,
     required String statusText,
     required String logReason,
+    required bool verifyPersistedBond,
   }) async {
     _throwIfDisconnectingDuringSetup();
     final activeConnection = _connection;
@@ -654,7 +978,7 @@ class AidexSession implements CgmSession {
     _connectionState = BleConnectionState.connected;
     _throwIfDisconnectingDuringSetup();
 
-    if (refreshedConnection.supportsBondLifecycle) {
+    if (verifyPersistedBond && refreshedConnection.supportsBondLifecycle) {
       final refreshedBondState = await refreshedConnection.currentBondState();
       _throwIfDisconnectingDuringSetup();
       if (refreshedBondState != BleBondState.bonded) {
@@ -668,7 +992,9 @@ class AidexSession implements CgmSession {
 
     await Future<void>.delayed(postConnectSettle);
     _throwIfDisconnectingDuringSetup();
-    _monitorConnectionState();
+    if (verifyPersistedBond) {
+      _monitorConnectionState();
+    }
     _emitLog(CgmLogLevel.debug, 'GATT link refreshed $logReason');
   }
 
@@ -944,27 +1270,59 @@ class AidexSession implements CgmSession {
       ..addAll(refreshedCharacteristics);
   }
 
-  Future<void> _subscribeToNotifications() async {
-    await _attachNotification(AidexUuids.f001, _f001Notifications);
-    await _attachNotification(AidexUuids.f002, _f002Notifications);
+  Future<void> _subscribeBeforeVendorPair(String attempt) async {
+    await _attachNotification(
+      AidexUuids.f001,
+      _f001Notifications,
+      step: AidexSubscribeStep.f001,
+      attempt: attempt,
+    );
+    await _attachNotification(
+      AidexUuids.f002,
+      _f002Notifications,
+      step: AidexSubscribeStep.f002,
+      attempt: attempt,
+    );
+  }
+
+  Future<void> _subscribeAfterVendorPair(String attempt) async {
     if (_characteristics.containsKey(AidexUuids.f003)) {
-      await _attachNotification(AidexUuids.f003, _f003Notifications);
+      await _attachNotification(
+        AidexUuids.f003,
+        _f003Notifications,
+        step: AidexSubscribeStep.f003,
+        attempt: attempt,
+      );
     }
     await _attachNotification(
       AidexUuids.specificOps,
       _specificOpsNotifications,
+      step: AidexSubscribeStep.specificOps,
+      attempt: attempt,
     );
-    await _attachNotification(AidexUuids.racp, _racpNotifications);
+    await _attachNotification(
+      AidexUuids.racp,
+      _racpNotifications,
+      step: AidexSubscribeStep.racp,
+      attempt: attempt,
+    );
     await _attachNotification(
       AidexUuids.measurement,
       _measurementNotifications,
+      step: AidexSubscribeStep.measurement,
+      attempt: attempt,
     );
   }
 
   Future<void> _attachNotification(
     String uuid,
-    StreamController<List<int>> sink,
-  ) async {
+    StreamController<List<int>> sink, {
+    required String step,
+    required String attempt,
+  }) async {
+    _setSubscriptionProgress(step: step, attempt: attempt);
+    _emitLog(CgmLogLevel.debug, 'Subscribing to notification $step');
+    _throwIfNotificationLinkDisconnected();
     final ref = _characteristic(uuid);
     final conn = _requireConnection;
     final stream = conn.notifications(ref);
@@ -985,7 +1343,21 @@ class AidexSession implements CgmSession {
       },
     );
     await conn.setNotify(ref, true);
+    _throwIfNotificationLinkDisconnected();
     await Future<void>.delayed(_timings.gattGap);
+    _throwIfNotificationLinkDisconnected();
+  }
+
+  void _throwIfNotificationLinkDisconnected() {
+    _throwIfDisconnectingDuringSetup();
+    if (_connection == null ||
+        _connectionState != BleConnectionState.connected) {
+      throw BleFailure(
+        kind: BleFailureKind.deviceDisconnected,
+        operation: BleOperation.subscribe,
+        diagnosticCode: 'aidex.subscribe.link-disconnected',
+      );
+    }
   }
 
   Future<void> _clearNotificationSubscriptions() async {
@@ -1196,73 +1568,285 @@ class AidexSession implements CgmSession {
     return extractAidexSerial(sensor.displayName).isEmpty;
   }
 
-  Future<void> _clearSensorBondState() async {
-    if (_connection == null) {
-      return;
-    }
-
-    if (_sessionKey == null || _sessionIv == null) {
-      try {
-        await _clearBondViaBms();
-      } catch (error) {
-        _emitLog(
-          CgmLogLevel.warning,
-          'BMS bond clear failed (${error.runtimeType})',
-        );
-      }
-      return;
-    }
-
-    try {
-      await _sendVendorCommand(AidexVendorOpcode.unpair);
-      _emitLog(CgmLogLevel.info, 'Vendor unpair command sent');
-    } catch (error) {
-      _emitLog(
-        CgmLogLevel.warning,
-        'Vendor unpair failed (${error.runtimeType})',
-      );
-    }
-
-    try {
-      await _clearBondViaBms();
-    } catch (error) {
-      _emitLog(
-        CgmLogLevel.warning,
-        'BMS bond clear failed (${error.runtimeType})',
-      );
-    }
-  }
-
-  Future<void> _removeLocalBond() async {
+  Future<
+    ({
+      BleConnection connection,
+      BleCharacteristicRef controlPoint,
+      CgmBondTransferPlan plan,
+    })
+  >
+  _inspectBondTransferContext() async {
     final connection = _connection;
-    if (connection == null || !connection.supportsBondLifecycle) {
-      return;
-    }
-    try {
-      await connection.removeBond();
-      _emitLog(CgmLogLevel.info, 'Removed local BLE bond');
-    } catch (error) {
-      _emitLog(
-        CgmLogLevel.warning,
-        'OS bond removal failed (${error.runtimeType})',
+    if (connection == null ||
+        _snapshot.stage != CgmSyncStage.ready ||
+        _disconnecting ||
+        _connectionState != BleConnectionState.connected) {
+      throw const CgmBondTransferException(
+        CgmBondTransferFailureKind.sessionNotReady,
+        outcome: CgmBondTransferOutcome.notStarted,
       );
     }
-  }
+    if (!connection.supportsBondLifecycle) {
+      throw const CgmBondTransferException(
+        CgmBondTransferFailureKind.unsupportedPlatform,
+        outcome: CgmBondTransferOutcome.notStarted,
+      );
+    }
+    if (_sessionKey == null || _sessionIv == null) {
+      throw const CgmBondTransferException(
+        CgmBondTransferFailureKind.linkNotAuthenticated,
+        outcome: CgmBondTransferOutcome.notStarted,
+      );
+    }
 
-  Future<void> _clearBondViaBms() async {
+    BleBondState bondState;
+    try {
+      bondState = await connection.currentBondState();
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(
+        const CgmBondTransferException(
+          CgmBondTransferFailureKind.bondStateUnavailable,
+          outcome: CgmBondTransferOutcome.notStarted,
+        ),
+        stackTrace,
+      );
+    }
+    if (bondState != BleBondState.bonded) {
+      throw const CgmBondTransferException(
+        CgmBondTransferFailureKind.localBondMissing,
+        outcome: CgmBondTransferOutcome.notStarted,
+      );
+    }
+
     final controlPoint =
         _characteristics[_normalizeUuid(AidexUuids.bondManagementControlPoint)];
-    if (controlPoint == null) {
-      return;
-    }
     final featureRef =
         _characteristics[_normalizeUuid(AidexUuids.bondManagementFeature)];
-    if (featureRef != null) {
-      final feature = await _read(featureRef);
-      _rawHex[AidexUuids.bondManagementFeature] = hexOf(feature);
+    if (controlPoint == null ||
+        featureRef == null ||
+        !controlPoint.properties.write ||
+        !featureRef.properties.read) {
+      throw const CgmBondTransferException(
+        CgmBondTransferFailureKind.serviceUnavailable,
+        outcome: CgmBondTransferOutcome.notStarted,
+      );
     }
-    await _write(controlPoint, const <int>[0x06]);
-    _emitLog(CgmLogLevel.info, 'Bond Management delete-all opcode sent');
+
+    List<int> feature;
+    try {
+      feature = await _read(featureRef);
+    } catch (error, stackTrace) {
+      Error.throwWithStackTrace(
+        const CgmBondTransferException(
+          CgmBondTransferFailureKind.featureUnavailable,
+          outcome: CgmBondTransferOutcome.notStarted,
+        ),
+        stackTrace,
+      );
+    }
+    final plan = parseAidexBondTransferFeature(feature);
+    return (connection: connection, controlPoint: controlPoint, plan: plan);
+  }
+
+  Future<CgmBondTransferPlan> _inspectBondTransferInternal() async {
+    final context = await _inspectBondTransferContext();
+    _emitLog(
+      CgmLogLevel.info,
+      context.plan.removesAllLeBonds
+          ? 'Sensor transfer supports all-LE bond deletion'
+          : 'Sensor transfer supports requesting-phone LE bond deletion',
+    );
+    return context.plan;
+  }
+
+  Future<void> _executeBondTransferInternal(
+    CgmBondTransferPlan expectedPlan, {
+    required Future<void> Function() onSensorAccepted,
+  }) async {
+    final context = await _inspectBondTransferContext();
+    if (context.plan != expectedPlan) {
+      throw const CgmBondTransferException(
+        CgmBondTransferFailureKind.featureChanged,
+        outcome: CgmBondTransferOutcome.notStarted,
+      );
+    }
+
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = null;
+    _historyResumeTimer?.cancel();
+    _historyResumeTimer = null;
+    _liveCatchUpQueued = false;
+    _disconnecting = true;
+    _setSnapshot(
+      _snapshot.copyWith(
+        stage: CgmSyncStage.bonding,
+        statusText: 'Preparing sensor transfer',
+        clearLastError: true,
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          cgmBondTransferStateMetadataKey: 'requesting',
+        }..remove(cgmBondTransferDiagnosticMetadataKey),
+      ),
+    );
+
+    try {
+      // Bluetooth BMS requires Write with Response. This irreversible write is
+      // issued once; any missing response has an unknown outcome and is never
+      // retried automatically.
+      await _write(context.controlPoint, <int>[
+        aidexBondTransferOpcode(expectedPlan),
+      ], withoutResponse: false);
+    } catch (error, stackTrace) {
+      final failure = const CgmBondTransferException(
+        CgmBondTransferFailureKind.sensorResponseUnknown,
+        outcome: CgmBondTransferOutcome.unknown,
+      );
+      await _stopBondTransferLink(context.connection);
+      _setBondTransferFailure(failure);
+      Error.throwWithStackTrace(failure, stackTrace);
+    }
+
+    try {
+      await onSensorAccepted();
+    } catch (error, stackTrace) {
+      final failure = const CgmBondTransferException(
+        CgmBondTransferFailureKind.statePersistenceFailed,
+        outcome: CgmBondTransferOutcome.sensorAccepted,
+      );
+      await _stopBondTransferLink(context.connection);
+      _setBondTransferFailure(failure);
+      Error.throwWithStackTrace(failure, stackTrace);
+    }
+
+    _setSnapshot(
+      _snapshot.copyWith(
+        stage: CgmSyncStage.bonding,
+        statusText: 'Disconnecting sensor',
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          cgmBondTransferStateMetadataKey: 'sensor-accepted',
+        },
+      ),
+    );
+    await _cancelBondTransferListeners();
+
+    try {
+      // The BMS deletion takes effect only after the LE transport is inactive.
+      await context.connection.disconnect();
+    } catch (error, stackTrace) {
+      final failure = const CgmBondTransferException(
+        CgmBondTransferFailureKind.disconnectUnconfirmed,
+        outcome: CgmBondTransferOutcome.sensorAccepted,
+      );
+      _setBondTransferFailure(failure);
+      Error.throwWithStackTrace(failure, stackTrace);
+    }
+    _connection = null;
+    _connectionState = BleConnectionState.disconnected;
+
+    try {
+      // The CGM profile permits local deletion only after the sensor accepted
+      // its procedure and the requested transport is no longer active.
+      await context.connection.removeBond();
+    } catch (error, stackTrace) {
+      final failure = const CgmBondTransferException(
+        CgmBondTransferFailureKind.localBondRemovalFailed,
+        outcome: CgmBondTransferOutcome.sensorAccepted,
+      );
+      _setBondTransferFailure(failure);
+      Error.throwWithStackTrace(failure, stackTrace);
+    }
+
+    BleBondState localBondState;
+    try {
+      localBondState = await context.connection.currentBondState();
+    } catch (error, stackTrace) {
+      final failure = const CgmBondTransferException(
+        CgmBondTransferFailureKind.localBondRemovalUnconfirmed,
+        outcome: CgmBondTransferOutcome.sensorAccepted,
+      );
+      _setBondTransferFailure(failure);
+      Error.throwWithStackTrace(failure, stackTrace);
+    }
+    if (localBondState != BleBondState.unbonded) {
+      final failure = const CgmBondTransferException(
+        CgmBondTransferFailureKind.localBondRemovalUnconfirmed,
+        outcome: CgmBondTransferOutcome.sensorAccepted,
+      );
+      _setBondTransferFailure(failure);
+      throw failure;
+    }
+
+    _sessionKey = null;
+    _sessionIv = null;
+    _rawVendorSeed = null;
+    _sensorPairedBeforeBond = false;
+    _setSnapshot(
+      _snapshot.copyWith(
+        stage: CgmSyncStage.disconnected,
+        statusText: 'Ready to pair with another phone',
+        clearLastError: true,
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          cgmBondTransferStateMetadataKey: 'complete',
+        }..remove(cgmBondTransferDiagnosticMetadataKey),
+      ),
+    );
+  }
+
+  Future<void> _cancelBondTransferListeners() async {
+    try {
+      await _connectionStateSubscription?.cancel();
+    } catch (_) {
+      _emitLog(CgmLogLevel.warning, 'Sensor transfer monitor cleanup failed');
+    }
+    _connectionStateSubscription = null;
+    try {
+      await _clearNotificationSubscriptions();
+    } catch (_) {
+      _emitLog(
+        CgmLogLevel.warning,
+        'Sensor transfer notification cleanup failed',
+      );
+    }
+  }
+
+  Future<void> _stopBondTransferLink(BleConnection connection) async {
+    await _cancelBondTransferListeners();
+    try {
+      await connection.disconnect();
+      if (identical(_connection, connection)) {
+        _connection = null;
+      }
+      _connectionState = BleConnectionState.disconnected;
+    } catch (_) {
+      // The sensor-side outcome is already unknown. Keep the local bond and
+      // report that terminal outcome instead of obscuring it with cleanup.
+      _emitLog(
+        CgmLogLevel.warning,
+        'Sensor transfer cleanup disconnect failed',
+      );
+    }
+  }
+
+  void _setBondTransferFailure(CgmBondTransferException failure) {
+    _emitLog(CgmLogLevel.error, failure.diagnosticCode);
+    _setSnapshot(
+      _snapshot.copyWith(
+        stage: CgmSyncStage.error,
+        statusText: 'Sensor transfer stopped',
+        lastError: failure.userMessage,
+        metadata: <String, String>{
+          ..._snapshot.metadata,
+          cgmBondTransferStateMetadataKey: switch (failure.outcome) {
+            CgmBondTransferOutcome.notStarted => 'not-started',
+            CgmBondTransferOutcome.unknown => 'unknown',
+            CgmBondTransferOutcome.sensorAccepted => 'sensor-accepted',
+          },
+          cgmBondTransferDiagnosticMetadataKey: failure.diagnosticCode,
+        },
+      ),
+    );
   }
 
   Future<void> _startSession() async {
@@ -2311,6 +2895,10 @@ class AidexSession implements CgmSession {
   }
 
   void _setSnapshot(CgmSessionSnapshot snapshot) {
+    final isErrorSnapshot = snapshot.stage == CgmSyncStage.error;
+    if (isErrorSnapshot) {
+      _debugAidexSetupTrace('error-snapshot-set-start');
+    }
     final shouldClearError =
         snapshot.lastError != null &&
         snapshot.stage != CgmSyncStage.error &&
@@ -2319,26 +2907,61 @@ class AidexSession implements CgmSession {
         ? snapshot.copyWith(clearLastError: true)
         : snapshot;
     if (!_snapshotController.isClosed) {
+      if (isErrorSnapshot) {
+        _debugAidexSetupTrace('error-snapshot-broadcast-start');
+      }
       _snapshotController.add(_snapshot);
+      if (isErrorSnapshot) {
+        _debugAidexSetupTrace('error-snapshot-broadcast-complete');
+      }
+    }
+    if (isErrorSnapshot) {
+      _debugAidexSetupTrace('error-snapshot-set-complete');
     }
   }
 
   void _setSetupPhase(String phase) {
     assert(AidexSetupPhase.values.contains(phase));
+    final metadata = <String, String>{..._snapshot.metadata}
+      ..[aidexSetupPhaseMetadataKey] = phase;
+    if (phase != AidexSetupPhase.subscribe) {
+      metadata
+        ..remove(aidexSubscribeStepMetadataKey)
+        ..remove(aidexSubscribeAttemptMetadataKey);
+    }
+    _setSnapshot(_snapshot.copyWith(metadata: metadata));
+  }
+
+  void _setSubscriptionProgress({
+    required String step,
+    required String attempt,
+  }) {
+    assert(AidexSubscribeStep.values.contains(step));
+    assert(AidexSubscribeAttempt.values.contains(attempt));
     _setSnapshot(
       _snapshot.copyWith(
+        stage: CgmSyncStage.bonding,
+        statusText: 'Subscribing to notifications',
         metadata: <String, String>{
           ..._snapshot.metadata,
-          aidexSetupPhaseMetadataKey: phase,
+          aidexSetupPhaseMetadataKey: AidexSetupPhase.subscribe,
+          aidexSubscribeStepMetadataKey: step,
+          aidexSubscribeAttemptMetadataKey: attempt,
         },
       ),
     );
   }
 
-  Future<T> _runQueued<T>(Future<T> Function() action) {
+  Future<T> _runQueued<T>(
+    Future<T> Function() action, {
+    bool allowWhileDisconnecting = false,
+  }) {
     final completer = Completer<T>();
     _operationChain = _operationChain.catchError((Object _) {}).then((_) async {
       try {
+        if (_disconnecting && !allowWhileDisconnecting) {
+          throw StateError('Session is disconnecting');
+        }
         final result = await action();
         if (!completer.isCompleted) {
           completer.complete(result);
@@ -2419,7 +3042,6 @@ class AidexUnsafeAdmin implements CgmUnsafeAdmin {
   Set<CgmUnsafeOperation> get supportedOperations => const <CgmUnsafeOperation>{
     CgmUnsafeOperation.reset,
     CgmUnsafeOperation.shelfMode,
-    CgmUnsafeOperation.unpair,
     CgmUnsafeOperation.clearStorage,
     CgmUnsafeOperation.factoryBiasTrim,
     CgmUnsafeOperation.factoryCurrentTrim,
@@ -2438,8 +3060,9 @@ class AidexUnsafeAdmin implements CgmUnsafeAdmin {
         case CgmUnsafeOperation.shelfMode:
           await session._sendVendorCommand(AidexVendorOpcode.shelfMode);
         case CgmUnsafeOperation.unpair:
-          await session._clearSensorBondState();
-          await session._removeLocalBond();
+          throw UnsupportedError(
+            'Use the confirmed sensor transfer flow to move a bond.',
+          );
         case CgmUnsafeOperation.clearStorage:
           await session._sendVendorCommand(AidexVendorOpcode.clearStorage);
         case CgmUnsafeOperation.factoryBiasTrim:

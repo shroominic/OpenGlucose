@@ -42,6 +42,7 @@ class FileHealthStateStore implements HealthStateStore {
   static const _lastSensorKey = 'openHealth.lastSensor';
   static const _sensorArchiveKey = 'openHealth.sensorArchive';
   static const _historyPrefix = 'openHealth.history.';
+  static const _bondTransferPrefix = 'openHealth.bondTransfer.';
   static const _healthExportLastSyncedKey =
       'openHealth.healthExport.lastSyncedMs';
   static const _healthExportWatermarkKey =
@@ -635,6 +636,7 @@ class FileHealthStateStore implements HealthStateStore {
     return key == _lastSensorKey ||
         key == _sensorArchiveKey ||
         key.startsWith(_historyPrefix) ||
+        key.startsWith(_bondTransferPrefix) ||
         key == _healthExportLastSyncedKey ||
         key == _healthExportWatermarkKey;
   }

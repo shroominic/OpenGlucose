@@ -102,6 +102,11 @@ abstract interface class BleConnection {
 
   Future<List<int>> read(BleCharacteristicRef characteristic);
 
+  /// Writes [value] and, unless [withoutResponse] is true, completes only
+  /// after the peer's ATT Write Response confirms acceptance.
+  ///
+  /// A timeout or disconnect before that response has an unknown outcome.
+  /// Callers must not retry an irreversible write automatically.
   Future<void> write(
     BleCharacteristicRef characteristic,
     List<int> value, {

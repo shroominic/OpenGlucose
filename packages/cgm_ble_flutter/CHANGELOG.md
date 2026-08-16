@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Give notification subscriptions a timeout owned by FlutterBluePlus, so a
+  failed CCCD write releases the plugin operation mutex before setup recovery.
+- Observe Android bond transitions before starting `createBond`, so an
+  immediate bonding rejection is not lost when the GATT link disconnects.
 - Give service discovery a dedicated 30-second timeout owned by
   FlutterBluePlus. This prevents an earlier Dart timeout from returning while
   the plugin still holds its BLE operation mutex.
