@@ -22,7 +22,7 @@ dependencies:
     path: ../packages/cgm_core
   intl: ^0.20.3
   path_provider: ^2.1.5
-  share_plus: ^12.0.2
+  share_plus: ^13.3.0
   shared_preferences: ^2.5.3
   health: ^13.3.1
   # Secure on-device storage (iOS Keychain / Android Keystore) for the optional
