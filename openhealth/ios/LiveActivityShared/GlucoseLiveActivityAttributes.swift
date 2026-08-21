@@ -19,6 +19,8 @@ struct GlucoseLiveActivityAttributes: ActivityAttributes {
     var recordedAt: Date?
   }
 
+  // Retained for ActivityKit schema compatibility. This display-only value is
+  // always the OpenGlucose brand, never the connected sensor identity.
   var sensorName: String
 }
 #endif

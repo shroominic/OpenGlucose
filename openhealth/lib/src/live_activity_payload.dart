@@ -3,6 +3,8 @@ import 'package:cgm_core/cgm_core.dart';
 import 'display_preferences.dart';
 import 'session_presentation.dart';
 
+const liveSurfaceBrandName = 'OpenGlucose';
+
 class LiveActivityPayload {
   const LiveActivityPayload({
     required this.sensorName,
@@ -19,6 +21,8 @@ class LiveActivityPayload {
     this.recordedAtIso8601,
   });
 
+  /// Legacy platform-contract key. Production builders store the app brand,
+  /// never the connected sensor identity, in this display-only field.
   final String sensorName;
   final String stageCode;
   final String stageLabel;
@@ -87,7 +91,7 @@ LiveActivityPayload buildLiveActivityPayload({
   );
   if (warmup != null) {
     return LiveActivityPayload(
-      sensorName: snapshot.sensor.displayName,
+      sensorName: liveSurfaceBrandName,
       stageCode: 'progress',
       stageLabel: warmupStageLabel(warmup).toUpperCase(),
       valueText: warmupBigValueText(warmup),
@@ -134,7 +138,7 @@ LiveActivityPayload buildLiveActivityPayload({
       : 'Updated $readingTime';
 
   return LiveActivityPayload(
-    sensorName: snapshot.sensor.displayName,
+    sensorName: liveSurfaceBrandName,
     stageCode: stageCode,
     stageLabel: stageLabel,
     valueText: valueText,

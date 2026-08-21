@@ -54,6 +54,13 @@ void main() {
         contains('getBoolean(PREF_SENSITIVE_LOCK_SCREEN_OPT_IN, false)'),
       );
       expect(android, contains('buildRedactedNotification(payload)'));
+      expect(android, contains('BRAND_NAME = "OpenGlucose"'));
+      expect(android, contains('.setSubText(BRAND_NAME)'));
+      expect(
+        android,
+        isNot(contains('buildBigText(sensorName')),
+        reason: 'Live notifications must not render the connected sensor name.',
+      );
       expect(android, contains('validatedWarmupMinutes(payload)'));
       expect(android, contains('.setPublicVersion(publicVersion)'));
       expect(android, contains('Open the app to view your glucose'));
@@ -76,6 +83,12 @@ void main() {
       expect(ios, contains('"sensorName": "OpenGlucose"'));
       expect(ios, contains('let sensorName = displayPayload["sensorName"]'));
       expect(ios, contains('sensorName: displaySensorName'));
+      final iosWidget = _read(
+        'ios/OpenGlucoseLiveActivityWidget/'
+        'OpenGlucoseLiveActivityWidget.swift',
+      );
+      expect(iosWidget, contains('openGlucoseBrandName = "OpenGlucose"'));
+      expect(iosWidget, isNot(contains('Text(context.attributes.sensorName)')));
       expect(ios, contains('clearPersistedBackgroundPayload()'));
       expect(
         iosBridge,

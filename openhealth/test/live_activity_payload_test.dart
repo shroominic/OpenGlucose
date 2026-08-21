@@ -98,6 +98,7 @@ void main() {
     );
 
     expect(payload.stageCode, 'progress');
+    expect(payload.sensorName, liveSurfaceBrandName);
     expect(payload.stageLabel, 'WARMUP');
     expect(payload.valueText, '57');
     expect(payload.unitText, 'min');
@@ -259,6 +260,7 @@ void main() {
     );
 
     expect(payload.stageCode, 'live');
+    expect(payload.sensorName, liveSurfaceBrandName);
     expect(payload.stageLabel, 'Connected');
     expect(payload.trendSymbol, '↑');
     expect(payload.deltaText, '+14');

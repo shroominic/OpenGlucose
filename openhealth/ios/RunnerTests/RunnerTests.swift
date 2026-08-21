@@ -267,7 +267,7 @@ final class LiveActivityLockScreenRedactionTests: XCTestCase {
       to: payload,
       sensitiveContentEnabled: true
     )
-    XCTAssertEqual(consented["sensorName"] as? String, "Private sensor name")
+    XCTAssertEqual(consented["sensorName"] as? String, "OpenGlucose")
     XCTAssertEqual(consented["valueText"] as? String, "112")
     XCTAssertEqual(consented["unitText"] as? String, "mg/dL")
     XCTAssertEqual(consented["lastReadingText"] as? String, "14:55")

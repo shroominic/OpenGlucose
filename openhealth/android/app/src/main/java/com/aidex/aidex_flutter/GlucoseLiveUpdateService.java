@@ -23,6 +23,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public final class GlucoseLiveUpdateService extends Service {
+  private static final String BRAND_NAME = "OpenGlucose";
   static final String ACTION_UPSERT =
       "com.aidex.aidex_flutter.action.UPSERT_LIVE_UPDATE";
   static final String ACTION_END =
@@ -117,7 +118,6 @@ public final class GlucoseLiveUpdateService extends Service {
   }
 
   private Notification buildNotification(Map<String, Object> payload) {
-    final String sensorName = stringValue(payload, "sensorName", "OpenGlucose");
     final String valueText = stringValue(payload, "valueText", "--");
     final String unitText = stringValue(payload, "unitText", "mg/dL");
     final String detailText = stringValue(payload, "detailText", "Waiting for sensor");
@@ -133,13 +133,13 @@ public final class GlucoseLiveUpdateService extends Service {
     }
 
     final boolean hasValue = valueText != null && !"--".equals(valueText) && !valueText.isEmpty();
-    final String title = hasValue ? valueText + " " + unitText : sensorName;
+    final String title = hasValue ? valueText + " " + unitText : BRAND_NAME;
     final String text =
         detailText != null && !detailText.isEmpty()
             ? detailText
             : fallbackDetail(stageLabel, lastReadingText);
-    final String subText = hasValue ? sensorName : stageLabel;
-    final String bigText = buildBigText(sensorName, text, trendSymbol, deltaText);
+    final String subText = BRAND_NAME;
+    final String bigText = buildBigText(BRAND_NAME, text, trendSymbol, deltaText);
     final Notification publicVersion = buildRedactedNotification(payload);
 
     final Notification.Builder builder;
@@ -187,9 +187,9 @@ public final class GlucoseLiveUpdateService extends Service {
     }
     return builder
         .setSmallIcon(R.drawable.ic_glucose_notification)
-        .setContentTitle("OpenGlucose")
+        .setContentTitle(BRAND_NAME)
         .setContentText("Open the app to view your glucose")
-        .setSubText(stageLabel == null || stageLabel.isEmpty() ? "Sensor active" : stageLabel)
+        .setSubText(BRAND_NAME)
         .setContentIntent(contentIntent)
         .setCategory(Notification.CATEGORY_STATUS)
         .setVisibility(Notification.VISIBILITY_PUBLIC)
@@ -213,7 +213,7 @@ public final class GlucoseLiveUpdateService extends Service {
           .setSmallIcon(R.drawable.ic_glucose_notification)
           .setContentTitle(remainingMinutes + " min")
           .setContentText("Sensor warming up")
-          .setSubText("Warmup")
+          .setSubText(BRAND_NAME)
           .setContentIntent(buildLaunchIntent())
           .setCategory(Notification.CATEGORY_STATUS)
           .setVisibility(Notification.VISIBILITY_PUBLIC)
@@ -345,12 +345,12 @@ public final class GlucoseLiveUpdateService extends Service {
 
   private Map<String, Object> buildFallbackPayload() {
     final SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    final String sensorName = preferences.getString(PREF_BACKGROUND_SENSOR, null);
-    if (sensorName == null || sensorName.isEmpty()) {
+    final String configuredSensorName = preferences.getString(PREF_BACKGROUND_SENSOR, null);
+    if (configuredSensorName == null || configuredSensorName.isEmpty()) {
       return Collections.emptyMap();
     }
     final HashMap<String, Object> payload = new HashMap<>();
-    payload.put("sensorName", sensorName);
+    payload.put("sensorName", BRAND_NAME);
     payload.put("valueText", "--");
     payload.put("unitText", "mg/dL");
     payload.put("stageLabel", "Live");
@@ -386,8 +386,8 @@ public final class GlucoseLiveUpdateService extends Service {
   }
 
   private String buildBigText(
-      String sensorName, String detailText, String trendSymbol, String deltaText) {
-    final StringBuilder builder = new StringBuilder(sensorName);
+      String brandName, String detailText, String trendSymbol, String deltaText) {
+    final StringBuilder builder = new StringBuilder(brandName);
     if (detailText != null && !detailText.isEmpty()) {
       builder.append(" • ").append(detailText);
     }
