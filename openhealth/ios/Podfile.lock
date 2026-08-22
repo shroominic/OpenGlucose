@@ -8,7 +8,7 @@ PODS:
   - flutter_secure_storage_darwin (10.0.0):
     - Flutter
     - FlutterMacOS
-  - health (13.3.1):
+  - health (13.3.2):
     - Flutter
   - share_plus (0.0.1):
     - Flutter
@@ -52,7 +52,7 @@ SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   flutter_blue_plus_darwin: 20a08bfeaa0f7804d524858d3d8744bcc1b6dbc3
   flutter_secure_storage_darwin: acdb3f316ed05a3e68f856e0353b133eec373a23
-  health: 4decf5d74e8f54c58a8c07a385fc72f629a831d9
+  health: 72947bca89ee7906256d6f650db061ca4b2f92c7
   share_plus: 50da8cb520a8f0f65671c6c6a99b3617ed10a58a
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
   sqflite_darwin: 20b2a3a3b70e43edae938624ce550a3cbf66a3d0
