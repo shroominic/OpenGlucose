@@ -10,9 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   testWidgets(
     'settings is a full route and remains accessible without sensor',
-    (
-      tester,
-    ) async {
+    (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{
         'openHealth.onboarding.completed': true,
       });
@@ -40,9 +38,7 @@ void main() {
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
 
-      final overview = find.byKey(
-        const ValueKey<String>('settingsOverview'),
-      );
+      final overview = find.byKey(const ValueKey<String>('settingsOverview'));
       expect(overview, findsOneWidget);
       // A Material 3 large SliverAppBar keeps both expanded and collapsed
       // title renderers in the tree.

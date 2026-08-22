@@ -68,10 +68,7 @@ void main() {
       expect(android, isNot(contains('.apply()')));
 
       expect(ios, contains('sensitiveLockScreenOptInKey'));
-      expect(
-        ios,
-        contains('sensitiveContentEnabled: defaults.bool(forKey:'),
-      );
+      expect(ios, contains('sensitiveContentEnabled: defaults.bool(forKey:'));
       expect(ios, contains('case "getSensitiveContentEnabled"'));
       expect(ios, contains('case "setSensitiveContentEnabled"'));
       expect(ios, contains('defaults.synchronize()'));
@@ -325,12 +322,8 @@ void main() {
     });
 
     test('Android release is source-bound and draft-first', () {
-      final workflow = _read(
-        '../.github/workflows/release-android.yml',
-      );
-      final verifier = _read(
-        '../scripts/verify-android-release-artifact.sh',
-      );
+      final workflow = _read('../.github/workflows/release-android.yml');
+      final verifier = _read('../scripts/verify-android-release-artifact.sh');
 
       expect(workflow, contains('push:\n    tags:'));
       expect(workflow, contains('workflow_dispatch:'));
@@ -360,16 +353,11 @@ void main() {
       expect(workflow, contains("'.assets | length'"));
       expect(workflow, contains('verify-android-release-artifact.sh'));
       expect(workflow, contains('actions/attest@'));
-      expect(
-        workflow,
-        contains('gh api --method POST'),
-      );
+      expect(workflow, contains('gh api --method POST'));
       expect(workflow, contains('resolve_release_tag_commit'));
       expect(
         workflow,
-        contains(
-          r'test "$(resolve_release_tag_commit)" = "$RELEASE_COMMIT"',
-        ),
+        contains(r'test "$(resolve_release_tag_commit)" = "$RELEASE_COMMIT"'),
       );
       expect(workflow, isNot(contains('--clobber')));
       expect(workflow, isNot(contains('softprops/action-gh-release')));

@@ -2801,10 +2801,7 @@ Widget _buildSensorSettingsPane(
               key: const ValueKey<String>('moveSensorToAnotherPhoneButton'),
               onPressed: controller.canMoveSensorToAnotherPhone
                   ? () => unawaited(
-                      _confirmAndMoveSensorToAnotherPhone(
-                        context,
-                        controller,
-                      ),
+                      _confirmAndMoveSensorToAnotherPhone(context, controller),
                     )
                   : null,
               icon: const Icon(Icons.phonelink_erase_rounded),
@@ -2846,9 +2843,7 @@ Future<void> _confirmInterruptedSelectedSensorTransferRecovery(
           child: const Text('Cancel'),
         ),
         FilledButton(
-          key: const ValueKey<String>(
-            'confirmSelectedInterruptedMoveRecovery',
-          ),
+          key: const ValueKey<String>('confirmSelectedInterruptedMoveRecovery'),
           onPressed: () => Navigator.of(dialogContext).pop(true),
           child: const Text('I checked Bluetooth'),
         ),

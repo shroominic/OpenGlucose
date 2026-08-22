@@ -118,9 +118,7 @@ class SqfliteHealthRepository implements HealthRepository {
           data TEXT NOT NULL
         )
       ''');
-      await db.execute(
-        'CREATE INDEX idx_sleep_start ON $tableSleep(start_ms)',
-      );
+      await db.execute('CREATE INDEX idx_sleep_start ON $tableSleep(start_ms)');
 
       await db.execute('''
         CREATE TABLE $tableHeartRate (

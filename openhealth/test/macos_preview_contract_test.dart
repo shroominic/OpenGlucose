@@ -10,9 +10,7 @@ void main() {
     final podfile = _read('macos/Podfile');
     final appInfo = _read('macos/Runner/Configs/AppInfo.xcconfig');
     final releaseConfig = _read('macos/Runner/Configs/Release.xcconfig');
-    final releaseEntitlements = _read(
-      'macos/Runner/Release.entitlements',
-    );
+    final releaseEntitlements = _read('macos/Runner/Release.entitlements');
 
     expect(info, contains('NSBluetoothAlwaysUsageDescription'));
     expect(podfile, contains("platform :osx, '11.0'"));
@@ -52,16 +50,10 @@ void main() {
         'bool get supportsBondLifecycle => !kIsWeb && Platform.isAndroid',
       ),
     );
-    expect(
-      app,
-      contains('defaultTargetPlatform == TargetPlatform.android'),
-    );
+    expect(app, contains('defaultTargetPlatform == TargetPlatform.android'));
     expect(documentation, contains('does not expose bond state'));
     expect(documentation, contains('hides **Move sensor** on macOS'));
-    expect(
-      documentation,
-      contains('No redacted physical Mac/AiDEX evidence'),
-    );
+    expect(documentation, contains('No redacted physical Mac/AiDEX evidence'));
   });
 
   test('macOS preview does not expose API-key storage', () {

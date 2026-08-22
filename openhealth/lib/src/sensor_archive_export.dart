@@ -123,10 +123,7 @@ Uint8List buildArchivedSensorXlsx({
     )
     ..addFile(ArchiveFile.string('xl/styles.xml', _xlsxStyles))
     ..addFile(
-      ArchiveFile.string(
-        'xl/worksheets/sheet1.xml',
-        _buildWorksheetXml(rows),
-      ),
+      ArchiveFile.string('xl/worksheets/sheet1.xml', _buildWorksheetXml(rows)),
     );
   return ZipEncoder().encodeBytes(
     archive,
@@ -175,24 +172,22 @@ List<List<String>> _exportRows(
   ];
 }
 
-List<String> _rowFor(
-  ArchivedSensorSession session,
-  CgmReading? reading,
-) => <String>[
-  _safeText(session.reason.name),
-  _utcTimestamp(session.startedAt),
-  _utcTimestamp(session.endedAt),
-  _utcTimestamp(session.lastReadingAt),
-  session.readingCount.toString(),
-  _utcTimestamp(reading?.recordedAt),
-  if (reading == null) '' else _decimal(reading.valueMgdl),
-  if (reading == null) '' else (reading.valueMgdl / 18).toStringAsFixed(3),
-  _safeText(reading?.source.name ?? ''),
-  reading?.sensorMinute?.toString() ?? '',
-  reading?.rawValue?.toString() ?? '',
-  reading?.qualifier?.toString() ?? '',
-  reading?.isDisplayProvisional.toString() ?? '',
-];
+List<String> _rowFor(ArchivedSensorSession session, CgmReading? reading) =>
+    <String>[
+      _safeText(session.reason.name),
+      _utcTimestamp(session.startedAt),
+      _utcTimestamp(session.endedAt),
+      _utcTimestamp(session.lastReadingAt),
+      session.readingCount.toString(),
+      _utcTimestamp(reading?.recordedAt),
+      if (reading == null) '' else _decimal(reading.valueMgdl),
+      if (reading == null) '' else (reading.valueMgdl / 18).toStringAsFixed(3),
+      _safeText(reading?.source.name ?? ''),
+      reading?.sensorMinute?.toString() ?? '',
+      reading?.rawValue?.toString() ?? '',
+      reading?.qualifier?.toString() ?? '',
+      reading?.isDisplayProvisional.toString() ?? '',
+    ];
 
 /// Stops spreadsheet applications from evaluating exported labels as formulas.
 /// Numeric measurement columns remain numeric.

@@ -430,9 +430,7 @@ void main() {
 
   testWidgets(
     'restored accepted move needs explicit Bluetooth acknowledgment',
-    (
-      tester,
-    ) async {
+    (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
       await tester.binding.setSurfaceSize(const Size(800, 1800));
@@ -504,9 +502,7 @@ void main() {
 
   testWidgets(
     'orphan accepted move requires local confirmation before Connect',
-    (
-      tester,
-    ) async {
+    (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
       SharedPreferences.setMockInitialValues(<String, Object>{
@@ -575,9 +571,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(800, 1800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final driver = _TransferWidgetDriver(
-      plan: const CgmBondTransferPlan(
-        CgmBondTransferScope.requestingDeviceLe,
-      ),
+      plan: const CgmBondTransferPlan(CgmBondTransferScope.requestingDeviceLe),
     );
     final tombstoneKey = 'openHealth.bondTransfer.${driver.sensor.storageKey}';
     SharedPreferences.setMockInitialValues(<String, Object>{
@@ -610,9 +604,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final blockedAction = tester.widget<FilledButton>(
-      find.byKey(
-        const ValueKey<String>('reviewSelectedInterruptedMoveButton'),
-      ),
+      find.byKey(const ValueKey<String>('reviewSelectedInterruptedMoveButton')),
     );
     expect(blockedAction.onPressed, isNull);
     expect(find.text('Move needs support'), findsOneWidget);

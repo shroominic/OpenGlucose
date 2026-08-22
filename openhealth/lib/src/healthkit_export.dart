@@ -192,9 +192,7 @@ class HealthKitExportService implements GlucoseExporter {
             }
             written += 1;
           } catch (error) {
-            debugPrint(
-              'HealthKit export failed (${error.runtimeType}).',
-            );
+            debugPrint('HealthKit export failed (${error.runtimeType}).');
             failureMessage = 'Apple Health could not save a glucose sample.';
             break;
           }

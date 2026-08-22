@@ -221,10 +221,7 @@ void main() {
       );
       expect(find.byType(CgmDashboardChart), findsNothing);
 
-      await tester.drag(
-        find.byType(CustomScrollView),
-        const Offset(0, -240),
-      );
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -240));
       await tester.pumpAndSettle();
       await tester.tap(find.text('View weekly recap'));
       await tester.pumpAndSettle();

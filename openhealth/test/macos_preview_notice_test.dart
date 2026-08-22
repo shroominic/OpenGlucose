@@ -33,10 +33,7 @@ void main() {
       isFalse,
     );
     expect(
-      shouldShowMacosPreviewNotice(
-        platform: TargetPlatform.macOS,
-        isWeb: true,
-      ),
+      shouldShowMacosPreviewNotice(platform: TargetPlatform.macOS, isWeb: true),
       isFalse,
     );
   });
@@ -61,9 +58,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(body: MacosPreviewUnavailableAiPane()),
-      ),
+      const MaterialApp(home: Scaffold(body: MacosPreviewUnavailableAiPane())),
     );
 
     expect(find.text('AI unavailable in macOS preview'), findsOneWidget);

@@ -390,9 +390,7 @@ class _InteractiveHistoryChart extends StatelessWidget {
     if (points.isEmpty) {
       return preferences.unit == GlucoseUnit.mgdl ? 60 : (60 / 18);
     }
-    final bandLow = preferences.unit.convertFromMgdl(
-      preferences.targetLowMgdl,
-    );
+    final bandLow = preferences.unit.convertFromMgdl(preferences.targetLowMgdl);
     final minValue = points.map((point) => point.low).reduce(math.min);
     final padding = preferences.unit == GlucoseUnit.mgdl ? 10.0 : 0.8;
     return math.min(minValue, bandLow) - padding;
@@ -567,9 +565,7 @@ class _DashboardChartPainter extends CustomPainter {
     final plotRect = _plotRect(size, overlayInsetTop: overlayInsetTop);
     final minMinute = points.first.minute;
     final maxMinute = points.last.minute;
-    final bandLow = preferences.unit.convertFromMgdl(
-      preferences.targetLowMgdl,
-    );
+    final bandLow = preferences.unit.convertFromMgdl(preferences.targetLowMgdl);
     final bandHigh = preferences.unit.convertFromMgdl(
       preferences.targetHighMgdl,
     );

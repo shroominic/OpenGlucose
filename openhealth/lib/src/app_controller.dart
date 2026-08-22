@@ -20,15 +20,12 @@ typedef LiveActivityPrivacySetter =
     Future<void> Function({required bool enabled});
 
 void _debugAppSessionTrace(String milestone) {
-  assert(
-    () {
-      // Debug-only closed milestones. No device identifiers, sensor values,
-      // or native descriptions are written to process output.
-      debugPrint('OGBLE ui=$milestone');
-      return true;
-    }(),
-    'debug session trace',
-  );
+  assert(() {
+    // Debug-only closed milestones. No device identifiers, sensor values,
+    // or native descriptions are written to process output.
+    debugPrint('OGBLE ui=$milestone');
+    return true;
+  }(), 'debug session trace');
 }
 
 class CgmAppController extends ChangeNotifier {
@@ -1121,10 +1118,7 @@ class CgmAppController extends ChangeNotifier {
             );
             _clearPersistenceFailure('Clearing sensor transfer state');
           } catch (error) {
-            _recordPersistenceFailure(
-              'Clearing sensor transfer state',
-              error,
-            );
+            _recordPersistenceFailure('Clearing sensor transfer state', error);
           }
         }
       }

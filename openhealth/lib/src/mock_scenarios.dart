@@ -249,9 +249,7 @@ class MockScenarioCatalog {
   CgmSessionSnapshot _expiringSoon() {
     final now = _clock();
     // ~3 hours of life left out of 15 days.
-    final sessionStart = now.subtract(
-      _sensorLife - const Duration(hours: 3),
-    );
+    final sessionStart = now.subtract(_sensorLife - const Duration(hours: 3));
     final history = _buildHistory(
       now: now,
       sessionStart: sessionStart,
@@ -275,9 +273,7 @@ class MockScenarioCatalog {
   CgmSessionSnapshot _expired() {
     final now = _clock();
     // Started just over 15 days ago: expired / session stopped.
-    final sessionStart = now.subtract(
-      _sensorLife + const Duration(hours: 2),
-    );
+    final sessionStart = now.subtract(_sensorLife + const Duration(hours: 2));
     // Last readings stop ~2h ago, when the sensor expired.
     final lastReadingAt = now.subtract(const Duration(hours: 2));
     final history = _buildHistory(

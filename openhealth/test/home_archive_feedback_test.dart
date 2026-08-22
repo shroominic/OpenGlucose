@@ -58,122 +58,101 @@ void main() {
     },
   );
 
-  testWidgets(
-    'archive export offers CSV TXT and XLSX choices',
-    (
-      tester,
-    ) async {
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        'openHealth.onboarding.completed': true,
-      });
-      final preferences = await SharedPreferences.getInstance();
-      final fixture = _archivedHistoryFixture(includePostWarmup: false);
-      final store = _MemoryHealthStateStore(fixture.values);
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: _NoSensorDriver(),
-        healthStateStore: store,
-      );
-      await controller.initialize();
+  testWidgets('archive export offers CSV TXT and XLSX choices', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final fixture = _archivedHistoryFixture(includePostWarmup: false);
+    final store = _MemoryHealthStateStore(fixture.values);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _NoSensorDriver(),
+      healthStateStore: store,
+    );
+    await controller.initialize();
 
-      await tester.pumpWidget(
-        OpenGlucoseApp(
-          controller: controller,
-          healthExport: HealthExportController(
-            preferences: preferences,
-            healthStateStore: store,
-            writesAllowed: false,
-          )..initialize(),
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
           preferences: preferences,
-        ),
-      );
-      await tester.pumpAndSettle();
+          healthStateStore: store,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      await tester.tap(find.byTooltip('Settings'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Sensor archive'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(fixture.session.serial));
-      await tester.pumpAndSettle();
-      await tester.drag(find.byType(ListView), const Offset(0, -500));
-      await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Sensor archive'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(fixture.session.serial));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView), const Offset(0, -500));
+    await tester.pumpAndSettle();
 
-      final exportLabel = find.text('Export data');
-      expect(exportLabel, findsOneWidget);
-      final exportButton = find.ancestor(
-        of: exportLabel,
-        matching: find.byWidgetPredicate(
-          (widget) => widget is ButtonStyleButton,
-        ),
-      );
-      expect(exportButton, findsOneWidget);
-      expect(
-        tester.widget<ButtonStyleButton>(exportButton).onPressed,
-        isNotNull,
-      );
+    final exportLabel = find.text('Export data');
+    expect(exportLabel, findsOneWidget);
+    final exportButton = find.ancestor(
+      of: exportLabel,
+      matching: find.byWidgetPredicate((widget) => widget is ButtonStyleButton),
+    );
+    expect(exportButton, findsOneWidget);
+    expect(tester.widget<ButtonStyleButton>(exportButton).onPressed, isNotNull);
 
-      await tester.tap(exportLabel);
+    await tester.tap(exportLabel);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Export archived sensor data'), findsOneWidget);
+    expect(find.text('1 stored glucose readings'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('archivedExportWarmupDisclosure')),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('1 warmup reading is included for a complete export'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('archivedSensorExportFormatPicker')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('exportFormatCsv')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('exportFormatTxt')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('exportFormatXlsx')),
+      findsOneWidget,
+    );
+    expect(find.text('Included in the file'), findsOneWidget);
+    expect(find.textContaining('Sensor serials, device IDs'), findsOneWidget);
+    for (final format in const <({String key, String shareLabel})>[
+      (key: 'exportFormatCsv', shareLabel: 'Share CSV'),
+      (key: 'exportFormatTxt', shareLabel: 'Share TXT'),
+      (key: 'exportFormatXlsx', shareLabel: 'Share XLSX'),
+    ]) {
+      await tester.tap(find.byKey(ValueKey<String>(format.key)));
       await tester.pumpAndSettle();
+      expect(find.text(format.shareLabel), findsOneWidget);
+    }
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
 
-      expect(find.text('Export archived sensor data'), findsOneWidget);
-      expect(find.text('1 stored glucose readings'), findsOneWidget);
-      expect(
-        find.byKey(
-          const ValueKey<String>('archivedExportWarmupDisclosure'),
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          '1 warmup reading is included for a complete export',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(
-          const ValueKey<String>('archivedSensorExportFormatPicker'),
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('exportFormatCsv')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('exportFormatTxt')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('exportFormatXlsx')),
-        findsOneWidget,
-      );
-      expect(find.text('Included in the file'), findsOneWidget);
-      expect(
-        find.textContaining('Sensor serials, device IDs'),
-        findsOneWidget,
-      );
-      for (final format in const <({String key, String shareLabel})>[
-        (key: 'exportFormatCsv', shareLabel: 'Share CSV'),
-        (key: 'exportFormatTxt', shareLabel: 'Share TXT'),
-        (key: 'exportFormatXlsx', shareLabel: 'Share XLSX'),
-      ]) {
-        await tester.tap(find.byKey(ValueKey<String>(format.key)));
-        await tester.pumpAndSettle();
-        expect(find.text(format.shareLabel), findsOneWidget);
-      }
-      await tester.tap(find.text('Cancel'));
-      await tester.pumpAndSettle();
-
-      await tester.pumpWidget(const SizedBox.shrink());
-      controller.dispose();
-    },
-  );
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
 
   testWidgets(
     'sample data is offered after first-run onboarding with no history',
-    (
-      tester,
-    ) async {
+    (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final preferences = await SharedPreferences.getInstance();
       final store = _MemoryHealthStateStore(const <String, String>{});

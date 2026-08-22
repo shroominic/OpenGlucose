@@ -158,9 +158,7 @@ class _TopBar extends StatelessWidget {
                 : TextButton(
                     key: const ValueKey<String>('onboardingSkipButton'),
                     onPressed: onSkip,
-                    style: TextButton.styleFrom(
-                      foregroundColor: _kMuted,
-                    ),
+                    style: TextButton.styleFrom(foregroundColor: _kMuted),
                     child: const Text('Skip'),
                   ),
           ),
@@ -363,11 +361,7 @@ class _BulletRow extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: const Color(0xFFDCE7E2)),
           ),
-          child: Icon(
-            bullet.icon,
-            size: 20,
-            color: _kAccent,
-          ),
+          child: Icon(bullet.icon, size: 20, color: _kAccent),
         ),
         const SizedBox(width: 14),
         Expanded(
@@ -502,11 +496,7 @@ class _TargetRangeStep extends StatelessWidget {
               color: _kAccent.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(20),
             ),
-            child: const Icon(
-              Icons.tune_rounded,
-              size: 36,
-              color: _kAccent,
-            ),
+            child: const Icon(Icons.tune_rounded, size: 36, color: _kAccent),
           ),
           const SizedBox(height: 28),
           Text(
@@ -587,9 +577,7 @@ class _TargetRangeStep extends StatelessWidget {
                   max: _maxMgdl,
                   divisions: divisions,
                   activeColor: _kAccent,
-                  inactiveColor: _kAccent.withValues(
-                    alpha: 0.18,
-                  ),
+                  inactiveColor: _kAccent.withValues(alpha: 0.18),
                   labels: RangeLabels(
                     _format(rangeMgdl.start),
                     _format(rangeMgdl.end),

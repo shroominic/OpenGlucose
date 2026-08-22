@@ -25,10 +25,8 @@ class DisplayPreferences {
   final double targetLowMgdl;
   final double targetHighMgdl;
 
-  GlucoseRangeBounds get targetRange => GlucoseRangeBounds(
-    lowMgdl: targetLowMgdl,
-    highMgdl: targetHighMgdl,
-  );
+  GlucoseRangeBounds get targetRange =>
+      GlucoseRangeBounds(lowMgdl: targetLowMgdl, highMgdl: targetHighMgdl);
 
   double calibrate(double valueMgdl) {
     return (valueMgdl * calibrationScale) + calibrationOffset;

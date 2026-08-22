@@ -149,9 +149,7 @@ void main() {
       final snapshot = catalog.buildSnapshot(MockScenario.multiSensorHistory);
       expect(snapshot.metadata['previousSensorReadings'], isNotNull);
       // Readings with negative sensorMinute belong to the previous sensor.
-      final previous = snapshot.history.where(
-        (r) => (r.sensorMinute ?? 0) < 0,
-      );
+      final previous = snapshot.history.where((r) => (r.sensorMinute ?? 0) < 0);
       expect(previous, isNotEmpty);
       final current = snapshot.history.where((r) => (r.sensorMinute ?? 0) >= 0);
       expect(current, isNotEmpty);

@@ -256,10 +256,7 @@ void main() {
           version: SqfliteHealthRepository.schemaVersion,
         ),
       );
-      expect(
-        await db.getVersion(),
-        SqfliteHealthRepository.schemaVersion,
-      );
+      expect(await db.getVersion(), SqfliteHealthRepository.schemaVersion);
       await db.close();
     });
 

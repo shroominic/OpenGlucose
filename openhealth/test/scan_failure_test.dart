@@ -221,10 +221,9 @@ void main() {
 
       expect(controller.scanning, isFalse);
       expect(controller.scanFailure, isNull);
-      expect(
-        controller.sensors.map((sensor) => sensor.displayName),
-        <String>['Sensor new'],
-      );
+      expect(controller.sensors.map((sensor) => sensor.displayName), <String>[
+        'Sensor new',
+      ]);
 
       controller.dispose();
     },

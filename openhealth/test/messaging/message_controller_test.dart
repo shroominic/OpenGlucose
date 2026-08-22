@@ -76,10 +76,12 @@ void main() {
         ),
       ]);
       controller.updateContext(_context());
-      expect(
-        controller.visibleMessages.map((m) => m.id).toList(),
-        <String>['alertHigh', 'alertLow', 'info', 'tip'],
-      );
+      expect(controller.visibleMessages.map((m) => m.id).toList(), <String>[
+        'alertHigh',
+        'alertLow',
+        'info',
+        'tip',
+      ]);
     });
   });
 

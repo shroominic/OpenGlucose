@@ -48,18 +48,14 @@ void main() {
 
     final repository = await openHealthRepository(
       directoryProvider: () async => temporaryDirectory,
-      privacyPreparer:
-          ({
-            required directoryPath,
-            required databasePath,
-          }) {
-            preparedDirectoryPath = directoryPath;
-            preparedDatabasePath = databasePath;
-            Directory(directoryPath).createSync(recursive: true);
-            expect(File(databasePath).existsSync(), isFalse);
-            preparationCompleted = true;
-            return Future<void>.value();
-          },
+      privacyPreparer: ({required directoryPath, required databasePath}) {
+        preparedDirectoryPath = directoryPath;
+        preparedDatabasePath = databasePath;
+        Directory(directoryPath).createSync(recursive: true);
+        expect(File(databasePath).existsSync(), isFalse);
+        preparationCompleted = true;
+        return Future<void>.value();
+      },
       databaseFactory: databaseFactoryFfi,
       requiresIosPrivacyPreparation: true,
     );
@@ -91,10 +87,7 @@ void main() {
       openHealthRepository(
         directoryProvider: () async => temporaryDirectory,
         privacyPreparer:
-            ({
-              required directoryPath,
-              required databasePath,
-            }) async {
+            ({required directoryPath, required databasePath}) async {
               throw StateError('privacy verification failed');
             },
         databaseFactory: databaseFactoryFfi,

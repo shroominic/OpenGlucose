@@ -260,9 +260,7 @@ void main() {
       await controller.initialize();
       await controller
           .connect(sensor)
-          .timeout(
-            const Duration(milliseconds: 100),
-          );
+          .timeout(const Duration(milliseconds: 100));
 
       expect(controller.snapshot?.stage, CgmSyncStage.error);
       expect(
@@ -431,70 +429,69 @@ void main() {
     await driver.close();
   });
 
-  testWidgets(
-    'unverified disconnect exposes manual BLE recovery actions',
-    (tester) async {
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        'openHealth.onboarding.completed': true,
-      });
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _testSensor();
-      final session = _ControlledSession(
-        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
-      );
-      final driver = _ControlledDriver(<_ControlledSession>[session]);
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: _ControllableHealthStateStore(),
-        reconnectDelay: Duration.zero,
-      );
-      final failure = BleFailure(
-        kind: BleFailureKind.deviceDisconnected,
-        operation: BleOperation.connect,
-        diagnosticCode: 'aidex.connection.disconnected',
-      );
+  testWidgets('unverified disconnect exposes manual BLE recovery actions', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _testSensor();
+    final session = _ControlledSession(
+      _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+    );
+    final driver = _ControlledDriver(<_ControlledSession>[session]);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+      reconnectDelay: Duration.zero,
+    );
+    final failure = BleFailure(
+      kind: BleFailureKind.deviceDisconnected,
+      operation: BleOperation.connect,
+      diagnosticCode: 'aidex.connection.disconnected',
+    );
 
-      await controller.initialize();
-      await controller.connect(sensor);
-      session.emit(
-        _testSnapshot(
-          sensor,
-          stage: CgmSyncStage.disconnected,
-          metadata: failure.toMetadata(),
-          lastError: 'BLE connection lost',
-        ),
-      );
+    await controller.initialize();
+    await controller.connect(sensor);
+    session.emit(
+      _testSnapshot(
+        sensor,
+        stage: CgmSyncStage.disconnected,
+        metadata: failure.toMetadata(),
+        lastError: 'BLE connection lost',
+      ),
+    );
 
-      expect(controller.connectionRequiresUserAction, isTrue);
-      expect(driver.connectedSensors, hasLength(1));
+    expect(controller.connectionRequiresUserAction, isTrue);
+    expect(driver.connectedSensors, hasLength(1));
 
-      await tester.pumpWidget(
-        OpenGlucoseApp(
-          controller: controller,
-          healthExport: HealthExportController(
-            preferences: preferences,
-            writesAllowed: false,
-          )..initialize(),
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
           preferences: preferences,
-        ),
-      );
-      await tester.pump();
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
 
-      expect(
-        find.byKey(const ValueKey<String>('retryBleSetupButton')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('chooseAnotherSensorButton')),
-        findsOneWidget,
-      );
+    expect(
+      find.byKey(const ValueKey<String>('retryBleSetupButton')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('chooseAnotherSensorButton')),
+      findsOneWidget,
+    );
 
-      await tester.pumpWidget(const SizedBox.shrink());
-      controller.dispose();
-      await driver.close();
-    },
-  );
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await driver.close();
+  });
 
   test('promotes a ready sensor to the durable selection', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -833,9 +830,7 @@ void main() {
         <int?>[60, 61],
       );
       expect(
-        controller.allHistoricalReadings.map(
-          (reading) => reading.sensorMinute,
-        ),
+        controller.allHistoricalReadings.map((reading) => reading.sensorMinute),
         <int?>[60, 61],
       );
 
@@ -920,9 +915,7 @@ void main() {
         <double>[139],
       );
       expect(
-        controller.allHistoricalReadings.map(
-          (reading) => reading.valueMgdl,
-        ),
+        controller.allHistoricalReadings.map((reading) => reading.valueMgdl),
         <double>[139],
       );
 
@@ -1132,9 +1125,7 @@ void main() {
       failSetPrefix: 'openHealth.bondTransfer.',
     );
     final driver = _BondTransferDriver(
-      plan: const CgmBondTransferPlan(
-        CgmBondTransferScope.requestingDeviceLe,
-      ),
+      plan: const CgmBondTransferPlan(CgmBondTransferScope.requestingDeviceLe),
     );
     final controller = CgmAppController(
       preferences: preferences,
@@ -1280,9 +1271,7 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
     final driver = _BondTransferDriver(
-      plan: const CgmBondTransferPlan(
-        CgmBondTransferScope.requestingDeviceLe,
-      ),
+      plan: const CgmBondTransferPlan(CgmBondTransferScope.requestingDeviceLe),
     );
     final controller = CgmAppController(
       preferences: preferences,
@@ -1469,9 +1458,7 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
     final driver = _BondTransferDriver(
-      plan: const CgmBondTransferPlan(
-        CgmBondTransferScope.requestingDeviceLe,
-      ),
+      plan: const CgmBondTransferPlan(CgmBondTransferScope.requestingDeviceLe),
     );
     final controller = CgmAppController(
       preferences: preferences,

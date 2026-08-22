@@ -53,9 +53,7 @@ class HttpAiTransport {
           .timeout(_timeout);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiGenerationException(
-          _providerErrorMessage(response.statusCode),
-        );
+        throw AiGenerationException(_providerErrorMessage(response.statusCode));
       }
       return HttpChatAiProvider.parseResponseBody(responseBody);
     } on AiGenerationException {

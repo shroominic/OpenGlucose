@@ -94,10 +94,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
-          home: OnboardingFlow(
-            store: store,
-            onFinished: () => finished = true,
-          ),
+          home: OnboardingFlow(store: store, onFinished: () => finished = true),
         ),
       );
 
