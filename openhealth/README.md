@@ -12,6 +12,9 @@ package name are OpenGlucose and `openglucose`.
 
 - iOS and Android builds create `AidexSensorDriver` with the
   `FlutterBluePlusTransport` platform adapter.
+- The macOS reviewer preview creates the same driver, but real sensor pairing,
+  reconnect, and live behavior are not verified. It cannot remove a local
+  Bluetooth bond or run the confirmed sensor-transfer action.
 - Web builds and widget tests create `DemoCgmDriver`, allowing UI development
   without Bluetooth hardware.
 - A successful demo run does not validate a physical sensor or native
@@ -44,6 +47,10 @@ flutter run -d <device-id>
 Mobile operation depends on Bluetooth availability, granted platform
 permissions, and a supported sensor. Never add provisioning profiles, signing
 keys, `.env` files, sensor exports, or identifiers to the repository.
+
+For the separate macOS reviewer target and its hardware gates, see
+[`docs/macos-preview.md`](../docs/macos-preview.md). It is not part of the
+stable mobile release.
 
 ### Android pairing recovery
 
@@ -78,12 +85,14 @@ flutter build web
 The repository-wide `make check` covers formatting, static analysis,
 unit/widget tests, the deterministic demo lifecycle integration test, Android
 and web builds, and the negative Android release-signing gate. On macOS it also
-runs the unsigned iOS build and `RunnerTests` on the pinned simulator. Physical-
-device end-to-end automation is still deferred.
+runs the unsigned iOS build and `RunnerTests` on the pinned simulator, plus the
+ad-hoc-signed macOS preview and native macOS tests. Physical-device end-to-end
+automation is still deferred.
 
-Focused native iteration can use `make build-android`, `make build-ios`, or
-`make test-ios-native`. User-interface changes require behavior checks and screenshots on
-the affected form factors; see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Focused native iteration can use `make build-android`, `make build-ios`,
+`make test-ios-native`, `make build-macos`, or `make test-macos-native`.
+User-interface changes require behavior checks and screenshots on the affected
+form factors; see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Architecture and support
 

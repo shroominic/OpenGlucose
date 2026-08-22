@@ -59,10 +59,11 @@ The device end-to-end lane is explicitly deferred and currently reports that
 status instead of claiming hardware coverage. `make check` runs tooling,
 formatting, analysis, Dart/Flutter tests, Android and web builds, the negative
 Android release-signing gate, and—on macOS—the unsigned iOS build plus native
-Runner tests. Focused build targets remain available for iteration. The controls
-register assigns the physical-device gap to `@shroominic`; the baseline-default
-approval records a time-bounded exception through 2026-11-30, with redacted
-manual device evidence still required for affected R2/R3 changes.
+Runner tests, the ad-hoc-signed macOS preview, and its native tests. Focused
+build targets remain available for iteration. The controls register assigns
+the physical-device gap to `@shroominic`; the baseline-default approval records
+a time-bounded exception through 2026-11-30, with redacted manual device
+evidence still required for affected R2/R3 changes.
 
 Run the demo UI without BLE hardware:
 
@@ -92,7 +93,9 @@ OpenGlucose is designed around these constraints:
 On native platforms, the baseline moves restricted sensor state to a dedicated
 application-support file. The web demo continues to persist its
 `shared_preferences` values in the browser's origin-scoped `localStorage`; it is
-not a private, encrypted, backup-excluded, or supported health-data store.
+not a private, encrypted, backup-excluded, or supported health-data store. The
+[macOS reviewer preview](docs/macos-preview.md) is also outside the supported
+mobile release until its listed physical-device and distribution gates close.
 
 The current implementation is not yet a production-readiness claim. Consult
 the [architecture decisions](docs/architecture/adr/README.md) for accepted

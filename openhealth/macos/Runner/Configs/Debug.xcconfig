@@ -1,0 +1,6 @@
+#include "../../Flutter/Flutter-Debug.xcconfig"
+#include "Warnings.xcconfig"
+
+// The locked native-assets output is currently arm64-only. Keep every preview
+// configuration Apple-silicon-only until x86_64 is built and tested end to end.
+ARCHS = arm64

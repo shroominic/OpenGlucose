@@ -16,6 +16,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   brand instead of exposing the connected sensor name. Sensor identity remains
   available in Settings.
 
+### Added
+
+- Add a source-bound, ad-hoc-signed Apple-silicon macOS reviewer preview with a
+  read-only CI/package lane and explicit in-app hardware limitations. macOS is
+  not part of the stable release and remains unsupported until physical AiDEX,
+  Intel-native-assets, privacy, signing, and notarization gates close.
+
 ## [0.1.3] - 2026-08-16
 
 ### Changed

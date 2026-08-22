@@ -1,0 +1,168 @@
+name: macOS Preview
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/macos-preview.yml"
+      - "Makefile"
+      - "docs/macos-preview.md"
+      - "openhealth/**"
+      - "packages/**"
+      - "scripts/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/macos-preview.yml"
+      - "Makefile"
+      - "docs/macos-preview.md"
+      - "openhealth/**"
+      - "packages/**"
+      - "scripts/**"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing strict vMAJOR.MINOR.PATCH tag to build
+        required: true
+        type: string
+
+concurrency:
+  group: macos-preview-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.41.6"
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  build:
+    name: Build Apple-silicon macOS preview
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: >-
+            ${{
+              github.event_name == 'workflow_dispatch' && inputs.release_tag ||
+              github.sha
+            }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Bind build to immutable source
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          source_commit=$(git rev-parse HEAD)
+          source_ref="ci:$source_commit"
+          if test "$GITHUB_EVENT_NAME" = workflow_dispatch; then
+            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              printf 'Release tag must be strict vMAJOR.MINOR.PATCH; found %s\n' "$RELEASE_TAG" >&2
+              exit 1
+            fi
+            tag_commit=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+            test "$source_commit" = "$tag_commit"
+
+            version_record=$(sed -n 's/^version: \([0-9][0-9.]*+[0-9][0-9]*\)$/\1/p' openhealth/pubspec.yaml)
+            test -n "$version_record"
+            test "$RELEASE_TAG" = "v${version_record%%+*}"
+            source_ref="refs/tags/$RELEASE_TAG"
+          fi
+
+          printf 'commit=%s\n' "$source_commit" >> "$GITHUB_OUTPUT"
+          printf 'ref=%s\n' "$source_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install pinned CocoaPods
+        run: |
+          cocoapods_version=$(cat .cocoapods-version)
+          cocoapods_root="$RUNNER_TEMP/cocoapods/$cocoapods_version"
+          gem install --install-dir "$cocoapods_root" \
+            cocoapods -v "$cocoapods_version" --no-document
+
+          actual_cocoapods=$(
+            GEM_HOME="$cocoapods_root" \
+              GEM_PATH="$cocoapods_root" \
+              "$cocoapods_root/bin/pod" --version
+          )
+          test "$actual_cocoapods" = "$cocoapods_version"
+
+          printf 'GEM_HOME=%s\n' "$cocoapods_root" >> "$GITHUB_ENV"
+          printf 'GEM_PATH=%s\n' "$cocoapods_root" >> "$GITHUB_ENV"
+          printf '%s\n' "$cocoapods_root/bin" >> "$GITHUB_PATH"
+
+      - name: Restore locked dependencies
+        run: make bootstrap
+
+      - name: Run macOS checks
+        run: make format-check lint test-unit build-macos test-macos-native
+
+      - name: Read application version
+        id: version
+        run: |
+          set -euo pipefail
+          version_record=$(sed -n 's/^version: \([0-9][0-9.]*+[0-9][0-9]*\)$/\1/p' openhealth/pubspec.yaml)
+          test -n "$version_record"
+          test "$(printf '%s\n' "$version_record" | wc -l | tr -d ' ')" = 1
+          printf 'record=%s\n' "$version_record" >> "$GITHUB_OUTPUT"
+          printf 'safe_record=%s\n' "${version_record/+/-}" >> "$GITHUB_OUTPUT"
+
+      - name: Package reviewer preview
+        id: package
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+          VERSION_RECORD: ${{ steps.version.outputs.record }}
+        run: |
+          ./scripts/package-macos-preview.sh \
+            'openhealth/build/macos/Build/Products/Release/OpenGlucose Preview.app' \
+            dist/macos \
+            "$VERSION_RECORD" \
+            "$SOURCE_COMMIT" \
+            "$SOURCE_REF"
+
+      - name: Record package evidence
+        env:
+          APP_VERSION: ${{ steps.version.outputs.record }}
+          PACKAGE_SHA256: ${{ steps.package.outputs.sha256 }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+        run: |
+          {
+            printf '### macOS preview build\n\n'
+            printf -- "- Source commit: %s\n" "$SOURCE_COMMIT"
+            printf -- "- Source ref: %s\n" "$SOURCE_REF"
+            printf -- "- Application version: %s\n" "$APP_VERSION"
+            printf -- "- SHA-256: %s\n" "$PACKAGE_SHA256"
+            printf -- '- Signing: ad-hoc; not notarized\n'
+            printf -- '- Physical AiDEX verification: required before a support claim\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify source tree remained unchanged
+        run: git diff --exit-code
+
+      - name: Upload manual preview artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openglucose-${{ steps.version.outputs.safe_record }}-macos-arm64-preview
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 14

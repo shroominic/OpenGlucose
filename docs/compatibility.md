@@ -19,8 +19,17 @@ The current native project configuration targets:
 
 These are build floors, not promises that every device, OS release, Bluetooth
 stack, background mode, or sensor firmware has been exercised. Web is a demo
-and UI-test surface, not a supported physical-CGM transport. Desktop platforms
-are not currently product targets.
+and UI-test surface, not a supported physical-CGM transport.
+
+The repository contains an ad-hoc-signed, non-notarized Apple-silicon `arm64`
+macOS reviewer preview with a macOS 11 deployment floor. It is not a
+supported product target and is not part of the stable mobile release. Intel
+Macs are excluded because a locked native dependency does not currently
+produce a verified `x86_64` asset. The Darwin BLE dependency compiles the
+required GATT operations, but no physical Mac/AiDEX compatibility evidence is
+recorded. The dependency does not expose bond-state or bond-removal operations
+on macOS, so the app does not offer sensor transfer there. See the
+[macOS preview gates](macos-preview.md).
 
 Changes to a platform floor require a user-impact assessment, updated manifests
 and docs, affected platform builds, and an entry in the root changelog.
