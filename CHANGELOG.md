@@ -10,25 +10,24 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-22
+
 ### Added
 
 - The iPhone Live Activity now has an Apple Watch Smart Stack presentation for
   iOS 18 and watchOS 11. It shows privacy-gated glucose, trend, reading age,
-  stale state, and warmup without giving the Watch direct sensor Bluetooth
-  ownership.
+  stale state, and warmup. The iPhone remains the only device with sensor
+  Bluetooth ownership.
+- Add a source-bound, ad-hoc-signed Apple-silicon macOS reviewer preview with a
+  read-only CI/package lane and explicit in-app hardware limitations. macOS is
+  not part of the stable release and remains unsupported until physical AiDEX,
+  Intel-native-assets, privacy, signing, and notarization gates close.
 
 ### Changed
 
 - The connected dashboard and live glucose surfaces now use the OpenGlucose
   brand instead of exposing the connected sensor name. Sensor identity remains
   available in Settings.
-
-### Added
-
-- Add a source-bound, ad-hoc-signed Apple-silicon macOS reviewer preview with a
-  read-only CI/package lane and explicit in-app hardware limitations. macOS is
-  not part of the stable release and remains unsupported until physical AiDEX,
-  Intel-native-assets, privacy, signing, and notarization gates close.
 
 ## [0.1.3] - 2026-08-16
 
@@ -173,7 +172,8 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/shroominic/OpenGlucose/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shroominic/OpenGlucose/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/shroominic/OpenGlucose/compare/v0.1.0...v0.1.1

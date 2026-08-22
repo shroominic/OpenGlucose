@@ -13,12 +13,9 @@ import 'weekly_recap/weekly_recap_screen.dart';
 /// Sample readings exist only in memory. This route never touches BLE,
 /// persistence, HealthKit, notifications, or lock-screen activities.
 class SampleDashboardScreen extends StatelessWidget {
-  SampleDashboardScreen({
-    super.key,
-    required this.preferences,
-    DateTime? now,
-  }) : _now = now ?? DateTime.now(),
-       _readings = _sampleReadings(now ?? DateTime.now());
+  SampleDashboardScreen({super.key, required this.preferences, DateTime? now})
+    : _now = now ?? DateTime.now(),
+      _readings = _sampleReadings(now ?? DateTime.now());
 
   final DisplayPreferences preferences;
   final DateTime _now;

@@ -372,10 +372,7 @@ void main() {
         backupExclusionMarker: (path) async => markedPaths.add(path),
       );
       await store.initialize();
-      await store.setString(
-        'openHealth.sensorArchive',
-        '[{"id":"archive-1"}]',
-      );
+      await store.setString('openHealth.sensorArchive', '[{"id":"archive-1"}]');
       final metadataBefore = await _stateFile(directory).readAsString();
       markedPaths.clear();
 
@@ -400,10 +397,7 @@ void main() {
         await _historyBlob(directory, activeKey).readAsString(),
         '[{"valueMgdl":102}]',
       );
-      expect(
-        markedPaths.where((path) => path.endsWith(_fileName)),
-        isEmpty,
-      );
+      expect(markedPaths.where((path) => path.endsWith(_fileName)), isEmpty);
       expect(
         markedPaths.where((path) => path.endsWith(_historyBlobExtension)),
         hasLength(3),
@@ -458,9 +452,9 @@ void main() {
     await _stateFile(directory).writeAsString(
       _encodedEnvelope(const <String, String>{}, schemaVersion: 2),
     );
-    await File('${legacyBlob.path}.previous').writeAsString(
-      'committed-history',
-    );
+    await File(
+      '${legacyBlob.path}.previous',
+    ).writeAsString('committed-history');
     await File('${legacyBlob.path}.next').writeAsString('uncommitted-history');
 
     final store = await _initializeEmptyStore(directory);
@@ -623,10 +617,7 @@ void main() {
       final store = await _initializeEmptyStore(directory);
 
       expect(store.getString(key), 'committed-blob-history');
-      expect(
-        (await _readEnvelope(directory))['values'],
-        isNot(contains(key)),
-      );
+      expect((await _readEnvelope(directory))['values'], isNot(contains(key)));
       expect(
         await _historyBlob(directory, key).readAsString(),
         'committed-blob-history',
@@ -820,18 +811,14 @@ File _historyBlob(Directory directory, String key) {
   final historyDirectory = Directory('${directory.path}/$_historyDirectory')
     ..createSync(recursive: true);
   final digest = crypto.sha256.convert(utf8.encode(key));
-  return File(
-    '${historyDirectory.path}/history-$digest$_historyBlobExtension',
-  );
+  return File('${historyDirectory.path}/history-$digest$_historyBlobExtension');
 }
 
 File _legacyHistoryBlob(Directory directory, String key) {
   final historyDirectory = Directory('${directory.path}/$_historyDirectory')
     ..createSync(recursive: true);
   final encodedKey = base64Url.encode(utf8.encode(key));
-  return File(
-    '${historyDirectory.path}/$encodedKey$_historyBlobExtension',
-  );
+  return File('${historyDirectory.path}/$encodedKey$_historyBlobExtension');
 }
 
 Future<Map<String, dynamic>> _readEnvelope(Directory directory) async {
@@ -839,10 +826,7 @@ Future<Map<String, dynamic>> _readEnvelope(Directory directory) async {
       as Map<String, dynamic>;
 }
 
-String _encodedEnvelope(
-  Map<String, String> values, {
-  int schemaVersion = 1,
-}) {
+String _encodedEnvelope(Map<String, String> values, {int schemaVersion = 1}) {
   return jsonEncode(<String, Object>{
     'schemaVersion': schemaVersion,
     'values': values,

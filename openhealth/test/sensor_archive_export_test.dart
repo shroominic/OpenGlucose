@@ -169,10 +169,7 @@ void main() {
 
     final lines = text.split('\r\n');
     expect(lines.first, archivedSensorCsvColumns.join('\t'));
-    expect(
-      lines[1],
-      contains('2026-08-01T02:02:03.000Z\t103.5\t5.750\traw'),
-    );
+    expect(lines[1], contains('2026-08-01T02:02:03.000Z\t103.5\t5.750\traw'));
     expect(lines[1].split('\t'), hasLength(archivedSensorCsvColumns.length));
     expect(text, isNot(contains(session.id)));
     expect(text, isNot(contains(session.serial)));

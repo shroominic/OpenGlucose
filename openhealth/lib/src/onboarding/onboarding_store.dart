@@ -40,10 +40,7 @@ class OnboardingStore {
 
   /// Marks onboarding as done. Optionally records the chosen target range
   /// (in mg/dL); when omitted the existing/default range is left intact.
-  Future<void> complete({
-    double? targetLowMgdl,
-    double? targetHighMgdl,
-  }) async {
+  Future<void> complete({double? targetLowMgdl, double? targetHighMgdl}) async {
     if (targetLowMgdl != null || targetHighMgdl != null) {
       final current = _loadDisplayPreferences() ?? const DisplayPreferences();
       final low = targetLowMgdl ?? current.targetLowMgdl;

@@ -73,10 +73,7 @@ class _FakeResponse extends Stream<List<int>> implements HttpClientResponse {
 
 class _FakeClient implements HttpClient {
   _FakeClient({required int statusCode, required String responseBody})
-    : _response = _FakeResponse(
-        statusCode: statusCode,
-        body: responseBody,
-      );
+    : _response = _FakeResponse(statusCode: statusCode, body: responseBody);
 
   final HttpClientResponse _response;
   final List<Uri> postedUris = <Uri>[];
@@ -102,18 +99,14 @@ const _request = AiRequest(
   messages: <AiMessage>[AiMessage.user('private glucose summary')],
 );
 
-AiProviderConfig _config(String baseUrl) => AiProviderConfig(
-  baseUrl: baseUrl,
-  apiKey: 'sk-private',
-);
+AiProviderConfig _config(String baseUrl) =>
+    AiProviderConfig(baseUrl: baseUrl, apiKey: 'sk-private');
 
-Future<String> _sendWithClient(
-  _FakeClient client,
-  AiProviderConfig config,
-) => HttpOverrides.runZoned(
-  () => HttpAiTransport().call(_request, config),
-  createHttpClient: (_) => client,
-);
+Future<String> _sendWithClient(_FakeClient client, AiProviderConfig config) =>
+    HttpOverrides.runZoned(
+      () => HttpAiTransport().call(_request, config),
+      createHttpClient: (_) => client,
+    );
 
 void main() {
   test(
@@ -158,10 +151,9 @@ void main() {
     );
 
     expect(result, 'safe response');
-    expect(
-      client.postedUris,
-      <Uri>[Uri.parse('https://api.example.com/v1/chat/completions')],
-    );
+    expect(client.postedUris, <Uri>[
+      Uri.parse('https://api.example.com/v1/chat/completions'),
+    ]);
     final request = client.lastRequest!;
     expect(request.followRedirects, isFalse);
     expect(

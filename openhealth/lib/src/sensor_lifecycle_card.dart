@@ -182,10 +182,7 @@ class _ActiveLifecycle extends StatelessWidget {
                       label: 'Warmup',
                       value: '${warmup.remainingMinutes} min left',
                     ),
-                    _LifeStatRow(
-                      label: 'Sensor age',
-                      value: ageText,
-                    ),
+                    _LifeStatRow(label: 'Sensor age', value: ageText),
                   ] else ...<Widget>[
                     _LifeStatRow(
                       label: 'Time remaining',
@@ -256,11 +253,7 @@ class _ExpiredOffboarding extends StatelessWidget {
       children: <Widget>[
         Row(
           children: <Widget>[
-            const Icon(
-              Icons.event_busy_rounded,
-              color: expiredColor,
-              size: 22,
-            ),
+            const Icon(Icons.event_busy_rounded, color: expiredColor, size: 22),
             const SizedBox(width: 8),
             Expanded(
               child: Text(

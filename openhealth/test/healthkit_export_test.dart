@@ -465,9 +465,7 @@ void main() {
 
     expect(
       tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Sync now'),
-          )
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Sync now'))
           .onPressed,
       isNull,
     );
@@ -476,9 +474,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Sync now'),
-          )
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Sync now'))
           .onPressed,
       isNotNull,
     );
@@ -516,9 +512,7 @@ void main() {
     );
     expect(
       tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Sync now'),
-          )
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Sync now'))
           .onPressed,
       isNull,
     );
@@ -561,9 +555,7 @@ void main() {
 
     expect(exporter.exported, hasLength(60));
     expect(
-      exporter.exported.every(
-        (reading) => (reading.sensorMinute ?? -1) >= 60,
-      ),
+      exporter.exported.every((reading) => (reading.sensorMinute ?? -1) >= 60),
       isTrue,
     );
 

@@ -104,9 +104,7 @@ void main() {
 
   testWidgets(
     'does not let prior partial-day readings satisfy recap coverage',
-    (
-      tester,
-    ) async {
+    (tester) async {
       final readings = <CgmReading>[
         for (var index = 0; index < 160; index++)
           _reading(

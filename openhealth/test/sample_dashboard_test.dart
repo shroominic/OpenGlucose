@@ -55,12 +55,9 @@ void main() {
       expect(controller.snapshot, isNull);
       expect(controller.sensors, isEmpty);
       expect(controller.archivedSensors, isEmpty);
-      expect(
-        <String, Object?>{
-          for (final key in preferences.getKeys()) key: preferences.get(key),
-        },
-        preferencesBefore,
-      );
+      expect(<String, Object?>{
+        for (final key in preferences.getKeys()) key: preferences.get(key),
+      }, preferencesBefore);
       expect(healthStateStore.snapshot, restrictedStateBefore);
 
       await tester.scrollUntilVisible(

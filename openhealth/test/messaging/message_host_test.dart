@@ -47,10 +47,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Warming up'), findsOneWidget);
-    expect(
-      find.text('Readings begin after about an hour.'),
-      findsOneWidget,
-    );
+    expect(find.text('Readings begin after about an hour.'), findsOneWidget);
 
     await tester.tap(
       find.byKey(const ValueKey<String>('messageDismiss-info.warmup')),
