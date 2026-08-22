@@ -10,6 +10,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- The iPhone Live Activity now has an Apple Watch Smart Stack presentation for
+  iOS 18 and watchOS 11. It shows privacy-gated glucose, trend, reading age,
+  stale state, and warmup without giving the Watch direct sensor Bluetooth
+  ownership.
+
 ### Changed
 
 - The connected dashboard and live glucose surfaces now use the OpenGlucose

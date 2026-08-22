@@ -14,7 +14,10 @@ struct OpenGlucoseLiveActivityWidgetBundle: WidgetBundle {
 struct OpenGlucoseLiveActivityWidget: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: GlucoseLiveActivityAttributes.self) { context in
-      GlucoseLiveActivityLockScreenView(context: context)
+      GlucoseLiveActivityLockScreenView(
+        context: context,
+        isStale: liveActivityIsStale(context)
+      )
         .activityBackgroundTint(Color(red: 17 / 255, green: 52 / 255, blue: 55 / 255))
         .activitySystemActionForegroundColor(.white)
     } dynamicIsland: { context in
@@ -25,7 +28,10 @@ struct OpenGlucoseLiveActivityWidget: Widget {
               .font(.headline.weight(.semibold))
               .lineLimit(1)
               .minimumScaleFactor(0.8)
-            if let updatedText = updatedText(for: context.state) {
+            if let updatedText = updatedText(
+              for: context.state,
+              isStale: liveActivityIsStale(context)
+            ) {
               Text(updatedText)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
@@ -36,7 +42,10 @@ struct OpenGlucoseLiveActivityWidget: Widget {
           .padding(.top, 6)
         }
         DynamicIslandExpandedRegion(.trailing) {
-          if let trendText = trendText(for: context.state) {
+          if let trendText = trendText(
+            for: context.state,
+            isStale: liveActivityIsStale(context)
+          ) {
             GlucoseLiveTrendBadge(text: trendText)
               .padding(.trailing, 8)
               .padding(.top, 6)
@@ -45,15 +54,28 @@ struct OpenGlucoseLiveActivityWidget: Widget {
         DynamicIslandExpandedRegion(.bottom) {
           HStack(alignment: .bottom, spacing: 14) {
             HStack(alignment: .bottom, spacing: 8) {
-              Text(context.state.valueText)
+              Text(
+                visibleValueText(
+                  for: context.state,
+                  isStale: liveActivityIsStale(context)
+                )
+              )
                 .font(.system(size: 36, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
               VStack(alignment: .leading, spacing: 3) {
-                Text(context.state.unitText)
+                Text(
+                  visibleUnitText(
+                    for: context.state,
+                    isStale: liveActivityIsStale(context)
+                  )
+                )
                   .font(.headline.weight(.semibold))
-                if let trendText = trendText(for: context.state) {
+                if let trendText = trendText(
+                  for: context.state,
+                  isStale: liveActivityIsStale(context)
+                ) {
                   Text(trendText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -61,7 +83,10 @@ struct OpenGlucoseLiveActivityWidget: Widget {
               }
             }
             Spacer(minLength: 0)
-            if let updatedText = updatedText(for: context.state) {
+            if let updatedText = updatedText(
+              for: context.state,
+              isStale: liveActivityIsStale(context)
+            ) {
               Text(updatedText)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -74,35 +99,86 @@ struct OpenGlucoseLiveActivityWidget: Widget {
           .padding(.bottom, 8)
         }
       } compactLeading: {
-        Text(context.state.valueText)
-          .font(.headline.weight(.bold))
-          .monospacedDigit()
-          .minimumScaleFactor(0.7)
+        GlucoseLiveCompactLeadingView(
+          state: context.state,
+          isStale: liveActivityIsStale(context)
+        )
       } compactTrailing: {
-        Text(compactTrailingText(for: context.state))
-          .font(.caption2.weight(.semibold))
-          .lineLimit(1)
+        GlucoseLiveCompactTrailingView(
+          state: context.state,
+          isStale: liveActivityIsStale(context)
+        )
       } minimal: {
-        Text(context.state.valueText)
-          .font(.caption2.weight(.bold))
-          .monospacedDigit()
+        GlucoseLiveCompactLeadingView(
+          state: context.state,
+          isStale: liveActivityIsStale(context),
+          isMinimal: true
+        )
       }
-      .keylineTint(stageColor(for: context.state))
+      .keylineTint(
+        stageColor(
+          for: context.state,
+          isStale: liveActivityIsStale(context)
+        )
+      )
     }
   }
+}
 
-  private func compactTrailingText(
-    for state: GlucoseLiveActivityAttributes.ContentState
-  ) -> String {
-    if !state.trendSymbol.isEmpty {
-      return state.trendSymbol
+/// iOS 18 and watchOS 11 automatically compose these compact presentations
+/// into the Apple Watch Smart Stack. Keeping them available from iOS 16.1
+/// preserves the existing Live Activity on older supported iPhones.
+private struct GlucoseLiveCompactLeadingView: View {
+  let state: GlucoseLiveActivityAttributes.ContentState
+  let isStale: Bool
+  var isMinimal = false
+
+  @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+  var body: some View {
+    Text(compactLeadingText(for: state, isStale: isStale))
+      .font(isMinimal ? .caption2.weight(.bold) : .headline.weight(.bold))
+      .monospacedDigit()
+      .lineLimit(1)
+      .minimumScaleFactor(0.65)
+      .foregroundStyle(.primary.opacity(isLuminanceReduced ? 0.72 : 1))
+      .privacySensitive(hasVisibleGlucoseValue(state, isStale: isStale))
+      .accessibilityLabel(
+        compactLeadingAccessibilityLabel(for: state, isStale: isStale)
+      )
+  }
+}
+
+private struct GlucoseLiveCompactTrailingView: View {
+  let state: GlucoseLiveActivityAttributes.ContentState
+  let isStale: Bool
+
+  @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+  var body: some View {
+    VStack(alignment: .trailing, spacing: 0) {
+      Text(compactStatusText(for: state, isStale: isStale))
+        .font(.caption2.weight(.semibold))
+        .lineLimit(1)
+      if let recordedAt = state.recordedAt {
+        Text(recordedAt, style: .relative)
+          .font(.system(size: 8, weight: .medium))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
     }
-    return state.unitText
+    .opacity(isLuminanceReduced ? 0.72 : 1)
+    .privacySensitive(hasVisibleGlucoseValue(state, isStale: isStale))
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(
+      compactTrailingAccessibilityLabel(for: state, isStale: isStale)
+    )
   }
 }
 
 private struct GlucoseLiveActivityLockScreenView: View {
   let context: ActivityViewContext<GlucoseLiveActivityAttributes>
+  let isStale: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
@@ -112,7 +188,10 @@ private struct GlucoseLiveActivityLockScreenView: View {
           .lineLimit(1)
           .minimumScaleFactor(0.8)
         Spacer(minLength: 0)
-        if let updatedText = updatedText(for: context.state) {
+        if let updatedText = updatedText(
+          for: context.state,
+          isStale: isStale
+        ) {
           Text(updatedText)
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 12)
@@ -123,15 +202,18 @@ private struct GlucoseLiveActivityLockScreenView: View {
       }
 
       HStack(alignment: .bottom, spacing: 12) {
-        Text(context.state.valueText)
+        Text(visibleValueText(for: context.state, isStale: isStale))
           .font(.system(size: 52, weight: .bold, design: .rounded))
           .monospacedDigit()
           .lineLimit(1)
           .minimumScaleFactor(0.72)
         VStack(alignment: .leading, spacing: 4) {
-          Text(context.state.unitText)
+          Text(visibleUnitText(for: context.state, isStale: isStale))
             .font(.title3.weight(.semibold))
-          if let trendText = trendText(for: context.state) {
+          if let trendText = trendText(
+            for: context.state,
+            isStale: isStale
+          ) {
             Text(trendText)
               .font(.caption.weight(.semibold))
               .foregroundStyle(.white.opacity(0.8))
@@ -159,14 +241,38 @@ private struct GlucoseLiveTrendBadge: View {
   }
 }
 
-private func updatedText(for state: GlucoseLiveActivityAttributes.ContentState) -> String? {
+private func liveActivityIsStale(
+  _ context: ActivityViewContext<GlucoseLiveActivityAttributes>
+) -> Bool {
+  if context.state.isStale {
+    return true
+  }
+  if #available(iOS 16.2, *) {
+    return context.isStale
+  }
+  return false
+}
+
+private func updatedText(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String? {
   guard state.lastReadingText != "--" else {
     return nil
+  }
+  if isStale {
+    return "Stale"
   }
   return "Updated \(state.lastReadingText)"
 }
 
-private func trendText(for state: GlucoseLiveActivityAttributes.ContentState) -> String? {
+private func trendText(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String? {
+  guard !isStale else {
+    return nil
+  }
   let parts = [state.trendSymbol, state.deltaText].filter { !$0.isEmpty }
   guard !parts.isEmpty else {
     return nil
@@ -174,8 +280,111 @@ private func trendText(for state: GlucoseLiveActivityAttributes.ContentState) ->
   return parts.joined(separator: " ")
 }
 
-private func stageColor(for state: GlucoseLiveActivityAttributes.ContentState) -> Color {
-  if state.isStale && state.stageCode == "live" {
+private func hasVisibleGlucoseValue(
+  _ state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> Bool {
+  !isStale && hasGlucoseValue(state)
+}
+
+private func visibleValueText(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String {
+  hasVisibleGlucoseValue(state, isStale: isStale) ? state.valueText : "--"
+}
+
+private func visibleUnitText(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String {
+  hasVisibleGlucoseValue(state, isStale: isStale) ? state.unitText : ""
+}
+
+private func hasGlucoseValue(
+  _ state: GlucoseLiveActivityAttributes.ContentState
+) -> Bool {
+  guard state.valueText != "--", state.valueText != "…" else {
+    return false
+  }
+  return state.unitText == "mg/dL" || state.unitText == "mmol/L"
+}
+
+private func compactLeadingText(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String {
+  if hasVisibleGlucoseValue(state, isStale: isStale) {
+    return state.valueText
+  }
+  if state.stageCode == "progress", state.unitText == "min" {
+    return "\(state.valueText)m"
+  }
+  return "--"
+}
+
+private func compactStatusText(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String {
+  if isStale, hasGlucoseValue(state) {
+    return "Stale"
+  }
+  if state.stageCode == "error" {
+    return "Error"
+  }
+  if state.stageCode == "progress" {
+    return state.stageLabel.isEmpty ? "Connecting" : state.stageLabel
+  }
+  if let trend = trendText(for: state, isStale: isStale) {
+    return trend
+  }
+  return state.unitText.isEmpty ? state.stageLabel : state.unitText
+}
+
+private func compactLeadingAccessibilityLabel(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String {
+  if isStale, hasGlucoseValue(state) {
+    return "Glucose unavailable, reading stale"
+  }
+  if hasVisibleGlucoseValue(state, isStale: isStale) {
+    return "Glucose \(state.valueText) \(spokenUnit(state.unitText))"
+  }
+  if state.stageCode == "progress", state.unitText == "min" {
+    return "Sensor warmup, \(state.valueText) minutes remaining"
+  }
+  return "Glucose unavailable"
+}
+
+private func compactTrailingAccessibilityLabel(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> String {
+  var parts = [compactStatusText(for: state, isStale: isStale)]
+  if state.lastReadingText != "--" {
+    parts.append("reading at \(state.lastReadingText)")
+  }
+  return parts.joined(separator: ", ")
+}
+
+private func spokenUnit(_ unit: String) -> String {
+  switch unit {
+  case "mg/dL":
+    return "milligrams per deciliter"
+  case "mmol/L":
+    return "millimoles per liter"
+  default:
+    return unit
+  }
+}
+
+private func stageColor(
+  for state: GlucoseLiveActivityAttributes.ContentState,
+  isStale: Bool
+) -> Color {
+  if isStale && state.stageCode == "live" {
     return Color(red: 242 / 255, green: 166 / 255, blue: 90 / 255)
   }
 

@@ -17,6 +17,12 @@ The current native project configuration targets:
 - iOS 14 and newer for the app, with iOS 16.1 and newer required for the Live
   Activity widget extension.
 
+The [Apple Watch Smart Stack presentation](apple-watch.md) requires a paired
+iPhone on iOS 18 or newer and Apple Watch on watchOS 11 or newer. It is an
+iPhone Live Activity display, not a native Watch app or a direct sensor
+transport. Physical paired-device verification remains required before a
+release can claim Apple Watch compatibility.
+
 These are build floors, not promises that every device, OS release, Bluetooth
 stack, background mode, or sensor firmware has been exercised. Web is a demo
 and UI-test surface, not a supported physical-CGM transport.
