@@ -246,7 +246,7 @@ final class GlucoseLiveActivityController {
   }
 
   func upsertBackgroundGlucose(
-    sensorName: String,
+    sensorName _: String,
     valueMgdl: Int,
     observedAt: Date
   ) {
@@ -261,7 +261,7 @@ final class GlucoseLiveActivityController {
       } catch {
         return
       }
-      payload["sensorName"] = sensorName
+      payload["sensorName"] = "OpenGlucose"
       payload["stageCode"] = "live"
       payload["stageLabel"] = "LIVE"
       payload["valueText"] = String(valueMgdl)
@@ -461,7 +461,12 @@ enum LiveActivityLockScreenRedaction {
     to payload: [String: Any],
     sensitiveContentEnabled: Bool
   ) -> [String: Any] {
-    sensitiveContentEnabled ? payload : redact(payload)
+    guard sensitiveContentEnabled else {
+      return redact(payload)
+    }
+    var brandedPayload = payload
+    brandedPayload["sensorName"] = "OpenGlucose"
+    return brandedPayload
   }
 
   static func redact(_ payload: [String: Any]) -> [String: Any] {

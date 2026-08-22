@@ -2,6 +2,8 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
+private let openGlucoseBrandName = "OpenGlucose"
+
 @main
 struct OpenGlucoseLiveActivityWidgetBundle: WidgetBundle {
   var body: some Widget {
@@ -19,7 +21,7 @@ struct OpenGlucoseLiveActivityWidget: Widget {
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
           VStack(alignment: .leading, spacing: 6) {
-            Text(context.attributes.sensorName)
+            Text(openGlucoseBrandName)
               .font(.headline.weight(.semibold))
               .lineLimit(1)
               .minimumScaleFactor(0.8)
@@ -105,7 +107,7 @@ private struct GlucoseLiveActivityLockScreenView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
       HStack(alignment: .top, spacing: 12) {
-        Text(context.attributes.sensorName)
+        Text(openGlucoseBrandName)
           .font(.headline.weight(.semibold))
           .lineLimit(1)
           .minimumScaleFactor(0.8)

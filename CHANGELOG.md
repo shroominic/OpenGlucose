@@ -10,6 +10,12 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Changed
+
+- The connected dashboard and live glucose surfaces now use the OpenGlucose
+  brand instead of exposing the connected sensor name. Sensor identity remains
+  available in Settings.
+
 ## [0.1.3] - 2026-08-16
 
 ### Changed

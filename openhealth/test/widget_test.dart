@@ -203,8 +203,15 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.text('Connected'), findsOneWidget);
+    expect(find.text('OpenGlucose'), findsOneWidget);
+    expect(find.text('AiDEX Demo 07A12'), findsNothing);
     expect(find.text('History'), findsOneWidget);
     expect(find.text('DEMO DATA — NOT REAL GLUCOSE'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('AiDEX Demo 07A12'), findsOneWidget);
+
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
   });
