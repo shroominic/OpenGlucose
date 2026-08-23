@@ -102,6 +102,10 @@ glucose line. Imported raw samples remain separate; display normalization uses
 per-type source priority so overlapping Apple Watch, Whoop, Oura, and iPhone
 records are not blindly summed.
 
+The local storage contract now retains typed platform identity, source
+provenance, revisions, and tombstones. It de-duplicates a source record only
+when the platform supplies that stable identity; it does not yet read either
+platform, request permission, retain sync anchors, or choose an overlap winner.
 MVP can bounded-requery with the existing Flutter `health` package and upsert by
 HealthKit UUID. Production incremental sync uses native
 `HKAnchoredObjectQuery`, one persisted anchor per type, and handles deleted

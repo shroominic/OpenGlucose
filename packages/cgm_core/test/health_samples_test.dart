@@ -2,6 +2,131 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('import provenance', () {
+    const provenance = HealthSampleProvenance(
+      identity: HealthImportIdentity(
+        platform: HealthSourcePlatform.appleHealth,
+        externalId: 'fixture-record-1',
+      ),
+      sourceApplicationId: 'com.example.health-source',
+      sourceName: 'Fixture Watch',
+      sourceDevice: 'fixture-device',
+      sourceDeviceModel: 'Fixture Watch 1',
+      recordingMethod: HealthRecordingMethod.automatic,
+      sourceRevision: 'revision-2',
+    );
+
+    test('round-trips typed identity and provenance without a format bump', () {
+      final sample = ActivitySample(
+        start: DateTime.utc(2026, 1, 1, 9),
+        end: DateTime.utc(2026, 1, 1, 9, 30),
+        type: ActivityType.steps,
+        source: DataSource.appleHealth,
+        steps: 1200,
+        provenance: provenance,
+      );
+
+      final json = sample.toJson();
+      final restored = ActivitySample.fromJson(json);
+      expect(json['formatVersion'], 1);
+      expect(restored.provenance, isNotNull);
+      expect(
+        restored.provenance!.identity.platform,
+        HealthSourcePlatform.appleHealth,
+      );
+      expect(restored.provenance!.identity.externalId, 'fixture-record-1');
+      expect(
+        restored.provenance!.sourceApplicationId,
+        'com.example.health-source',
+      );
+      expect(restored.provenance!.sourceName, 'Fixture Watch');
+      expect(restored.provenance!.sourceDevice, 'fixture-device');
+      expect(restored.provenance!.sourceDeviceModel, 'Fixture Watch 1');
+      expect(
+        restored.provenance!.recordingMethod,
+        HealthRecordingMethod.automatic,
+      );
+      expect(restored.provenance!.sourceRevision, 'revision-2');
+      expect(restored.provenance!.isDeleted, isFalse);
+    });
+
+    test('uses a deterministic platform-scoped import identity', () {
+      const apple = HealthImportIdentity(
+        platform: HealthSourcePlatform.appleHealth,
+        externalId: 'same-id',
+      );
+      const android = HealthImportIdentity(
+        platform: HealthSourcePlatform.healthConnect,
+        externalId: 'same-id',
+      );
+      expect(apple.stableKey, apple.stableKey);
+      expect(apple.stableKey, isNot(android.stableKey));
+    });
+
+    test('keeps legacy samples readable without provenance', () {
+      final restored = HeartRateSample.fromJson(<String, Object?>{
+        'formatVersion': 1,
+        'timestamp': '2026-01-01T12:00:00.000Z',
+        'bpm': 72,
+        'source': 'appleHealth',
+      });
+      expect(restored.provenance, isNull);
+    });
+
+    test('rejects a provenance platform that disagrees with sample source', () {
+      final sample = SleepSample(
+        start: DateTime.utc(2026, 1, 1, 23),
+        end: DateTime.utc(2026, 1, 2),
+        stage: SleepStage.deep,
+        source: DataSource.appleHealth,
+        provenance: const HealthSampleProvenance(
+          identity: HealthImportIdentity(
+            platform: HealthSourcePlatform.healthConnect,
+            externalId: 'fixture-record-2',
+          ),
+        ),
+      );
+      expect(sample.toJson, throwsA(isA<FormatException>()));
+    });
+
+    test('validates tombstone provenance and preserves its revision', () {
+      const tombstone = HealthImportTombstone(
+        kind: HealthSampleKind.heartRate,
+        provenance: HealthSampleProvenance(
+          identity: HealthImportIdentity(
+            platform: HealthSourcePlatform.healthConnect,
+            externalId: 'fixture-record-3',
+          ),
+          sourceRevision: 'revision-3',
+          isDeleted: true,
+        ),
+      );
+      final restored = HealthImportTombstone.fromJson(tombstone.toJson());
+      expect(restored.kind, HealthSampleKind.heartRate);
+      expect(restored.provenance.isDeleted, isTrue);
+      expect(restored.provenance.sourceRevision, 'revision-3');
+    });
+
+    test('rejects blank external identities and non-deletion tombstones', () {
+      const invalidIdentity = HealthImportIdentity(
+        platform: HealthSourcePlatform.appleHealth,
+        externalId: ' ',
+      );
+      expect(invalidIdentity.toJson, throwsA(isA<FormatException>()));
+
+      const invalidTombstone = HealthImportTombstone(
+        kind: HealthSampleKind.activity,
+        provenance: HealthSampleProvenance(
+          identity: HealthImportIdentity(
+            platform: HealthSourcePlatform.appleHealth,
+            externalId: 'fixture-record-4',
+          ),
+        ),
+      );
+      expect(invalidTombstone.toJson, throwsA(isA<FormatException>()));
+    });
+  });
+
   group('ActivitySample', () {
     test('construction, duration & timeline contract', () {
       final sample = ActivitySample(
