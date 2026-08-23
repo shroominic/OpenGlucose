@@ -52,7 +52,15 @@ enum MealResponseStatus {
   /// requires a single source.
   mixedSources,
 
-  /// Baseline, count, coverage, cadence, and source requirements are met.
+  /// One or more display-provisional readings were accepted for inspection.
+  ///
+  /// This status is deliberately not sufficient. A caller may opt in to retain
+  /// provisional samples in the evidence, but it must not present their
+  /// derived response metrics as a normal qualified result.
+  provisionalReadings,
+
+  /// Baseline, count, coverage, cadence, source, and finality requirements
+  /// are met.
   sufficient;
 
   String get key => name;
@@ -90,8 +98,7 @@ class MealResponsePolicy {
     this.includeProvisionalReadings = false,
     this.allowMixedSources = false,
   }) : assert(minimumBaselineReadings > 0),
-       assert(minimumPostMealReadings > 0),
-       assert(minimumCoverage >= 0 && minimumCoverage <= 1);
+       assert(minimumPostMealReadings > 0);
 
   /// Time before a meal used to estimate its local baseline.
   final Duration baselineWindow;
@@ -106,13 +113,21 @@ class MealResponsePolicy {
   final int minimumPostMealReadings;
 
   /// Minimum fraction of [responseWindow] observed before a response is ready.
+  ///
+  /// [MealResponseAnalytics.analyze] rejects non-finite values and values
+  /// outside the inclusive 0–1 range.
   final double minimumCoverage;
 
   /// Largest permitted gap from the meal to the first sample, between samples,
   /// or from the final sample to the end of the response window.
   final Duration maximumGap;
 
-  /// Whether display-provisional readings may be included.
+  /// Whether display-provisional readings may be retained for inspection.
+  ///
+  /// An accepted provisional reading always produces
+  /// [MealResponseStatus.provisionalReadings], so it never makes a response
+  /// sufficient. This option lets a caller inspect the evidence without
+  /// treating provisional data as a normal response summary.
   final bool includeProvisionalReadings;
 
   /// Whether a response may combine multiple [CgmRecordSource] values.
@@ -145,8 +160,12 @@ class MealResponseEvidence {
     required this.largestGap,
     required this.averagePostMealCadence,
     required this.duplicateTimestampCount,
-    required this.excludedProvisionalSampleCount,
-    required this.excludedFutureSampleCount,
+    required this.acceptedProvisionalBaselineSampleCount,
+    required this.acceptedProvisionalPostMealSampleCount,
+    required this.excludedProvisionalBaselineSampleCount,
+    required this.excludedProvisionalPostMealSampleCount,
+    required this.excludedFutureBaselineSampleCount,
+    required this.excludedFuturePostMealSampleCount,
   });
 
   final String calculationVersion;
@@ -173,12 +192,48 @@ class MealResponseEvidence {
   final Duration? averagePostMealCadence;
 
   final int duplicateTimestampCount;
-  final int excludedProvisionalSampleCount;
-  final int excludedFutureSampleCount;
+
+  /// Accepted display-provisional samples in the baseline window.
+  final int acceptedProvisionalBaselineSampleCount;
+
+  /// Accepted display-provisional samples in the post-meal response window.
+  final int acceptedProvisionalPostMealSampleCount;
+
+  /// Provisional samples excluded from the baseline window by the policy.
+  final int excludedProvisionalBaselineSampleCount;
+
+  /// Provisional samples excluded from the post-meal window by the policy.
+  final int excludedProvisionalPostMealSampleCount;
+
+  /// Future samples excluded from the baseline window relative to `now`.
+  final int excludedFutureBaselineSampleCount;
+
+  /// Future samples excluded from the post-meal window relative to `now`.
+  final int excludedFuturePostMealSampleCount;
 
   int get readingCount => baselineSampleIds.length + postMealSampleIds.length;
 
   bool get hasMixedSources => sources.length > 1;
+
+  /// Whether any selected sample was display-provisional.
+  ///
+  /// When true, the response status is
+  /// [MealResponseStatus.provisionalReadings] and is never sufficient.
+  bool get hasAcceptedProvisionalReadings => acceptedProvisionalSampleCount > 0;
+
+  /// Total accepted display-provisional samples across this meal's windows.
+  int get acceptedProvisionalSampleCount =>
+      acceptedProvisionalBaselineSampleCount +
+      acceptedProvisionalPostMealSampleCount;
+
+  /// Total excluded provisional samples across this meal's windows.
+  int get excludedProvisionalSampleCount =>
+      excludedProvisionalBaselineSampleCount +
+      excludedProvisionalPostMealSampleCount;
+
+  /// Total excluded future samples across this meal's windows.
+  int get excludedFutureSampleCount =>
+      excludedFutureBaselineSampleCount + excludedFuturePostMealSampleCount;
 }
 
 /// A local, non-causal response summary for one meal journal event.
@@ -298,6 +353,7 @@ abstract final class MealResponseAnalytics {
         )
         .toList(growable: false);
     final orderedMeals = _stableMealOrder(meals);
+    _validateMealIds(orderedMeals);
     if (orderedMeals.isEmpty) {
       return MealResponseSummary(
         status: MealResponseSummaryStatus.noMeals,
@@ -312,7 +368,7 @@ abstract final class MealResponseAnalytics {
       );
     }
 
-    final eligible = _eligibleReadings(
+    final eligibleReadings = _eligibleReadings(
       readings,
       includeProvisional: policy.includeProvisionalReadings,
       now: reference,
@@ -321,10 +377,10 @@ abstract final class MealResponseAnalytics {
         .map(
           (meal) => _analyzeMeal(
             meal,
-            eligible.readings,
+            eligibleReadings,
             policy,
-            excludedProvisionalSampleCount: eligible.excludedProvisionalCount,
-            excludedFutureSampleCount: eligible.excludedFutureCount,
+            allReadings: readings,
+            now: reference,
           ),
         )
         .toList(growable: false);
@@ -363,6 +419,7 @@ abstract final class MealResponseAnalytics {
         policy.maximumGap > policy.responseWindow ||
         policy.minimumBaselineReadings < 1 ||
         policy.minimumPostMealReadings < 1 ||
+        !policy.minimumCoverage.isFinite ||
         policy.minimumCoverage < 0 ||
         policy.minimumCoverage > 1) {
       throw ArgumentError.value(
@@ -386,12 +443,26 @@ abstract final class MealResponseAnalytics {
     }
   }
 
+  static void _validateMealIds(List<HealthEvent> meals) {
+    final ids = <String>{};
+    for (final meal in meals) {
+      final normalizedId = meal.id.trim();
+      if (normalizedId.isEmpty || !ids.add(normalizedId)) {
+        throw ArgumentError.value(
+          meal.id,
+          'events',
+          'every selected meal id must be non-empty and unique',
+        );
+      }
+    }
+  }
+
   static MealResponse _analyzeMeal(
     HealthEvent meal,
     List<IdentifiedGlucoseReading> readings,
     MealResponsePolicy policy, {
-    required int excludedProvisionalSampleCount,
-    required int excludedFutureSampleCount,
+    required List<IdentifiedGlucoseReading> allReadings,
+    required DateTime? now,
   }) {
     final mealAt = meal.timestamp.toUtc();
     final baselineStart = mealAt.subtract(policy.baselineWindow);
@@ -407,6 +478,14 @@ abstract final class MealResponseAnalytics {
       start: mealAt,
       end: responseEnd,
       includeEnd: true,
+    );
+    final exclusions = _excludedWindowCounts(
+      allReadings,
+      baselineStart: baselineStart,
+      mealAt: mealAt,
+      responseEnd: responseEnd,
+      includeProvisional: policy.includeProvisionalReadings,
+      now: now,
     );
     final responseTimes = postMeal.samples
         .map((sample) => sample.reading.recordedAt!.toUtc())
@@ -452,6 +531,9 @@ abstract final class MealResponseAnalytics {
       coveragePercent: coveragePercent,
       largestGap: largestGap,
       duplicateTimestampCount: duplicateCount,
+      acceptedProvisionalSampleCount:
+          baseline.acceptedProvisionalSampleCount +
+          postMeal.acceptedProvisionalSampleCount,
       hasMixedSources: sources.length > 1,
       policy: policy,
     );
@@ -477,8 +559,16 @@ abstract final class MealResponseAnalytics {
       largestGap: largestGap,
       averagePostMealCadence: _averageCadence(responseTimes),
       duplicateTimestampCount: duplicateCount,
-      excludedProvisionalSampleCount: excludedProvisionalSampleCount,
-      excludedFutureSampleCount: excludedFutureSampleCount,
+      acceptedProvisionalBaselineSampleCount:
+          baseline.acceptedProvisionalSampleCount,
+      acceptedProvisionalPostMealSampleCount:
+          postMeal.acceptedProvisionalSampleCount,
+      excludedProvisionalBaselineSampleCount:
+          exclusions.provisionalBaselineCount,
+      excludedProvisionalPostMealSampleCount:
+          exclusions.provisionalPostMealCount,
+      excludedFutureBaselineSampleCount: exclusions.futureBaselineCount,
+      excludedFuturePostMealSampleCount: exclusions.futurePostMealCount,
     );
     return MealResponse(
       mealId: meal.id,
@@ -509,9 +599,13 @@ abstract final class MealResponseAnalytics {
     required double coveragePercent,
     required Duration largestGap,
     required int duplicateTimestampCount,
+    required int acceptedProvisionalSampleCount,
     required bool hasMixedSources,
     required MealResponsePolicy policy,
   }) {
+    if (acceptedProvisionalSampleCount > 0) {
+      return MealResponseStatus.provisionalReadings;
+    }
     if (responseCount == 0) return MealResponseStatus.noPostMealReadings;
     if (duplicateTimestampCount > 0) {
       return MealResponseStatus.duplicateTimestamps;
@@ -525,7 +619,8 @@ abstract final class MealResponseAnalytics {
     if (responseCount < policy.minimumPostMealReadings) {
       return MealResponseStatus.insufficientPostMealReadings;
     }
-    if (coveragePercent < policy.minimumCoverage * 100) {
+    if (!coveragePercent.isFinite ||
+        coveragePercent < policy.minimumCoverage * 100) {
       return MealResponseStatus.insufficientCoverage;
     }
     if (largestGap > policy.maximumGap) {
@@ -564,13 +659,11 @@ abstract final class MealResponseAnalytics {
     return indexed.map((entry) => entry.value).toList(growable: false);
   }
 
-  static _EligibleReadings _eligibleReadings(
+  static List<IdentifiedGlucoseReading> _eligibleReadings(
     List<IdentifiedGlucoseReading> readings, {
     required bool includeProvisional,
     required DateTime? now,
   }) {
-    var excludedProvisional = 0;
-    var excludedFuture = 0;
     final output = <IdentifiedGlucoseReading>[];
     for (final sample in readings) {
       final at = sample.reading.recordedAt;
@@ -580,20 +673,66 @@ abstract final class MealResponseAnalytics {
         continue;
       }
       if (now != null && at.toUtc().isAfter(now)) {
-        excludedFuture++;
         continue;
       }
       if (!includeProvisional && sample.reading.isDisplayProvisional) {
-        excludedProvisional++;
         continue;
       }
       output.add(sample);
     }
     output.sort(_compareSamples);
-    return _EligibleReadings(
-      readings: List<IdentifiedGlucoseReading>.unmodifiable(output),
-      excludedProvisionalCount: excludedProvisional,
-      excludedFutureCount: excludedFuture,
+    return List<IdentifiedGlucoseReading>.unmodifiable(output);
+  }
+
+  static _ExcludedWindowCounts _excludedWindowCounts(
+    List<IdentifiedGlucoseReading> readings, {
+    required DateTime baselineStart,
+    required DateTime mealAt,
+    required DateTime responseEnd,
+    required bool includeProvisional,
+    required DateTime? now,
+  }) {
+    var provisionalBaselineCount = 0;
+    var provisionalPostMealCount = 0;
+    var futureBaselineCount = 0;
+    var futurePostMealCount = 0;
+
+    for (final sample in readings) {
+      final at = sample.reading.recordedAt;
+      if (at == null ||
+          !sample.reading.valueMgdl.isFinite ||
+          sample.reading.valueMgdl <= 0) {
+        continue;
+      }
+      final timestamp = at.toUtc();
+      final isBaseline =
+          !timestamp.isBefore(baselineStart) && timestamp.isBefore(mealAt);
+      final isPostMeal =
+          !timestamp.isBefore(mealAt) && !timestamp.isAfter(responseEnd);
+      if (!isBaseline && !isPostMeal) continue;
+
+      if (now != null && timestamp.isAfter(now)) {
+        if (isBaseline) {
+          futureBaselineCount++;
+        } else {
+          futurePostMealCount++;
+        }
+        continue;
+      }
+      if (!includeProvisional && sample.reading.isDisplayProvisional) {
+        if (isBaseline) {
+          provisionalBaselineCount++;
+        } else {
+          provisionalPostMealCount++;
+        }
+      }
+    }
+
+    return _ExcludedWindowCounts(
+      provisionalBaselineCount: provisionalBaselineCount,
+      provisionalPostMealCount: provisionalPostMealCount,
+      futureBaselineCount: futureBaselineCount,
+      futurePostMealCount: futurePostMealCount,
     );
   }
 
@@ -611,7 +750,11 @@ abstract final class MealResponseAnalytics {
         })
         .toList(growable: false);
     if (window.length < 2) {
-      return _SelectedWindow(samples: window, duplicateTimestampCount: 0);
+      return _SelectedWindow(
+        samples: List<IdentifiedGlucoseReading>.unmodifiable(window),
+        duplicateTimestampCount: 0,
+        acceptedProvisionalSampleCount: _provisionalSampleCount(window),
+      );
     }
     final samples = <IdentifiedGlucoseReading>[];
     var duplicateTimestampCount = 0;
@@ -628,8 +771,12 @@ abstract final class MealResponseAnalytics {
     return _SelectedWindow(
       samples: List<IdentifiedGlucoseReading>.unmodifiable(samples),
       duplicateTimestampCount: duplicateTimestampCount,
+      acceptedProvisionalSampleCount: _provisionalSampleCount(samples),
     );
   }
+
+  static int _provisionalSampleCount(List<IdentifiedGlucoseReading> samples) =>
+      samples.where((sample) => sample.reading.isDisplayProvisional).length;
 
   static int _compareSamples(
     IdentifiedGlucoseReading left,
@@ -722,24 +869,28 @@ abstract final class MealResponseAnalytics {
   }
 }
 
-class _EligibleReadings {
-  const _EligibleReadings({
-    required this.readings,
-    required this.excludedProvisionalCount,
-    required this.excludedFutureCount,
-  });
-
-  final List<IdentifiedGlucoseReading> readings;
-  final int excludedProvisionalCount;
-  final int excludedFutureCount;
-}
-
 class _SelectedWindow {
   const _SelectedWindow({
     required this.samples,
     required this.duplicateTimestampCount,
+    required this.acceptedProvisionalSampleCount,
   });
 
   final List<IdentifiedGlucoseReading> samples;
   final int duplicateTimestampCount;
+  final int acceptedProvisionalSampleCount;
+}
+
+class _ExcludedWindowCounts {
+  const _ExcludedWindowCounts({
+    required this.provisionalBaselineCount,
+    required this.provisionalPostMealCount,
+    required this.futureBaselineCount,
+    required this.futurePostMealCount,
+  });
+
+  final int provisionalBaselineCount;
+  final int provisionalPostMealCount;
+  final int futureBaselineCount;
+  final int futurePostMealCount;
 }

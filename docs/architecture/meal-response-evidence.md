@@ -9,9 +9,10 @@ emergency signal.
 ## Inputs and identity
 
 The caller passes a `HealthEventType.meal` and `IdentifiedGlucoseReading`
-values. Each glucose record must have a non-empty, unique local or imported
-record ID. The result contains only IDs, timestamps, source types, counts, and
-metrics. It does not copy a meal description, note body, or raw glucose series.
+values. Each selected meal and glucose record must have a non-empty, unique
+local or imported record ID. The result contains only IDs, timestamps, source
+types, counts, and metrics. It does not copy a meal description, note body, or
+raw glucose series.
 
 All arithmetic uses UTC instants. The algorithm sorts inputs by instant,
 source name, and record ID. It rejects duplicate timestamps in a relevant
@@ -31,9 +32,13 @@ The default policy uses:
   reviewed source-priority policy.
 
 Display-provisional readings and readings after the caller's supplied `now`
-instant are excluded. The evidence object records their counts. Sparse,
-gapped, future, duplicate, out-of-order, DST-crossing, and mixed-source data
-therefore has a deterministic, inspectable result.
+instant are excluded by default. The evidence object records each exclusion by
+baseline or post-meal window, so a sample outside one meal's windows does not
+inflate that meal's evidence. A caller can retain provisional readings for
+inspection, but that response receives `provisionalReadings` and is never
+sufficient. Sparse, gapped, future, provisional, duplicate, out-of-order,
+DST-crossing, and mixed-source data therefore has a deterministic, inspectable
+result.
 
 ## Output
 
@@ -44,7 +49,8 @@ Every `MealResponse` includes `MealResponseEvidence` with:
 - accepted baseline and response sample IDs;
 - source summary, sample count, active span, sample cadence, coverage span,
   and largest gap;
-- duplicate and excluded-reading counts; and
+- duplicate counts, accepted-provisional counts, and per-window
+  provisional/future exclusion counts; and
 - a qualification status.
 
 Only a sufficient response exposes peak rise, time to peak, and observed
