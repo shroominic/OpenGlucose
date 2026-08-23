@@ -237,7 +237,7 @@ void main() {
     );
 
     test(
-      'tombstone removes an imported record and remains queryable',
+      'tombstone removes an imported record, then a re-import clears it',
       () async {
         const identity = HealthImportIdentity(
           platform: HealthSourcePlatform.appleHealth,
@@ -268,6 +268,24 @@ void main() {
         );
         expect(tombstones, hasLength(1));
         expect(tombstones.single.provenance.sourceRevision, 'revision-3');
+
+        await repo.upsertHeartRateSamples([
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 12, 5),
+            bpm: 74,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: identity,
+              sourceRevision: 'revision-4',
+            ),
+          ),
+        ]);
+
+        final reimported = await repo.queryHeartRateSamples();
+        expect(reimported, hasLength(1));
+        expect(reimported.single.bpm, 74);
+        expect(reimported.single.provenance!.sourceRevision, 'revision-4');
+        expect(await repo.queryImportTombstones(), isEmpty);
       },
     );
   });
@@ -328,9 +346,22 @@ void main() {
         title: 't',
       ),
     );
+    await repo.reconcileImportTombstones([
+      const HealthImportTombstone(
+        kind: HealthSampleKind.heartRate,
+        provenance: HealthSampleProvenance(
+          identity: HealthImportIdentity(
+            platform: HealthSourcePlatform.appleHealth,
+            externalId: 'fixture-clear-tombstone',
+          ),
+          isDeleted: true,
+        ),
+      ),
+    ]);
     await repo.clear();
     expect(await repo.queryEvents(), isEmpty);
     expect(await repo.queryHeartRateSamples(), isEmpty);
+    expect(await repo.queryImportTombstones(), isEmpty);
     expect(await repo.queryInsights(), isEmpty);
   });
 
@@ -485,6 +516,153 @@ void main() {
             [SqfliteHealthRepository.tableImportTombstones],
           );
           expect(tables, isNotEmpty);
+          await inspected.close();
+        } finally {
+          await databaseFactoryFfi.deleteDatabase(path);
+          await directory.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
+      'rejects an unknown newer schema without lowering its version',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'openglucose-health-future-schema-',
+        );
+        final path = '${directory.path}${Platform.pathSeparator}health.db';
+        try {
+          final current = SqfliteHealthRepository(
+            path: path,
+            databaseFactory: databaseFactoryFfi,
+          );
+          await current.init();
+          await current.close();
+
+          final future = await databaseFactoryFfi.openDatabase(path);
+          const futureVersion = SqfliteHealthRepository.schemaVersion + 1;
+          await future.setVersion(futureVersion);
+          await future.close();
+
+          final older = SqfliteHealthRepository(
+            path: path,
+            databaseFactory: databaseFactoryFfi,
+          );
+          await expectLater(older.init(), throwsA(isA<StateError>()));
+          await older.close();
+
+          final inspected = await databaseFactoryFfi.openDatabase(path);
+          expect(await inspected.getVersion(), futureVersion);
+          await inspected.close();
+        } finally {
+          await databaseFactoryFfi.deleteDatabase(path);
+          await directory.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
+      'recovers after a schema-v1 binary lowers the v2 version marker',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'openglucose-health-v2-v1-v2-',
+        );
+        final path = '${directory.path}${Platform.pathSeparator}health.db';
+        try {
+          const identity = HealthImportIdentity(
+            platform: HealthSourcePlatform.appleHealth,
+            externalId: 'fixture-downgrade-record',
+          );
+          final initial = SqfliteHealthRepository(
+            path: path,
+            databaseFactory: databaseFactoryFfi,
+          );
+          await initial.init();
+          await initial.upsertActivitySamples([
+            ActivitySample(
+              start: DateTime.utc(2026, 1, 1, 8),
+              end: DateTime.utc(2026, 1, 1, 8, 15),
+              type: ActivityType.steps,
+              source: DataSource.appleHealth,
+              steps: 100,
+              provenance: const HealthSampleProvenance(identity: identity),
+            ),
+          ]);
+          await initial.close();
+
+          // The shipped v1 repository has no onDowngrade callback. sqflite
+          // lowers user_version, but leaves the additive v2 table shape.
+          final legacyV1 = await databaseFactoryFfi.openDatabase(
+            path,
+            options: OpenDatabaseOptions(version: 1),
+          );
+          expect(await legacyV1.getVersion(), 1);
+          final v2Columns = await legacyV1.rawQuery(
+            'PRAGMA table_info(activity_samples)',
+          );
+          expect(
+            v2Columns.map((column) => column['name']),
+            containsAll(['identity_platform', 'external_id']),
+          );
+          await legacyV1.insert('activity_samples', <String, Object?>{
+            'start_ms': DateTime.utc(2026, 1, 1, 9).millisecondsSinceEpoch,
+            'type': ActivityType.steps.key,
+            'data':
+                '{'
+                '"formatVersion":1,'
+                '"start":"2026-01-01T09:00:00.000Z",'
+                '"end":"2026-01-01T09:15:00.000Z",'
+                '"type":"steps",'
+                '"source":"appleHealth",'
+                '"steps":200'
+                '}',
+          });
+          await legacyV1.close();
+
+          final recovered = SqfliteHealthRepository(
+            path: path,
+            databaseFactory: databaseFactoryFfi,
+          );
+          await recovered.init();
+          final recoveredSamples = await recovered.queryActivitySamples();
+          expect(recoveredSamples, hasLength(2));
+          expect(
+            recoveredSamples
+                .singleWhere((sample) => sample.provenance == null)
+                .steps,
+            200,
+          );
+          expect(
+            recoveredSamples
+                .singleWhere((sample) => sample.provenance != null)
+                .steps,
+            100,
+          );
+
+          // The restored v2 import index still replaces the source record.
+          await recovered.upsertActivitySamples([
+            ActivitySample(
+              start: DateTime.utc(2026, 1, 1, 10),
+              end: DateTime.utc(2026, 1, 1, 10, 15),
+              type: ActivityType.steps,
+              source: DataSource.appleHealth,
+              steps: 300,
+              provenance: const HealthSampleProvenance(identity: identity),
+            ),
+          ]);
+          final reconciled = await recovered.queryActivitySamples();
+          expect(reconciled, hasLength(2));
+          expect(
+            reconciled.singleWhere((sample) => sample.provenance != null).steps,
+            300,
+          );
+          await recovered.close();
+
+          final inspected = await databaseFactoryFfi.openDatabase(path);
+          expect(
+            await inspected.getVersion(),
+            SqfliteHealthRepository.schemaVersion,
+          );
           await inspected.close();
         } finally {
           await databaseFactoryFfi.deleteDatabase(path);

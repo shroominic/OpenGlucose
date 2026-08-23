@@ -40,7 +40,13 @@ rewriting or deleting schema-version-1 rows. The migration is performed by the
 SQLite upgrade transaction. A prior schema-version-1 binary can still read the
 JSON sample payloads after this upgrade, but it cannot preserve the new import
 identity when it writes; do not continue imports on a downgraded binary. Roll
-forward to a schema-version-2 build before importing again.
+forward to a schema-version-2 build before importing again. The schema-two
+migration probes existing columns and tables before adding them, because a
+schema-one binary can lower SQLite's version marker while leaving the additive
+schema-two shape in place. Rolling forward restores the marker and does not
+repeat an `ALTER TABLE`; it does not restore provenance omitted by a
+schema-one write. Schema-two binaries reject future unknown schema versions
+instead of lowering their version marker.
 
 ## Alternatives considered
 

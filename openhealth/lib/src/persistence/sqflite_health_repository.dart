@@ -67,6 +67,7 @@ class SqfliteHealthRepository implements HealthRepository {
           await _migrate(db, 0, version);
         },
         onUpgrade: _migrate,
+        onDowngrade: _rejectDowngrade,
       ),
     );
   }
@@ -178,42 +179,42 @@ class SqfliteHealthRepository implements HealthRepository {
         'CREATE INDEX idx_insights_category ON $tableInsights(category)',
       );
     }
-    if (from >= 1 && from < 2) {
-      // Existing v1 rows have no import identity. Keep them untouched and
-      // nullable so legacy/manual rows retain their append-only semantics.
-      await db.execute(
-        'ALTER TABLE $tableActivity ADD COLUMN identity_platform TEXT',
+    if (from < 2 && to >= 2) {
+      // A schema-v1 binary has no downgrade callback. sqflite therefore lowers
+      // `user_version` when that binary opens a v2 database, while retaining
+      // these additive v2 columns. Probe before every ALTER so a later v2
+      // launch repairs that version marker instead of treating the database as
+      // corrupt and failing on duplicate columns.
+      //
+      // Existing v1 rows remain untouched and nullable so legacy/manual rows
+      // retain their append-only semantics.
+      await _addColumnIfMissing(
+        db,
+        tableActivity,
+        'identity_platform',
       );
+      await _addColumnIfMissing(db, tableActivity, 'external_id');
       await db.execute(
-        'ALTER TABLE $tableActivity ADD COLUMN external_id TEXT',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_import_identity '
+        'ON $tableActivity(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
       );
+      await _addColumnIfMissing(db, tableSleep, 'identity_platform');
+      await _addColumnIfMissing(db, tableSleep, 'external_id');
       await db.execute(
-        'CREATE UNIQUE INDEX idx_activity_import_identity ON $tableActivity('
-        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
-        'AND external_id IS NOT NULL',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_import_identity '
+        'ON $tableSleep(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
       );
+      await _addColumnIfMissing(db, tableHeartRate, 'identity_platform');
+      await _addColumnIfMissing(db, tableHeartRate, 'external_id');
       await db.execute(
-        'ALTER TABLE $tableSleep ADD COLUMN identity_platform TEXT',
-      );
-      await db.execute('ALTER TABLE $tableSleep ADD COLUMN external_id TEXT');
-      await db.execute(
-        'CREATE UNIQUE INDEX idx_sleep_import_identity ON $tableSleep('
-        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
-        'AND external_id IS NOT NULL',
-      );
-      await db.execute(
-        'ALTER TABLE $tableHeartRate ADD COLUMN identity_platform TEXT',
-      );
-      await db.execute(
-        'ALTER TABLE $tableHeartRate ADD COLUMN external_id TEXT',
-      );
-      await db.execute(
-        'CREATE UNIQUE INDEX idx_hr_import_identity ON $tableHeartRate('
-        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
-        'AND external_id IS NOT NULL',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_hr_import_identity '
+        'ON $tableHeartRate(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
       );
       await db.execute('''
-        CREATE TABLE $tableImportTombstones (
+        CREATE TABLE IF NOT EXISTS $tableImportTombstones (
           sample_kind TEXT NOT NULL,
           identity_platform TEXT NOT NULL,
           external_id TEXT NOT NULL,
@@ -223,6 +224,34 @@ class SqfliteHealthRepository implements HealthRepository {
       ''');
     }
   }
+
+  /// Adds one nullable schema-v2 identity column if a downgraded v1 binary
+  /// already reset the SQLite version marker while leaving the v2 table shape.
+  static Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    final exists = columns.any((entry) => entry['name'] == column);
+    if (!exists) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column TEXT');
+    }
+  }
+
+  /// Keeps a future schema from being silently relabelled as this version.
+  ///
+  /// Version one shipped without this guard, so [_migrate] separately repairs
+  /// the historical v2 -> v1 -> v2 marker rollback. Future downgrades fail
+  /// closed instead of risking an unknown schema being written by this binary.
+  static Future<void> _rejectDowngrade(
+    Database _,
+    int from,
+    int to,
+  ) => throw StateError(
+    'Refusing local health database downgrade from schema $from to $to. '
+    'Use a schema-version-$from or newer build.',
+  );
 
   static int _ms(DateTime t) => t.toUtc().millisecondsSinceEpoch;
 

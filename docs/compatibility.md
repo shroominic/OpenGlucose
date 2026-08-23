@@ -116,7 +116,15 @@ identity. The forward migration is additive and transaction-backed. A
 schema-one binary can read the stored sample JSON after the upgrade, but cannot
 preserve the identity columns when it writes new imports; do not continue
 imports after a downgrade. Roll forward to a schema-two build before importing
-again.
+again. A schema-one binary can lower SQLite's `user_version` while leaving the
+additive schema-two columns in place. Schema two probes the table shape before
+each additive migration, so a later schema-two launch restores the version
+marker without duplicate-column failure. That recovery preserves existing rows;
+it does not make schema-one writes source-aware.
+
+The schema-two binary rejects an attempt to open a higher, unknown SQLite
+schema version. It leaves that higher version marker unchanged rather than
+silently relabelling an unrecognized schema as version two.
 
 Downgrading to a schema-two app after filename migration is unsupported: the
 older app cannot locate schema-three blobs even though their bytes remain on
