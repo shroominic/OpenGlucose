@@ -103,9 +103,17 @@ unless deterministic_preflights.all? { |index| index && index < claim_index }
   raise "TestFlight signing contract failed: every deterministic preflight must precede the upload attempt"
 end
 
-claim_end = script.index("\nfi\n", claim_index)
-unless claim_end && script[(claim_end + 4)...upload_index].to_s.strip.empty?
-  raise "TestFlight signing contract failed: pilot must run immediately after the external upload attempt claim"
+resume_guard = script.rindex('if [[ "$TESTFLIGHT_RESUME_UPLOAD" == "yes" ]]; then', claim_index)
+resume_verify = script.index('fastlane ios verify_external_upload_continuation')
+claim_stop = script.index('if [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "yes" ]]; then')
+unless resume_guard && resume_verify && claim_stop &&
+       resume_guard < resume_verify && resume_verify < upload_index &&
+       claim_index < claim_stop && claim_stop < upload_index
+  raise "TestFlight signing contract failed: pilot must follow only a verified persisted upload claim"
+end
+claim_stop_end = script.index("\n    fi\n", claim_stop)
+unless claim_stop_end && script[claim_stop...claim_stop_end].include?("exit 0")
+  raise "TestFlight signing contract failed: a pre-pilot upload claim must stop before continuation"
 end
 
 notify_only_start = script.index(
@@ -155,7 +163,14 @@ require_match(
   "normal reruns must not overwrite a completed upload state"
 )
 
-%w[TESTFLIGHT_STOP_AFTER_UPLOAD TESTFLIGHT_STOP_AFTER_REVIEW].each do |variable|
+%w[
+  TESTFLIGHT_STOP_AFTER_UPLOAD
+  TESTFLIGHT_STOP_AFTER_REVIEW
+  TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM
+  TESTFLIGHT_RESUME_UPLOAD
+  TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM
+  TESTFLIGHT_SEND_CLAIMED_NOTIFICATION
+].each do |variable|
   require_match(
     script,
     /#{Regexp.escape(variable)}="\$\{#{Regexp.escape(variable)}:-no\}"/,
@@ -174,6 +189,20 @@ end
 review_stop = notify_only.index('if [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "yes" ]]; then')
 unless review_stop && resume_associate < review_stop && review_stop < resume_notify
   raise "TestFlight signing contract failed: review stop must precede notification"
+end
+
+notification_claim_stop = notify_only.index(
+  'if [[ "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "yes" ]]; then'
+)
+notification_send_mode = notify_only.index('TESTFLIGHT_SEND_CLAIMED_NOTIFICATION')
+unless notification_claim_stop && notification_send_mode &&
+       notification_claim_stop < resume_notify && notification_send_mode < resume_notify
+  raise "TestFlight signing contract failed: notification must use an explicit claim or send mode"
+end
+
+build_execution = script[script.index('echo "==> Uploading without distribution or tester notification"')..]
+if build_execution.include?('fastlane ios notify_external_build')
+  raise "TestFlight signing contract failed: normal external upload must not auto-notify"
 end
 
 uuid_validator = Regexp.escape(

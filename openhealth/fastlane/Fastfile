@@ -908,6 +908,29 @@ def notification_receipt_state(path:, expected:)
   end
 end
 
+# The workflow persists this pending claim before it starts the single
+# non-idempotent notification request.  A later runner may inspect the claim,
+# but it must not turn a pending claim into another request: only the guarded
+# continuation job that owns the same workflow delivery may do that.
+def require_pending_notification_claim(path:, expected:)
+  receipt = load_notification_receipt(path)
+  matches = expected.all? { |key, value| receipt[key] == value }
+  UI.user_error!("Notification receipt does not match the exact release") unless matches
+  UI.user_error!("Notification receipt is not a pending claim") unless
+    receipt["status"] == "pending"
+
+  pending_stat = File.lstat(path)
+  UI.user_error!("Pending notification claim must have mode 600") unless
+    (pending_stat.mode & 0o777) == 0o600
+
+  claim_id = receipt["claimId"].to_s.strip
+  claimed_at = receipt["claimedAtUtc"].to_s.strip
+  UI.user_error!("Pending notification claim is incomplete") if
+    claim_id.empty? || claimed_at.empty?
+  require_utc_timestamp(value: claimed_at, label: "Pending notification claim")
+  claim_id
+end
+
 def create_notification_claim(path:, expected:)
   claim_id = SecureRandom.uuid
   claim = expected.merge(
@@ -1136,7 +1159,8 @@ platform :ios do
     source_commit = required_option(options, :source_commit)
     ipa_sha256 = required_option(options, :ipa_sha256)
     # This absence query and the exclusive local publication together are the
-    # final claim step. The shell invokes pilot immediately after this lane.
+    # final deterministic claim step. The workflow persists the claim before
+    # it permits the one pilot continuation.
     require_no_exact_build(
       app: app,
       version: version,
@@ -1171,6 +1195,46 @@ platform :ios do
       continuation_token_path: continuation_token_path
     )
     UI.success("Claimed the exact external upload attempt")
+  end
+
+  desc "Verify the same claimed external upload before its one pilot continuation"
+  lane :verify_external_upload_continuation do |options|
+    attempt_path = required_option(options, :upload_attempt_path)
+    provenance_path = required_option(options, :upload_provenance_path)
+    continuation_token_path = required_option(options, :continuation_token_path)
+    require_external_upload_paths_distinct(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path
+    )
+    require_external_upload_file_state(
+      attempt_path: attempt_path,
+      provenance_path: provenance_path,
+      expected: :pending,
+      allow_pending_continuation: true
+    )
+
+    app = connect_api_app(options)
+    bundle_id = required_option(options, :bundle_id)
+    version = required_option(options, :version)
+    build_number = required_option(options, :build_number)
+    source_commit = required_option(options, :source_commit)
+    ipa_sha256 = required_option(options, :ipa_sha256)
+    require_no_exact_build(
+      app: app,
+      version: version,
+      build_number: build_number
+    )
+    require_upload_attempt(
+      path: attempt_path,
+      app: app,
+      bundle_id: bundle_id,
+      version: version,
+      build_number: build_number,
+      source_commit: source_commit,
+      ipa_sha256: ipa_sha256,
+      continuation_token_path: continuation_token_path
+    )
+    UI.success("Verified the exact claimed external upload continuation")
   end
 
   desc "Finalize immutable provenance for the exact processed external build"
@@ -1387,6 +1451,10 @@ platform :ios do
     require_no_individual_testers(build)
     require_app_store_eligible_build(build)
 
+    notification_phase = optional_option(options, :notification_phase) || "deliver"
+    UI.user_error!("Notification phase is invalid") unless
+      %w[claim send deliver].include?(notification_phase)
+
     detail = build.build_beta_detail
     expected_receipt = expected_notification_receipt(
       app: app,
@@ -1405,13 +1473,18 @@ platform :ios do
       source_commit: required_option(options, :source_commit),
       ipa_sha256: upload_provenance["ipaSha256"]
     )
-    if notification_receipt_state(
-      path: receipt_path,
-      expected: expected_receipt
-    ) == :complete
-      UI.success("Verified the durable notification receipt for the exact build")
-      next
-    end
+    claim_id = if notification_phase == "send"
+                 require_pending_notification_claim(
+                   path: receipt_path,
+                   expected: expected_receipt
+                 )
+               elsif notification_receipt_state(
+                 path: receipt_path,
+                 expected: expected_receipt
+               ) == :complete
+                 UI.success("Verified the durable notification receipt for the exact build")
+                 next
+               end
     if build.ready_for_beta_submission?
       UI.user_error!(
         "The exact build still requires beta-review submission. Run the " \
@@ -1432,12 +1505,18 @@ platform :ios do
 
     # Claim the exact release durably before the build-scoped, non-idempotent
     # notification request. Existing pending or complete records prevent a
-    # concurrent runner from posting. The audience is then rechecked with the
-    # claim held immediately before the single request attempt.
-    claim_id = create_notification_claim(
-      path: receipt_path,
-      expected: expected_receipt
-    )
+    # concurrent runner from posting. The workflow stores this claim before it
+    # can enter the `send` continuation, so a new workflow must fail closed.
+    unless notification_phase == "send"
+      claim_id = create_notification_claim(
+        path: receipt_path,
+        expected: expected_receipt
+      )
+      if notification_phase == "claim"
+        UI.success("Created the durable notification claim for the exact build")
+        next
+      end
+    end
     group = exact_external_group(
       app: app,
       group_name: required_option(options, :group_name),

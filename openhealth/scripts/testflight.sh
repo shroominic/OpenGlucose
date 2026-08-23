@@ -345,11 +345,31 @@ TESTFLIGHT_STOP_AFTER_REVIEW="${TESTFLIGHT_STOP_AFTER_REVIEW:-no}"
 [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "yes" || \
    "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" ]] || \
   fail "TESTFLIGHT_STOP_AFTER_REVIEW must be yes or no"
+TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM="${TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM:-no}"
+[[ "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "yes" || \
+   "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "no" ]] || \
+  fail "TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM must be yes or no"
+TESTFLIGHT_RESUME_UPLOAD="${TESTFLIGHT_RESUME_UPLOAD:-no}"
+[[ "$TESTFLIGHT_RESUME_UPLOAD" == "yes" || \
+   "$TESTFLIGHT_RESUME_UPLOAD" == "no" ]] || \
+  fail "TESTFLIGHT_RESUME_UPLOAD must be yes or no"
+TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM="${TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM:-no}"
+[[ "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "yes" || \
+   "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "no" ]] || \
+  fail "TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM must be yes or no"
+TESTFLIGHT_SEND_CLAIMED_NOTIFICATION="${TESTFLIGHT_SEND_CLAIMED_NOTIFICATION:-no}"
+[[ "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "yes" || \
+   "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "no" ]] || \
+  fail "TESTFLIGHT_SEND_CLAIMED_NOTIFICATION must be yes or no"
 if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
     fail "internal TestFlight mode does not support notify-only runs"
   [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "no" && \
-     "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" ]] || \
+     "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" && \
+     "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "no" && \
+     "$TESTFLIGHT_RESUME_UPLOAD" == "no" && \
+     "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "no" && \
+     "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "no" ]] || \
     fail "internal TestFlight mode does not support external phase stops"
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for internal mode}"
   : "${TESTFLIGHT_TESTER_ID:?missing immutable TESTFLIGHT_TESTER_ID for internal mode}"
@@ -385,6 +405,28 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" || \
      "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
     fail "TESTFLIGHT_STOP_AFTER_REVIEW requires a notify-only review run"
+  if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
+    [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "no" && \
+       "$TESTFLIGHT_RESUME_UPLOAD" == "no" ]] || \
+      fail "upload-claim controls require a build-and-upload run"
+    [[ "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "no" || \
+       "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" ]] || \
+      fail "notification claiming requires completed beta review"
+    [[ "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "no" || \
+       "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" ]] || \
+      fail "notification delivery requires completed beta review"
+    [[ "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "no" || \
+       "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "no" ]] || \
+      fail "notification claim and delivery are separate operations"
+  else
+    [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" && \
+       "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "no" && \
+       "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "no" ]] || \
+      fail "notification controls require a notify-only run"
+    [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "no" || \
+       "$TESTFLIGHT_RESUME_UPLOAD" == "no" ]] || \
+      fail "upload claim and upload continuation are separate operations"
+  fi
 fi
 [[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || \
   fail "APPLE_TEAM_ID is malformed"
@@ -443,12 +485,22 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   # official runs for one provenance record must contend on the same claim.
   UPLOAD_ATTEMPT_PATH=$(canonical_external_record_path \
     "$UPLOAD_PROVENANCE_PATH.attempt" "upload attempt")
+  UPLOAD_CONTINUATION_TOKEN_PATH=
+  if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" && \
+        ( "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "yes" || \
+          "$TESTFLIGHT_RESUME_UPLOAD" == "yes" ) ]]; then
+    : "${TESTFLIGHT_UPLOAD_CONTINUATION_TOKEN_PATH:?missing TESTFLIGHT_UPLOAD_CONTINUATION_TOKEN_PATH for split upload}"
+    UPLOAD_CONTINUATION_TOKEN_PATH=$(canonical_external_record_path \
+      "$TESTFLIGHT_UPLOAD_CONTINUATION_TOKEN_PATH" "upload continuation token")
+  fi
 
   managed_release_paths=(
     "$NOTIFICATION_RECEIPT_PATH"
     "$UPLOAD_ATTEMPT_PATH"
     "$UPLOAD_PROVENANCE_PATH"
   )
+  [[ -z "$UPLOAD_CONTINUATION_TOKEN_PATH" ]] || \
+    managed_release_paths+=("$UPLOAD_CONTINUATION_TOKEN_PATH")
   for managed_path in "${managed_release_paths[@]}"; do
     for namespace_owner in "${managed_release_paths[@]}"; do
       [[ "$managed_path" != "$namespace_owner".tmp.* ]] || \
@@ -472,7 +524,8 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
     require_regular_file_mode "$UPLOAD_PROVENANCE_PATH" "upload provenance" 400
     provenance_present=yes
   fi
-  if [[ "$attempt_present" == "yes" && "$provenance_present" == "no" ]]; then
+  if [[ "$attempt_present" == "yes" && "$provenance_present" == "no" && \
+        "$TESTFLIGHT_RESUME_UPLOAD" == "no" ]]; then
     fail "an upload attempt is pending without finalized provenance; preserve it, record an incident, and cut a new build number"
   fi
   if [[ "$attempt_present" == "no" && "$provenance_present" == "yes" ]]; then
@@ -481,6 +534,11 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
   if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     [[ "$attempt_present" == "yes" && "$provenance_present" == "yes" ]] || \
       fail "notify-only mode requires both immutable upload attempt and provenance"
+  elif [[ "$TESTFLIGHT_RESUME_UPLOAD" == "yes" ]]; then
+    [[ "$attempt_present" == "yes" && "$provenance_present" == "no" ]] || \
+      fail "upload continuation requires exactly one pending immutable upload attempt"
+    require_regular_file_mode \
+      "$UPLOAD_CONTINUATION_TOKEN_PATH" "upload continuation token" 600
   else
     [[ "$attempt_present" == "no" && "$provenance_present" == "no" ]] || \
       fail "normal upload reruns are blocked after an attempt is finalized; use notify-only mode"
@@ -565,6 +623,12 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ "$TESTFLIGHT_MODE" == "external" && \
+      "$TESTFLIGHT_NOTIFY_ONLY" == "no" && \
+      -z "$UPLOAD_CONTINUATION_TOKEN_PATH" ]]; then
+  UPLOAD_CONTINUATION_TOKEN_PATH="$release_temp/upload-continuation-token"
+fi
+
 credential_json="$release_temp/app-store-connect.json"
 export FASTLANE_SKIP_DOCS=1
 export FASTLANE_SKIP_UPDATE_CHECK=1
@@ -648,7 +712,16 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     echo "==> Submitted or verified external beta review for $RELEASE_VERSION ($head_commit)"
     exit 0
   fi
-  echo "==> Verifying the exact build and sending the deferred tester notification"
+  notification_phase=deliver
+  if [[ "$TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM" == "yes" ]]; then
+    notification_phase=claim
+    echo "==> Creating a durable claim before tester notification"
+  elif [[ "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "yes" ]]; then
+    notification_phase=send
+    echo "==> Sending notification from the persisted durable claim"
+  else
+    echo "==> Verifying the exact build and sending the deferred tester notification"
+  fi
   fastlane ios notify_external_build \
     "api_key_path:$credential_json" \
     "bundle_id:$APP_BUNDLE_ID" \
@@ -664,18 +737,24 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "source_commit:$head_commit" \
     "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
-    "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
+    "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH" \
+    "notification_phase:$notification_phase"
+  if [[ "$notification_phase" == claim ]]; then
+    echo "==> Persist the notification claim before any send continuation"
+    exit 0
+  fi
   echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
   exit 0
 fi
 
-echo "==> Restoring locked dependencies"
-flutter pub get --enforce-lockfile
-assert_clean_source "dependency restore"
-dependency_state_before=$(dependency_fingerprint)
+if [[ "$TESTFLIGHT_RESUME_UPLOAD" == "no" ]]; then
+  echo "==> Restoring locked dependencies"
+  flutter pub get --enforce-lockfile
+  assert_clean_source "dependency restore"
+  dependency_state_before=$(dependency_fingerprint)
 
-echo "==> Building committed version $RELEASE_VERSION from $head_commit"
-if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
+  echo "==> Building committed version $RELEASE_VERSION from $head_commit"
+  if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   internal_export_options="$release_temp/internal-export-options.plist"
   cat >"$internal_export_options" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -706,11 +785,11 @@ if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
 </dict>
 </plist>
 PLIST
-  flutter build ipa \
-    --release \
-    --no-pub \
-    --export-options-plist="$internal_export_options"
-else
+    flutter build ipa \
+      --release \
+      --no-pub \
+      --export-options-plist="$internal_export_options"
+  else
   external_export_options="$release_temp/external-export-options.plist"
   cat >"$external_export_options" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -741,21 +820,25 @@ else
 </dict>
 </plist>
 PLIST
-  flutter build ipa \
-    --release \
-    --no-pub \
-    --export-options-plist="$external_export_options"
-fi
+    flutter build ipa \
+      --release \
+      --no-pub \
+      --export-options-plist="$external_export_options"
+  fi
 
-# Builds and CocoaPods hooks can rewrite tracked dependency state. Verify both
-# the entire worktree and the dependency inputs again before trusting the IPA.
-assert_clean_source "release build"
-post_build_commit=$(git rev-parse HEAD)
-[[ "$post_build_commit" == "$head_commit" ]] || \
-  fail "HEAD changed during the release build ($head_commit -> $post_build_commit)"
-dependency_state_after=$(dependency_fingerprint)
-[[ "$dependency_state_after" == "$dependency_state_before" ]] || \
-  fail "release build changed locked dependency state"
+  # Builds and CocoaPods hooks can rewrite tracked dependency state. Verify both
+  # the entire worktree and the dependency inputs again before trusting the IPA.
+  assert_clean_source "release build"
+  post_build_commit=$(git rev-parse HEAD)
+  [[ "$post_build_commit" == "$head_commit" ]] || \
+    fail "HEAD changed during the release build ($head_commit -> $post_build_commit)"
+  dependency_state_after=$(dependency_fingerprint)
+  [[ "$dependency_state_after" == "$dependency_state_before" ]] || \
+    fail "release build changed locked dependency state"
+else
+  echo "==> Resuming the persisted external upload claim without rebuilding"
+  assert_clean_source "claimed upload resume"
+fi
 
 shopt -s nullglob
 ipas=("$ROOT"/build/ios/ipa/*.ipa)
@@ -833,18 +916,35 @@ else
 fi
 [[ "$(<"$preupload_group_id_file")" == "$approved_group_id" ]] || \
   fail "approved TestFlight audience changed before upload"
-upload_continuation_token="$release_temp/upload-continuation-token"
+upload_continuation_token="${UPLOAD_CONTINUATION_TOKEN_PATH:-}"
 if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
-  fastlane ios claim_external_upload_attempt \
-    "api_key_path:$credential_json" \
-    "bundle_id:$APP_BUNDLE_ID" \
-    "version:$EXPECTED_MARKETING_VERSION" \
-    "build_number:$EXPECTED_BUILD_NUMBER" \
-    "source_commit:$head_commit" \
-    "ipa_sha256:$artifact_sha256" \
-    "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
-    "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
-    "continuation_token_path:$upload_continuation_token"
+  if [[ "$TESTFLIGHT_RESUME_UPLOAD" == "yes" ]]; then
+    fastlane ios verify_external_upload_continuation \
+      "api_key_path:$credential_json" \
+      "bundle_id:$APP_BUNDLE_ID" \
+      "version:$EXPECTED_MARKETING_VERSION" \
+      "build_number:$EXPECTED_BUILD_NUMBER" \
+      "source_commit:$head_commit" \
+      "ipa_sha256:$artifact_sha256" \
+      "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
+      "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
+      "continuation_token_path:$upload_continuation_token"
+  else
+    fastlane ios claim_external_upload_attempt \
+      "api_key_path:$credential_json" \
+      "bundle_id:$APP_BUNDLE_ID" \
+      "version:$EXPECTED_MARKETING_VERSION" \
+      "build_number:$EXPECTED_BUILD_NUMBER" \
+      "source_commit:$head_commit" \
+      "ipa_sha256:$artifact_sha256" \
+      "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
+      "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
+      "continuation_token_path:$upload_continuation_token"
+    if [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM" == "yes" ]]; then
+      echo "==> Persist the external upload claim before any pilot continuation"
+      exit 0
+    fi
+  fi
 fi
 fastlane pilot upload \
   --api_key_path "$credential_json" \
@@ -886,6 +986,10 @@ fastlane ios record_external_upload_provenance \
   "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
   "continuation_token_path:$upload_continuation_token" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
+# The continuation token authorizes only this one runner-local pilot handoff.
+# Final provenance is immutable; retain no reusable continuation material after
+# it has been recorded.
+rm -f -- "$upload_continuation_token"
 
 if [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "yes" ]]; then
   echo "==> Uploaded and recorded external TestFlight build $RELEASE_VERSION ($head_commit)"
@@ -911,24 +1015,5 @@ fastlane ios associate_external_build \
   "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
 
-echo "==> Verifying the exclusive audience and notifying eligible testers"
-echo "    If beta review is pending, re-run with TESTFLIGHT_NOTIFY_ONLY=yes and TESTFLIGHT_GROUP_ID=$approved_group_id after approval."
-fastlane ios notify_external_build \
-  "api_key_path:$credential_json" \
-  "bundle_id:$APP_BUNDLE_ID" \
-  "group_name:$TESTFLIGHT_GROUP" \
-  "group_id:$approved_group_id" \
-  "approved_internal_group_id:$TESTFLIGHT_INTERNAL_GROUP_ID" \
-  "internal_group_name:$TESTFLIGHT_INTERNAL_GROUP" \
-  "internal_tester_id:$TESTFLIGHT_INTERNAL_TESTER_ID" \
-  "external_tester_count:$TESTFLIGHT_EXTERNAL_TESTER_COUNT" \
-  "external_tester_ids_sha256:$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" \
-  "version:$EXPECTED_MARKETING_VERSION" \
-  "build_number:$EXPECTED_BUILD_NUMBER" \
-  "source_commit:$head_commit" \
-  "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
-  "upload_provenance_path:$UPLOAD_PROVENANCE_PATH" \
-  "notification_receipt_path:$NOTIFICATION_RECEIPT_PATH"
-
-echo "==> Verified audience and notification receipt for $RELEASE_VERSION ($head_commit)"
-echo "    SHA-256: $artifact_sha256"
+echo "==> Associated the external build without tester notification"
+echo "    Run an explicit notify-only delivery after Apple approves beta review."

@@ -133,48 +133,49 @@ report `APP_STORE_ELIGIBLE`. After every deterministic source, dependency,
 artifact, signature, provisioning-profile, review-metadata, and audience
 preflight passes, it rechecks that audience and takes the immutable upload
 attempt described below. `pilot` is the immediately following command and
-uploads with distribution and automatic notification disabled. The lane then
-associates the exact processed build through the external ID, proves that the
-exact associated group set is the approved automatic internal group plus the
-approved external group, rejects individually assigned testers, and pins the
+uploads with distribution and automatic notification disabled. The lane can
+then associate the exact processed build through the external ID, prove that
+the exact associated group set is the approved automatic internal group plus
+the approved external group, reject individually assigned testers, and pin the
 external group's exact tester relationship set using an approved count plus
-SHA-256 digest. It
-requires every beta app localization to have a nonblank description and
-feedback email, and requires one exact beta review detail with contact name,
-email, phone, review notes, and an explicit demo-account flag (plus credentials
-when the flag is true). These metadata checks run before upload and again before
-submission. After submission, the lane refetches the exact build with its beta
-review submission and accepts only Apple's pending, in-review, or approved
-states. It rechecks both group memberships and the closed public-link state
-after taking the durable notification claim and immediately before sending one
-build-scoped tester notification.
+SHA-256 digest. It requires every beta app localization to have a nonblank
+description and feedback email, and requires one exact beta review detail with
+contact name, email, phone, review notes, and an explicit demo-account flag
+(plus credentials when the flag is true). These metadata checks run before
+upload and again before submission. An explicit notify-only phase, after Apple
+approval, refetches the exact build with its beta review submission, accepts
+only Apple's pending, in-review, or approved states, rechecks both group
+memberships and the closed public-link state after taking the durable
+notification claim, and then sends one build-scoped tester notification.
 
 The external lane requires `TESTFLIGHT_UPLOAD_PROVENANCE_PATH` in a mode-700
 directory outside the repository and deterministically derives the immutable
 attempt path by appending `.attempt`; there is no separately configurable
-attempt location. After every deterministic preflight and immediately before
-`pilot`, the claim lane asks App Store Connect for the exact app, iOS version,
-and build number across every processing state and aborts if any build already
-exists. It then publishes a mode-400 immutable attempt containing only the app
-and bundle IDs, version/build, source commit, locally verified IPA SHA-256,
-random attempt ID, continuation-token digest, and UTC claim time. Publication
-uses a uniquely named, fsynced same-directory inode and an atomic no-overwrite
-hard link. Official runs for the same provenance record therefore contend on
-one path: one claim wins and no process can replace it. Managed attempt,
-provenance, notification, `.tmp.*`, and `.complete.*` path namespaces may not
-collide.
+attempt location. After every deterministic preflight, the claim lane asks App
+Store Connect for the exact app, iOS version, and build number across every
+processing state and aborts if any build already exists. It then publishes a
+mode-400 immutable attempt containing only the app and bundle IDs,
+version/build, source commit, locally verified IPA SHA-256, random attempt ID,
+continuation-token digest, and UTC claim time. Publication uses a uniquely
+named, fsynced same-directory inode and an atomic no-overwrite hard link.
+Official runs for the same provenance record therefore contend on one path: one
+claim wins and no process can replace it. Managed attempt, provenance,
+notification, `.tmp.*`, and `.complete.*` path namespaces may not collide.
 
 Only the same uninterrupted shell has the private, mode-600 continuation token
-needed to finalize the claim. After `pilot` returns and Apple processing
-succeeds, the lane resolves exactly one valid build, rechecks its
-`APP_STORE_ELIGIBLE` audience type, and atomically publishes mode-400 final
-provenance. The final record binds the exact App Store Connect build ID and
-audience type to the attempt ID and SHA-256 of the immutable attempt bytes, as
-well as the app/bundle, version/build, source commit, IPA digest, and UTC
-recording time. Successful state permanently retains both records. Association
-and notification require both, validate their schemas/modes/binding, and
-revalidate the exact remote build. A normal upload rerun is blocked even after
-finalization; use notify-only mode for the already finalized release.
+needed to finalize the claim. Local delivery invokes `pilot` immediately after
+the claim. The protected workflow instead stores a private immutable claim
+artifact before it starts the continuation, then verifies the same claim and
+token immediately before `pilot`. It does not persist the token. After `pilot`
+returns and Apple processing succeeds, the lane resolves exactly one valid
+build, rechecks its `APP_STORE_ELIGIBLE` audience type, and atomically publishes
+mode-400 final provenance. The final record binds the exact App Store Connect
+build ID and audience type to the attempt ID and SHA-256 of the immutable
+attempt bytes, as well as the app/bundle, version/build, source commit, IPA
+digest, and UTC recording time. Association and notification require both,
+validate their schemas/modes/binding, and revalidate the exact remote build. A
+normal upload rerun is blocked even after finalization; use notify-only mode
+for the already finalized release.
 
 An attempt without final provenance means the non-idempotent upload boundary is
 ambiguous. Every restarted automation mode must stop before App Store Connect
@@ -218,6 +219,9 @@ build, closed public-link state, exact two-group association, and notification
 state without building or uploading again. This also safely resumes a process
 that stopped after final provenance publication but before association. A
 pending-only upload attempt can never enter notify-only mode.
+Build-and-upload mode never sends external tester notifications, even when
+Apple has already approved beta review; notification is always an explicit
+notify-only operation.
 Concurrent notification runs are prohibited. A `pending`
 claim, interrupted run, or ambiguous App Store Connect response blocks every
 retry until the release owner reconciles the exact build. If the owner can prove
@@ -249,12 +253,11 @@ internal audience and therefore requires explicit release approval.
 
 ### Protected GitHub Actions delivery
 
-`.github/workflows/release-testflight.yml` delivers only a reviewed stable
-release tag. Publishing a stable GitHub Release starts an **internal** upload;
-the same upload can be started later with `workflow_dispatch`, which is how an
-already-published release such as `v0.1.4` is delivered. The workflow checks
-the exact tag, committed version/build number, release visibility, main
-ancestry, clean source, and the latest eligible release tag before any signing
+`.github/workflows/release-testflight.yml` is **workflow-dispatch only**. A
+release owner explicitly selects the stable tag, audience, and phase; publishing
+a GitHub Release never starts TestFlight delivery. The workflow checks the
+exact tag, committed version/build number, release visibility, main ancestry,
+clean source, and the latest published stable release tag before any signing
 credential is exposed.
 
 Every release phase waits for its protected GitHub environment. Configure
@@ -279,21 +282,29 @@ required reviewers and limit each environment to protected tags:
 The upload job imports the exact Distribution certificate and profiles only
 into an ephemeral runner keychain. It runs the existing signing and audience
 verification script, retains the IPA as a private 14-day workflow artifact,
-and creates a GitHub build-provenance attestation. An external upload also
-retains its immutable attempt and provenance files as a private 90-day
-workflow artifact. The later phase needs that upload run ID; it verifies the
-same tag, source, app, version, build, and IPA digest before it changes App
-Store Connect. The workflow never stores a second release ledger or deploy key.
+and creates a GitHub build-provenance attestation. For an external upload it
+first writes a unique private 90-day upload-claim artifact, then and only then
+continues to `pilot`; the continuation token remains only on that runner and is
+removed after final provenance. A cancellation after the claim artifact blocks
+every new upload dispatch for that build, even if the final provenance artifact
+was not reached. Final attempt/provenance state is a separate private 90-day
+artifact. The later phase needs that upload run ID; it verifies the same tag,
+source, app, version, build, and IPA digest before it changes App Store Connect.
+The workflow never stores a second release ledger or deploy key.
 
 External delivery has three explicit operations. Select `external` with
 `upload` to build and upload without association, beta review submission, or
 tester notification. After the Account Holder has completed the current
 export-compliance decision in App Store Connect, run `submit_review` with the
 external upload run ID. After Apple approves beta review, run `notify` with the
-same run ID. The notify phase is never automatic. If a request is interrupted
-at an upload or notification boundary, do not retry it blindly: preserve the
-artifact/evidence, reconcile the exact App Store Connect build, and cut a new
-build number when its delivery state is ambiguous.
+same run ID. The notify phase has no default and is never automatic. It creates
+a unique private 90-day notification-claim artifact before its one send
+continuation. A cancellation or ambiguous result after that artifact exists
+blocks every later notification dispatch for that build; reconcile the exact
+App Store Connect state rather than retrying. Retained receipts are audit
+evidence only and cannot reopen a send. If an upload or notification boundary
+is interrupted, preserve the evidence, reconcile the exact App Store Connect
+build, and cut a new build number when its delivery state is ambiguous.
 
 An internal upload is intentionally a separate export type. It is the right
 first delivery for a new stable tag, does not require external beta review, and

@@ -132,6 +132,21 @@ Dir.mktmpdir("openglucose-receipt-test") do |directory|
   assert_user_error("claim is pending") do
     notification_receipt_state(path: receipt_path, expected: expected)
   end
+  assert(
+    require_pending_notification_claim(path: receipt_path, expected: expected) == claim_id,
+    "the guarded continuation must recover only the exact pending claim"
+  )
+  File.chmod(0o400, receipt_path)
+  assert_user_error("must have mode 600") do
+    require_pending_notification_claim(path: receipt_path, expected: expected)
+  end
+  File.chmod(0o600, receipt_path)
+  assert_user_error("does not match the exact release") do
+    require_pending_notification_claim(
+      path: receipt_path,
+      expected: expected.merge("buildId" => "different-build")
+    )
+  end
   assert_user_error("claim already exists") do
     create_notification_claim(path: receipt_path, expected: expected)
   end
@@ -153,6 +168,9 @@ Dir.mktmpdir("openglucose-receipt-test") do |directory|
     notification_receipt_state(path: receipt_path, expected: expected) == :complete,
     "an exact complete receipt must be verification-only"
   )
+  assert_user_error("is not a pending claim") do
+    require_pending_notification_claim(path: receipt_path, expected: expected)
+  end
   assert_user_error("does not match the exact release") do
     notification_receipt_state(
       path: receipt_path,
