@@ -18,7 +18,7 @@ class AiSettings {
   /// Whether the user opted into AI insights (BYO-key). Off by default.
   final bool enabled;
 
-  /// OpenAI/Anthropic-compatible base URL.
+  /// OpenAI-compatible chat-completions base URL.
   final String baseUrl;
 
   /// Model identifier.

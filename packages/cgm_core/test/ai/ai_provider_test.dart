@@ -30,6 +30,19 @@ void main() {
         isTrue,
       );
     });
+
+    test('rejects invalid remote endpoint configuration', () {
+      const config = AiProviderConfig(
+        baseUrl: 'http://api.example.com/v1',
+        apiKey: 'sk-1',
+      );
+      expect(config.isReady, isFalse);
+      expect(config.validationError, contains('absolute HTTPS URL'));
+      expect(
+        config.capability().availabilityReason,
+        AiAvailabilityReason.invalidConfiguration,
+      );
+    });
   });
 
   group('HttpChatAiProvider', () {
@@ -46,6 +59,8 @@ void main() {
       );
       expect(provider.isEnabled, isTrue);
       expect(provider.modelId, 'test-model');
+      expect(provider.capability.kind, AiProviderKind.openAiCompatibleRemote);
+      expect(provider.capability.supportsStructuredOutput, isTrue);
     });
 
     test('returns trimmed transport text', () async {
@@ -107,6 +122,7 @@ void main() {
       final body = HttpChatAiProvider.buildRequestBody(_req(), config());
       expect(body['model'], 'gpt-4o-mini');
       expect(body['max_tokens'], isA<int>());
+      expect(body['response_format'], <String, Object?>{'type': 'json_object'});
       final messages = body['messages'] as List;
       expect(messages.first, containsPair('role', 'system'));
       expect(messages.last, containsPair('role', 'user'));
@@ -123,16 +139,19 @@ void main() {
       expect(HttpChatAiProvider.parseResponseBody(body), 'from openai');
     });
 
-    test('parseResponseBody reads Anthropic content shape', () {
+    test('parseResponseBody rejects native Anthropic response shape', () {
       final body = jsonEncode({
         'content': [
           {'type': 'text', 'text': 'from anthropic'},
         ],
       });
-      expect(HttpChatAiProvider.parseResponseBody(body), 'from anthropic');
+      expect(
+        () => HttpChatAiProvider.parseResponseBody(body),
+        throwsA(isA<AiGenerationException>()),
+      );
     });
 
-    test('parseResponseBody surfaces provider error message', () {
+    test('parseResponseBody redacts provider error details', () {
       final body = jsonEncode({
         'error': {'message': 'invalid key'},
       });
@@ -142,7 +161,7 @@ void main() {
           isA<AiGenerationException>().having(
             (e) => e.message,
             'message',
-            contains('invalid key'),
+            'Provider returned an error response.',
           ),
         ),
       );
@@ -159,4 +178,5 @@ void main() {
 
 AiRequest _req() => const AiRequest(
   messages: <AiMessage>[AiMessage.system('sys'), AiMessage.user('hello')],
+  structuredOutputVersion: aiObservationContractVersion,
 );

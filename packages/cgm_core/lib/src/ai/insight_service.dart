@@ -1,28 +1,18 @@
 import '../ai_insight.dart';
 import '../cgm_models.dart';
 import '../glucose_analytics.dart';
-import '../health_event.dart';
 import '../health_repository.dart';
 import 'ai_disclaimer.dart';
+import 'ai_output_contract.dart';
 import 'ai_provider.dart';
 import 'glucose_summary.dart';
+import 'http_chat_ai_provider.dart';
 
-/// Generates AI insights from the user's *local* health data and persists them.
+/// Generates structured, evidence-bound AI observations from local data.
 ///
-/// Flow:
-/// 1. Read journal [HealthEvent]s for the window from the [HealthRepository]
-///    (glucose readings are passed in by the caller, which owns reading
-///    history).
-/// 2. Reduce both to a privacy-conscious [GlucoseSummary] — aggregate stats,
-///    not raw per-minute dumps.
-/// 3. Build a guard-railed prompt (wellness framing baked in) and call the
-///    injected [AiProvider].
-/// 4. Persist the result as an [AiInsight] tagged with the wellness disclaimer
-///    and provenance (model id), via [HealthRepository.upsertInsight].
-///
-/// Errors are surfaced as [AiGenerationException] but never crash the app: the
-/// caller decides how to present a failure. When the provider is disabled, the
-/// service short-circuits without any I/O.
+/// A provider is called only after deterministic coverage and evidence are
+/// available. Free-form output, unknown citations, unsupported numeric claims,
+/// unsafe language, and refusals never become persisted insights.
 class InsightService {
   InsightService({
     required HealthRepository repository,
@@ -39,24 +29,29 @@ class InsightService {
   final String Function() _idFactory;
   final DateTime Function() _clock;
 
-  /// Whether the underlying provider is configured to generate.
   bool get isEnabled => _provider.isEnabled;
 
-  /// Generates a single summary insight over `[windowStart, windowEnd]` from
-  /// the supplied [readings] plus the journal events in that window, persists
-  /// it, and returns it.
+  /// Generates one validated observation over the specified window.
   ///
-  /// Returns `null` when AI is disabled. Throws [AiGenerationException] on a
-  /// generation/network failure (the caller is expected to catch and surface
-  /// it gracefully).
+  /// Returns null before any I/O when AI is disabled. A sparse window, a
+  /// provider without structured output, an invalid response, or a refusal
+  /// throws and leaves the repository unchanged.
   Future<AiInsight?> generateSummaryInsight({
     required List<CgmReading> readings,
     required DateTime windowStart,
     required DateTime windowEnd,
     GlucoseUnit unit = GlucoseUnit.mgdl,
     AiInsightCategory category = AiInsightCategory.summary,
+    String locale = 'en',
   }) async {
     if (!_provider.isEnabled) return null;
+
+    final capability = _capabilityFor(_provider);
+    if (!capability.isAvailable || !capability.supportsStructuredOutput) {
+      throw const AiGenerationException(
+        'AI provider cannot produce structured evidence-bound observations.',
+      );
+    }
 
     final events = await _repository.queryEvents(
       window: TimeWindow(start: windowStart, end: windowEnd),
@@ -68,7 +63,6 @@ class InsightService {
           return !at.isBefore(windowStart) && at.isBefore(windowEnd);
         })
         .toList(growable: false);
-
     final summary = GlucoseSummary.fromData(
       windowStart: windowStart,
       windowEnd: windowEnd,
@@ -94,86 +88,115 @@ class InsightService {
       );
     }
 
-    final request = AiRequest(
-      model: _provider.modelId ?? 'gpt-4o-mini',
-      messages: buildMessages(summary),
+    final context = MetabolicContextSnapshot.fromGlucoseSummary(
+      summary,
+      locale: locale,
     );
+    final request = AiRequest(
+      model: _provider.modelId ?? capability.model ?? 'gpt-4o-mini',
+      messages: buildMessagesForContext(context),
+      purpose: AiRequestPurpose.observation,
+      structuredOutputVersion: aiObservationContractVersion,
+      maxTokens: capability.resourceLimits.maxOutputTokens,
+    );
+    final response = await _provider.generate(request);
+    final draft = AiOutputContract.decodeAndValidate(
+      response: response,
+      context: context,
+    );
+    if (draft.kind == ObservationDraftKind.refusal) {
+      throw const AiGenerationException(
+        'AI provider declined to create an evidence-bound observation.',
+      );
+    }
 
-    final body = await _provider.generate(request);
-
+    final citedIds = draft.statements
+        .expand((statement) => statement.evidenceIds)
+        .toSet();
+    final citedEvidence = context.evidence
+        .where((evidence) => citedIds.contains(evidence.id))
+        .toList(growable: false);
+    final body = draft.statements
+        .map((statement) => statement.text.trim())
+        .join('\n\n');
     final insight = AiInsight(
       id: _idFactory(),
       createdAt: _clock(),
       category: category,
-      title: _titleFor(category, summary),
-      body: '$body\n\n${AiDisclaimer.short}',
+      title: _titleFor(category),
+      body:
+          (StringBuffer(body)
+                ..write('\n\n')
+                ..write(AiDisclaimer.short))
+              .toString(),
       windowStart: windowStart,
       windowEnd: windowEnd,
       model: _provider.modelId,
-      tags: const <String>[AiDisclaimer.tag, 'ai-generated'],
+      tags: const <String>[AiDisclaimer.tag, 'ai-generated', 'evidence-bound'],
+      evidence: citedEvidence,
+      provenance: AiGenerationProvenance.fromCapability(
+        capability,
+        endpointHostname: _endpointHostname(_provider),
+      ),
     );
-
     await _repository.upsertInsight(insight);
     return insight;
   }
 
-  /// Builds the guard-railed message list for a summary [summary].
-  ///
-  /// Exposed for unit testing of prompt construction. The system message bakes
-  /// in the wellness guardrail; the user message carries only aggregate stats.
-  static List<AiMessage> buildMessages(GlucoseSummary summary) {
-    return <AiMessage>[
-      const AiMessage.system(AiDisclaimer.systemGuardrail),
-      AiMessage.user(buildPrompt(summary)),
-    ];
-  }
+  /// Builds guarded messages from a summary for compatibility with callers
+  /// that have not yet constructed a snapshot.
+  static List<AiMessage> buildMessages(
+    GlucoseSummary summary, {
+    String locale = 'en',
+  }) => buildMessagesForContext(
+    MetabolicContextSnapshot.fromGlucoseSummary(summary, locale: locale),
+  );
 
-  /// Renders the privacy-conscious user prompt from a [summary].
-  ///
-  /// Only aggregate numbers and event *counts* are included — never raw
-  /// readings or free-text note bodies — so the minimum necessary data leaves
-  /// the device on a BYO-key call.
-  static String buildPrompt(GlucoseSummary summary) {
-    String fmt(double? value, {int digits = 0}) =>
-        value == null ? 'n/a' : value.toStringAsFixed(digits);
-    final unit = summary.unit.label;
-    final hours = summary.windowEnd.difference(summary.windowStart).inHours;
+  /// Builds guarded messages that contain only the deterministic snapshot.
+  static List<AiMessage> buildMessagesForContext(
+    MetabolicContextSnapshot context,
+  ) => <AiMessage>[
+    const AiMessage.system(AiDisclaimer.systemGuardrail),
+    AiMessage.user(AiOutputContract.buildPrompt(context)),
+  ];
 
-    final buffer = StringBuffer()
-      ..writeln(
-        'Summarize patterns in my self-tracked glucose data for self-experimentation.',
-      )
-      ..writeln('Window: about $hours hours, ${summary.readingCount} readings.')
-      ..writeln('Average glucose: ${fmt(summary.average)} $unit')
-      ..writeln('Range: ${fmt(summary.minimum)}–${fmt(summary.maximum)} $unit')
-      ..writeln('Variability (SD): ${fmt(summary.standardDeviation)} $unit')
-      ..writeln(
-        'Time in 70–180 mg/dL range: ${fmt(summary.timeInRangePercent, digits: 1)}% '
-        '(below ${fmt(summary.timeBelowRangePercent, digits: 1)}%, '
-        'above ${fmt(summary.timeAboveRangePercent, digits: 1)}%)',
-      )
-      ..writeln(
-        'Logged events: ${summary.mealCount} meals, '
-        '${summary.exerciseCount} workouts, ${summary.noteCount} notes'
-        '${summary.totalCarbsGrams == null ? '' : ', ${fmt(summary.totalCarbsGrams)}g carbs total'}.',
-      )
-      ..writeln(
-        'Give 2-4 short, non-prescriptive observations a curious self-experimenter '
-        'might explore. No medical advice, no diagnosis, no dosing.',
+  /// Renders the evidence-only prompt from a summary.
+  static String buildPrompt(GlucoseSummary summary, {String locale = 'en'}) =>
+      AiOutputContract.buildPrompt(
+        MetabolicContextSnapshot.fromGlucoseSummary(summary, locale: locale),
       );
-    return buffer.toString();
+
+  static AiProviderCapability _capabilityFor(AiProvider provider) {
+    if (provider is AiCapabilityDescribingProvider) {
+      return (provider as AiCapabilityDescribingProvider).capability;
+    }
+    return const AiProviderCapability(
+      kind: AiProviderKind.disabled,
+      executionLocation: AiExecutionLocation.none,
+      availabilityReason: AiAvailabilityReason.unsupportedProtocol,
+      supportsStructuredOutput: false,
+      locale: 'und',
+      resourceLimits: AiResourceLimits(),
+      availabilityDetail: 'Provider does not declare capabilities.',
+    );
   }
 
-  static String _titleFor(AiInsightCategory category, GlucoseSummary summary) {
-    return switch (category) {
-      AiInsightCategory.summary => 'Glucose summary',
-      AiInsightCategory.pattern => 'Pattern observation',
-      AiInsightCategory.recommendation => 'Self-experiment idea',
-      AiInsightCategory.anomaly => 'Flagged observation',
-      AiInsightCategory.custom => 'AI insight',
-    };
+  static String? _endpointHostname(AiProvider provider) {
+    if (provider is HttpChatAiProvider) {
+      return provider.config.endpointHostname;
+    }
+    return null;
   }
 
-  static String _defaultIdFactory() =>
-      'insight-${DateTime.now().microsecondsSinceEpoch}';
+  static String _titleFor(AiInsightCategory category) => switch (category) {
+    AiInsightCategory.summary => 'Glucose summary',
+    AiInsightCategory.pattern => 'Pattern observation',
+    AiInsightCategory.recommendation => 'Self-experiment idea',
+    AiInsightCategory.anomaly => 'Flagged observation',
+    AiInsightCategory.custom => 'AI insight',
+  };
+
+  static String _defaultIdFactory() => (StringBuffer(
+    'insight-',
+  )..write(DateTime.now().microsecondsSinceEpoch)).toString();
 }

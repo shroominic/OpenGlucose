@@ -97,6 +97,7 @@ class _FakeClient implements HttpClient {
 
 const _request = AiRequest(
   messages: <AiMessage>[AiMessage.user('private glucose summary')],
+  structuredOutputVersion: aiObservationContractVersion,
 );
 
 AiProviderConfig _config(String baseUrl) =>
@@ -202,4 +203,27 @@ void main() {
       ),
     );
   });
+
+  test(
+    'x-api-key stays OpenAI-compatible and does not imply Anthropic',
+    () async {
+      final client = _FakeClient(
+        statusCode: 200,
+        responseBody: '{"choices":[{"message":{"content":"safe response"}}]}',
+      );
+      final config = AiProviderConfig(
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'sk-private',
+        authScheme: AiAuthScheme.xApiKey,
+      );
+
+      await _sendWithClient(client, config);
+
+      expect(client.lastRequest!.fakeHeaders.values['x-api-key'], 'sk-private');
+      expect(
+        client.lastRequest!.fakeHeaders.values,
+        isNot(contains('anthropic-version')),
+      );
+    },
+  );
 }

@@ -47,6 +47,50 @@ void main() {
       expect(AiInsightCategory.fromKey(null), AiInsightCategory.custom);
     });
 
+    test('round-trips validated evidence and provenance', () {
+      final start = DateTime.utc(2026, 2, 1);
+      final end = DateTime.utc(2026, 2, 2);
+      final insight = AiInsight(
+        id: 'i-evidence',
+        createdAt: end,
+        category: AiInsightCategory.summary,
+        title: 'Evidence-bound summary',
+        evidence: <EvidenceRef>[
+          EvidenceRef(
+            id: 'glucose.average',
+            kind: AiEvidenceKind.glucoseAggregate,
+            label: 'Average glucose',
+            value: 111,
+            unit: 'mg/dL',
+            windowStart: start,
+            windowEnd: end,
+            sampleCount: 288,
+          ),
+        ],
+        provenance: const AiGenerationProvenance(
+          contractVersion: aiObservationContractVersion,
+          promptTemplateVersion: aiPromptTemplateVersion,
+          providerKind: AiProviderKind.openAiCompatibleRemote,
+          executionLocation: AiExecutionLocation.remote,
+          locale: 'en',
+          model: 'test-model',
+          modelVersion: 'test-model-2026-01',
+          runtimeVersion: 'Android 16',
+          endpointHostname: 'api.example.com',
+        ),
+      );
+
+      final restored = AiInsight.fromJson(insight.toJson());
+
+      expect(restored.evidence.single.id, 'glucose.average');
+      expect(restored.evidence.single.value, 111);
+      expect(
+        restored.provenance!.promptTemplateVersion,
+        aiPromptTemplateVersion,
+      );
+      expect(restored.provenance!.runtimeVersion, 'Android 16');
+    });
+
     test('copyWith can clear optional fields', () {
       final insight = AiInsight(
         id: 'i3',

@@ -1,3 +1,4 @@
+import 'ai/ai_output_contract.dart';
 import 'timeline.dart';
 
 /// The category of an [AiInsight].
@@ -54,6 +55,8 @@ class AiInsight implements TimelineEntry {
     this.confidence,
     this.model,
     this.tags = const <String>[],
+    this.evidence = const <EvidenceRef>[],
+    this.provenance,
   });
 
   /// Stable unique identifier (caller-supplied; e.g. a UUID).
@@ -86,6 +89,12 @@ class AiInsight implements TimelineEntry {
   /// Free-form tags for filtering and grouping.
   final List<String> tags;
 
+  /// Deterministic evidence that each persisted AI observation must cite.
+  final List<EvidenceRef> evidence;
+
+  /// Prompt, provider, model, and runtime provenance for reproducibility.
+  final AiGenerationProvenance? provenance;
+
   @override
   DateTime get timelineTimestamp => createdAt;
 
@@ -103,9 +112,12 @@ class AiInsight implements TimelineEntry {
     double? confidence,
     String? model,
     List<String>? tags,
+    List<EvidenceRef>? evidence,
+    AiGenerationProvenance? provenance,
     bool clearWindow = false,
     bool clearConfidence = false,
     bool clearModel = false,
+    bool clearProvenance = false,
   }) {
     return AiInsight(
       id: id ?? this.id,
@@ -118,6 +130,8 @@ class AiInsight implements TimelineEntry {
       confidence: clearConfidence ? null : (confidence ?? this.confidence),
       model: clearModel ? null : (model ?? this.model),
       tags: tags ?? this.tags,
+      evidence: evidence ?? this.evidence,
+      provenance: clearProvenance ? null : (provenance ?? this.provenance),
     );
   }
 
@@ -132,12 +146,44 @@ class AiInsight implements TimelineEntry {
     'confidence': confidence,
     'model': model,
     'tags': tags,
+    'evidence': evidence.map((item) => item.toJson()).toList(growable: false),
+    'provenance': provenance?.toJson(),
   };
 
   factory AiInsight.fromJson(Map<String, Object?> json) {
     DateTime? parseOpt(Object? value) {
       if (value is String && value.isNotEmpty) return DateTime.tryParse(value);
       return null;
+    }
+
+    List<EvidenceRef> parseEvidence(Object? value) {
+      if (value is! List) return const <EvidenceRef>[];
+      final evidence = <EvidenceRef>[];
+      for (final item in value) {
+        if (item is! Map) continue;
+        try {
+          evidence.add(
+            EvidenceRef.fromJson(
+              item.map<String, Object?>(
+                (key, nestedValue) => MapEntry('$key', nestedValue),
+              ),
+            ),
+          );
+        } on AiOutputValidationException {
+          // Legacy/corrupt records remain readable without pretending they
+          // carry validated evidence.
+        }
+      }
+      return evidence;
+    }
+
+    AiGenerationProvenance? parseProvenance(Object? value) {
+      if (value is! Map) return null;
+      return AiGenerationProvenance.fromJson(
+        value.map<String, Object?>(
+          (key, nestedValue) => MapEntry('$key', nestedValue),
+        ),
+      );
     }
 
     return AiInsight(
@@ -155,6 +201,8 @@ class AiInsight implements TimelineEntry {
       tags: ((json['tags'] as List<dynamic>?) ?? const <dynamic>[])
           .map((value) => '$value')
           .toList(growable: false),
+      evidence: parseEvidence(json['evidence']),
+      provenance: parseProvenance(json['provenance']),
     );
   }
 }

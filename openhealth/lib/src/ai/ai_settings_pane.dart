@@ -162,6 +162,104 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     }
   }
 
+  Future<void> _testConnection() async {
+    final store = _store;
+    if (store == null) return;
+    setState(() {
+      _busy = true;
+      _status = 'Saving provider settings…';
+    });
+    try {
+      if (!await _persistDraft() || !mounted) return;
+      final controller = AiController(
+        store: store,
+        repository: InMemoryHealthRepository(),
+      );
+      final result = await controller.testRemoteConnection();
+      if (!mounted) return;
+      setState(() {
+        _status = result.responseReceived
+            ? 'Connection works. No health data was sent.'
+            : 'The provider did not return a connection response.';
+      });
+    } on AiGenerationException catch (error) {
+      if (!mounted) return;
+      setState(
+        () => _status = (StringBuffer(
+          'Could not test connection: ',
+        )..write(error.message)).toString(),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _status = 'Could not test the AI connection.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _requestGenerationConsent() async {
+    final store = _store;
+    if (store == null) return;
+    setState(() {
+      _busy = true;
+      _status = 'Saving provider settings…';
+    });
+    try {
+      if (!await _persistDraft() || !mounted) return;
+      final controller = AiController(
+        store: store,
+        repository: InMemoryHealthRepository(),
+      );
+      final disclosure = await controller.remoteGenerationDisclosure();
+      if (!mounted) return;
+      if (disclosure == null) {
+        setState(
+          () => _status = 'Enable a valid cloud provider and add an API key.',
+        );
+        return;
+      }
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(
+            (StringBuffer('Send aggregates to ')
+                  ..write(disclosure.endpointHostname)
+                  ..write('?'))
+                .toString(),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text(
+                'This real generation sends only these categories. It never '
+                'sends raw readings or journal note text.',
+              ),
+              const SizedBox(height: 12),
+              for (final category in disclosure.dataCategories)
+                Text('• $category'),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Generate'),
+            ),
+          ],
+        ),
+      );
+      if (approved == true && mounted) {
+        await _generateNow();
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -263,7 +361,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                   ),
                   DropdownMenuItem(
                     value: AiAuthScheme.xApiKey,
-                    child: Text('x-api-key (Anthropic)'),
+                    child: Text('x-api-key (compatible gateway)'),
                   ),
                 ],
                 onChanged: _busy
@@ -306,9 +404,16 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                     OutlinedButton.icon(
                       onPressed: (_busy || !_settings.enabled)
                           ? null
-                          : _generateNow,
-                      icon: const Icon(Icons.science_outlined),
-                      label: const Text('Test with aggregates'),
+                          : _testConnection,
+                      icon: const Icon(Icons.wifi_tethering_rounded),
+                      label: const Text('Test connection (no health data)'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: (_busy || !_settings.enabled)
+                          ? null
+                          : _requestGenerationConsent,
+                      icon: const Icon(Icons.auto_awesome_outlined),
+                      label: const Text('Generate aggregate insight'),
                     ),
                   ],
                 ),

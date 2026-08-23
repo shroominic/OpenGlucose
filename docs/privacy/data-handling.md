@@ -128,12 +128,26 @@ review. Follow
 
 ## AI
 
-AI is off by default and requires a user-supplied key. The current Generate
-action sends a 24-hour aggregate to the HTTPS provider URL shown in settings:
-reading count, average, range, standard deviation, time in/below/above range,
-estimated A1c, meal/exercise/note counts, and total logged carbohydrates. It
-does not send raw readings or note text. The UI discloses those categories and
-that provider retention terms apply. Redirects, credentials in URLs, query
-parameters, and non-HTTPS endpoints are rejected. Before public distribution,
-the prompt/model/policy still requires representative medical/dosing
-adversarial evaluation and an accountable privacy/safety owner.
+AI is off by default and needs a user-supplied key held in platform secure
+storage. The shipped remote path is OpenAI-compatible chat-completions only;
+it does not claim native Anthropic Messages support.
+
+The connection test sends only a fixed synthetic request. It does not read
+health data and does not persist an insight. A real generation first shows the
+recipient hostname and these exact possible categories: time window, aggregate
+glucose statistics, journal event counts, and total logged carbohydrates when
+present. It does not send raw readings, identifiers, or journal note text.
+The remote provider's retention terms apply after the user confirms.
+
+The generated output must be typed JSON with deterministic evidence references.
+Unknown citations, inconsistent numeric values, free-form text, and output
+matching defined medical/dosing/treatment/emergency or prompt-injection safety
+patterns are rejected before persistence. Pattern checks do not prove that
+every unsafe statement is caught. A stored validated insight records its cited
+evidence and prompt/provider/model/runtime provenance. Redirects, credentials
+in URLs, query parameters, fragments, and non-HTTPS endpoints are rejected.
+
+This is not a production-safety claim. Full delete/export verification, exact
+host OS-version capture, approved data receipts, expanded adversarial
+evaluation, an accountable privacy/safety owner, and independent R2 review are
+still required before public distribution.
