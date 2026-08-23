@@ -10,6 +10,14 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- A state-restored Today, Timeline, and Trends product shell. Timeline and
+  Trends show glucose context only while the current sensor state is usable;
+  warmup, stale, unavailable, and retained readings remain explicit and are
+  never labelled as live. The unified multi-source body timeline, journal
+  entries, imports, and final dark-theme migration remain separate work.
+
 ## [0.1.4] - 2026-08-22
 
 ### Added

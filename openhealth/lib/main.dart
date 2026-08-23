@@ -5,6 +5,7 @@ import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/app_theme.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
@@ -26,6 +27,7 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/today_navigation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -313,43 +315,11 @@ class OpenGlucoseApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFF0B6E69);
-    final colorScheme = ColorScheme.fromSeed(
-      seedColor: seed,
-      brightness: Brightness.light,
-      surface: const Color(0xFFFFF8F1),
-    );
     return MaterialApp(
       title: 'OpenGlucose',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: colorScheme,
-        scaffoldBackgroundColor: const Color(0xFFF6EFE6),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-        ),
-        cardTheme: CardThemeData(
-          color: Colors.white.withValues(alpha: 0.94),
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xFFF4F6F2),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-          ),
-        ),
-      ),
+      restorationScopeId: 'openglucose',
+      theme: OpenGlucoseTokens.lightTheme(),
       // --- TASK-007 onboarding gate ---
       // First-run only: show the skippable onboarding flow, then hand off to
       // the existing scan/connect home. Persisted via OnboardingStore; once
@@ -433,10 +403,22 @@ class CgmHomePage extends StatefulWidget {
   State<CgmHomePage> createState() => _CgmHomePageState();
 }
 
-class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
+class _CgmHomePageState extends State<CgmHomePage>
+    with WidgetsBindingObserver, RestorationMixin {
   static const _foregroundFreshnessInterval = Duration(seconds: 45);
 
   Timer? _freshnessTimer;
+  final RestorableInt _destinationIndex = RestorableInt(
+    OpenGlucoseDestination.today.index,
+  );
+
+  @override
+  String? get restorationId => 'cgm-home';
+
+  @override
+  void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
+    registerForRestoration(_destinationIndex, 'selected-destination');
+  }
 
   @override
   void initState() {
@@ -450,6 +432,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _destinationIndex.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -468,6 +451,9 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
       animation: widget.controller,
       builder: (context, _) {
         final snapshot = widget.controller.snapshot;
+        final destination = OpenGlucoseDestination.fromRestoredIndex(
+          _destinationIndex.value,
+        );
         // Contextual-messaging bridge: recompute which messages are relevant
         // from the latest app state on every controller change. Deferred to
         // post-frame so it never triggers a rebuild during this build pass.
@@ -481,25 +467,39 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
         }
         return Scaffold(
           body: DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[
-                  Color(0xFFF7F0E4),
-                  Color(0xFFE9F3EF),
-                  Color(0xFFF7F5EE),
-                ],
-              ),
-            ),
+            decoration: OpenGlucoseTokens.backgroundDecoration,
             child: SafeArea(
-              child: snapshot == null
-                  ? _ScanView(controller: widget.controller)
-                  : _DashboardView(
-                      controller: widget.controller,
-                      snapshot: snapshot,
-                      messageController: widget.messageController,
-                    ),
+              child: OpenGlucoseNavigationShell(
+                destination: destination,
+                onDestinationSelected: (selection) {
+                  setState(() => _destinationIndex.value = selection.index);
+                },
+                today: snapshot == null
+                    ? _ScanView(controller: widget.controller)
+                    : _DashboardView(
+                        controller: widget.controller,
+                        snapshot: snapshot,
+                        messageController: widget.messageController,
+                      ),
+                timeline: GlucoseTimelinePane(
+                  snapshot: snapshot,
+                  displayReading: widget.controller.displayLatestReading,
+                  visibleHistory: widget.controller.visibleHistory,
+                  retainedHistoryCount:
+                      widget.controller.allHistoricalReadings.length,
+                  preferences: widget.controller.displayPreferences,
+                  isSampleData: widget.controller.isMockDriver,
+                ),
+                trends: GlucoseTrendsPane(
+                  snapshot: snapshot,
+                  displayReading: widget.controller.displayLatestReading,
+                  visibleHistory: widget.controller.visibleHistory,
+                  retainedHistoryCount:
+                      widget.controller.allHistoricalReadings.length,
+                  preferences: widget.controller.displayPreferences,
+                  isSampleData: widget.controller.isMockDriver,
+                ),
+              ),
             ),
           ),
         );
@@ -651,7 +651,10 @@ class _ScanView extends StatelessWidget {
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-            child: Row(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 2,
+              alignment: WrapAlignment.spaceBetween,
               children: <Widget>[
                 Text(
                   'Nearby sensors',
@@ -659,7 +662,6 @@ class _ScanView extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const Spacer(),
                 Text(
                   '${controller.sensors.length} found',
                   style: theme.textTheme.bodyMedium?.copyWith(
