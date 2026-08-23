@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "protocol": "openglucose.testflight.tag-bound.v1",
+  "workflow": ".github/workflows/release-testflight.yml"
+}

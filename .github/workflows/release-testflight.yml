@@ -28,9 +28,11 @@ on:
         type: string
 
 # Do not cancel an upload or notification. Apple does not make either request
-# safely retryable after a runner is interrupted.
+# safely retryable after a runner is interrupted. This must remain one constant
+# repository-wide group: a newer tag must wait and then revalidate rather than
+# crossing an App Store Connect boundary alongside an older tag.
 concurrency:
-  group: testflight-release-${{ inputs.release_tag }}
+  group: openglucose-testflight-delivery
   cancel-in-progress: false
 
 permissions: {}
@@ -67,6 +69,11 @@ jobs:
           INPUT_PHASE: ${{ inputs.phase }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
+          WORKFLOW_REF_PROTECTED: ${{ github.ref_protected }}
+          WORKFLOW_REF_TYPE: ${{ github.ref_type }}
+          WORKFLOW_DEFINITION_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
 
@@ -78,6 +85,13 @@ jobs:
           case "$audience" in internal | external) ;; *) exit 1 ;; esac
           case "$phase" in upload | submit_review | notify) ;; *) exit 1 ;; esac
           [[ "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          expected_ref="refs/tags/$release_tag"
+          expected_workflow_ref="$GITHUB_REPOSITORY/.github/workflows/release-testflight.yml@$expected_ref"
+          test "$WORKFLOW_REF" = "$expected_ref"
+          test "$WORKFLOW_REF_NAME" = "$release_tag"
+          test "$WORKFLOW_REF_TYPE" = tag
+          test "$WORKFLOW_REF_PROTECTED" = true
+          test "$WORKFLOW_DEFINITION_REF" = "$expected_workflow_ref"
           if [[ "$audience" == internal ]]; then
             test "$phase" = upload
           fi
@@ -102,7 +116,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Validate tag, release, version, and main ancestry
+      - name: Validate protected future tag, release, version, and main ancestry
         id: release
         shell: bash
         env:
@@ -111,36 +125,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
-          test "$(jq -r '.tag_name' <<<"$release_json")" = "$RELEASE_TAG"
-          test "$(jq -r '.draft' <<<"$release_json")" = false
-          test "$(jq -r '.prerelease' <<<"$release_json")" = false
-          test "$(jq -r '.published_at // empty' <<<"$release_json")" != ''
-
           version=$(sed -n 's/^version: \([0-9][0-9.]*+[0-9][0-9]*\)$/\1/p' openhealth/pubspec.yaml)
           [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+([1-9][0-9]*)$ ]]
           test "$RELEASE_TAG" = "v${version%%+*}"
           build_number=${version##*+}
           source_sha=$(git rev-parse HEAD)
           test "$source_sha" = "$(git rev-parse "${RELEASE_TAG}^{commit}")"
-
-          git fetch origin main --tags
-          git merge-base --is-ancestor "$source_sha" origin/main
-          published_tags=$(mktemp)
-          trap 'rm -f -- "$published_tags"' EXIT
-          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
-            jq -r '.[] | select(.draft == false and .prerelease == false and .published_at != null) | .tag_name' > "$published_tags"
-          eligible_tags=()
-          while IFS= read -r candidate_tag; do
-            [[ "$candidate_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || continue
-            candidate_sha=$(git rev-parse -q --verify "${candidate_tag}^{commit}") || continue
-            if git merge-base --is-ancestor "$candidate_sha" origin/main; then
-              eligible_tags+=("$candidate_tag")
-            fi
-          done < "$published_tags"
-          test "${#eligible_tags[@]}" -gt 0
-          latest_release_tag=$(printf '%s\n' "${eligible_tags[@]}" | sort -V | tail -n 1)
-          test "$RELEASE_TAG" = "$latest_release_tag"
+          ./scripts/verify-testflight-release-tag.sh "$RELEASE_TAG" "$source_sha"
           test -z "$(git status --porcelain --untracked-files=all)"
 
           {
@@ -202,6 +193,9 @@ jobs:
       id-token: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      TESTFLIGHT_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+      TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS: "yes"
     steps:
       - name: Check out exact validated source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -238,6 +232,17 @@ jobs:
           make tooling-check format-check lint test-unit test-integration
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=all)"
+
+      # Environment approval occurs before this job starts. Recheck the remote
+      # tag after that approval and before release credentials are decoded.
+      - name: Revalidate protected stable tag after approval before signing
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          ./scripts/verify-testflight-release-tag.sh "$RELEASE_TAG" "$SOURCE_SHA"
 
       - name: Build, verify, and persist the external upload claim
         shell: bash
@@ -506,6 +511,9 @@ jobs:
       contents: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      TESTFLIGHT_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+      TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS: "yes"
     steps:
       - name: Check out exact validated source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

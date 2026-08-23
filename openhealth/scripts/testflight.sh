@@ -361,6 +361,18 @@ TESTFLIGHT_SEND_CLAIMED_NOTIFICATION="${TESTFLIGHT_SEND_CLAIMED_NOTIFICATION:-no
 [[ "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "yes" || \
    "$TESTFLIGHT_SEND_CLAIMED_NOTIFICATION" == "no" ]] || \
   fail "TESTFLIGHT_SEND_CLAIMED_NOTIFICATION must be yes or no"
+TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS="${TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS:-no}"
+[[ "$TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS" == "yes" || \
+   "$TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS" == "no" ]] || \
+  fail "TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS must be yes or no"
+if [[ "$TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS" == "yes" ]]; then
+  : "${TESTFLIGHT_RELEASE_TAG:?missing TESTFLIGHT_RELEASE_TAG for stable tag freshness}"
+  [[ "$TESTFLIGHT_RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || \
+    fail "TESTFLIGHT_RELEASE_TAG must be strict vMAJOR.MINOR.PATCH"
+  [[ -x "$REPOSITORY_ROOT/scripts/verify-testflight-release-tag.sh" ]] || \
+    fail "stable TestFlight tag verifier is missing"
+  require_command gh
+fi
 if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
     fail "internal TestFlight mode does not support notify-only runs"
@@ -587,6 +599,12 @@ head_commit=$(git rev-parse HEAD)
   fail "RELEASE_COMMIT does not match HEAD ($head_commit)"
 assert_clean_source "release startup"
 
+verify_stable_tag_freshness() {
+  [[ "$TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS" == "yes" ]] || return 0
+  "$REPOSITORY_ROOT/scripts/verify-testflight-release-tag.sh" \
+    "$TESTFLIGHT_RELEASE_TAG" "$head_commit"
+}
+
 pubspec_version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml)
 [[ -n "$pubspec_version" ]] || fail "pubspec.yaml has no version"
 [[ "$RELEASE_VERSION" == "$pubspec_version" ]] || \
@@ -693,6 +711,7 @@ fi
 
 if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   echo "==> Resuming idempotent association for the finalized external build"
+  verify_stable_tag_freshness
   fastlane ios associate_external_build \
     "api_key_path:$credential_json" \
     "bundle_id:$APP_BUNDLE_ID" \
@@ -722,6 +741,7 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
   else
     echo "==> Verifying the exact build and sending the deferred tester notification"
   fi
+  verify_stable_tag_freshness
   fastlane ios notify_external_build \
     "api_key_path:$credential_json" \
     "bundle_id:$APP_BUNDLE_ID" \
@@ -748,6 +768,9 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
 fi
 
 if [[ "$TESTFLIGHT_RESUME_UPLOAD" == "no" ]]; then
+  # A protected workflow runs this check again after environment approval and
+  # immediately before Xcode starts signing the immutable source.
+  verify_stable_tag_freshness
   echo "==> Restoring locked dependencies"
   flutter pub get --enforce-lockfile
   assert_clean_source "dependency restore"
@@ -946,6 +969,7 @@ if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
     fi
   fi
 fi
+verify_stable_tag_freshness
 fastlane pilot upload \
   --api_key_path "$credential_json" \
   --app_identifier "$APP_BUNDLE_ID" \

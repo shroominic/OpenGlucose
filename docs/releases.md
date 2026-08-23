@@ -253,15 +253,40 @@ internal audience and therefore requires explicit release approval.
 
 ### Protected GitHub Actions delivery
 
-`.github/workflows/release-testflight.yml` is **workflow-dispatch only**. A
-release owner explicitly selects the stable tag, audience, and phase; publishing
-a GitHub Release never starts TestFlight delivery. The workflow checks the
-exact tag, committed version/build number, release visibility, main ancestry,
-clean source, and the latest published stable release tag before any signing
-credential is exposed.
+`.github/workflows/release-testflight.yml` is **workflow-dispatch only** and
+uses the tag-bound protocol. Dispatch it from the exact release tag, and give
+the same tag as `release_tag`; do not dispatch it from `main`, a branch, or a
+different tag. A release owner explicitly selects the audience and phase;
+publishing a GitHub Release never starts TestFlight delivery. For example:
 
-Every release phase waits for its protected GitHub environment. Configure
-required reviewers and limit each environment to protected tags:
+```sh
+gh workflow run release-testflight.yml \
+  --ref vMAJOR.MINOR.PATCH \
+  -f release_tag=vMAJOR.MINOR.PATCH \
+  -f audience=external \
+  -f phase=upload
+```
+
+Only future release tags are eligible. The tagged source must contain
+`.github/testflight-release-protocol.json` with the current tag-bound protocol.
+This deliberately rejects older tags, including `v0.1.4`, even if they already
+have a stable GitHub Release. The private `0.1.4 (26)` TestFlight candidate is
+a documented manual release-owner procedure; it must not be sent through this
+workflow or attached to the public `v0.1.4` GitHub Release.
+
+For a future delivery, first merge this protocol to `main`, configure the
+protected tag/ruleset and protected environments below, then create the release
+tag from that merged source and publish its stable GitHub Release. Only after
+those steps may the release owner dispatch the workflow from that tag. Do not
+retrofit the marker to, retag, or dispatch an earlier release.
+
+Every phase waits for its protected GitHub environment. Configure required
+reviewers, a protected tag/ruleset that makes release tags report as protected,
+and selected deployment tags such as `v[0-9]*` with no branch deployment
+source. The workflow requires its GitHub execution ref, workflow-definition
+ref/SHA, ref name, ref type, and protected state to match the input tag before
+it can access a protected environment. This prevents a branch workflow run from
+selecting a trusted tag as an input to bypass the environment policy:
 
 - `testflight-internal-upload` and `testflight-external-upload` need the
   upload secrets `ASC_API_KEY_P8_BASE64`, `IOS_DISTRIBUTION_P12_BASE64`,
@@ -279,18 +304,28 @@ required reviewers and limit each environment to protected tags:
   `TESTFLIGHT_INTERNAL_GROUP_ID`, `TESTFLIGHT_EXTERNAL_TESTER_COUNT`, and
   `TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256`.
 
+All TestFlight upload, review, and notification phases use one repository-wide,
+non-cancelling concurrency group. A waiting older tag does not proceed after a
+newer stable release is published: every release boundary rechecks the exact
+protected tag, remote tag-to-commit binding, published stable release state,
+main ancestry, and latest stable version. The checks run after environment
+approval, immediately before signing, immediately before `pilot`, before beta
+review/association, and immediately before notification. If the tag is no
+longer current, no signing, upload, review, association, or notification is
+attempted.
+
 The upload job imports the exact Distribution certificate and profiles only
-into an ephemeral runner keychain. It runs the existing signing and audience
-verification script, retains the IPA as a private 14-day workflow artifact,
-and creates a GitHub build-provenance attestation. For an external upload it
-first writes a unique private 90-day upload-claim artifact, then and only then
-continues to `pilot`; the continuation token remains only on that runner and is
-removed after final provenance. A cancellation after the claim artifact blocks
-every new upload dispatch for that build, even if the final provenance artifact
-was not reached. Final attempt/provenance state is a separate private 90-day
-artifact. The later phase needs that upload run ID; it verifies the same tag,
-source, app, version, build, and IPA digest before it changes App Store Connect.
-The workflow never stores a second release ledger or deploy key.
+into an ephemeral runner keychain. It runs the signing and audience verification
+script, retains the IPA as a private 14-day workflow artifact, and creates a
+GitHub build-provenance attestation. For an external upload it first writes a
+unique private 90-day upload-claim artifact, then and only then continues to
+`pilot`; the continuation token remains only on that runner and is removed after
+final provenance. A cancellation after the claim artifact blocks every new
+upload dispatch for that build, even if the final provenance artifact was not
+reached. Final attempt/provenance state is a separate private 90-day artifact.
+The later phase needs that upload run ID; it verifies the same tag, source, app,
+version, build, and IPA digest before it changes App Store Connect. The workflow
+never stores a second release ledger or deploy key.
 
 External delivery has three explicit operations. Select `external` with
 `upload` to build and upload without association, beta review submission, or
