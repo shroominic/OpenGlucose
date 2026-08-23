@@ -155,6 +155,27 @@ require_match(
   "normal reruns must not overwrite a completed upload state"
 )
 
+%w[TESTFLIGHT_STOP_AFTER_UPLOAD TESTFLIGHT_STOP_AFTER_REVIEW].each do |variable|
+  require_match(
+    script,
+    /#{Regexp.escape(variable)}="\$\{#{Regexp.escape(variable)}:-no\}"/,
+    "#{variable} must fail closed to no"
+  )
+end
+
+upload_stop = script.index('if [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "yes" ]]; then')
+record_provenance = script.index('fastlane ios record_external_upload_provenance')
+associate_after_upload = script.index('fastlane ios associate_external_build', record_provenance)
+unless upload_stop && record_provenance && associate_after_upload &&
+       record_provenance < upload_stop && upload_stop < associate_after_upload
+  raise "TestFlight signing contract failed: upload stop must precede association"
+end
+
+review_stop = notify_only.index('if [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "yes" ]]; then')
+unless review_stop && resume_associate < review_stop && review_stop < resume_notify
+  raise "TestFlight signing contract failed: review stop must precede notification"
+end
+
 uuid_validator = Regexp.escape(
   "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
 )

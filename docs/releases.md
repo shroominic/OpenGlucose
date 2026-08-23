@@ -247,4 +247,57 @@ The external mode distributes externally, so run it only after that entire
 audience is approved. Internal mode still uploads a real build to its automatic
 internal audience and therefore requires explicit release approval.
 
+### Protected GitHub Actions delivery
+
+`.github/workflows/release-testflight.yml` delivers only a reviewed stable
+release tag. Publishing a stable GitHub Release starts an **internal** upload;
+the same upload can be started later with `workflow_dispatch`, which is how an
+already-published release such as `v0.1.4` is delivered. The workflow checks
+the exact tag, committed version/build number, release visibility, main
+ancestry, clean source, and the latest eligible release tag before any signing
+credential is exposed.
+
+Every release phase waits for its protected GitHub environment. Configure
+required reviewers and limit each environment to protected tags:
+
+- `testflight-internal-upload` and `testflight-external-upload` need the
+  upload secrets `ASC_API_KEY_P8_BASE64`, `IOS_DISTRIBUTION_P12_BASE64`,
+  `IOS_DISTRIBUTION_P12_PASSWORD`, `IOS_APP_STORE_PROFILE_BASE64`, and
+  `IOS_LIVE_ACTIVITY_PROFILE_BASE64`.
+- `testflight-external-review` and `testflight-external-notify` need only
+  `ASC_API_KEY_P8_BASE64`.
+- All four environments use the reviewed non-secret variables
+  `ASC_API_KEY_ID`, `ASC_API_ISSUER_ID`, `APPLE_TEAM_ID`, `APP_BUNDLE_ID`,
+  `LIVE_ACTIVITY_BUNDLE_ID`, `APP_STORE_PROFILE_UUID`,
+  `LIVE_ACTIVITY_APP_STORE_PROFILE_UUID`,
+  `IOS_DISTRIBUTION_CERTIFICATE_SHA1`, `TESTFLIGHT_GROUP`,
+  `TESTFLIGHT_GROUP_ID`, and `TESTFLIGHT_INTERNAL_TESTER_ID`. External
+  environments also require `TESTFLIGHT_INTERNAL_GROUP`,
+  `TESTFLIGHT_INTERNAL_GROUP_ID`, `TESTFLIGHT_EXTERNAL_TESTER_COUNT`, and
+  `TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256`.
+
+The upload job imports the exact Distribution certificate and profiles only
+into an ephemeral runner keychain. It runs the existing signing and audience
+verification script, retains the IPA as a private 14-day workflow artifact,
+and creates a GitHub build-provenance attestation. An external upload also
+retains its immutable attempt and provenance files as a private 90-day
+workflow artifact. The later phase needs that upload run ID; it verifies the
+same tag, source, app, version, build, and IPA digest before it changes App
+Store Connect. The workflow never stores a second release ledger or deploy key.
+
+External delivery has three explicit operations. Select `external` with
+`upload` to build and upload without association, beta review submission, or
+tester notification. After the Account Holder has completed the current
+export-compliance decision in App Store Connect, run `submit_review` with the
+external upload run ID. After Apple approves beta review, run `notify` with the
+same run ID. The notify phase is never automatic. If a request is interrupted
+at an upload or notification boundary, do not retry it blindly: preserve the
+artifact/evidence, reconcile the exact App Store Connect build, and cut a new
+build number when its delivery state is ambiguous.
+
+An internal upload is intentionally a separate export type. It is the right
+first delivery for a new stable tag, does not require external beta review, and
+cannot later become an external build with the same version/build number. Use
+an external upload from the start when that is the approved destination.
+
 Follow `docs/runbooks/release-rollback.md` for a bad or compromised release.

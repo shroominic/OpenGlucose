@@ -337,9 +337,20 @@ TESTFLIGHT_MODE="${TESTFLIGHT_MODE:-external}"
 TESTFLIGHT_NOTIFY_ONLY="${TESTFLIGHT_NOTIFY_ONLY:-no}"
 [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" || "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
   fail "TESTFLIGHT_NOTIFY_ONLY must be yes or no"
+TESTFLIGHT_STOP_AFTER_UPLOAD="${TESTFLIGHT_STOP_AFTER_UPLOAD:-no}"
+[[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "yes" || \
+   "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "no" ]] || \
+  fail "TESTFLIGHT_STOP_AFTER_UPLOAD must be yes or no"
+TESTFLIGHT_STOP_AFTER_REVIEW="${TESTFLIGHT_STOP_AFTER_REVIEW:-no}"
+[[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "yes" || \
+   "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" ]] || \
+  fail "TESTFLIGHT_STOP_AFTER_REVIEW must be yes or no"
 if [[ "$TESTFLIGHT_MODE" == "internal" ]]; then
   [[ "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
     fail "internal TestFlight mode does not support notify-only runs"
+  [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "no" && \
+     "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" ]] || \
+    fail "internal TestFlight mode does not support external phase stops"
   : "${TESTFLIGHT_GROUP_ID:?missing immutable TESTFLIGHT_GROUP_ID for internal mode}"
   : "${TESTFLIGHT_TESTER_ID:?missing immutable TESTFLIGHT_TESTER_ID for internal mode}"
   : "${APP_STORE_PROFILE_UUID:?missing APP_STORE_PROFILE_UUID for internal mode}"
@@ -366,6 +377,14 @@ else
   : "${TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256:?missing TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 for external mode}"
   : "${TESTFLIGHT_UPLOAD_PROVENANCE_PATH:?missing TESTFLIGHT_UPLOAD_PROVENANCE_PATH for external mode}"
   : "${TESTFLIGHT_CHANGELOG:?missing TESTFLIGHT_CHANGELOG}"
+fi
+if [[ "$TESTFLIGHT_MODE" == "external" ]]; then
+  [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "no" || \
+     "$TESTFLIGHT_NOTIFY_ONLY" == "no" ]] || \
+    fail "TESTFLIGHT_STOP_AFTER_UPLOAD requires a build-and-upload run"
+  [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "no" || \
+     "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]] || \
+    fail "TESTFLIGHT_STOP_AFTER_REVIEW requires a notify-only review run"
 fi
 [[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || \
   fail "APPLE_TEAM_ID is malformed"
@@ -625,6 +644,10 @@ if [[ "$TESTFLIGHT_NOTIFY_ONLY" == "yes" ]]; then
     "source_commit:$head_commit" \
     "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
     "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
+  if [[ "$TESTFLIGHT_STOP_AFTER_REVIEW" == "yes" ]]; then
+    echo "==> Submitted or verified external beta review for $RELEASE_VERSION ($head_commit)"
+    exit 0
+  fi
   echo "==> Verifying the exact build and sending the deferred tester notification"
   fastlane ios notify_external_build \
     "api_key_path:$credential_json" \
@@ -863,6 +886,12 @@ fastlane ios record_external_upload_provenance \
   "upload_attempt_path:$UPLOAD_ATTEMPT_PATH" \
   "continuation_token_path:$upload_continuation_token" \
   "upload_provenance_path:$UPLOAD_PROVENANCE_PATH"
+
+if [[ "$TESTFLIGHT_STOP_AFTER_UPLOAD" == "yes" ]]; then
+  echo "==> Uploaded and recorded external TestFlight build $RELEASE_VERSION ($head_commit)"
+  echo "    SHA-256: $artifact_sha256"
+  exit 0
+fi
 
 echo "==> Associating the exact build with the approved immutable group ID"
 fastlane ios associate_external_build \
