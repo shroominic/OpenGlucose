@@ -7,6 +7,8 @@
   activity, sleep, and heart-rate samples. Repository implementations now
   replace provenance-bearing source records deterministically and retain typed
   source-deletion tombstones; manual and legacy samples remain append-only.
+- Add pure-Dart, evidence-linked meal-response analytics with deterministic
+  coverage, gap, duplicate, provisional, and mixed-source qualification.
 
 These additive public APIs require a minor version bump before any independent
 package publication.
