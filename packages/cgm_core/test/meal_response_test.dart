@@ -321,23 +321,72 @@ void main() {
       expect(optedInResponse.status, MealResponseStatus.sufficient);
     });
 
-    test('excludes provisional and future readings with evidence counts', () {
+    test('accepted provisional readings are explicitly disqualifying', () {
       final readings = _qualifiedResponse()
-        ..[1] = _reading(
-          'baseline-15',
-          _mealAt.subtract(const Duration(minutes: 15)),
-          100,
+        ..[3] = _reading(
+          'post-30',
+          _mealAt.add(const Duration(minutes: 30)),
+          140,
           provisional: true,
-        )
-        ..add(_reading('future', _mealAt.add(const Duration(hours: 3)), 120));
+        );
       final response = MealResponseAnalytics.analyze(
         events: <HealthEvent>[_meal('meal-1', _mealAt)],
         readings: readings,
-        now: _mealAt.add(const Duration(hours: 2)),
+        policy: const MealResponsePolicy(includeProvisionalReadings: true),
       ).responses.single;
 
-      expect(response.status, MealResponseStatus.insufficientBaseline);
-      expect(response.evidence.excludedProvisionalSampleCount, 1);
+      expect(response.status, MealResponseStatus.provisionalReadings);
+      expect(response.isSufficient, isFalse);
+      expect(response.peakDeltaMgdl, isNull);
+      expect(response.timeToPeak, isNull);
+      expect(response.observedDeltaAreaMgdlMinutes, isNull);
+      expect(response.evidence.hasAcceptedProvisionalReadings, isTrue);
+      expect(response.evidence.acceptedProvisionalBaselineSampleCount, 0);
+      expect(response.evidence.acceptedProvisionalPostMealSampleCount, 1);
+      expect(response.evidence.acceptedProvisionalSampleCount, 1);
+    });
+
+    test('reports excluded samples for each meal window only', () {
+      final readings = <IdentifiedGlucoseReading>[
+        _reading(
+          'baseline-30',
+          _mealAt.subtract(const Duration(minutes: 30)),
+          100,
+        ),
+        _reading(
+          'baseline-provisional',
+          _mealAt.subtract(const Duration(minutes: 15)),
+          100,
+          provisional: true,
+        ),
+        _reading('post-0', _mealAt, 100),
+        _reading('post-30', _mealAt.add(const Duration(minutes: 30)), 140),
+        _reading('post-60', _mealAt.add(const Duration(hours: 1)), 150),
+        _reading(
+          'post-provisional',
+          _mealAt.add(const Duration(minutes: 45)),
+          145,
+          provisional: true,
+        ),
+        _reading('post-future', _mealAt.add(const Duration(minutes: 90)), 140),
+        _reading(
+          'outside-window',
+          _mealAt.add(const Duration(hours: 3)),
+          120,
+          provisional: true,
+        ),
+      ];
+      final response = MealResponseAnalytics.analyze(
+        events: <HealthEvent>[_meal('meal-1', _mealAt)],
+        readings: readings,
+        now: _mealAt.add(const Duration(hours: 1)),
+      ).responses.single;
+
+      expect(response.evidence.excludedProvisionalBaselineSampleCount, 1);
+      expect(response.evidence.excludedProvisionalPostMealSampleCount, 1);
+      expect(response.evidence.excludedFutureBaselineSampleCount, 0);
+      expect(response.evidence.excludedFuturePostMealSampleCount, 1);
+      expect(response.evidence.excludedProvisionalSampleCount, 2);
       expect(response.evidence.excludedFutureSampleCount, 1);
       expect(response.evidence.baselineSampleIds, <String>['baseline-30']);
     });
@@ -360,6 +409,71 @@ void main() {
         ),
         throwsArgumentError,
       );
+    });
+
+    test('requires non-empty, unique selected meal IDs', () {
+      expect(
+        () => MealResponseAnalytics.analyze(
+          events: <HealthEvent>[_meal('', _mealAt)],
+          readings: _qualifiedResponse(),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => MealResponseAnalytics.analyze(
+          events: <HealthEvent>[_meal('  ', _mealAt)],
+          readings: _qualifiedResponse(),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => MealResponseAnalytics.analyze(
+          events: <HealthEvent>[
+            _meal('same', _mealAt),
+            _meal('same', _mealAt.add(const Duration(minutes: 1))),
+          ],
+          readings: _qualifiedResponse(),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => MealResponseAnalytics.analyze(
+          events: <HealthEvent>[
+            _meal('same', _mealAt),
+            _meal(' same ', _mealAt.add(const Duration(minutes: 1))),
+          ],
+          readings: _qualifiedResponse(),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => MealResponseAnalytics.analyze(
+          events: <HealthEvent>[
+            _meal('meal-1', _mealAt),
+            _meal('', _mealAt.add(const Duration(minutes: 1))),
+          ],
+          readings: _qualifiedResponse(),
+          now: _mealAt,
+        ),
+        returnsNormally,
+      );
+    });
+
+    test('rejects non-finite coverage requirements', () {
+      for (final coverage in <double>[
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        expect(
+          () => MealResponseAnalytics.analyze(
+            events: <HealthEvent>[_meal('meal-1', _mealAt)],
+            readings: _qualifiedResponse(),
+            policy: MealResponsePolicy(minimumCoverage: coverage),
+          ),
+          throwsArgumentError,
+        );
+      }
     });
   });
 }
