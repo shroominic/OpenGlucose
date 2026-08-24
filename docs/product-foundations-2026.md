@@ -85,12 +85,12 @@ disconnect or replace.
 
 ## Apple Health import and overlays
 
-The current integration exports glucose only. Import must not ship until the
-schema retains HealthKit UUID, source bundle/name, device, recording method,
-interval, and deletion state with unique constraints; the current methods named
-`upsert` are append-only and would duplicate repeated imports.
+The current first import ships only a narrow iOS context reader. It uses the
+source-aware schema for HealthKit UUID, source bundle/name, device, recording
+method, interval, and deletion state. Its upserts reconcile only records with
+stable platform identities. The broader import plan below remains unshipped.
 
-Initial read categories:
+Future read categories, outside the current partial implementation:
 
 - sleep intervals and stages;
 - workouts, active energy, exercise time, steps, and walking/running distance;
@@ -102,16 +102,16 @@ glucose line. Imported raw samples remain separate; display normalization uses
 per-type source priority so overlapping Apple Watch, Whoop, Oura, and iPhone
 records are not blindly summed.
 
-The local storage contract now retains typed platform identity, source
-provenance, revisions, and tombstones. It de-duplicates a source record only
-when the platform supplies that stable identity; it does not yet read either
-platform, request permission, retain sync anchors, or choose an overlap winner.
-MVP can bounded-requery with the existing Flutter `health` package and upsert by
-HealthKit UUID. Production incremental sync uses native
-`HKAnchoredObjectQuery`, one persisted anchor per type, and handles deleted
-objects. Permissions are progressive and requested only when the user enables
-an overlay. iOS can make denied and empty reads indistinguishable, so the UI
-reports `No accessible data` rather than claiming a permission outcome.
+The local storage contract retains typed platform identity, source provenance,
+revisions, and tombstones. The iOS context-import implementation now uses native
+`HKAnchoredObjectQuery` for user-triggered, bounded sleep/workout/heart-rate
+imports. It persists one restricted anchor per type only after the matching
+local changes are durable, and applies returned deleted objects as tombstones.
+The first UI is a dedicated opt-in control, not an overlay. iOS can make denied
+and empty reads indistinguishable, so it reports `No accessible data` rather
+than claiming a permission outcome. Health Connect, historical glucose import,
+background delivery, source-overlap policy, and visual overlays remain future
+work.
 
 References:
 

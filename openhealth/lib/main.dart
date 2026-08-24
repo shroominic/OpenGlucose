@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
+import 'package:openglucose/src/apple_health_context_import.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
@@ -26,6 +27,7 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/persistence/health_store.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -73,6 +75,13 @@ Future<_BootstrapResult> _bootstrap() async {
     healthStateStore: healthStateStore,
     writesAllowed: !controller.isMockDriver,
   )..initialize();
+  final healthContextImport = AppleHealthContextImportController(
+    preferences: preferences,
+    healthStateStore: healthStateStore,
+    repositoryFactory: openHealthRepository,
+    readsAllowed: !controller.isMockDriver,
+  );
+  await healthContextImport.initialize();
   final messages = MessageController(
     preferences: preferences,
     messages: defaultMessageCatalog,
@@ -88,6 +97,7 @@ Future<_BootstrapResult> _bootstrap() async {
     controller: controller,
     preferences: preferences,
     healthExport: healthExport,
+    healthContextImport: healthContextImport,
     messages: messages,
   );
 }
@@ -95,6 +105,7 @@ Future<_BootstrapResult> _bootstrap() async {
 typedef _BootstrapResult = ({
   CgmAppController controller,
   HealthExportController healthExport,
+  AppleHealthContextImportController healthContextImport,
   MessageController messages,
   SharedPreferences preferences,
 });
@@ -143,6 +154,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         return OpenGlucoseApp(
           controller: result.controller,
           healthExport: result.healthExport,
+          healthContextImport: result.healthContextImport,
           preferences: result.preferences,
           messageController: result.messages,
         );
@@ -233,6 +245,23 @@ class HealthExportScope extends InheritedNotifier<HealthExportController> {
   }
 }
 
+/// Provides the opt-in Apple Health context importer when the app composition
+/// includes it. The nullable scope keeps existing preview/test compositions
+/// fail-closed: they expose no read controls unless a controller is supplied.
+class AppleHealthContextImportScope
+    extends InheritedNotifier<AppleHealthContextImportController> {
+  const AppleHealthContextImportScope({
+    super.key,
+    AppleHealthContextImportController? controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static AppleHealthContextImportController? maybeOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<AppleHealthContextImportScope>()
+          ?.notifier;
+}
+
 /// Shares one prepared archived-sensor file through the platform share sheet.
 ///
 /// The callback is injectable so tests can verify the exact native payload.
@@ -295,6 +324,7 @@ class OpenGlucoseApp extends StatelessWidget {
     super.key,
     required this.controller,
     required this.healthExport,
+    this.healthContextImport,
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
@@ -302,6 +332,7 @@ class OpenGlucoseApp extends StatelessWidget {
 
   final CgmAppController controller;
   final HealthExportController healthExport;
+  final AppleHealthContextImportController? healthContextImport;
   final SharedPreferences preferences;
 
   /// Optional contextual-messaging engine. When null (e.g. in some tests) the
@@ -358,13 +389,16 @@ class OpenGlucoseApp extends StatelessWidget {
         share: archivedSensorShareAction ?? _shareArchivedSensorFile,
         child: HealthExportScope(
           controller: healthExport,
-          child: _OnboardingGate(
-            store: OnboardingStore(preferences),
-            controller: controller,
-            unit: controller.displayPreferences.unit,
-            home: CgmHomePage(
+          child: AppleHealthContextImportScope(
+            controller: healthContextImport,
+            child: _OnboardingGate(
+              store: OnboardingStore(preferences),
               controller: controller,
-              messageController: messageController,
+              unit: controller.displayPreferences.unit,
+              home: CgmHomePage(
+                controller: controller,
+                messageController: messageController,
+              ),
             ),
           ),
         ),
@@ -1603,6 +1637,7 @@ Future<void> _showSettings(
     unawaited(controller.loadCalibrations());
   }
   final healthExport = HealthExportScope.of(context);
+  final healthContextImport = AppleHealthContextImportScope.maybeOf(context);
   var working = controller.displayPreferences;
   final scaleController = TextEditingController(
     text: working.calibrationScale.toStringAsFixed(2),
@@ -1651,6 +1686,7 @@ Future<void> _showSettings(
                     child: _SettingsOverview(
                       controller: controller,
                       healthExport: healthExport,
+                      healthContextImport: healthContextImport,
                       displayPane: displayPane,
                       hasActiveSensor: snapshot != null,
                       developerPane: snapshot == null
@@ -1691,6 +1727,7 @@ class _SettingsOverview extends StatelessWidget {
   const _SettingsOverview({
     required this.controller,
     required this.healthExport,
+    this.healthContextImport,
     required this.displayPane,
     required this.hasActiveSensor,
     this.developerPane,
@@ -1698,6 +1735,7 @@ class _SettingsOverview extends StatelessWidget {
 
   final CgmAppController controller;
   final HealthExportController healthExport;
+  final AppleHealthContextImportController? healthContextImport;
   final Widget displayPane;
   final bool hasActiveSensor;
   final Widget? developerPane;
@@ -1798,6 +1836,7 @@ class _SettingsOverview extends StatelessWidget {
                 subtitle: 'Glucose export and health data controls',
                 child: IntegrationsSettingsPane(
                   healthExport: healthExport,
+                  healthContextImport: healthContextImport,
                   controller: controller,
                 ),
               ),

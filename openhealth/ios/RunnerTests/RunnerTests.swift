@@ -20,6 +20,38 @@ final class RunnerTests: XCTestCase {
     try? FileManager.default.removeItem(at: directoryURL)
   }
 
+  func testHealthContextImportAcceptsOnlyBoundedPositiveWindows() {
+    let day: Int64 = 24 * 60 * 60 * 1000
+
+    XCTAssertTrue(
+      HealthKitContextImportChannel.isValidWindow(
+        startMilliseconds: day,
+        endMilliseconds: day + 30 * day
+      )
+    )
+    XCTAssertFalse(
+      HealthKitContextImportChannel.isValidWindow(
+        startMilliseconds: day,
+        endMilliseconds: day + 32 * day
+      )
+    )
+    XCTAssertFalse(
+      HealthKitContextImportChannel.isValidWindow(
+        startMilliseconds: day,
+        endMilliseconds: day
+      )
+    )
+  }
+
+  func testHealthContextImportNormalizesSleepStagesWithoutPayloadText() {
+    XCTAssertEqual(HealthKitContextImportChannel.sleepStage(0), "inBed")
+    XCTAssertEqual(HealthKitContextImportChannel.sleepStage(2), "awake")
+    XCTAssertEqual(HealthKitContextImportChannel.sleepStage(3), "light")
+    XCTAssertEqual(HealthKitContextImportChannel.sleepStage(4), "deep")
+    XCTAssertEqual(HealthKitContextImportChannel.sleepStage(5), "rem")
+    XCTAssertEqual(HealthKitContextImportChannel.sleepStage(1), "asleep")
+  }
+
   func testLegacyDefaultsArePurgedAndOnlyTargetIsMigrated() throws {
     defaults.set(
       "AiDEX sensor",

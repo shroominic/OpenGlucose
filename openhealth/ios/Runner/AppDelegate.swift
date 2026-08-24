@@ -4,6 +4,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var privacyStorageChannel: PrivacyStorageChannel?
+  private var healthKitContextImportChannel: HealthKitContextImportChannel?
 
   override func application(
     _ application: UIApplication,
@@ -37,5 +38,8 @@ import UIKit
       with: messenger
     )
     privacyStorageChannel = PrivacyStorageChannel(messenger: messenger)
+    healthKitContextImportChannel = HealthKitContextImportChannel(
+      messenger: messenger
+    )
   }
 }

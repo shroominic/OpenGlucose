@@ -47,6 +47,14 @@ class FileHealthStateStore implements HealthStateStore {
       'openHealth.healthExport.lastSyncedMs';
   static const _healthExportWatermarkKey =
       'openHealth.healthExport.watermarkMs';
+  static const _appleHealthContextImportLastSyncedKey =
+      'openHealth.appleHealthContextImport.lastSyncedMs';
+  static const _appleHealthContextImportAnchorSleepKey =
+      'openHealth.appleHealthContextImport.anchor.sleep';
+  static const _appleHealthContextImportAnchorWorkoutKey =
+      'openHealth.appleHealthContextImport.anchor.workout';
+  static const _appleHealthContextImportAnchorHeartRateKey =
+      'openHealth.appleHealthContextImport.anchor.heartRate';
   static const _privacyChannel = MethodChannel(
     'com.openglucose.app/privacy_storage',
   );
@@ -638,7 +646,11 @@ class FileHealthStateStore implements HealthStateStore {
         key.startsWith(_historyPrefix) ||
         key.startsWith(_bondTransferPrefix) ||
         key == _healthExportLastSyncedKey ||
-        key == _healthExportWatermarkKey;
+        key == _healthExportWatermarkKey ||
+        key == _appleHealthContextImportLastSyncedKey ||
+        key == _appleHealthContextImportAnchorSleepKey ||
+        key == _appleHealthContextImportAnchorWorkoutKey ||
+        key == _appleHealthContextImportAnchorHeartRateKey;
   }
 
   static bool _isHistoryKey(String key) => key.startsWith(_historyPrefix);
@@ -649,7 +661,8 @@ class FileHealthStateStore implements HealthStateStore {
       return value;
     }
     if ((key == _healthExportLastSyncedKey ||
-            key == _healthExportWatermarkKey) &&
+            key == _healthExportWatermarkKey ||
+            key == _appleHealthContextImportLastSyncedKey) &&
         value is int &&
         value >= 0) {
       return value.toString();
