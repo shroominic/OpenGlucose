@@ -79,6 +79,7 @@ class FileAppleHealthContextImportStateStore
 
       final file = File('${directory.path}${Platform.pathSeparator}$_fileName');
       _file = file;
+      await _rejectUnsupportedTransactionArtifacts(file);
       await _restoreInterruptedCommit(file);
       if (!file.existsSync()) {
         _state = AppleHealthContextImportState();
@@ -151,6 +152,30 @@ class FileAppleHealthContextImportStateStore
       // unknown future schema merely because it found a transaction artifact.
       _decode(await next.readAsString());
       await next.rename(file.path);
+    }
+  }
+
+  /// Stops an older binary from discarding a staged state that it cannot read.
+  ///
+  /// A crash can leave a current primary with a newer `.next`, or an older
+  /// `.previous` alongside a newer `.next`. Decode each artifact before any
+  /// recovery rename or cleanup. Corrupt known-version staging can still be
+  /// discarded in favour of an authoritative file, but an unknown schema must
+  /// remain byte-for-byte untouched for a later roll-forward.
+  Future<void> _rejectUnsupportedTransactionArtifacts(File file) async {
+    for (final artifact in <File>[
+      File('${file.path}.previous'),
+      File('${file.path}.next'),
+    ]) {
+      if (!artifact.existsSync()) {
+        continue;
+      }
+      try {
+        _decode(await artifact.readAsString());
+      } on FormatException {
+        // The existing recovery protocol can discard a corrupt, known-version
+        // staging file after it has restored or verified the authoritative one.
+      }
     }
   }
 

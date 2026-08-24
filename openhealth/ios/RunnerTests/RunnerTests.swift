@@ -79,6 +79,13 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(
       HealthKitContextImportChannel.queryErrorStatus(
         domain: HKErrorDomain,
+        code: HKError.Code.errorAuthorizationDenied.rawValue
+      ),
+      "noAccessibleData"
+    )
+    XCTAssertEqual(
+      HealthKitContextImportChannel.queryErrorStatus(
+        domain: HKErrorDomain,
         code: HKError.Code.errorHealthDataUnavailable.rawValue
       ),
       "unavailable"

@@ -945,6 +945,115 @@ void main() {
   });
 
   test(
+    'native authorization transport preserves safe public statuses',
+    () async {
+      const channel = MethodChannel('test.apple-health-context-authorization');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      var nativeStatus = 'requested';
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        switch (call.method) {
+          case 'requestAuthorization':
+            return <String, Object>{
+              'schemaVersion': 1,
+              'status': nativeStatus,
+            };
+          case 'availability':
+            return <String, Object>{'schemaVersion': 1, 'status': 'available'};
+          default:
+            throw StateError('Unexpected method.');
+        }
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final service = HealthKitContextImportService(
+        channel: channel,
+        supportCheck: () => true,
+      );
+
+      Future<void> expectStatus(
+        String response,
+        AppleHealthContextAuthorizationStatus expected,
+      ) async {
+        nativeStatus = response;
+        final authorization = await service.requestAuthorization(
+          AppleHealthContextDataType.values.toSet(),
+        );
+        expect(authorization.status, expected);
+      }
+
+      await expectStatus(
+        'requested',
+        AppleHealthContextAuthorizationStatus.requested,
+      );
+      await expectStatus(
+        'unavailable',
+        AppleHealthContextAuthorizationStatus.unavailable,
+      );
+      await expectStatus(
+        'locked',
+        AppleHealthContextAuthorizationStatus.locked,
+      );
+      await expectStatus('retry', AppleHealthContextAuthorizationStatus.retry);
+      await expectStatus(
+        'noAccessibleData',
+        AppleHealthContextAuthorizationStatus.noAccessibleData,
+      );
+      await expectStatus(
+        'failed',
+        AppleHealthContextAuthorizationStatus.failed,
+      );
+    },
+  );
+
+  test(
+    'authorization errors retain explicit opt-in with safe public guidance',
+    () async {
+      final preferences = await loadPreferences();
+
+      Future<void> expectAuthorizationState(
+        AppleHealthContextAuthorizationStatus authorizationStatus,
+        AppleHealthContextAccessState expectedState,
+        String messageFragment,
+      ) async {
+        await preferences.setBool(_enabledKey, false);
+        final service = _FakeContextService()
+          ..authorizationStatus = authorizationStatus;
+        final context = controller(
+          preferences: preferences,
+          stateStore: _MemoryAppleHealthContextImportStateStore(),
+          repository: InMemoryHealthRepository(),
+          service: service,
+        );
+        await context.initialize();
+
+        await context.setEnabled(enabled: true);
+
+        expect(context.enabled, isTrue);
+        expect(preferences.getBool(_enabledKey), isTrue);
+        expect(context.accessState, expectedState);
+        expect(context.statusMessage, contains(messageFragment));
+        expect(context.statusMessage, isNot(contains('HKError')));
+      }
+
+      await expectAuthorizationState(
+        AppleHealthContextAuthorizationStatus.locked,
+        AppleHealthContextAccessState.locked,
+        'Unlock',
+      );
+      await expectAuthorizationState(
+        AppleHealthContextAuthorizationStatus.retry,
+        AppleHealthContextAccessState.retry,
+        'Try again',
+      );
+      await expectAuthorizationState(
+        AppleHealthContextAuthorizationStatus.noAccessibleData,
+        AppleHealthContextAccessState.noAccessibleData,
+        'No accessible data',
+      );
+    },
+  );
+
+  test(
     'native transport accepts no-data batches that cannot advance a cursor',
     () async {
       const channel = MethodChannel('test.apple-health-context-no-data');

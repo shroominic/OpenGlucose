@@ -58,7 +58,14 @@ enum AppleHealthContextAvailability { available, unavailable }
 /// Apple does not disclose whether a user granted read access. [requested]
 /// means only that iOS accepted the request; a later sync can still return no
 /// accessible data.
-enum AppleHealthContextAuthorizationStatus { requested, unavailable, failed }
+enum AppleHealthContextAuthorizationStatus {
+  requested,
+  unavailable,
+  locked,
+  retry,
+  noAccessibleData,
+  failed,
+}
 
 /// The visible state of the context-import permission and sync flow.
 enum AppleHealthContextAccessState {
@@ -249,6 +256,18 @@ class HealthKitContextImportService implements AppleHealthContextImportService {
         ),
         'unavailable' => const AppleHealthContextAuthorizationResult(
           AppleHealthContextAuthorizationStatus.unavailable,
+        ),
+        'locked' => const AppleHealthContextAuthorizationResult(
+          AppleHealthContextAuthorizationStatus.locked,
+        ),
+        'retry' => const AppleHealthContextAuthorizationResult(
+          AppleHealthContextAuthorizationStatus.retry,
+        ),
+        'noAccessibleData' => const AppleHealthContextAuthorizationResult(
+          AppleHealthContextAuthorizationStatus.noAccessibleData,
+        ),
+        'failed' => const AppleHealthContextAuthorizationResult(
+          AppleHealthContextAuthorizationStatus.failed,
         ),
         _ => const AppleHealthContextAuthorizationResult(
           AppleHealthContextAuthorizationStatus.failed,
@@ -797,6 +816,24 @@ class AppleHealthContextImportController extends ChangeNotifier {
           _accessState = AppleHealthContextAccessState.unavailable;
           _statusMessage = 'Apple Health is unavailable on this device.';
           await _preferences.setBool(_enabledKey, false);
+        case AppleHealthContextAuthorizationStatus.locked:
+          _enabled = true;
+          _accessState = AppleHealthContextAccessState.locked;
+          _statusMessage =
+              'Unlock this iPhone and try Apple Health import again.';
+          await _preferences.setBool(_enabledKey, true);
+        case AppleHealthContextAuthorizationStatus.retry:
+          _enabled = true;
+          _accessState = AppleHealthContextAccessState.retry;
+          _statusMessage =
+              'Apple Health context import could not finish. Try again.';
+          await _preferences.setBool(_enabledKey, true);
+        case AppleHealthContextAuthorizationStatus.noAccessibleData:
+          _enabled = true;
+          _accessState = AppleHealthContextAccessState.noAccessibleData;
+          _statusMessage =
+              'No accessible data. Apple may return this for empty data or unavailable read access.';
+          await _preferences.setBool(_enabledKey, true);
         case AppleHealthContextAuthorizationStatus.failed:
           _enabled = false;
           _accessState = AppleHealthContextAccessState.failed;

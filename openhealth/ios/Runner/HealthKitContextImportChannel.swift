@@ -92,11 +92,15 @@ final class HealthKitContextImportChannel {
     healthStore.requestAuthorization(
       toShare: Set<HKSampleType>(),
       read: readTypes
-    ) { success, _ in
+    ) { success, error in
       DispatchQueue.main.async {
+        if let error {
+          result(Self.statusResponse(Self.queryErrorStatus(error)))
+          return
+        }
         // Apple does not reveal read authorization. `requested` deliberately
         // means only that iOS completed this request without an API failure.
-        result(Self.statusResponse(success ? "requested" : "failed"))
+        result(Self.statusResponse(success ? "requested" : "retry"))
       }
     }
   }
