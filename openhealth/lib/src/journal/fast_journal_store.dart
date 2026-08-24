@@ -8,12 +8,17 @@ import 'package:cgm_core/cgm_core.dart';
 enum FastJournalKind {
   meal,
   activity,
+
+  /// A general local note. Existing sleep records remain supported for
+  /// rollback compatibility, but new general journal capture uses notes.
+  note,
   sleep
   ;
 
   String get label => switch (this) {
     FastJournalKind.meal => 'Meal',
     FastJournalKind.activity => 'Activity',
+    FastJournalKind.note => 'Note',
     FastJournalKind.sleep => 'Sleep',
   };
 
@@ -47,11 +52,10 @@ class FastJournalRiseReference {
   }
 
   factory FastJournalRiseReference.fromJson(Map<String, Object?> json) {
-    _requireExactKeys(
-      json,
-      const <String>{'startedAt', 'lastObservedAt'},
-      context: 'fast-journal rise reference',
-    );
+    _requireExactKeys(json, const <String>{
+      'startedAt',
+      'lastObservedAt',
+    }, context: 'fast-journal rise reference');
     final reference = FastJournalRiseReference(
       startedAt: _readRequiredUtcDate(json, 'startedAt'),
       lastObservedAt: _readRequiredUtcDate(json, 'lastObservedAt'),
@@ -130,20 +134,16 @@ class FastJournalEntry {
   }
 
   factory FastJournalEntry.fromJson(Map<String, Object?> json) {
-    _requireExactKeys(
-      json,
-      const <String>{
-        'formatVersion',
-        'id',
-        'kind',
-        'occurredAt',
-        'label',
-        'durationMs',
-        'riseReference',
-        'source',
-      },
-      context: 'fast-journal entry',
-    );
+    _requireExactKeys(json, const <String>{
+      'formatVersion',
+      'id',
+      'kind',
+      'occurredAt',
+      'label',
+      'durationMs',
+      'riseReference',
+      'source',
+    }, context: 'fast-journal entry');
     final version = json['formatVersion'];
     if (version is! int || version != formatVersion) {
       throw FormatException('Unsupported fast-journal formatVersion: $version');
@@ -210,9 +210,7 @@ abstract interface class FastJournalStore {
 
 /// Resolves the journal protocol from the app-owned health repository.
 typedef FastJournalStoreResolver =
-    FastJournalStore Function(
-      HealthRepository repository,
-    );
+    FastJournalStore Function(HealthRepository repository);
 
 /// Obtains the optional journal store from the app-owned health repository.
 ///

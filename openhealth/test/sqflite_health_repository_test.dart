@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/context_bridge/context_attachment_fact.dart';
+import 'package:openglucose/src/context_bridge/context_attachment_writer.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/sqflite_health_repository.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -293,6 +294,121 @@ void main() {
   });
 
   group('context attachment facts', () {
+    test(
+      'writes one linked diary entry and episode fact in one local transaction',
+      () async {
+        final entry = FastJournalEntry(
+          id: 'transactional-note',
+          kind: FastJournalKind.note,
+          occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+          label: 'Private detail',
+        );
+        final fact = attachmentFact(
+          id: 'transactional-fact',
+          journalEntryId: entry.id,
+          candidate: candidateId('0123456789abcdef01234567'),
+          episode: episodeKey('fedcba9876543210fedcba98'),
+        );
+
+        final saved = await repo.saveContextAttachment(
+          entry: entry,
+          fact: fact,
+        );
+
+        expect(saved.status, ContextAttachmentSaveStatus.saved);
+        expect(saved.entry?.riseReference?.startedAt, fact.episodeStart);
+        expect(
+          (await repo.queryFastJournalEntries(limit: 20)).map(
+            (journal) => journal.id,
+          ),
+          <String>[entry.id],
+        );
+        expect(
+          (await repo.queryContextAttachmentFacts()).map((item) => item.id),
+          <String>[fact.id],
+        );
+
+        final duplicateEntry = FastJournalEntry(
+          id: 'second-note',
+          kind: FastJournalKind.activity,
+          occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+        );
+        final duplicate = attachmentFact(
+          id: 'second-fact',
+          journalEntryId: duplicateEntry.id,
+          candidate: candidateId('111111111111111111111111'),
+          episode: fact.episodeKey,
+        );
+        final alreadyClaimed = await repo.saveContextAttachment(
+          entry: duplicateEntry,
+          fact: duplicate,
+        );
+
+        expect(
+          alreadyClaimed.status,
+          ContextAttachmentSaveStatus.alreadyClaimed,
+        );
+        expect(
+          (await repo.queryFastJournalEntries(limit: 20)).map(
+            (journal) => journal.id,
+          ),
+          <String>[entry.id],
+        );
+      },
+    );
+
+    test(
+      'rolls back the diary entry when a fact ID is an unrelated collision',
+      () async {
+        final firstEntry = FastJournalEntry(
+          id: 'first-linked-entry',
+          kind: FastJournalKind.meal,
+          occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+        );
+        final firstFact = attachmentFact(
+          id: 'shared-fact-id',
+          journalEntryId: firstEntry.id,
+          candidate: candidateId('222222222222222222222222'),
+          episode: episodeKey('333333333333333333333333'),
+        );
+        await repo.saveContextAttachment(entry: firstEntry, fact: firstFact);
+
+        final secondEntry = FastJournalEntry(
+          id: 'must-rollback-entry',
+          kind: FastJournalKind.note,
+          occurredAt: DateTime.utc(2026, 1, 3, 20, 10),
+        );
+        final secondFact = ContextAttachmentFact(
+          id: firstFact.id,
+          journalEntryId: secondEntry.id,
+          candidateId: candidateId('444444444444444444444444'),
+          episodeKey: episodeKey('555555555555555555555555'),
+          calculationVersion: 'recent-observed-rise-v1',
+          episodeStart: DateTime.utc(2026, 1, 3, 20),
+          peakAt: DateTime.utc(2026, 1, 3, 20, 15),
+          attachmentWindowStart: DateTime.utc(2026, 1, 3, 19, 45),
+          attachmentWindowEnd: DateTime.utc(2026, 1, 3, 20, 30),
+          occurredAt: secondEntry.occurredAt,
+        );
+
+        await expectLater(
+          repo.saveContextAttachment(entry: secondEntry, fact: secondFact),
+          throwsStateError,
+        );
+
+        expect(
+          (await repo.queryFastJournalEntries(limit: 20)).map(
+            (journal) => journal.id,
+          ),
+          <String>[firstEntry.id],
+        );
+        expect(
+          (await repo.queryContextAttachmentFacts()).map((fact) => fact.id),
+          <String>[firstFact.id],
+        );
+      },
+    );
+
     test(
       'round-trips bounded additive facts without changing health events',
       () async {

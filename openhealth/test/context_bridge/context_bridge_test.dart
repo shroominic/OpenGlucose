@@ -155,6 +155,33 @@ void main() {
     );
 
     test(
+      'does not query local context until the reader surface is enabled',
+      () async {
+        final repository = _BridgeRepository();
+        final enabled = ValueNotifier<bool>(false);
+        final harness = await _BridgeHarness.create(
+          repository: repository,
+          contextSettingsSignal: enabled,
+          isContextViewEnabled: () => enabled.value,
+        );
+        addTearDown(() async {
+          enabled.dispose();
+          await harness.dispose();
+        });
+
+        expect(repository.acquireCalls, 0);
+        expect(harness.bridge.snapshot.loadState, ContextBridgeLoadState.idle);
+        expect(harness.bridge.snapshot.glucoseReadings, isEmpty);
+
+        enabled.value = true;
+        await _drainBridgeQueue();
+
+        expect(repository.acquireCalls, 1);
+        expect(harness.bridge.snapshot.loadState, ContextBridgeLoadState.ready);
+      },
+    );
+
+    test(
       'uses the full post-warmup active history, not chart crop settings',
       () async {
         final harness = await _BridgeHarness.create();
@@ -827,6 +854,8 @@ class _BridgeHarness {
     ContextBridgeSuggestionPolicy suggestionPolicy =
         const ContextBridgeSuggestionPolicy.disabled(),
     Listenable? contextSignal,
+    Listenable? contextSettingsSignal,
+    ContextBridgeEnabledProvider? isContextViewEnabled,
     bool demoDriver = false,
   }) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -842,15 +871,19 @@ class _BridgeHarness {
     );
     await controller.initialize();
     await controller.connect(sensor);
-    final lifecycle = AppHealthRepositoryLifecycle(
-      () async => repository ?? _BridgeRepository(),
-    );
+    final localRepository = repository ?? _BridgeRepository();
+    final lifecycle = AppHealthRepositoryLifecycle(() async {
+      localRepository.acquireCalls++;
+      return localRepository;
+    });
     final bridge = ContextBridge(
       controller: controller,
       repositoryLifecycle: lifecycle,
       clock: () => _now,
       suggestionPolicy: suggestionPolicy,
       contextChangeSignal: contextSignal,
+      contextSettingsSignal: contextSettingsSignal,
+      isContextViewEnabled: isContextViewEnabled,
     );
     await bridge.start();
     // Connecting a controller can still emit its final ready snapshot while
@@ -880,6 +913,7 @@ class _BridgeRepository extends InMemoryHealthRepository
       <String, ContextAttachmentFact>{};
   TimeWindow? lastJournalWindow;
   int? lastJournalLimit;
+  int acquireCalls = 0;
   bool failActivityQuery = false;
 
   @override

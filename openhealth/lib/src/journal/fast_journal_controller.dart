@@ -84,9 +84,7 @@ class RecentGlucoseRise {
 /// Return `null` until a deterministic analytics policy supplies a qualified
 /// candidate. The controller never interprets raw glucose readings itself.
 typedef FastJournalRecentRiseProvider =
-    RecentGlucoseRise? Function(
-      DateTime now,
-    );
+    RecentGlucoseRise? Function(DateTime now);
 
 /// The production-safe provider until reviewed local analytics supplies one.
 RecentGlucoseRise? noRecentGlucoseRise(DateTime _) => null;
@@ -124,7 +122,7 @@ class FastJournalController {
   RecentGlucoseRise? _latestEligibleRise;
   Future<void> _saveTail = Future<void>.value();
 
-  /// The newest manual meal, activity, and sleep entries, newest first.
+  /// The newest local diary entries, newest first.
   List<FastJournalEntry> get entries =>
       List<FastJournalEntry>.unmodifiable(_entries);
 

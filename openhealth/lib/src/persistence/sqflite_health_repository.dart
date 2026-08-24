@@ -4,6 +4,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../context_bridge/context_attachment_fact.dart';
+import '../context_bridge/context_attachment_writer.dart';
 import '../journal/fast_journal_store.dart';
 
 /// On-device, local-first [HealthRepository] backed by SQLite via `sqflite`.
@@ -26,7 +27,11 @@ import '../journal/fast_journal_store.dart';
 /// keys) promoted to dedicated, indexed columns. This keeps schema churn low as
 /// models gain fields while keeping window/type queries index-backed.
 class SqfliteHealthRepository
-    implements HealthRepository, FastJournalStore, ContextAttachmentFactStore {
+    implements
+        HealthRepository,
+        FastJournalStore,
+        ContextAttachmentFactStore,
+        ContextAttachmentWriter {
   SqfliteHealthRepository({
     required String path,
     DatabaseFactory? databaseFactory,
@@ -194,11 +199,7 @@ class SqfliteHealthRepository
       //
       // Existing v1 rows remain untouched and nullable so legacy/manual rows
       // retain their append-only semantics.
-      await _addColumnIfMissing(
-        db,
-        tableActivity,
-        'identity_platform',
-      );
+      await _addColumnIfMissing(db, tableActivity, 'identity_platform');
       await _addColumnIfMissing(db, tableActivity, 'external_id');
       await db.execute(
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_import_identity '
@@ -290,14 +291,8 @@ class SqfliteHealthRepository
       // session-scoped episode key used by all schema-five writes. A legacy
       // row cannot be safely backfilled because it never stored the private
       // session discriminator needed to prove its episode scope.
-      await _addColumnIfMissing(
-        db,
-        tableContextAttachmentFacts,
-        'episode_key',
-      );
-      await db.execute(
-        'DROP INDEX IF EXISTS idx_context_attachment_candidate',
-      );
+      await _addColumnIfMissing(db, tableContextAttachmentFacts, 'episode_key');
+      await db.execute('DROP INDEX IF EXISTS idx_context_attachment_candidate');
       await db.execute(
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_episode '
         'ON $tableContextAttachmentFacts(episode_key) '
@@ -325,14 +320,11 @@ class SqfliteHealthRepository
   /// Version one shipped without this guard, so [_migrate] separately repairs
   /// the historical v2 -> v1 -> v2 marker rollback. Future downgrades fail
   /// closed instead of risking an unknown schema being written by this binary.
-  static Future<void> _rejectDowngrade(
-    Database _,
-    int from,
-    int to,
-  ) => throw StateError(
-    'Refusing local health database downgrade from schema $from to $to. '
-    'Use a schema-version-$from or newer build.',
-  );
+  static Future<void> _rejectDowngrade(Database _, int from, int to) =>
+      throw StateError(
+        'Refusing local health database downgrade from schema $from to $to. '
+        'Use a schema-version-$from or newer build.',
+      );
 
   static int _ms(DateTime t) => t.toUtc().millisecondsSinceEpoch;
 
@@ -541,6 +533,119 @@ class SqfliteHealthRepository
     });
   }
 
+  @override
+  Future<ContextAttachmentSaveResult> saveContextAttachment({
+    required FastJournalEntry entry,
+    required ContextAttachmentFact fact,
+  }) async {
+    if (entry.riseReference != null) {
+      throw ArgumentError.value(
+        entry,
+        'entry',
+        'The context attachment writer owns the local observation link.',
+      );
+    }
+    if (!fact.isStableEpisodeClaim || fact.journalEntryId != entry.id) {
+      throw ArgumentError.value(
+        fact,
+        'fact',
+        'Expected a stable fact for the supplied local journal entry.',
+      );
+    }
+    if (!fact.occurredAt.toUtc().isAtSameMomentAs(entry.occurredAt.toUtc())) {
+      throw ArgumentError.value(
+        fact,
+        'fact',
+        'Context fact timing must match the local journal entry.',
+      );
+    }
+    entry.toJson();
+    final factData = jsonEncode(fact.toJson());
+    final attached = entry.copyWith(
+      riseReference: FastJournalRiseReference(
+        startedAt: fact.episodeStart,
+        lastObservedAt: fact.peakAt,
+      ),
+    );
+    final entryData = jsonEncode(attached.toJson());
+    final requestedStart = _us(fact.episodeStart);
+    return _database.transaction((transaction) async {
+      // A current fact and an older fast-journal link are both durable claims.
+      // Check both before writing so a rollback to a legacy build cannot
+      // silently create a second local attachment for the same episode.
+      final existingFact = await transaction.query(
+        tableContextAttachmentFacts,
+        columns: const <String>['episode_key'],
+        where: 'episode_key = ?',
+        whereArgs: <Object?>[fact.episodeKey.value],
+        limit: 1,
+      );
+      final existingJournal = await transaction.query(
+        tableFastJournalEntries,
+        columns: const <String>['id'],
+        where: 'rise_started_at_us = ?',
+        whereArgs: <Object?>[requestedStart],
+        limit: 1,
+      );
+      if (existingFact.isNotEmpty || existingJournal.isNotEmpty) {
+        return const ContextAttachmentSaveResult.alreadyClaimed();
+      }
+
+      final journalInserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableFastJournalEntries(
+          id, occurred_at_ms, kind, rise_started_at_us, data
+        ) VALUES (?, ?, ?, ?, ?)
+        ''',
+        <Object?>[
+          attached.id,
+          _ms(attached.occurredAt),
+          attached.kind.name,
+          requestedStart,
+          entryData,
+        ],
+      );
+      if (journalInserted == 0) {
+        final claim = await transaction.query(
+          tableFastJournalEntries,
+          columns: const <String>['id'],
+          where: 'rise_started_at_us = ?',
+          whereArgs: <Object?>[requestedStart],
+          limit: 1,
+        );
+        if (claim.isNotEmpty) {
+          return const ContextAttachmentSaveResult.alreadyClaimed();
+        }
+        throw StateError('Local context journal ID collides with an entry.');
+      }
+
+      final factInserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableContextAttachmentFacts(
+          id, journal_entry_id, occurred_at_ms, candidate_id, episode_key,
+          calculation_version, data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        <Object?>[
+          fact.id,
+          fact.journalEntryId,
+          _ms(fact.occurredAt),
+          fact.candidateId.value,
+          fact.episodeKey.value,
+          fact.calculationVersion,
+          factData,
+        ],
+      );
+      if (factInserted == 0) {
+        // Throwing from this transaction rolls back the journal write too.
+        // A fact conflict after the earlier checks is never safe to turn into
+        // a half-saved attachment.
+        throw StateError('Local context fact claim could not be saved.');
+      }
+      return ContextAttachmentSaveResult.saved(attached);
+    });
+  }
+
   // --- Context attachment facts ------------------------------------------
 
   @override
@@ -644,11 +749,7 @@ class SqfliteHealthRepository
       orderBy: 'occurred_at_ms ASC, id ASC',
     );
     return rows
-        .map(
-          (row) => ContextAttachmentFact.fromJson(
-            _decode(row['data']),
-          ),
-        )
+        .map((row) => ContextAttachmentFact.fromJson(_decode(row['data'])))
         .toList(growable: false);
   }
 
@@ -827,10 +928,7 @@ class SqfliteHealthRepository
     return _database.delete(
       table,
       where: '$timestampColumn < ? AND identity_platform = ?',
-      whereArgs: <Object?>[
-        _ms(cutoff),
-        platform.key,
-      ],
+      whereArgs: <Object?>[_ms(cutoff), platform.key],
     );
   }
 

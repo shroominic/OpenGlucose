@@ -15,6 +15,20 @@ import 'context_bridge_models.dart';
 /// Supplies time at the composition edge and in deterministic tests.
 typedef ContextBridgeClock = DateTime Function();
 
+/// Supplies the current user-selected, non-clinical suggestion policy.
+///
+/// The bridge does not own preference persistence. This seam lets an app-owned
+/// settings controller change the policy without giving widgets repository
+/// access.
+typedef ContextBridgeSuggestionPolicyProvider =
+    ContextBridgeSuggestionPolicy Function();
+
+/// Supplies whether the optional reader surface is enabled.
+///
+/// When false, the bridge publishes an idle cache and does not query local
+/// context storage. This is intentionally separate from a suggestion policy.
+typedef ContextBridgeEnabledProvider = bool Function();
+
 /// Conservative local cache limits for the production context bridge.
 ///
 /// This is a cache/query policy, not a glucose or medical policy. The bridge
@@ -89,9 +103,13 @@ class ContextBridge extends ChangeNotifier {
     required CgmAppController controller,
     required AppHealthRepositoryLifecycle repositoryLifecycle,
     this.contextChangeSignal,
+    this.contextSettingsSignal,
     ContextBridgeClock? clock,
     this.cachePolicy = const ContextBridgeCachePolicy(),
-    this.suggestionPolicy = const ContextBridgeSuggestionPolicy.disabled(),
+    ContextBridgeSuggestionPolicy suggestionPolicy =
+        const ContextBridgeSuggestionPolicy.disabled(),
+    ContextBridgeSuggestionPolicyProvider? suggestionPolicyProvider,
+    ContextBridgeEnabledProvider? isContextViewEnabled,
   }) : assert(
          !cachePolicy.window.isNegative && cachePolicy.window != Duration.zero,
          'ContextBridgeCachePolicy.window must be positive.',
@@ -107,6 +125,9 @@ class ContextBridge extends ChangeNotifier {
        _controller = controller,
        _repositoryLifecycle = repositoryLifecycle,
        _clock = clock ?? DateTime.now,
+       _fallbackSuggestionPolicy = suggestionPolicy,
+       _suggestionPolicyProvider = suggestionPolicyProvider,
+       _isContextViewEnabled = isContextViewEnabled,
        _snapshot = ContextBridgeSnapshot.idle(
          (clock ?? DateTime.now)().toUtc(),
        );
@@ -114,9 +135,12 @@ class ContextBridge extends ChangeNotifier {
   final CgmAppController _controller;
   final AppHealthRepositoryLifecycle _repositoryLifecycle;
   final Listenable? contextChangeSignal;
+  final Listenable? contextSettingsSignal;
   final ContextBridgeClock _clock;
   final ContextBridgeCachePolicy cachePolicy;
-  final ContextBridgeSuggestionPolicy suggestionPolicy;
+  final ContextBridgeSuggestionPolicy _fallbackSuggestionPolicy;
+  final ContextBridgeSuggestionPolicyProvider? _suggestionPolicyProvider;
+  final ContextBridgeEnabledProvider? _isContextViewEnabled;
 
   ContextBridgeSnapshot _snapshot;
   Future<void> _reloadTail = Future<void>.value();
@@ -128,6 +152,11 @@ class ContextBridge extends ChangeNotifier {
   /// repository access stays within [reload].
   ContextBridgeSnapshot get snapshot => _snapshot;
 
+  ContextBridgeSuggestionPolicy get suggestionPolicy =>
+      _suggestionPolicyProvider?.call() ?? _fallbackSuggestionPolicy;
+
+  bool get _contextViewEnabled => _isContextViewEnabled?.call() ?? true;
+
   /// Starts the one app-owned listener set and loads an initial local cache.
   Future<void> start() {
     if (_disposed) return Future<void>.value();
@@ -135,6 +164,7 @@ class ContextBridge extends ChangeNotifier {
       _started = true;
       _controller.addListener(_onControllerChanged);
       contextChangeSignal?.addListener(_onContextDataChanged);
+      contextSettingsSignal?.addListener(_onContextSettingsChanged);
     }
     return reload();
   }
@@ -147,6 +177,10 @@ class ContextBridge extends ChangeNotifier {
     if (_disposed) return Future<void>.value();
     final request = ++_requestGeneration;
     final now = _clock().toUtc();
+    if (!_contextViewEnabled) {
+      _publish(ContextBridgeSnapshot.idle(now));
+      return Future<void>.value();
+    }
     final pendingInput = _collectGlucose(now);
     _publish(
       ContextBridgeSnapshot(
@@ -171,7 +205,9 @@ class ContextBridge extends ChangeNotifier {
   }
 
   Future<void> _reloadOne(int request) async {
-    if (_disposed || request != _requestGeneration) return;
+    if (_disposed || request != _requestGeneration || !_contextViewEnabled) {
+      return;
+    }
     final now = _clock().toUtc();
     final window = _windowFor(now);
     final glucose = _collectGlucose(now);
@@ -461,10 +497,7 @@ class ContextBridge extends ChangeNotifier {
       );
     }
     final candidateId = ContextBridgeCandidateId(
-      _opaqueLinkId(
-        'candidate',
-        'candidate|$sessionKey|${candidate.id}',
-      ),
+      _opaqueLinkId('candidate', 'candidate|$sessionKey|${candidate.id}'),
     );
     // The episode key is stable when a later observed peak changes the
     // analytics candidate. It is scoped by the private active-session key so
@@ -694,10 +727,8 @@ class ContextBridge extends ChangeNotifier {
         : ContextBridgeContextAvailability.available;
   }
 
-  ContextBridgeWindow _windowFor(DateTime now) => ContextBridgeWindow(
-    start: now.subtract(cachePolicy.window),
-    end: now,
-  );
+  ContextBridgeWindow _windowFor(DateTime now) =>
+      ContextBridgeWindow(start: now.subtract(cachePolicy.window), end: now);
 
   TimeWindow _halfOpenWindow(ContextBridgeWindow window) => TimeWindow(
     start: window.start,
@@ -708,10 +739,8 @@ class ContextBridge extends ChangeNotifier {
 
   bool _isSuperseded(int request, String? expectedSessionKey) {
     if (_disposed || request != _requestGeneration) return true;
-    return _activeContextSession(
-          _controller.snapshot,
-          _clock().toUtc(),
-        )?.key !=
+    if (!_contextViewEnabled) return true;
+    return _activeContextSession(_controller.snapshot, _clock().toUtc())?.key !=
         expectedSessionKey;
   }
 
@@ -720,6 +749,10 @@ class ContextBridge extends ChangeNotifier {
   }
 
   void _onContextDataChanged() {
+    if (_started && !_disposed) unawaited(reload());
+  }
+
+  void _onContextSettingsChanged() {
     if (_started && !_disposed) unawaited(reload());
   }
 
@@ -736,6 +769,7 @@ class ContextBridge extends ChangeNotifier {
     if (_started) {
       _controller.removeListener(_onControllerChanged);
       contextChangeSignal?.removeListener(_onContextDataChanged);
+      contextSettingsSignal?.removeListener(_onContextSettingsChanged);
     }
     super.dispose();
   }

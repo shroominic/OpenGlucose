@@ -7,7 +7,7 @@ import 'package:openglucose/src/journal/fast_journal_controller.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
 
-/// A compact, optional local diary for manual meal, activity, and sleep logs.
+/// A compact, optional local diary for manual meal, activity, and note logs.
 ///
 /// It is intentionally a Settings destination rather than a dashboard card.
 /// The glucose-reader view stays focused on current readings.
@@ -78,10 +78,8 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _QuickJournalSheet(
-        journal: journal,
-        onSaved: reloadContext,
-      ),
+      builder: (context) =>
+          _QuickJournalSheet(journal: journal, onSaved: reloadContext),
     );
     if (saved == true && mounted) {
       setState(() {});
@@ -107,10 +105,7 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
-              OutlinedButton(
-                onPressed: _load,
-                child: const Text('Try again'),
-              ),
+              OutlinedButton(onPressed: _load, child: const Text('Try again')),
             ],
           ),
         ),
@@ -137,9 +132,9 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
           const SizedBox(height: 24),
           Text(
             'Recent entries',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
           if (journal.entries.isEmpty)
@@ -179,7 +174,7 @@ class _JournalIntro extends StatelessWidget {
             ),
             SizedBox(height: 6),
             Text(
-              'Record a meal, activity, or sleep note. Entries stay on this '
+              'Record a meal, activity, or note. Entries stay on this '
               'device.',
             ),
           ],
@@ -342,14 +337,14 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
             children: <Widget>[
               Text(
                 'Quick add',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 14),
               Wrap(
                 spacing: 8,
-                children: FastJournalKind.values
+                children: _newJournalKinds
                     .map(
                       (kind) => ChoiceChip(
                         label: Text(kind.label),
@@ -373,7 +368,7 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
                       ? 'For example, breakfast'
                       : _kind == FastJournalKind.activity
                       ? 'For example, walk'
-                      : 'For example, early night',
+                      : 'For example, felt tired',
                 ),
               ),
               TextButton.icon(
@@ -394,17 +389,12 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
                   value: _attachToLatestRise,
                   onChanged: _saving
                       ? null
-                      : (value) => setState(
-                          () => _attachToLatestRise = value,
-                        ),
+                      : (value) => setState(() => _attachToLatestRise = value),
                 ),
               ],
               if (_error != null) ...<Widget>[
                 const SizedBox(height: 8),
-                Text(
-                  _error!,
-                  style: const TextStyle(color: Color(0xFFB24A3B)),
-                ),
+                Text(_error!, style: const TextStyle(color: Color(0xFFB24A3B))),
               ],
               const SizedBox(height: 12),
               SizedBox(
@@ -427,8 +417,17 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
 IconData _iconFor(FastJournalKind kind) => switch (kind) {
   FastJournalKind.meal => Icons.restaurant_rounded,
   FastJournalKind.activity => Icons.directions_walk_rounded,
+  FastJournalKind.note => Icons.sticky_note_2_rounded,
   FastJournalKind.sleep => Icons.bedtime_rounded,
 };
+
+/// New manual capture intentionally stays to meal/activity/note. Older local
+/// sleep entries still decode and remain visible above for rollback safety.
+const List<FastJournalKind> _newJournalKinds = <FastJournalKind>[
+  FastJournalKind.meal,
+  FastJournalKind.activity,
+  FastJournalKind.note,
+];
 
 String _formatDuration(Duration duration) {
   final hours = duration.inHours;

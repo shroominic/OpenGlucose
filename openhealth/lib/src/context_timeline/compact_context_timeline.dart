@@ -19,6 +19,7 @@ class CompactContextTimeline extends StatefulWidget {
     this.initialRange = ContextTimelineRange.oneDay,
     this.initiallyExpanded = false,
     this.onAttachmentRequested,
+    this.showHeartRate = true,
   });
 
   final ContextTimelineSource source;
@@ -26,6 +27,10 @@ class CompactContextTimeline extends StatefulWidget {
   final ContextTimelineRange initialRange;
   final bool initiallyExpanded;
   final ValueChanged<ContextAttachmentDraft>? onAttachmentRequested;
+
+  /// Whether the optional heart-rate rail belongs in this visual surface.
+  /// The production context route starts glucose-first and leaves it off.
+  final bool showHeartRate;
 
   @override
   State<CompactContextTimeline> createState() => _CompactContextTimelineState();
@@ -77,11 +82,20 @@ class _CompactContextTimelineState extends State<CompactContextTimeline> {
               onSelected: (range) => setState(() => _range = range),
             ),
             const SizedBox(height: 12),
-            _ContextTimelinePlot(projection: projection),
+            _ContextTimelinePlot(
+              projection: projection,
+              showHeartRate: widget.showHeartRate,
+            ),
             const SizedBox(height: 12),
-            _ContextLegend(projection: projection),
+            _ContextLegend(
+              projection: projection,
+              showHeartRate: widget.showHeartRate,
+            ),
             const SizedBox(height: 12),
-            _AvailabilitySummary(projection: projection),
+            _AvailabilitySummary(
+              projection: projection,
+              showHeartRate: widget.showHeartRate,
+            ),
             if (projection.attachmentPrompt case final prompt?) ...<Widget>[
               const SizedBox(height: 12),
               _ContextAttachmentPromptCard(
@@ -90,9 +104,13 @@ class _CompactContextTimelineState extends State<CompactContextTimeline> {
               ),
             ],
             if (projection.items.isNotEmpty ||
-                projection.heartRateSamples.isNotEmpty) ...<Widget>[
+                (widget.showHeartRate &&
+                    projection.heartRateSamples.isNotEmpty)) ...<Widget>[
               const SizedBox(height: 12),
-              _ContextItems(projection: projection),
+              _ContextItems(
+                projection: projection,
+                showHeartRate: widget.showHeartRate,
+              ),
             ],
           ],
         ],
@@ -196,9 +214,13 @@ class _RangePicker extends StatelessWidget {
 }
 
 class _ContextTimelinePlot extends StatelessWidget {
-  const _ContextTimelinePlot({required this.projection});
+  const _ContextTimelinePlot({
+    required this.projection,
+    required this.showHeartRate,
+  });
 
   final ContextTimelineProjection projection;
+  final bool showHeartRate;
 
   @override
   Widget build(BuildContext context) {
@@ -206,8 +228,8 @@ class _ContextTimelinePlot extends StatelessWidget {
     final semanticLabel = StringBuffer(
       'Glucose-first contextual timeline. '
       '${projection.glucoseReadings.length} glucose readings, '
-      '${projection.items.where((item) => item.kind != ContextTimelineItemKind.heartRate).length} context items, '
-      '${projection.heartRateSamples.length} heart-rate samples.',
+      '${projection.items.where((item) => item.kind != ContextTimelineItemKind.heartRate).length} context items'
+      '${showHeartRate ? ', ${projection.heartRateSamples.length} heart-rate samples' : ''}.',
     );
     if (projection.glucoseReadings.isEmpty) {
       semanticLabel.write(' No glucose readings are available in this window.');
@@ -228,6 +250,7 @@ class _ContextTimelinePlot extends StatelessWidget {
               painter: _ContextTimelinePainter(
                 projection: projection,
                 colorScheme: theme.colorScheme,
+                showHeartRate: showHeartRate,
               ),
             ),
           ),
@@ -241,20 +264,24 @@ class _ContextTimelinePainter extends CustomPainter {
   const _ContextTimelinePainter({
     required this.projection,
     required this.colorScheme,
+    required this.showHeartRate,
   });
 
   final ContextTimelineProjection projection;
   final ColorScheme colorScheme;
+  final bool showHeartRate;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final chartRect = Rect.fromLTWH(12, 12, size.width - 24, size.height - 42);
-    final heartRateRect = Rect.fromLTWH(
-      chartRect.left,
-      size.height - 22,
-      chartRect.width,
-      10,
+    final chartRect = Rect.fromLTWH(
+      12,
+      12,
+      size.width - 24,
+      size.height - (showHeartRate ? 42 : 24),
     );
+    final heartRateRect = showHeartRate
+        ? Rect.fromLTWH(chartRect.left, size.height - 22, chartRect.width, 10)
+        : null;
     final grid = Paint()
       ..color = colorScheme.outlineVariant.withValues(alpha: 0.6)
       ..strokeWidth = 1;
@@ -293,7 +320,7 @@ class _ContextTimelinePainter extends CustomPainter {
     );
     _paintGlucose(canvas, chartRect);
     _paintMarkers(canvas, chartRect);
-    _paintHeartRate(canvas, heartRateRect);
+    if (heartRateRect != null) _paintHeartRate(canvas, heartRateRect);
   }
 
   void _paintIntervals(
@@ -418,13 +445,15 @@ class _ContextTimelinePainter extends CustomPainter {
   @override
   bool shouldRepaint(_ContextTimelinePainter oldDelegate) =>
       oldDelegate.projection != projection ||
-      oldDelegate.colorScheme != colorScheme;
+      oldDelegate.colorScheme != colorScheme ||
+      oldDelegate.showHeartRate != showHeartRate;
 }
 
 class _ContextLegend extends StatelessWidget {
-  const _ContextLegend({required this.projection});
+  const _ContextLegend({required this.projection, required this.showHeartRate});
 
   final ContextTimelineProjection projection;
+  final bool showHeartRate;
 
   @override
   Widget build(BuildContext context) {
@@ -440,7 +469,7 @@ class _ContextLegend extends StatelessWidget {
           color: theme.colorScheme.secondaryContainer,
           label: 'Activity',
         ),
-        if (projection.heartRateSamples.isNotEmpty)
+        if (showHeartRate && projection.heartRateSamples.isNotEmpty)
           _LegendItem(color: theme.colorScheme.tertiary, label: 'Heart rate'),
       ],
     );
@@ -468,15 +497,21 @@ class _LegendItem extends StatelessWidget {
 }
 
 class _AvailabilitySummary extends StatelessWidget {
-  const _AvailabilitySummary({required this.projection});
+  const _AvailabilitySummary({
+    required this.projection,
+    required this.showHeartRate,
+  });
 
   final ContextTimelineProjection projection;
+  final bool showHeartRate;
 
   @override
   Widget build(BuildContext context) {
     final unavailable = projection.laneStatuses
         .where(
-          (status) => status.availability != ContextDataAvailability.available,
+          (status) =>
+              status.availability != ContextDataAvailability.available &&
+              (showHeartRate || status.lane != ContextTimelineLane.heartRate),
         )
         .toList(growable: false);
     if (unavailable.isEmpty) return const SizedBox.shrink();
@@ -637,9 +672,10 @@ class _ContextAttachmentPromptCard extends StatelessWidget {
 }
 
 class _ContextItems extends StatelessWidget {
-  const _ContextItems({required this.projection});
+  const _ContextItems({required this.projection, required this.showHeartRate});
 
   final ContextTimelineProjection projection;
+  final bool showHeartRate;
 
   @override
   Widget build(BuildContext context) {
@@ -670,7 +706,8 @@ class _ContextItems extends StatelessWidget {
               ],
             ),
           ),
-        if (projection.heartRateSamples.isNotEmpty) ...<Widget>[
+        if (showHeartRate &&
+            projection.heartRateSamples.isNotEmpty) ...<Widget>[
           if (visibleItems.isNotEmpty) const SizedBox(height: 8),
           _HeartRateSummaryButton(projection: projection),
         ],
