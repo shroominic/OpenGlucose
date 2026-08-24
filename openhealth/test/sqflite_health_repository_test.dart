@@ -35,14 +35,24 @@ void main() {
     payload: MealPayload(carbsGrams: carbs, description: 'm$id'),
   );
 
+  ContextBridgeCandidateId candidateId([
+    String token = '0123456789abcdef01234567',
+  ]) => ContextBridgeCandidateId('ctx-candidate-$token');
+
+  ContextBridgeEpisodeKey episodeKey([
+    String token = 'fedcba9876543210fedcba98',
+  ]) => ContextBridgeEpisodeKey('ctx-episode-$token');
+
   ContextAttachmentFact attachmentFact({
     String id = 'attachment-fact',
     required String journalEntryId,
-    required String candidateId,
+    ContextBridgeCandidateId? candidate,
+    ContextBridgeEpisodeKey? episode,
   }) => ContextAttachmentFact(
     id: id,
     journalEntryId: journalEntryId,
-    candidateId: candidateId,
+    candidateId: candidate ?? candidateId(),
+    episodeKey: episode ?? episodeKey(),
     calculationVersion: 'recent-observed-rise-v1',
     episodeStart: DateTime.utc(2026, 1, 2, 20),
     peakAt: DateTime.utc(2026, 1, 2, 20, 15),
@@ -225,10 +235,11 @@ void main() {
             entry: entry('new-sleep', DateTime.utc(2026, 1, 2, 22)),
             requestedRise: rise(DateTime.utc(2026, 1, 2, 20)),
           );
-          await initial.saveContextAttachmentFact(
+          await initial.claimContextAttachmentFact(
             attachmentFact(
               journalEntryId: 'new-sleep',
-              candidateId: 'ctx-suggestion-for-legacy-test',
+              candidate: candidateId('111111111111111111111111'),
+              episode: episodeKey('222222222222222222222222'),
             ),
           );
           await initial.close();
@@ -269,8 +280,8 @@ void main() {
               end: DateTime.utc(2026, 1, 3),
             ),
           );
-          expect(facts.map((fact) => fact.candidateId), <String>[
-            'ctx-suggestion-for-legacy-test',
+          expect(facts.map((fact) => fact.candidateId.value), <String>[
+            'ctx-candidate-111111111111111111111111',
           ]);
           await recovered.close();
         } finally {
@@ -295,17 +306,18 @@ void main() {
         );
         final fact = attachmentFact(
           journalEntryId: 'journal-linked',
-          candidateId: 'ctx-suggestion-1',
+          candidate: candidateId('333333333333333333333333'),
+          episode: episodeKey('444444444444444444444444'),
         );
 
-        await repo.saveContextAttachmentFact(fact);
+        expect(await repo.claimContextAttachmentFact(fact), same(fact));
 
         final inRange = await repo.queryContextAttachmentFacts(
           window: TimeWindow(
             start: DateTime.utc(2026, 1, 2, 20),
             end: DateTime.utc(2026, 1, 2, 21),
           ),
-          candidateId: 'ctx-suggestion-1',
+          episodeKey: fact.episodeKey,
         );
         final outOfRange = await repo.queryContextAttachmentFacts(
           window: TimeWindow(end: DateTime.utc(2026, 1, 2, 20)),
@@ -315,6 +327,54 @@ void main() {
         expect(inRange.single.toJson(), fact.toJson());
         expect(outOfRange, isEmpty);
         expect(await repo.queryEvents(), isEmpty);
+      },
+    );
+
+    test(
+      'atomically claims one stable episode across concurrent peak revisions',
+      () async {
+        await repo.saveFastJournalEntry(
+          entry: FastJournalEntry(
+            id: 'journal-first',
+            kind: FastJournalKind.meal,
+            occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+          ),
+        );
+        await repo.saveFastJournalEntry(
+          entry: FastJournalEntry(
+            id: 'journal-later',
+            kind: FastJournalKind.activity,
+            occurredAt: DateTime.utc(2026, 1, 2, 20, 11),
+          ),
+        );
+        final sharedEpisode = episodeKey('555555555555555555555555');
+        final firstPeak = attachmentFact(
+          id: 'fact-first',
+          journalEntryId: 'journal-first',
+          candidate: candidateId('666666666666666666666666'),
+          episode: sharedEpisode,
+        );
+        final laterPeak = attachmentFact(
+          id: 'fact-later',
+          journalEntryId: 'journal-later',
+          candidate: candidateId('777777777777777777777777'),
+          episode: sharedEpisode,
+        );
+
+        final claims = await Future.wait<ContextAttachmentFact?>(
+          <Future<ContextAttachmentFact?>>[
+            repo.claimContextAttachmentFact(firstPeak),
+            repo.claimContextAttachmentFact(laterPeak),
+          ],
+        );
+
+        expect(firstPeak.candidateId.value, isNot(laterPeak.candidateId.value));
+        expect(claims.whereType<ContextAttachmentFact>(), hasLength(1));
+        final persisted = await repo.queryContextAttachmentFacts(
+          episodeKey: sharedEpisode,
+        );
+        expect(persisted, hasLength(1));
+        expect(persisted.single.episodeKey.value, sharedEpisode.value);
       },
     );
   });
@@ -641,11 +701,10 @@ void main() {
         occurredAt: DateTime.utc(2026, 1, 1),
       ),
     );
-    await repo.saveContextAttachmentFact(
+    await repo.claimContextAttachmentFact(
       attachmentFact(
         id: 'clear-fact',
         journalEntryId: 'clear-journal',
-        candidateId: 'ctx-clear',
       ),
     );
     await repo.clear();
@@ -692,6 +751,119 @@ void main() {
       expect(await other.queryInsights(), hasLength(1));
       await other.close();
     });
+
+    test(
+      'upgrades schema-four facts without fabricating episode scope',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'openglucose-context-schema-four-',
+        );
+        final path = '${directory.path}${Platform.pathSeparator}health.db';
+        try {
+          final schemaFour = await databaseFactoryFfi.openDatabase(
+            path,
+            options: OpenDatabaseOptions(
+              version: 4,
+              onCreate: (db, version) async {
+                await db.execute('''
+                  CREATE TABLE fast_journal_entries (
+                    id TEXT PRIMARY KEY,
+                    occurred_at_ms INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    rise_started_at_us INTEGER,
+                    data TEXT NOT NULL
+                  )
+                ''');
+                await db.execute('''
+                  CREATE TABLE context_attachment_facts (
+                    id TEXT PRIMARY KEY,
+                    journal_entry_id TEXT NOT NULL,
+                    occurred_at_ms INTEGER NOT NULL,
+                    candidate_id TEXT NOT NULL,
+                    calculation_version TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    FOREIGN KEY (journal_entry_id)
+                      REFERENCES fast_journal_entries(id) ON DELETE CASCADE
+                  )
+                ''');
+                await db.execute(
+                  'CREATE UNIQUE INDEX idx_context_attachment_candidate '
+                  'ON context_attachment_facts(candidate_id, '
+                  'calculation_version)',
+                );
+              },
+            ),
+          );
+          final journal = FastJournalEntry(
+            id: 'legacy-journal',
+            kind: FastJournalKind.meal,
+            occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+          );
+          await schemaFour.insert('fast_journal_entries', <String, Object?>{
+            'id': journal.id,
+            'occurred_at_ms': journal.occurredAt.millisecondsSinceEpoch,
+            'kind': journal.kind.name,
+            'rise_started_at_us': null,
+            'data': jsonEncode(journal.toJson()),
+          });
+          final legacyFact = <String, Object?>{
+            'formatVersion': 1,
+            'id': 'legacy-fact',
+            'journalEntryId': 'legacy-journal',
+            'candidateId': 'ctx-suggestion-schema-four',
+            'calculationVersion': 'recent-observed-rise-v1',
+            'episodeStart': '2026-01-02T20:00:00.000Z',
+            'peakAt': '2026-01-02T20:15:00.000Z',
+            'attachmentWindowStart': '2026-01-02T19:45:00.000Z',
+            'attachmentWindowEnd': '2026-01-02T20:30:00.000Z',
+            'occurredAt': '2026-01-02T20:10:00.000Z',
+          };
+          await schemaFour.insert('context_attachment_facts', <String, Object?>{
+            'id': 'legacy-fact',
+            'journal_entry_id': 'legacy-journal',
+            'occurred_at_ms': DateTime.utc(
+              2026,
+              1,
+              2,
+              20,
+              10,
+            ).millisecondsSinceEpoch,
+            'candidate_id': 'ctx-suggestion-schema-four',
+            'calculation_version': 'recent-observed-rise-v1',
+            'data': jsonEncode(legacyFact),
+          });
+          await schemaFour.close();
+
+          final upgraded = SqfliteHealthRepository(
+            path: path,
+            databaseFactory: databaseFactoryFfi,
+          );
+          await upgraded.init();
+          final facts = await upgraded.queryContextAttachmentFacts();
+          expect(facts, hasLength(1));
+          expect(facts.single.isStableEpisodeClaim, isFalse);
+          expect(facts.single.candidateId.value, 'ctx-suggestion-schema-four');
+          await expectLater(
+            upgraded.claimContextAttachmentFact(facts.single),
+            throwsArgumentError,
+          );
+
+          final inspected = await databaseFactoryFfi.openDatabase(path);
+          final columns = await inspected.rawQuery(
+            'PRAGMA table_info(context_attachment_facts)',
+          );
+          expect(
+            columns.map((column) => column['name']),
+            contains('episode_key'),
+          );
+          await inspected.close();
+          await upgraded.close();
+        } finally {
+          await databaseFactoryFfi.deleteDatabase(path);
+          await directory.delete(recursive: true);
+        }
+      },
+    );
 
     test(
       'upgrades a schema-v1 database without rewriting legacy rows',

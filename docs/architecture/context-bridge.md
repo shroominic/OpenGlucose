@@ -12,7 +12,8 @@ feature.
 `ContextBridge` is owned by the Flutter application composition root. It reads
 only data that the app already has:
 
-- the current active-sensor session history after the configured warmup;
+- the current ready, non-stopped, non-expired active-sensor session history
+  after a provable warmup boundary;
 - source-aware activity, sleep, and heart-rate samples already in the local
   health repository;
 - local manual fast-journal entries; and
@@ -27,6 +28,12 @@ they do not receive or query a repository.
 
 The bridge never starts a Health import, requests permissions, creates
 background work, calls an AI model, or connects to a remote service.
+
+The active session must have a known, non-future session start. Each retained
+reading must prove that it is post-warmup through a sensor-relative minute or
+a normalized timestamp after that session's warmup end. The bridge drops a
+reading whose placement is unknown. It does not reuse retained history while a
+session is connecting, stopped, or expired.
 
 ## Privacy boundary
 
@@ -50,21 +57,29 @@ non-clinical policy and supply disclosure text that says it is non-clinical or
 not medical advice.
 
 Even with that policy, the bridge fails closed when an active-session input is
-invalid, raw/calibration-only, provisional, future-dated, duplicated by
-timestamp, or mixed across reading sources. Safe display readings can still
-remain source-labelled in the cache, but they do not produce a candidate when
-the input set is mixed or otherwise incomplete. A candidate is a bounded
-opportunity to attach local context. It never states a cause of a glucose
-change.
+unproven post-warmup, invalid, raw/calibration-only, provisional,
+future-dated, duplicated by timestamp, or mixed across reading sources. Safe
+display readings can still remain source-labelled in the cache, but they do
+not produce a candidate when the input set is mixed or otherwise incomplete.
+A candidate is a bounded opportunity to attach local context. It never states
+a cause of a glucose change.
 
 ## Attachment facts
 
 `context_attachment_facts` is an additive SQLite table. It links a manual
-journal entry to an opaque candidate ID, calculation version, and bounded
-timing window. It stores no glucose values, raw packets, sensor identifiers,
-or external platform identifiers. It is deliberately separate from the legacy
-`health_events` JSON contract. Existing releases can continue to read known
-health events while ignoring the new table.
+journal entry to an opaque candidate revision ID, a stable session-scoped
+opaque episode key, calculation version, and bounded timing window. The
+episode key derives from the private active-session key plus the episode start;
+it does not include the mutable candidate peak. The store atomically claims
+that episode key once, so a later higher peak cannot re-enable or duplicate an
+attachment. It stores no glucose values, raw packets, sensor identifiers, or
+external platform identifiers.
+
+The table is deliberately separate from the legacy `health_events` JSON
+contract. Schema-four attachment rows remain readable during migration, but
+they lack the session discriminator required to prove a stable episode key and
+therefore do not suppress a schema-five episode claim. New writes require
+typed, bridge-generated opaque candidate and episode links.
 
 ## Deliberately deferred work
 

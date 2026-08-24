@@ -36,7 +36,7 @@ class SqfliteHealthRepository
        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
-  static const int schemaVersion = 4;
+  static const int schemaVersion = 5;
 
   static const String tableEvents = 'health_events';
   static const String tableActivity = 'activity_samples';
@@ -284,6 +284,26 @@ class SqfliteHealthRepository
         'ON $tableContextAttachmentFacts(occurred_at_ms DESC, id DESC)',
       );
     }
+    if (from < 5 && to >= 5) {
+      // Schema four linked claims to a mutable candidate identity. Keep those
+      // rows readable, but add a separate nullable column for the strict
+      // session-scoped episode key used by all schema-five writes. A legacy
+      // row cannot be safely backfilled because it never stored the private
+      // session discriminator needed to prove its episode scope.
+      await _addColumnIfMissing(
+        db,
+        tableContextAttachmentFacts,
+        'episode_key',
+      );
+      await db.execute(
+        'DROP INDEX IF EXISTS idx_context_attachment_candidate',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_episode '
+        'ON $tableContextAttachmentFacts(episode_key) '
+        'WHERE episode_key IS NOT NULL',
+      );
+    }
   }
 
   /// Adds one nullable schema-v2 identity column if a downgraded v1 binary
@@ -524,35 +544,59 @@ class SqfliteHealthRepository
   // --- Context attachment facts ------------------------------------------
 
   @override
-  Future<void> saveContextAttachmentFact(ContextAttachmentFact fact) async {
+  Future<ContextAttachmentFact?> claimContextAttachmentFact(
+    ContextAttachmentFact fact,
+  ) async {
+    if (!fact.isStableEpisodeClaim) {
+      throw ArgumentError.value(
+        fact,
+        'fact',
+        'Expected typed bridge-generated candidate and episode links.',
+      );
+    }
     final data = fact.toJson();
-    await _database.insert(tableContextAttachmentFacts, <String, Object?>{
-      'id': fact.id,
-      'journal_entry_id': fact.journalEntryId,
-      'occurred_at_ms': _ms(fact.occurredAt),
-      'candidate_id': fact.candidateId,
-      'calculation_version': fact.calculationVersion,
-      'data': jsonEncode(data),
+    return _database.transaction((transaction) async {
+      // The unique episode-key index and this single INSERT make a claim
+      // atomic. A later peak can carry a new candidate ID, but it cannot
+      // create a second local fact for the same active-session episode.
+      final inserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableContextAttachmentFacts(
+          id, journal_entry_id, occurred_at_ms, candidate_id, episode_key,
+          calculation_version, data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        <Object?>[
+          fact.id,
+          fact.journalEntryId,
+          _ms(fact.occurredAt),
+          fact.candidateId.value,
+          fact.episodeKey.value,
+          fact.calculationVersion,
+          jsonEncode(data),
+        ],
+      );
+      return inserted == 0 ? null : fact;
     });
   }
 
   @override
   Future<List<ContextAttachmentFact>> queryContextAttachmentFacts({
     TimeWindow window = TimeWindow.all,
-    String? candidateId,
+    ContextBridgeEpisodeKey? episodeKey,
   }) async {
     final (timeClause, args) = _windowClause('occurred_at_ms', window);
     final clauses = <String>[if (timeClause.isNotEmpty) timeClause];
-    if (candidateId != null) {
-      if (candidateId.trim().isEmpty) {
+    if (episodeKey != null) {
+      if (!episodeKey.isBridgeGenerated) {
         throw ArgumentError.value(
-          candidateId,
-          'candidateId',
-          'Expected a non-empty candidate identifier.',
+          episodeKey,
+          'episodeKey',
+          'Expected a bridge-generated episode key.',
         );
       }
-      clauses.add('candidate_id = ?');
-      args.add(candidateId);
+      clauses.add('episode_key = ?');
+      args.add(episodeKey.value);
     }
     final rows = await _database.query(
       tableContextAttachmentFacts,

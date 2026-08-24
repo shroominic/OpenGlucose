@@ -26,9 +26,10 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   presentation-neutral cache. It exposes opaque local identifiers only and
   keeps optional observed-rise attachment suggestions disabled until a product
   surface selects an explicit non-clinical policy.
-- SQLite schema four adds a separate, bounded local attachment-fact table for
-  future diary/context actions. It does not change the legacy `health_events`
-  JSON protocol.
+- SQLite schema five adds a stable, session-scoped opaque episode claim to the
+  separate bounded local attachment-fact table. It atomically prevents a later
+  candidate peak from creating a duplicate claim and does not change the
+  legacy `health_events` JSON protocol.
 
 ## [0.1.4] - 2026-08-22
 

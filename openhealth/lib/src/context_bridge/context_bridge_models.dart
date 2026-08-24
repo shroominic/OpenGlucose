@@ -1,5 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 
+import 'context_attachment_fact.dart';
+
 /// Lifecycle state for the app-owned local context cache.
 ///
 /// This says only whether this bridge has assembled a local snapshot. It does
@@ -33,6 +35,7 @@ enum ContextBridgeSuggestionAvailability {
   unsupportedReadingSource,
   provisionalReading,
   futureReading,
+  unprovenPostWarmupReading,
   duplicateTimestamp,
   mixedSources,
   notQualified,
@@ -160,7 +163,8 @@ class ContextBridgeDiaryItem {
 /// when they render an action based on it.
 class ContextBridgeAttachmentSuggestion {
   const ContextBridgeAttachmentSuggestion({
-    required this.id,
+    required this.candidateId,
+    required this.episodeKey,
     required this.calculationVersion,
     required this.episodeStart,
     required this.peakAt,
@@ -169,7 +173,17 @@ class ContextBridgeAttachmentSuggestion {
     required this.safetyBoundary,
   });
 
-  final String id;
+  /// Opaque ID for this candidate revision. A later peak can change it.
+  final ContextBridgeCandidateId candidateId;
+
+  /// Stable opaque key for the active-session episode.
+  ///
+  /// A durable attachment claim uses this key rather than [candidateId].
+  final ContextBridgeEpisodeKey episodeKey;
+
+  /// Compatibility shorthand for presentation code that needs the candidate
+  /// revision ID. Durable storage must use [episodeKey].
+  String get id => candidateId.value;
   final String calculationVersion;
   final DateTime episodeStart;
   final DateTime peakAt;

@@ -171,11 +171,20 @@ void main() {
     test(
       'isolates opaque reading identities when the active session changes',
       () async {
-        final harness = await _BridgeHarness.create();
+        final harness = await _BridgeHarness.create(
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
         addTearDown(harness.dispose);
-        final firstIds = harness.bridge.snapshot.glucoseReadings
+        final first = harness.bridge.snapshot;
+        final firstIds = first.glucoseReadings
             .map((reading) => reading.id)
             .toList(growable: false);
+        final firstEpisode = first.attachmentSuggestion?.episodeKey;
+        expect(firstEpisode, isNotNull);
         final beta = _sensor('beta');
 
         harness.session.emit(
@@ -193,6 +202,128 @@ void main() {
           second.glucoseReadings.map((reading) => reading.valueMgdl),
           _qualifiedHistory().map((reading) => reading.valueMgdl),
         );
+        expect(
+          second.attachmentSuggestion?.episodeKey.value,
+          isNot(firstEpisode?.value),
+        );
+      },
+    );
+
+    test(
+      'rejects readings whose post-warmup placement cannot be proven',
+      () async {
+        final unplaced = List<CgmReading>.generate(
+          8,
+          (_) => const CgmReading(
+            valueMgdl: 120,
+            source: CgmRecordSource.vendor,
+          ),
+          growable: false,
+        );
+        final harness = await _BridgeHarness.create(
+          history: unplaced,
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
+        addTearDown(harness.dispose);
+
+        expect(
+          harness.bridge.snapshot.glucoseAvailability,
+          ContextBridgeGlucoseAvailability.noPostWarmupReadings,
+        );
+        expect(
+          harness.bridge.snapshot.suggestionAvailability,
+          ContextBridgeSuggestionAvailability.unprovenPostWarmupReading,
+        );
+        expect(harness.bridge.snapshot.glucoseReadings, isEmpty);
+        expect(harness.bridge.snapshot.attachmentSuggestion, isNull);
+      },
+    );
+
+    test(
+      'settles retained unproven, non-ready, stopped, and expired sessions as inactive',
+      () async {
+        final cases = <({String name, CgmSessionSnapshot snapshot})>[
+          (
+            name: 'non-ready',
+            snapshot: _sessionSnapshot(
+              _sensor('alpha'),
+              history: _qualifiedHistory(),
+              stage: CgmSyncStage.connecting,
+            ),
+          ),
+          (
+            name: 'unknown session start',
+            snapshot: _sessionSnapshot(
+              _sensor('alpha'),
+              history: _qualifiedHistory(),
+              sessionInfo: const CgmSessionInfo(),
+            ),
+          ),
+          (
+            name: 'stopped',
+            snapshot: _sessionSnapshot(
+              _sensor('alpha'),
+              history: _qualifiedHistory(),
+              sessionInfo: CgmSessionInfo(
+                sessionStart: _now.subtract(const Duration(hours: 3)),
+                sessionStopped: true,
+              ),
+            ),
+          ),
+          (
+            name: 'expired',
+            snapshot: _sessionSnapshot(
+              _sensor('alpha'),
+              history: _qualifiedHistory(),
+              health: const CgmHealthSnapshot(expired: true),
+            ),
+          ),
+        ];
+        for (final testCase in cases) {
+          final harness = await _BridgeHarness.create(
+            suggestionPolicy:
+                ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                  recentRisePolicy: _risePolicy,
+                  disclosure: 'This is non-clinical and not medical advice.',
+                ),
+          );
+          try {
+            harness.session.emit(testCase.snapshot);
+            // The app controller deliberately retires stopped/expired sensor
+            // sessions. Let that normal lifecycle settle before disposing the
+            // fixture, then verify the bridge did not retain its history.
+            await _drainBridgeQueue();
+            await harness.bridge.reload();
+
+            expect(
+              harness.bridge.snapshot.loadState,
+              ContextBridgeLoadState.ready,
+              reason: testCase.name,
+            );
+            expect(
+              harness.bridge.snapshot.glucoseAvailability,
+              ContextBridgeGlucoseAvailability.noActiveSession,
+              reason: testCase.name,
+            );
+            expect(
+              harness.bridge.snapshot.suggestionAvailability,
+              ContextBridgeSuggestionAvailability.noActiveSession,
+              reason: testCase.name,
+            );
+            expect(
+              harness.bridge.snapshot.glucoseReadings,
+              isEmpty,
+              reason: testCase.name,
+            );
+          } finally {
+            await _drainBridgeQueue();
+            await harness.dispose();
+          }
+        }
       },
     );
 
@@ -221,7 +352,8 @@ void main() {
         repository.facts['attachment-fact'] = ContextAttachmentFact(
           id: 'attachment-fact',
           journalEntryId: 'linked-diary',
-          candidateId: candidate!.id,
+          candidateId: candidate!.candidateId,
+          episodeKey: candidate.episodeKey,
           calculationVersion: candidate.calculationVersion,
           episodeStart: candidate.episodeStart,
           peakAt: candidate.peakAt,
@@ -238,6 +370,102 @@ void main() {
         expect(harness.bridge.snapshot.attachmentSuggestion, isNull);
       },
     );
+
+    test(
+      'suppresses a claimed episode after a later peak changes its candidate',
+      () async {
+        final repository = _BridgeRepository();
+        repository.entries['linked-diary'] = FastJournalEntry(
+          id: 'linked-diary',
+          kind: FastJournalKind.meal,
+          occurredAt: _now.subtract(const Duration(minutes: 10)),
+          label: 'Dinner',
+        );
+        final harness = await _BridgeHarness.create(
+          repository: repository,
+          history: _evolvingPeakHistory(),
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
+        addTearDown(harness.dispose);
+        final initial = harness.bridge.snapshot.attachmentSuggestion;
+        expect(initial, isNotNull);
+        final initialSuggestion = initial!;
+        expect(initialSuggestion.id, startsWith('ctx-candidate-'));
+        expect(initialSuggestion.episodeKey.value, startsWith('ctx-episode-'));
+        expect(
+          <Object?>[
+            initialSuggestion.id,
+            initialSuggestion.episodeKey.value,
+          ].toString(),
+          isNot(
+            contains('bridge:alpha:restricted-storage-key'),
+          ),
+        );
+
+        harness.session.emit(
+          _sessionSnapshot(
+            _sensor('alpha'),
+            history: _evolvingPeakHistory(includeLaterPeak: true),
+          ),
+        );
+        await harness.bridge.reload();
+        final evolved = harness.bridge.snapshot.attachmentSuggestion;
+        expect(evolved, isNotNull);
+        expect(evolved!.id, isNot(initialSuggestion.id));
+        expect(evolved.episodeKey.value, initialSuggestion.episodeKey.value);
+
+        repository.facts['attachment-fact'] = ContextAttachmentFact(
+          id: 'attachment-fact',
+          journalEntryId: 'linked-diary',
+          candidateId: initialSuggestion.candidateId,
+          episodeKey: initialSuggestion.episodeKey,
+          calculationVersion: initialSuggestion.calculationVersion,
+          episodeStart: initialSuggestion.episodeStart,
+          peakAt: initialSuggestion.peakAt,
+          attachmentWindowStart: initialSuggestion.attachmentWindowStart,
+          attachmentWindowEnd: initialSuggestion.attachmentWindowEnd,
+          occurredAt: _now.subtract(const Duration(minutes: 10)),
+        );
+        await harness.bridge.reload();
+
+        expect(
+          harness.bridge.snapshot.suggestionAvailability,
+          ContextBridgeSuggestionAvailability.attachmentAlreadyRecorded,
+        );
+        expect(harness.bridge.snapshot.attachmentSuggestion, isNull);
+      },
+    );
+
+    test('requires typed bridge-generated attachment links', () {
+      expect(
+        () => ContextBridgeCandidateId('ctx-suggestion-not-a-candidate'),
+        throwsFormatException,
+      );
+      expect(
+        () => ContextBridgeEpisodeKey('ctx-episode-not-hex'),
+        throwsFormatException,
+      );
+      expect(
+        () => ContextAttachmentFact.fromJson(<String, Object?>{
+          'formatVersion': ContextAttachmentFact.formatVersion,
+          'id': 'attachment-fact',
+          'journalEntryId': 'journal-entry',
+          'candidateId': 'ctx-candidate-0123456789abcdef01234567',
+          'episodeKey': 'not-an-opaque-episode-key',
+          'calculationVersion': 'recent-observed-rise-v1',
+          'episodeStart': '2026-08-24T11:30:00.000Z',
+          'peakAt': '2026-08-24T11:45:00.000Z',
+          'attachmentWindowStart': '2026-08-24T11:00:00.000Z',
+          'attachmentWindowEnd': '2026-08-24T12:00:00.000Z',
+          'occurredAt': '2026-08-24T11:40:00.000Z',
+        }),
+        throwsFormatException,
+      );
+    });
 
     test(
       'reloads its cache from a local context signal and controller updates',
@@ -445,17 +673,23 @@ DiscoveredSensor _sensor(String suffix) => DiscoveredSensor(
 CgmSessionSnapshot _sessionSnapshot(
   DiscoveredSensor sensor, {
   required List<CgmReading> history,
+  CgmSyncStage stage = CgmSyncStage.ready,
+  CgmSessionInfo? sessionInfo,
+  CgmHealthSnapshot health = const CgmHealthSnapshot(),
 }) => CgmSessionSnapshot(
-  stage: CgmSyncStage.ready,
-  statusText: 'Ready',
+  stage: stage,
+  statusText: stage == CgmSyncStage.ready ? 'Ready' : 'Connecting',
   sensor: sensor,
   capabilities: sensor.capabilities,
   history: history,
-  latestReading: history.last,
-  sessionInfo: CgmSessionInfo(
-    sessionStart: _now.subtract(const Duration(hours: 3)),
-    serial: 'LIVE-SERIAL-${sensor.storageKey.split(':')[1]}',
-  ),
+  latestReading: history.isEmpty ? null : history.last,
+  sessionInfo:
+      sessionInfo ??
+      CgmSessionInfo(
+        sessionStart: _now.subtract(const Duration(hours: 3)),
+        serial: 'LIVE-SERIAL-${sensor.storageKey.split(':')[1]}',
+      ),
+  health: health,
   metadata: <String, String>{'packet': 'raw-packet-${sensor.storageKey}'},
 );
 
@@ -470,10 +704,45 @@ List<CgmReading> _qualifiedHistory() => <CgmReading>[
   _reading(_now, 124, sensorMinute: 176),
 ];
 
+List<CgmReading> _evolvingPeakHistory({bool includeLaterPeak = false}) =>
+    <CgmReading>[
+      _reading(
+        _now.subtract(const Duration(minutes: 30)),
+        120,
+        sensorMinute: 146,
+      ),
+      _reading(
+        _now.subtract(const Duration(minutes: 25)),
+        100,
+        sensorMinute: 151,
+      ),
+      _reading(
+        _now.subtract(const Duration(minutes: 20)),
+        110,
+        sensorMinute: 156,
+      ),
+      _reading(
+        _now.subtract(const Duration(minutes: 15)),
+        120,
+        sensorMinute: 161,
+      ),
+      _reading(
+        _now.subtract(const Duration(minutes: 10)),
+        125,
+        sensorMinute: 166,
+      ),
+      _reading(
+        _now.subtract(const Duration(minutes: 5)),
+        128,
+        sensorMinute: 171,
+      ),
+      if (includeLaterPeak) _reading(_now, 130, sensorMinute: 176),
+    ];
+
 CgmReading _reading(
   DateTime recordedAt,
   double valueMgdl, {
-  required int sensorMinute,
+  int? sensorMinute,
   CgmRecordSource source = CgmRecordSource.vendor,
   bool provisional = false,
 }) => CgmReading(
@@ -616,18 +885,29 @@ class _BridgeRepository extends InMemoryHealthRepository
   }
 
   @override
-  Future<void> saveContextAttachmentFact(ContextAttachmentFact fact) async {
+  Future<ContextAttachmentFact?> claimContextAttachmentFact(
+    ContextAttachmentFact fact,
+  ) async {
     fact.toJson();
+    if (facts.values.any(
+      (existing) => existing.episodeKey.value == fact.episodeKey.value,
+    )) {
+      return null;
+    }
     facts[fact.id] = fact;
+    return fact;
   }
 
   @override
   Future<List<ContextAttachmentFact>> queryContextAttachmentFacts({
     TimeWindow window = TimeWindow.all,
-    String? candidateId,
+    ContextBridgeEpisodeKey? episodeKey,
   }) async => facts.values
       .where((fact) => window.contains(fact.occurredAt))
-      .where((fact) => candidateId == null || fact.candidateId == candidateId)
+      .where(
+        (fact) =>
+            episodeKey == null || fact.episodeKey.value == episodeKey.value,
+      )
       .toList(growable: false);
 }
 

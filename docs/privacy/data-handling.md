@@ -61,8 +61,10 @@ presentation cache. It does not request permissions or start an import. Its
 models use opaque bridge IDs and omit sensor serial/device/storage identifiers,
 raw packets, platform external IDs, and provenance details. The bridge can
 read an additive local attachment-fact table that records only an opaque
-candidate ID, calculation version, journal row, and bounded timing window. It
-does not store a glucose value or causal interpretation, and observed-rise
+candidate revision ID, session-scoped opaque episode key, calculation version,
+journal row, and bounded timing window. The episode key derives from private
+local session material and is never exposed as a sensor identifier. It does
+not store a glucose value or causal interpretation, and observed-rise
 suggestions remain off until a separate product policy explicitly enables
 non-clinical wording. Chart/context presentation and attachment actions remain
 unimplemented.

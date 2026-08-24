@@ -140,17 +140,26 @@ table. The current partial diary has no edit or delete flow, so its one-time
 observational claim stays durable until a separately reviewed lifecycle policy
 exists.
 
-Schema four adds the isolated `context_attachment_facts` table. A fact links a
-manual diary row to an opaque candidate ID, calculation version, and bounded
-timing window. It stores no glucose value, sensor identifier, raw packet, or
-platform external ID, and it does not change the strict legacy `health_events`
-JSON protocol. The foreign key to `fast_journal_entries` prevents an orphaned
-fact. The migration is additive and creates its table and indexes with `IF NOT
-EXISTS`, so a v0.1.4-style legacy binary that lowers SQLite's version marker
-while leaving unknown tables in place can roll forward again without deleting
-facts or diary rows. Do not continue writing context data after a downgrade;
-roll forward to a schema-four build for recovery. A schema-four build rejects
-unknown higher SQLite schema versions and leaves their version marker intact.
+Schema four adds the isolated `context_attachment_facts` table. Its format-one
+facts link a manual diary row to an opaque candidate ID, calculation version,
+and bounded timing window. It stores no glucose value, sensor identifier, raw
+packet, or platform external ID, and it does not change the strict legacy
+`health_events` JSON protocol. The foreign key to `fast_journal_entries`
+prevents an orphaned fact.
+
+Schema five adds a nullable `episode_key` column and a unique partial index for
+new format-two facts. A format-two fact carries typed bridge-generated opaque
+candidate and session-scoped episode links. The episode key uses the private
+session discriminator plus the episode start, so a new higher peak cannot make
+a second claim. The claim insert and unique index are atomic. Schema-four rows
+remain readable, but do not have enough private session data to backfill a
+safe episode key; they are not used to suppress a schema-five episode claim.
+The migration is additive, so a v0.1.4-style legacy binary that lowers
+SQLite's version marker while leaving unknown tables in place can roll forward
+again without deleting facts or diary rows. Do not continue writing context
+data after a downgrade; roll forward to a schema-five build for recovery. A
+schema-five build rejects unknown higher SQLite schema versions and leaves
+their version marker intact.
 
 Downgrading to a schema-two app after filename migration is unsupported: the
 older app cannot locate schema-three blobs even though their bytes remain on

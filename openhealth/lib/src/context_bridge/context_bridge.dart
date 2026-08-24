@@ -8,7 +8,6 @@ import 'package:flutter/foundation.dart';
 import '../app_controller.dart';
 import '../journal/fast_journal_store.dart';
 import '../persistence/health_repository_lifecycle.dart';
-import '../session_presentation.dart';
 import 'context_attachment_fact.dart';
 import 'context_bridge_models.dart';
 
@@ -287,29 +286,30 @@ class ContextBridge extends ChangeNotifier {
 
   _GlucoseInput _collectGlucose(DateTime now) {
     final snapshot = _controller.snapshot;
-    final sessionKey = _activeSessionKey(snapshot);
-    if (snapshot == null ||
-        sessionKey == null ||
-        snapshot.stage != CgmSyncStage.ready) {
+    final activeSession = _activeContextSession(snapshot, now);
+    if (snapshot == null || activeSession == null) {
       return const _GlucoseInput.noActiveSession();
     }
 
     final sourceReadings = snapshot.history.isNotEmpty
         ? snapshot.history
         : <CgmReading>[if (snapshot.latestReading case final latest?) latest];
-    final postWarmup = readingsAfterWarmup(
-      sourceReadings,
-      sessionStart: snapshot.sessionInfo.sessionStart,
-      warmupMinutes: snapshot.sessionInfo.warmupMinutes,
-    );
-    if (postWarmup.isEmpty) {
-      return _GlucoseInput.noPostWarmupReadings(sessionKey: sessionKey);
-    }
-
     final window = _windowFor(now);
     final valid = <_ValidatedReading>[];
     var blocker = ContextBridgeSuggestionAvailability.notQualified;
-    for (final reading in postWarmup) {
+    for (final reading in sourceReadings) {
+      switch (_warmupPlacement(reading, activeSession)) {
+        case _WarmupPlacement.beforeWarmup:
+          continue;
+        case _WarmupPlacement.unknown:
+          blocker = _preferBlocker(
+            blocker,
+            ContextBridgeSuggestionAvailability.unprovenPostWarmupReading,
+          );
+          continue;
+        case _WarmupPlacement.postWarmup:
+          break;
+      }
       final recordedAt = reading.recordedAt?.toUtc();
       if (recordedAt == null ||
           !reading.valueMgdl.isFinite ||
@@ -343,7 +343,7 @@ class ContextBridge extends ChangeNotifier {
       }
       if (!window.contains(recordedAt)) continue;
       final id = _opaqueId(
-        'reading|$sessionKey|${recordedAt.microsecondsSinceEpoch}|'
+        'reading|${activeSession.key}|${recordedAt.microsecondsSinceEpoch}|'
         '${reading.source.name}|${reading.sensorMinute ?? ''}|'
         '${reading.valueMgdl.toStringAsFixed(6)}',
       );
@@ -403,7 +403,7 @@ class ContextBridge extends ChangeNotifier {
       );
     }
     return _GlucoseInput(
-      sessionKey: sessionKey,
+      sessionKey: activeSession.key,
       glucoseAvailability: deduplicated.isEmpty
           ? ContextBridgeGlucoseAvailability.noPostWarmupReadings
           : ContextBridgeGlucoseAvailability.available,
@@ -414,7 +414,10 @@ class ContextBridge extends ChangeNotifier {
         deduplicated.map((item) => item.candidate),
       ),
       suggestionBlocker: deduplicated.isEmpty
-          ? ContextBridgeSuggestionAvailability.noEligibleReadings
+          ? _preferBlocker(
+              ContextBridgeSuggestionAvailability.noEligibleReadings,
+              blocker,
+            )
           : blocker,
     );
   }
@@ -450,7 +453,28 @@ class ContextBridge extends ChangeNotifier {
         ContextBridgeSuggestionAvailability.attachmentFactsUnavailable,
       );
     }
-    final suggestionId = _opaqueId('suggestion|${candidate.id}');
+    final sessionKey = glucose.sessionKey;
+    if (sessionKey == null) {
+      return const _SuggestionResult(
+        ContextBridgeSuggestionAvailability.noActiveSession,
+      );
+    }
+    final candidateId = ContextBridgeCandidateId(
+      _opaqueLinkId(
+        'candidate',
+        'candidate|$sessionKey|${candidate.id}',
+      ),
+    );
+    // The episode key is stable when a later observed peak changes the
+    // analytics candidate. It is scoped by the private active-session key so
+    // equal timestamps from different sensors cannot share a durable claim.
+    final episodeKey = ContextBridgeEpisodeKey(
+      _opaqueLinkId(
+        'episode',
+        'episode|$sessionKey|'
+            '${candidate.episodeStart.toUtc().microsecondsSinceEpoch}',
+      ),
+    );
     final legacyAttached = journalEntries.any((entry) {
       final reference = entry.riseReference;
       return reference != null &&
@@ -458,8 +482,8 @@ class ContextBridge extends ChangeNotifier {
     });
     final factAttached = facts.any(
       (fact) =>
-          fact.candidateId == suggestionId &&
-          fact.calculationVersion == candidate.evidence.calculationVersion,
+          fact.isStableEpisodeClaim &&
+          fact.episodeKey.value == episodeKey.value,
     );
     if (legacyAttached || factAttached) {
       return const _SuggestionResult(
@@ -469,7 +493,8 @@ class ContextBridge extends ChangeNotifier {
     return _SuggestionResult(
       ContextBridgeSuggestionAvailability.available,
       ContextBridgeAttachmentSuggestion(
-        id: suggestionId,
+        candidateId: candidateId,
+        episodeKey: episodeKey,
         calculationVersion: candidate.evidence.calculationVersion,
         episodeStart: candidate.episodeStart,
         peakAt: candidate.peakAt,
@@ -682,7 +707,11 @@ class ContextBridge extends ChangeNotifier {
 
   bool _isSuperseded(int request, String? expectedSessionKey) {
     if (_disposed || request != _requestGeneration) return true;
-    return _activeSessionKey(_controller.snapshot) != expectedSessionKey;
+    return _activeContextSession(
+          _controller.snapshot,
+          _clock().toUtc(),
+        )?.key !=
+        expectedSessionKey;
   }
 
   void _onControllerChanged() {
@@ -726,16 +755,6 @@ class _GlucoseInput {
       readings = const <ContextBridgeReading>[],
       candidateReadings = const <IdentifiedGlucoseReading>[],
       suggestionBlocker = ContextBridgeSuggestionAvailability.noActiveSession;
-
-  factory _GlucoseInput.noPostWarmupReadings({
-    required String sessionKey,
-  }) => _GlucoseInput(
-    sessionKey: sessionKey,
-    glucoseAvailability: ContextBridgeGlucoseAvailability.noPostWarmupReadings,
-    readings: const <ContextBridgeReading>[],
-    candidateReadings: const <IdentifiedGlucoseReading>[],
-    suggestionBlocker: ContextBridgeSuggestionAvailability.noEligibleReadings,
-  );
 
   final String? sessionKey;
   final ContextBridgeGlucoseAvailability glucoseAvailability;
@@ -793,25 +812,77 @@ Future<_LoadResult<T>> _attempt<T>(Future<T> Function() operation) async {
   }
 }
 
-String? _activeSessionKey(CgmSessionSnapshot? snapshot) {
-  if (snapshot == null || snapshot.sensor.storageKey.trim().isEmpty) {
+class _ContextActiveSession {
+  const _ContextActiveSession({
+    required this.key,
+    required this.sessionStart,
+    required this.warmupMinutes,
+  });
+
+  final String key;
+  final DateTime sessionStart;
+  final int warmupMinutes;
+}
+
+enum _WarmupPlacement { beforeWarmup, postWarmup, unknown }
+
+/// Returns a session only when the bridge can safely treat it as active.
+///
+/// This deliberately has a stricter contract than presentation helpers. The
+/// bridge needs a stable session discriminator and a provable warmup boundary;
+/// retained history alone is not enough for a local context cache.
+_ContextActiveSession? _activeContextSession(
+  CgmSessionSnapshot? snapshot,
+  DateTime now,
+) {
+  if (snapshot == null ||
+      snapshot.stage != CgmSyncStage.ready ||
+      snapshot.sessionInfo.sessionStopped ||
+      snapshot.health.expired ||
+      snapshot.sensor.driverId.trim().isEmpty ||
+      snapshot.sensor.storageKey.trim().isEmpty) {
     return null;
   }
   final sessionStart = snapshot.sessionInfo.sessionStart?.toUtc();
-  final firstTimestamp = snapshot.history
-      .map((reading) => reading.recordedAt?.toUtc())
-      .whereType<DateTime>()
-      .fold<DateTime?>(null, (earliest, value) {
-        if (earliest == null || value.isBefore(earliest)) return value;
-        return earliest;
-      });
-  final discriminator = sessionStart ?? firstTimestamp;
-  if (discriminator == null) return null;
-  return _opaqueId(
-    'session|${snapshot.sensor.driverId}|${snapshot.sensor.storageKey}|'
-    '${discriminator.microsecondsSinceEpoch}|'
-    '${snapshot.sessionInfo.warmupMinutes}',
+  final warmupMinutes = snapshot.sessionInfo.warmupMinutes;
+  if (sessionStart == null ||
+      sessionStart.isAfter(now.toUtc()) ||
+      warmupMinutes < 0) {
+    return null;
+  }
+  return _ContextActiveSession(
+    key: _opaqueId(
+      'session|${snapshot.sensor.driverId}|${snapshot.sensor.storageKey}|'
+      '${sessionStart.microsecondsSinceEpoch}',
+    ),
+    sessionStart: sessionStart,
+    warmupMinutes: warmupMinutes,
   );
+}
+
+/// Places a reading relative to warmup only when a source datum proves it.
+///
+/// Sensor-relative minutes are authoritative when present. Otherwise the
+/// active session start plus a normalized timestamp prove placement. Unlike
+/// `readingsAfterWarmup`, unknown placement is never retained by the bridge.
+_WarmupPlacement _warmupPlacement(
+  CgmReading reading,
+  _ContextActiveSession session,
+) {
+  final sensorMinute = reading.sensorMinute;
+  if (sensorMinute != null) {
+    return sensorMinute >= session.warmupMinutes
+        ? _WarmupPlacement.postWarmup
+        : _WarmupPlacement.beforeWarmup;
+  }
+  final recordedAt = reading.recordedAt?.toUtc();
+  if (recordedAt == null) return _WarmupPlacement.unknown;
+  final warmupEndsAt = session.sessionStart.add(
+    Duration(minutes: session.warmupMinutes),
+  );
+  return recordedAt.isBefore(warmupEndsAt)
+      ? _WarmupPlacement.beforeWarmup
+      : _WarmupPlacement.postWarmup;
 }
 
 bool _isDisplaySafeSource(CgmRecordSource source) => switch (source) {
@@ -850,6 +921,7 @@ ContextBridgeSuggestionAvailability _preferBlocker(
     ContextBridgeSuggestionAvailability.provisionalReading: 4,
     ContextBridgeSuggestionAvailability.unsupportedReadingSource: 5,
     ContextBridgeSuggestionAvailability.invalidReading: 6,
+    ContextBridgeSuggestionAvailability.unprovenPostWarmupReading: 7,
   };
   final currentPriority = priority[current] ?? 0;
   final candidatePriority = priority[candidate] ?? 0;
@@ -861,4 +933,11 @@ String _opaqueId(String value) {
     utf8.encode('openglucose-context-bridge-v1|$value'),
   );
   return 'ctx-${digest.toString().substring(0, 24)}';
+}
+
+String _opaqueLinkId(String kind, String value) {
+  final digest = sha256.convert(
+    utf8.encode('openglucose-context-bridge-v1|$kind|$value'),
+  );
+  return 'ctx-$kind-${digest.toString().substring(0, 24)}';
 }
