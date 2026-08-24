@@ -57,24 +57,24 @@ void main() {
       );
     });
 
-    test('surfaces only the adapter-provided newest open context gap', () {
-      final newest = RecentContextGap(
-        id: 'newest',
+    test('surfaces at most one generic attachment prompt in range', () {
+      final newest = ContextAttachmentPrompt(
+        id: 'prompt-newest',
         start: contextFixtureNow.subtract(const Duration(minutes: 35)),
         end: contextFixtureNow.subtract(const Duration(minutes: 15)),
       );
       final projection = ContextTimelineProjection.compose(
-        snapshot: richContextFixture(gap: newest),
+        snapshot: richContextFixture(attachmentPrompt: newest),
         now: contextFixtureNow,
         range: ContextTimelineRange.threeHours,
       );
 
-      expect(projection.recentContextGap, same(newest));
+      expect(projection.attachmentPrompt, same(newest));
 
       final attached = ContextTimelineProjection.compose(
         snapshot: richContextFixture(
-          gap: RecentContextGap(
-            id: 'already-attached',
+          attachmentPrompt: ContextAttachmentPrompt(
+            id: 'already-attached-prompt',
             start: newest.start,
             end: newest.end,
             hasAttachedContext: true,
@@ -83,12 +83,12 @@ void main() {
         now: contextFixtureNow,
         range: ContextTimelineRange.threeHours,
       );
-      expect(attached.recentContextGap, isNull);
+      expect(attached.attachmentPrompt, isNull);
 
       final old = ContextTimelineProjection.compose(
         snapshot: richContextFixture(
-          gap: RecentContextGap(
-            id: 'old',
+          attachmentPrompt: ContextAttachmentPrompt(
+            id: 'old-prompt',
             start: contextFixtureNow.subtract(const Duration(days: 2)),
             end: contextFixtureNow.subtract(const Duration(days: 1, hours: 23)),
           ),
@@ -96,7 +96,7 @@ void main() {
         now: contextFixtureNow,
         range: ContextTimelineRange.oneDay,
       );
-      expect(old.recentContextGap, isNull);
+      expect(old.attachmentPrompt, isNull);
     });
 
     test('keeps unavailable context distinct from an empty numeric value', () {
@@ -135,6 +135,49 @@ void main() {
       expect(
         projection.statusFor(ContextTimelineLane.heartRate).availability,
         ContextDataAvailability.partial,
+      );
+    });
+
+    test('does not call out-of-window fallback context partial data', () {
+      final projection = ContextTimelineProjection.compose(
+        snapshot: ContextTimelineSnapshot(
+          heartRateSamples: <HeartRateSample>[
+            HeartRateSample(
+              timestamp: contextFixtureNow.subtract(const Duration(hours: 4)),
+              bpm: 70,
+              source: DataSource.appleHealth,
+            ),
+          ],
+        ),
+        now: contextFixtureNow,
+        range: ContextTimelineRange.threeHours,
+      );
+
+      expect(projection.heartRateSamples, isEmpty);
+      expect(
+        projection.statusFor(ContextTimelineLane.heartRate).availability,
+        ContextDataAvailability.noAccessibleData,
+      );
+    });
+
+    test('preserves an explicit stale status for the selected window', () {
+      final projection = ContextTimelineProjection.compose(
+        snapshot: const ContextTimelineSnapshot(
+          laneStatuses: <ContextTimelineLaneStatus>[
+            ContextTimelineLaneStatus(
+              lane: ContextTimelineLane.heartRate,
+              availability: ContextDataAvailability.stale,
+              source: DataSource.appleHealth,
+            ),
+          ],
+        ),
+        now: contextFixtureNow,
+        range: ContextTimelineRange.threeHours,
+      );
+
+      expect(
+        projection.statusFor(ContextTimelineLane.heartRate).availability,
+        ContextDataAvailability.stale,
       );
     });
   });

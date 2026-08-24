@@ -97,13 +97,16 @@ class ContextTimelineLaneStatus {
   final DataSource? source;
 }
 
-/// A pre-qualified, newest-only cue that says context has not been attached.
+/// A time-bounded, optional prompt to prepare a context draft.
 ///
-/// This is an adapter input, not an inference engine. The UI does not derive a
-/// glucose rise, decide what caused it, or make a health recommendation. A
-/// single optional value also makes the one-cue product constraint structural.
-class RecentContextGap {
-  const RecentContextGap({
+/// This is not glucose evidence, a pattern assessment, or a causal conclusion.
+/// The isolated preview uses it only for a generic, non-medical draft action.
+/// A future product surface that calls out a glucose pattern must instead use a
+/// deterministic, evidence-bound policy.
+///
+/// One optional value keeps the preview to at most one draft prompt.
+class ContextAttachmentPrompt {
+  const ContextAttachmentPrompt({
     required this.id,
     required this.start,
     required this.end,
@@ -121,9 +124,9 @@ class RecentContextGap {
 /// The receiving feature owns validation, editing, and persistence. This UI
 /// package only opens a draft flow and never writes journal or imported data.
 class ContextAttachmentDraft {
-  const ContextAttachmentDraft({required this.gap, required this.kind});
+  const ContextAttachmentDraft({required this.prompt, required this.kind});
 
-  final RecentContextGap gap;
+  final ContextAttachmentPrompt prompt;
   final ContextAttachmentKind kind;
 }
 
@@ -150,7 +153,7 @@ class ContextTimelineSnapshot {
     this.activitySamples = const <ActivitySample>[],
     this.heartRateSamples = const <HeartRateSample>[],
     this.laneStatuses = const <ContextTimelineLaneStatus>[],
-    this.recentContextGap,
+    this.attachmentPrompt,
     this.isSampleData = false,
   });
 
@@ -160,32 +163,55 @@ class ContextTimelineSnapshot {
   final List<ActivitySample> activitySamples;
   final List<HeartRateSample> heartRateSamples;
   final List<ContextTimelineLaneStatus> laneStatuses;
-  final RecentContextGap? recentContextGap;
+  final ContextAttachmentPrompt? attachmentPrompt;
   final bool isSampleData;
 
-  ContextTimelineLaneStatus statusFor(ContextTimelineLane lane) {
+  /// Returns an explicit source status, or an honest fallback for [window].
+  ///
+  /// A [ContextTimelineSource] must provide explicit statuses for the exact
+  /// query window when it has source knowledge. The fallback never turns data
+  /// outside the selected window into an in-window partial-data claim.
+  ContextTimelineLaneStatus statusFor(
+    ContextTimelineLane lane, {
+    ContextTimelineWindow? window,
+  }) {
     for (final status in laneStatuses) {
       if (status.lane == lane) return status;
     }
     return ContextTimelineLaneStatus(
       lane: lane,
-      availability: _hasDataFor(lane)
+      availability: _hasDataFor(lane, window: window)
           ? ContextDataAvailability.partial
           : ContextDataAvailability.noAccessibleData,
     );
   }
 
-  bool _hasDataFor(ContextTimelineLane lane) => switch (lane) {
+  bool _hasDataFor(
+    ContextTimelineLane lane, {
+    ContextTimelineWindow? window,
+  }) => switch (lane) {
     ContextTimelineLane.mealsAndNotes => events.any(
       (event) =>
-          event.type == HealthEventType.meal ||
-          event.type == HealthEventType.note,
+          (event.type == HealthEventType.meal ||
+              event.type == HealthEventType.note) &&
+          (window == null || window.contains(event.timestamp)),
     ),
-    ContextTimelineLane.sleep => sleepSamples.isNotEmpty,
+    ContextTimelineLane.sleep => sleepSamples.any(
+      (sample) => window == null || window.intersects(sample.start, sample.end),
+    ),
     ContextTimelineLane.activity =>
-      activitySamples.isNotEmpty ||
-          events.any((event) => event.type == HealthEventType.exercise),
-    ContextTimelineLane.heartRate => heartRateSamples.isNotEmpty,
+      activitySamples.any(
+            (sample) =>
+                window == null || window.intersects(sample.start, sample.end),
+          ) ||
+          events.any(
+            (event) =>
+                event.type == HealthEventType.exercise &&
+                (window == null || window.contains(event.timestamp)),
+          ),
+    ContextTimelineLane.heartRate => heartRateSamples.any(
+      (sample) => window == null || window.contains(sample.timestamp),
+    ),
   };
 }
 
@@ -200,7 +226,9 @@ class ContextTimelineQuery {
 ///
 /// A future coordinator can adapt a repository method to this typed provider
 /// without giving this visual package ownership of asynchronous import or
-/// persistence behavior.
+/// persistence behavior. It must return explicit lane statuses for the query
+/// window when an upstream source can distinguish unavailable, stale, partial,
+/// or conflicting data.
 typedef ContextTimelineSource =
     ContextTimelineSnapshot Function(ContextTimelineQuery query);
 
@@ -259,7 +287,7 @@ class ContextTimelineProjection {
     required this.items,
     required this.heartRateSamples,
     required this.laneStatuses,
-    required this.recentContextGap,
+    required this.attachmentPrompt,
     required this.isSampleData,
   });
 
@@ -270,7 +298,8 @@ class ContextTimelineProjection {
   }) {
     final window = ContextTimelineWindow.endingAt(now, range);
     final statuses = <ContextTimelineLaneStatus>[
-      for (final lane in ContextTimelineLane.values) snapshot.statusFor(lane),
+      for (final lane in ContextTimelineLane.values)
+        snapshot.statusFor(lane, window: window),
     ];
     final items =
         <ContextTimelineItem>[
@@ -301,12 +330,12 @@ class ContextTimelineProjection {
             .toList(growable: false)
           ..sort((left, right) => left.timestamp.compareTo(right.timestamp));
 
-    final gap = snapshot.recentContextGap;
-    final visibleGap =
-        gap != null &&
-            !gap.hasAttachedContext &&
-            window.intersects(gap.start, gap.end)
-        ? gap
+    final prompt = snapshot.attachmentPrompt;
+    final visiblePrompt =
+        prompt != null &&
+            !prompt.hasAttachedContext &&
+            window.intersects(prompt.start, prompt.end)
+        ? prompt
         : null;
 
     return ContextTimelineProjection(
@@ -315,7 +344,7 @@ class ContextTimelineProjection {
       items: items,
       heartRateSamples: heartRate,
       laneStatuses: statuses,
-      recentContextGap: visibleGap,
+      attachmentPrompt: visiblePrompt,
       isSampleData: snapshot.isSampleData,
     );
   }
@@ -325,7 +354,7 @@ class ContextTimelineProjection {
   final List<ContextTimelineItem> items;
   final List<HeartRateSample> heartRateSamples;
   final List<ContextTimelineLaneStatus> laneStatuses;
-  final RecentContextGap? recentContextGap;
+  final ContextAttachmentPrompt? attachmentPrompt;
   final bool isSampleData;
 
   ContextTimelineLaneStatus statusFor(ContextTimelineLane lane) =>
@@ -358,7 +387,7 @@ class ContextTimelineProjection {
           start: event.timestamp,
           end: _eventEnd(event),
           source: event.source,
-          qualification: snapshot.statusFor(lane).availability,
+          qualification: snapshot.statusFor(lane, window: window).availability,
           title: _eventTitle(event, kind),
           detail: _eventDetail(event, kind),
         ),
@@ -381,7 +410,7 @@ class ContextTimelineProjection {
           end: sample.end,
           source: sample.source,
           qualification: snapshot
-              .statusFor(ContextTimelineLane.sleep)
+              .statusFor(ContextTimelineLane.sleep, window: window)
               .availability,
           title: 'Sleep',
           detail: _sleepStageLabel(sample.stage),
@@ -404,7 +433,7 @@ class ContextTimelineProjection {
           end: sample.end,
           source: sample.source,
           qualification: snapshot
-              .statusFor(ContextTimelineLane.activity)
+              .statusFor(ContextTimelineLane.activity, window: window)
               .availability,
           title: sample.type == ActivityType.workout ? 'Workout' : 'Movement',
           detail: _activityDetail(sample),
@@ -425,7 +454,7 @@ class ContextTimelineProjection {
           end: sample.timestamp,
           source: sample.source,
           qualification: snapshot
-              .statusFor(ContextTimelineLane.heartRate)
+              .statusFor(ContextTimelineLane.heartRate, window: window)
               .availability,
           title: 'Heart rate',
           detail: '${sample.bpm.round()} bpm',

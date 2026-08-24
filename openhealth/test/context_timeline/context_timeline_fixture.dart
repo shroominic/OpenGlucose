@@ -5,7 +5,7 @@ final contextFixtureNow = DateTime.utc(2026, 8, 24, 12);
 
 ContextTimelineSnapshot richContextFixture({
   bool sampleData = true,
-  RecentContextGap? gap,
+  ContextAttachmentPrompt? attachmentPrompt,
   List<ContextTimelineLaneStatus>? statuses,
 }) {
   final now = contextFixtureNow;
@@ -102,9 +102,9 @@ ContextTimelineSnapshot richContextFixture({
             source: DataSource.appleHealth,
           ),
         ],
-    recentContextGap:
-        gap ??
-        RecentContextGap(
+    attachmentPrompt:
+        attachmentPrompt ??
+        ContextAttachmentPrompt(
           id: 'gap-newest',
           start: now.subtract(const Duration(minutes: 45)),
           end: now.subtract(const Duration(minutes: 20)),

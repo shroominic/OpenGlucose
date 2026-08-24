@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -81,10 +82,10 @@ class _CompactContextTimelineState extends State<CompactContextTimeline> {
             _ContextLegend(projection: projection),
             const SizedBox(height: 12),
             _AvailabilitySummary(projection: projection),
-            if (projection.recentContextGap case final gap?) ...<Widget>[
+            if (projection.attachmentPrompt case final prompt?) ...<Widget>[
               const SizedBox(height: 12),
-              _RecentContextGapCard(
-                gap: gap,
+              _ContextAttachmentPromptCard(
+                prompt: prompt,
                 onAttachmentRequested: widget.onAttachmentRequested,
               ),
             ],
@@ -479,9 +480,18 @@ class _AvailabilitySummary extends StatelessWidget {
         )
         .toList(growable: false);
     if (unavailable.isEmpty) return const SizedBox.shrink();
+    final semanticLabel = StringBuffer('Context availability.');
+    for (final status in unavailable) {
+      semanticLabel
+        ..write(' ${status.lane.label}: ${status.availability.title}. ')
+        ..write(status.availability.description);
+      if (status.source case final source?) {
+        semanticLabel.write(' Source: ${source.contextLabel}.');
+      }
+    }
     return Semantics(
       container: true,
-      label: 'Context availability',
+      label: semanticLabel.toString(),
       child: Card(
         key: const ValueKey<String>('contextAvailabilitySummary'),
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -514,62 +524,67 @@ class _AvailabilitySummary extends StatelessWidget {
   }
 }
 
-class _RecentContextGapCard extends StatelessWidget {
-  const _RecentContextGapCard({
-    required this.gap,
+class _ContextAttachmentPromptCard extends StatelessWidget {
+  const _ContextAttachmentPromptCard({
+    required this.prompt,
     required this.onAttachmentRequested,
   });
 
-  final RecentContextGap gap;
+  final ContextAttachmentPrompt prompt;
   final ValueChanged<ContextAttachmentDraft>? onAttachmentRequested;
 
   @override
-  Widget build(BuildContext context) => Card(
-    key: const ValueKey<String>('recentContextGapCue'),
-    color: Theme.of(context).colorScheme.secondaryContainer,
-    child: Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text(
-            'Recent glucose rise',
-            style: Theme.of(
-              context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'No context is attached to this recent glucose rise. This does not identify a cause.',
-          ),
-          const SizedBox(height: 8),
-          FilledButton.tonalIcon(
-            key: const ValueKey<String>('requestContextAttachment'),
-            onPressed: onAttachmentRequested == null
-                ? null
-                : () => _showAttachmentSheet(
-                    context,
-                    gap,
-                    onAttachmentRequested!,
-                  ),
-            icon: const Icon(Icons.add_comment_outlined),
-            label: const Text('Add context'),
-          ),
-          if (onAttachmentRequested == null) ...<Widget>[
-            const SizedBox(height: 4),
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    label:
+        'Optional context. This preview does not assess glucose patterns or identify a cause.',
+    child: Card(
+      key: const ValueKey<String>('contextAttachmentPrompt'),
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
             Text(
-              'Attachment capture is not configured in this preview.',
-              style: Theme.of(context).textTheme.bodySmall,
+              'Optional context',
+              style: Theme.of(
+                context,
+              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
             ),
+            const SizedBox(height: 4),
+            const Text(
+              'You can prepare a context draft for reflection. This preview does not assess glucose patterns or identify a cause.',
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
+              key: const ValueKey<String>('requestContextAttachment'),
+              onPressed: onAttachmentRequested == null
+                  ? null
+                  : () => _showAttachmentSheet(
+                      context,
+                      prompt,
+                      onAttachmentRequested!,
+                    ),
+              icon: const Icon(Icons.add_comment_outlined),
+              label: const Text('Add context'),
+            ),
+            if (onAttachmentRequested == null) ...<Widget>[
+              const SizedBox(height: 4),
+              Text(
+                'Attachment capture is not configured in this preview.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     ),
   );
 
   static Future<void> _showAttachmentSheet(
     BuildContext context,
-    RecentContextGap gap,
+    ContextAttachmentPrompt prompt,
     ValueChanged<ContextAttachmentDraft> onAttachmentRequested,
   ) => showModalBottomSheet<void>(
     context: context,
@@ -604,7 +619,7 @@ class _RecentContextGapCard extends StatelessWidget {
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   onAttachmentRequested(
-                    ContextAttachmentDraft(gap: gap, kind: kind),
+                    ContextAttachmentDraft(prompt: prompt, kind: kind),
                   );
                 },
               ),
@@ -735,25 +750,72 @@ class _HeartRateSummaryButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final samples = projection.heartRateSamples;
-    final latest = samples.last;
     final status = projection.statusFor(ContextTimelineLane.heartRate);
     return OutlinedButton.icon(
       key: const ValueKey<String>('heartRateSummary'),
-      onPressed: () => _ContextItemButton._showItemDetails(
-        context,
-        ContextTimelineItem(
-          id: 'heart-rate-summary',
-          kind: ContextTimelineItemKind.heartRate,
-          start: samples.first.timestamp,
-          end: latest.timestamp,
-          source: latest.source,
-          qualification: status.availability,
-          title: 'Heart rate rail',
-          detail: '${samples.length} samples, latest ${latest.bpm.round()} bpm',
-        ),
-      ),
+      onPressed: () => _showDetails(context, samples, status),
       icon: const Icon(Icons.monitor_heart_outlined, size: 18),
       label: Text('Heart rate (${samples.length})'),
+    );
+  }
+
+  static Future<void> _showDetails(
+    BuildContext context,
+    List<HeartRateSample> samples,
+    ContextTimelineLaneStatus status,
+  ) {
+    final sources =
+        <DataSource>{
+          for (final sample in samples) sample.source,
+        }.toList(growable: false)..sort(
+          (left, right) => left.contextLabel.compareTo(right.contextLabel),
+        );
+    final sourceLabel = sources.map((source) => source.contextLabel).join(', ');
+    final latest = samples.last;
+    return showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Semantics(
+                header: true,
+                child: Text(
+                  'Heart rate rail',
+                  style: Theme.of(
+                    sheetContext,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${samples.length} samples. Latest ${latest.bpm.round()} bpm.',
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Exact window: '
+                '${_formatWindow(samples.first.timestamp, latest.timestamp)}',
+              ),
+              Text(
+                sources.length == 1
+                    ? 'Source: $sourceLabel'
+                    : 'Sources: $sourceLabel',
+              ),
+              Text('Qualification: ${status.availability.title}'),
+              const SizedBox(height: 8),
+              Text(status.availability.description),
+              const SizedBox(height: 8),
+              const Text(
+                'Context can support reflection. It does not prove a cause or medical meaning.',
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
