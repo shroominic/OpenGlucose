@@ -67,6 +67,30 @@ void main() {
             sampleCount: 288,
           ),
         ],
+        statements: <AiInsightStatement>[
+          AiInsightStatement(
+            text: 'Recorded average glucose: 111 mg/dL in this window.',
+            evidence: <EvidenceRef>[
+              EvidenceRef(
+                id: 'glucose.average',
+                kind: AiEvidenceKind.glucoseAggregate,
+                label: 'Average glucose',
+                value: 111,
+                unit: 'mg/dL',
+                windowStart: start,
+                windowEnd: end,
+                sampleCount: 288,
+              ),
+            ],
+            numericClaims: const <AiNumericClaim>[
+              AiNumericClaim(
+                evidenceId: 'glucose.average',
+                value: 111,
+                unit: 'mg/dL',
+              ),
+            ],
+          ),
+        ],
         provenance: const AiGenerationProvenance(
           contractVersion: aiObservationContractVersion,
           promptTemplateVersion: aiPromptTemplateVersion,
@@ -84,6 +108,9 @@ void main() {
 
       expect(restored.evidence.single.id, 'glucose.average');
       expect(restored.evidence.single.value, 111);
+      expect(restored.statements, hasLength(1));
+      expect(restored.statements.single.evidence.single.id, 'glucose.average');
+      expect(restored.statements.single.numericClaims.single.unit, 'mg/dL');
       expect(
         restored.provenance!.promptTemplateVersion,
         aiPromptTemplateVersion,
@@ -113,5 +140,45 @@ void main() {
       expect(cleared.model, isNull);
       expect(cleared.title, 'Weekly recap');
     });
+
+    test(
+      'drops a stored statement that is not the canonical local rendering',
+      () {
+        final start = DateTime.utc(2026, 2, 1);
+        final end = DateTime.utc(2026, 2, 2);
+        final restored = AiInsight.fromJson(<String, Object?>{
+          'id': 'i-untrusted-statement',
+          'createdAt': end.toIso8601String(),
+          'category': 'summary',
+          'title': 'Summary',
+          'statements': <Object?>[
+            <String, Object?>{
+              'text': 'Take insulin now.',
+              'evidence': <Object?>[
+                EvidenceRef(
+                  id: 'glucose.average',
+                  kind: AiEvidenceKind.glucoseAggregate,
+                  label: 'Average glucose',
+                  value: 111,
+                  unit: 'mg/dL',
+                  windowStart: start,
+                  windowEnd: end,
+                  sampleCount: 288,
+                ).toJson(),
+              ],
+              'numericClaims': const <Object?>[
+                <String, Object?>{
+                  'evidenceId': 'glucose.average',
+                  'value': 111,
+                  'unit': 'mg/dL',
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(restored.statements, isEmpty);
+      },
+    );
   });
 }

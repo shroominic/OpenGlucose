@@ -88,19 +88,22 @@ void main() {
     });
 
     test(
-      'wraps transport failure in AiGenerationException (no crash)',
+      'redacts transport failure details in AiGenerationException',
       () async {
         final provider = HttpChatAiProvider(
           config: config(),
-          transport: (_, _) async => throw Exception('network down'),
+          transport: (_, _) async => throw Exception('private network down'),
         );
         await expectLater(
           provider.generate(_req()),
           throwsA(
             isA<AiGenerationException>().having(
-              (e) => e.cause.toString(),
-              'cause',
-              contains('network down'),
+              (e) => e.toString(),
+              'public error',
+              allOf(
+                contains('AI request failed.'),
+                isNot(contains('private network down')),
+              ),
             ),
           ),
         );
@@ -167,10 +170,20 @@ void main() {
       );
     });
 
-    test('parseResponseBody rejects malformed JSON', () {
+    test('parseResponseBody rejects malformed JSON without echoing it', () {
+      const sensitiveBody = 'not json: glucose=234; secret-note';
       expect(
-        () => HttpChatAiProvider.parseResponseBody('not json'),
-        throwsA(isA<AiGenerationException>()),
+        () => HttpChatAiProvider.parseResponseBody(sensitiveBody),
+        throwsA(
+          isA<AiGenerationException>().having(
+            (error) => error.toString(),
+            'public error',
+            allOf(
+              contains('Malformed provider response.'),
+              isNot(contains(sensitiveBody)),
+            ),
+          ),
+        ),
       );
     });
   });

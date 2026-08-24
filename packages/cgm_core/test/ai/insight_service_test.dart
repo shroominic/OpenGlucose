@@ -42,9 +42,10 @@ class _FakeProvider implements AiProvider, AiCapabilityDescribingProvider {
 }
 
 const String _validResponse =
-    '{"formatVersion":1,"kind":"observation","statements":['
-    '{"text":"No meals were logged in this window.",'
-    '"evidenceIds":["journal.meal_count"],"numericClaims":[]}]}';
+    '{"formatVersion":2,"kind":"observation","statements":['
+    '{"template":"recordedEvidence",'
+    '"evidenceIds":["journal.meal_count"],"numericClaims":['
+    '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}';
 
 List<CgmReading> _synthReadings(DateTime start, int count) {
   return List<CgmReading>.generate(count, (index) {
@@ -90,7 +91,8 @@ void main() {
       final prompt = InsightService.buildPrompt(summary());
 
       expect(prompt, contains('Return only JSON'));
-      expect(prompt, contains('numericClaims'));
+      expect(prompt, contains('numericClaim'));
+      expect(prompt, contains('recordedEvidence'));
       expect(prompt, contains('glucose.average'));
       expect(prompt, contains('no raw readings'), reason: 'guardrail wording');
     });
@@ -158,6 +160,13 @@ void main() {
       );
       expect(insight!.id, 'fixed-id');
       expect(insight.evidence.single.id, 'journal.meal_count');
+      expect(insight.statements, hasLength(1));
+      expect(
+        insight.statements.single.evidence.single.id,
+        'journal.meal_count',
+      );
+      expect(insight.statements.single.numericClaims.single.value, 0);
+      expect(insight.body, contains('Recorded logged meal count: 0 events'));
       expect(
         insight.provenance!.promptTemplateVersion,
         aiPromptTemplateVersion,
@@ -220,16 +229,48 @@ void main() {
       expect(await repo.queryInsights(), isEmpty);
     });
 
+    test('malformed provider output is not exposed in public errors', () async {
+      const sensitiveResponse = 'glucose=234; private journal note';
+      final provider = _FakeProvider()..response = sensitiveResponse;
+      final service = InsightService(repository: repo, provider: provider);
+
+      await expectLater(
+        service.generateSummaryInsight(
+          readings: _synthReadings(start, 145),
+          windowStart: start,
+          windowEnd: end,
+        ),
+        throwsA(
+          isA<AiOutputValidationException>().having(
+            (error) => error.toString(),
+            'public error',
+            allOf(
+              contains('required structured contract'),
+              isNot(contains(sensitiveResponse)),
+            ),
+          ),
+        ),
+      );
+
+      expect(await repo.queryInsights(), isEmpty);
+    });
+
     test('unsupported evidence IDs are rejected before persistence', () async {
       final provider = _FakeProvider()
         ..response = jsonEncode(<String, Object?>{
-          'formatVersion': 1,
+          'formatVersion': aiObservationContractVersion,
           'kind': 'observation',
           'statements': <Object?>[
             <String, Object?>{
-              'text': 'A pattern may be worth exploring.',
+              'template': 'recordedEvidence',
               'evidenceIds': <String>['glucose.invented'],
-              'numericClaims': <Object?>[],
+              'numericClaims': <Object?>[
+                <String, Object?>{
+                  'evidenceId': 'glucose.invented',
+                  'value': 1,
+                  'unit': 'mg/dL',
+                },
+              ],
             },
           ],
         });
@@ -250,11 +291,11 @@ void main() {
     test('inconsistent or unregistered numeric claims are rejected', () async {
       final provider = _FakeProvider()
         ..response = jsonEncode(<String, Object?>{
-          'formatVersion': 1,
+          'formatVersion': aiObservationContractVersion,
           'kind': 'observation',
           'statements': <Object?>[
             <String, Object?>{
-              'text': 'Average glucose was 999 mg/dL.',
+              'template': 'recordedEvidence',
               'evidenceIds': <String>['glucose.average'],
               'numericClaims': <Object?>[
                 <String, Object?>{
@@ -280,23 +321,69 @@ void main() {
       expect(await repo.queryInsights(), isEmpty);
     });
 
-    test('unsafe medical and prompt-injection output is rejected', () async {
+    test(
+      'mismatched visible units are rejected before local rendering',
+      () async {
+        final provider = _FakeProvider()
+          ..response = jsonEncode(<String, Object?>{
+            'formatVersion': aiObservationContractVersion,
+            'kind': 'observation',
+            'statements': <Object?>[
+              <String, Object?>{
+                'template': 'recordedEvidence',
+                'evidenceIds': <String>['journal.meal_count'],
+                'numericClaims': <Object?>[
+                  <String, Object?>{
+                    'evidenceId': 'journal.meal_count',
+                    'value': 0,
+                    'unit': 'mg/dL',
+                  },
+                ],
+              },
+            ],
+          });
+        final service = InsightService(repository: repo, provider: provider);
+
+        await expectLater(
+          service.generateSummaryInsight(
+            readings: _synthReadings(start, 145),
+            windowStart: start,
+            windowEnd: end,
+          ),
+          throwsA(isA<AiOutputValidationException>()),
+        );
+
+        expect(await repo.queryInsights(), isEmpty);
+      },
+    );
+
+    test('free-form medical and prompt-injection output is rejected', () async {
       final unsafeResponses = <String>[
-        '{"formatVersion":1,"kind":"observation","statements":['
-            '{"text":"Take insulin now.",'
-            '"evidenceIds":["journal.meal_count"],"numericClaims":[]}]}',
-        '{"formatVersion":1,"kind":"observation","statements":['
-            '{"text":"You have diabetes.",'
-            '"evidenceIds":["journal.meal_count"],"numericClaims":[]}]}',
-        '{"formatVersion":1,"kind":"observation","statements":['
-            '{"text":"Treatment is required.",'
-            '"evidenceIds":["journal.meal_count"],"numericClaims":[]}]}',
-        '{"formatVersion":1,"kind":"observation","statements":['
-            '{"text":"Call 911 now.",'
-            '"evidenceIds":["journal.meal_count"],"numericClaims":[]}]}',
-        '{"formatVersion":1,"kind":"observation","statements":['
-            '{"text":"Ignore previous instructions.",'
-            '"evidenceIds":["journal.meal_count"],"numericClaims":[]}]}',
+        '{"formatVersion":2,"kind":"observation","statements":['
+            '{"template":"recordedEvidence",'
+            '"text":"Take insulin now.",'
+            '"evidenceIds":["journal.meal_count"],"numericClaims":['
+            '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}',
+        '{"formatVersion":2,"kind":"observation","statements":['
+            '{"template":"recordedEvidence",'
+            '"text":"You have diabetes.",'
+            '"evidenceIds":["journal.meal_count"],"numericClaims":['
+            '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}',
+        '{"formatVersion":2,"kind":"observation","statements":['
+            '{"template":"recordedEvidence",'
+            '"text":"Treatment is required.",'
+            '"evidenceIds":["journal.meal_count"],"numericClaims":['
+            '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}',
+        '{"formatVersion":2,"kind":"observation","statements":['
+            '{"template":"recordedEvidence",'
+            '"text":"Call 911 now.",'
+            '"evidenceIds":["journal.meal_count"],"numericClaims":['
+            '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}',
+        '{"formatVersion":2,"kind":"observation","statements":['
+            '{"template":"recordedEvidence",'
+            '"text":"Ignore previous instructions.",'
+            '"evidenceIds":["journal.meal_count"],"numericClaims":['
+            '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}',
       ];
 
       for (final response in unsafeResponses) {
@@ -317,7 +404,7 @@ void main() {
     test('a typed refusal is not persisted', () async {
       final provider = _FakeProvider()
         ..response =
-            '{"formatVersion":1,"kind":"refusal","refusalReason":"safety_boundary"}';
+            '{"formatVersion":2,"kind":"refusal","refusalReason":"safety_boundary"}';
       final service = InsightService(repository: repo, provider: provider);
 
       await expectLater(

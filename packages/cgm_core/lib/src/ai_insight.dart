@@ -35,6 +35,100 @@ enum AiInsightCategory {
   }
 }
 
+/// One rendered AI observation with its exact local evidence mapping.
+///
+/// [text] is rendered by OpenGlucose from validated structured claims. It is
+/// persisted beside the source evidence so later views can show which numeric
+/// values supported each individual statement rather than only a flattened
+/// evidence list for the whole insight.
+class AiInsightStatement {
+  const AiInsightStatement({
+    required this.text,
+    required this.evidence,
+    required this.numericClaims,
+  });
+
+  final String text;
+  final List<EvidenceRef> evidence;
+  final List<AiNumericClaim> numericClaims;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'text': text,
+    'evidence': evidence.map((item) => item.toJson()).toList(growable: false),
+    'numericClaims': numericClaims
+        .map((claim) => claim.toJson())
+        .toList(growable: false),
+  };
+
+  factory AiInsightStatement.fromJson(Map<String, Object?> json) {
+    final rawEvidence = json['evidence'];
+    final rawClaims = json['numericClaims'];
+    final text = json['text'];
+    if (text is! String ||
+        text.trim().isEmpty ||
+        rawEvidence is! List ||
+        rawClaims is! List) {
+      throw const AiOutputValidationException(
+        'Stored AI statement did not use a validated evidence mapping.',
+      );
+    }
+    final evidence = <EvidenceRef>[];
+    for (final item in rawEvidence) {
+      if (item is! Map) {
+        throw const AiOutputValidationException(
+          'Stored AI statement did not use a validated evidence mapping.',
+        );
+      }
+      evidence.add(
+        EvidenceRef.fromJson(
+          item.map<String, Object?>((key, value) => MapEntry('$key', value)),
+        ),
+      );
+    }
+    final claims = <AiNumericClaim>[];
+    for (final item in rawClaims) {
+      if (item is! Map) {
+        throw const AiOutputValidationException(
+          'Stored AI statement did not use a validated evidence mapping.',
+        );
+      }
+      claims.add(
+        AiNumericClaim.fromJson(
+          item.map<String, Object?>((key, value) => MapEntry('$key', value)),
+        ),
+      );
+    }
+    if (evidence.length != 1 || claims.length != 1) {
+      throw const AiOutputValidationException(
+        'Stored AI statement did not use a validated evidence mapping.',
+      );
+    }
+    final evidenceById = <String, EvidenceRef>{
+      for (final item in evidence) item.id: item,
+    };
+    for (final claim in claims) {
+      final source = evidenceById[claim.evidenceId];
+      if (source == null ||
+          source.unit != claim.unit ||
+          !_sameNumericValue(source.value, claim.value)) {
+        throw const AiOutputValidationException(
+          'Stored AI statement did not use a validated evidence mapping.',
+        );
+      }
+    }
+    if (text != _renderStoredStatement(evidence.single)) {
+      throw const AiOutputValidationException(
+        'Stored AI statement did not use a validated evidence mapping.',
+      );
+    }
+    return AiInsightStatement(
+      text: text,
+      evidence: evidence,
+      numericClaims: claims,
+    );
+  }
+}
+
 /// An AI-generated insight derived from the user's timeline (CGM readings,
 /// events, and imported samples).
 ///
@@ -56,6 +150,7 @@ class AiInsight implements TimelineEntry {
     this.model,
     this.tags = const <String>[],
     this.evidence = const <EvidenceRef>[],
+    this.statements = const <AiInsightStatement>[],
     this.provenance,
   });
 
@@ -92,6 +187,9 @@ class AiInsight implements TimelineEntry {
   /// Deterministic evidence that each persisted AI observation must cite.
   final List<EvidenceRef> evidence;
 
+  /// Statement-level evidence and numeric mappings for validated AI output.
+  final List<AiInsightStatement> statements;
+
   /// Prompt, provider, model, and runtime provenance for reproducibility.
   final AiGenerationProvenance? provenance;
 
@@ -113,6 +211,7 @@ class AiInsight implements TimelineEntry {
     String? model,
     List<String>? tags,
     List<EvidenceRef>? evidence,
+    List<AiInsightStatement>? statements,
     AiGenerationProvenance? provenance,
     bool clearWindow = false,
     bool clearConfidence = false,
@@ -131,6 +230,7 @@ class AiInsight implements TimelineEntry {
       model: clearModel ? null : (model ?? this.model),
       tags: tags ?? this.tags,
       evidence: evidence ?? this.evidence,
+      statements: statements ?? this.statements,
       provenance: clearProvenance ? null : (provenance ?? this.provenance),
     );
   }
@@ -147,6 +247,9 @@ class AiInsight implements TimelineEntry {
     'model': model,
     'tags': tags,
     'evidence': evidence.map((item) => item.toJson()).toList(growable: false),
+    'statements': statements
+        .map((statement) => statement.toJson())
+        .toList(growable: false),
     'provenance': provenance?.toJson(),
   };
 
@@ -186,6 +289,27 @@ class AiInsight implements TimelineEntry {
       );
     }
 
+    List<AiInsightStatement> parseStatements(Object? value) {
+      if (value is! List) return const <AiInsightStatement>[];
+      final statements = <AiInsightStatement>[];
+      for (final item in value) {
+        if (item is! Map) continue;
+        try {
+          statements.add(
+            AiInsightStatement.fromJson(
+              item.map<String, Object?>(
+                (key, nestedValue) => MapEntry('$key', nestedValue),
+              ),
+            ),
+          );
+        } on AiOutputValidationException {
+          // Corrupt statement mappings remain unreadable rather than being
+          // shown as evidence-bound output.
+        }
+      }
+      return statements;
+    }
+
     return AiInsight(
       id: json['id'] as String? ?? '',
       createdAt:
@@ -202,7 +326,24 @@ class AiInsight implements TimelineEntry {
           .map((value) => '$value')
           .toList(growable: false),
       evidence: parseEvidence(json['evidence']),
+      statements: parseStatements(json['statements']),
       provenance: parseProvenance(json['provenance']),
     );
   }
+}
+
+bool _sameNumericValue(num left, num right) {
+  final delta = (left.toDouble() - right.toDouble()).abs();
+  return delta <= 0.000001;
+}
+
+String _renderStoredStatement(EvidenceRef evidence) =>
+    'Recorded ${evidence.label.toLowerCase()}: '
+    '${_formatStoredValue(evidence.value)} ${evidence.unit} in this window.';
+
+String _formatStoredValue(num value) {
+  if (value is int || value.toDouble() == value.toDouble().roundToDouble()) {
+    return value.toInt().toString();
+  }
+  return value.toString();
 }

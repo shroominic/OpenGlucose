@@ -20,13 +20,13 @@ OpenGlucose uses a fail-closed, versioned observation boundary:
    aggregate-only EvidenceRef values. It contains no raw readings, journal
    note text, identifiers, or API keys.
 2. A generated observation is valid only when it is structured JSON matching
-   ObservationDraft version 1. Each statement must cite known evidence. Each
-   numeric literal must have a matching numeric claim tied to the same evidence
-   value and unit.
-3. Unsupported evidence, inconsistent numbers, malformed output, and output
-   matching defined medical/dosing/treatment/emergency or prompt-injection
-   safety patterns are rejected before persistence or display. Pattern checks
-   are only one defense and do not prove that every unsafe statement is caught.
+   ObservationDraft version 2. The only accepted statement template cites one
+   known evidence value and one matching numeric claim. OpenGlucose renders
+   the visible number and unit locally; the provider cannot supply prose.
+3. Unsupported fields, unsupported templates, inconsistent values or units,
+   and malformed output are rejected before persistence or display. This is a
+   declarative allowlist, not a keyword deny-list for medical or prompt-
+   injection language.
 4. The shipped remote serializer is named OpenAI-compatible. Native Anthropic
    Messages is not claimed or accepted until it has a separate serializer and
    contract tests.
@@ -35,19 +35,25 @@ OpenGlucose uses a fail-closed, versioned observation boundary:
    limits. The host must not represent unavailable on-device inference as
    available.
 6. A connection test uses a fixed synthetic request and never reads health
-   data or persists an insight. Real remote generation first shows the endpoint
-   hostname and the exact aggregate data categories, then needs user consent.
-7. A valid insight persists cited evidence plus prompt, provider, model, and
-   runtime provenance. It keeps the wellness disclaimer.
+   data or persists an insight. Real remote generation first shows the exact
+   endpoint and aggregate data categories, then needs user consent.
+   The confirmation creates a one-use receipt bound to the endpoint, model,
+   prepared aggregate snapshot, and categories before a provider call.
+7. A valid insight persists statement-level evidence/numeric mappings plus
+   prompt, provider, model, and runtime provenance. It keeps the wellness
+   disclaimer. Public provider failures redact raw response content, and the
+   transport bounds response bytes before parsing.
 
 ## Threat model and controls
 
 | Threat | Control in this decision | Residual risk |
 | --- | --- | --- |
 | Remote provider receives more data than expected | Aggregate-only snapshot, recipient/category disclosure, no redirects, explicit real-generation consent | Provider retention and legal basis need owner review |
-| Prompt injection from journal content | The AI snapshot excludes free-text notes; output injection phrases fail closed | New context sources need the same review |
-| Hallucinated statistics or citations | Typed evidence IDs and exact numeric/unit validation | A correctly cited statement can still be a weak interpretation |
-| Medical, dosing, treatment, or emergency guidance | Prompt guardrail and output rejection fixtures | Pattern matching is not a substitute for human R2 safety review |
+| Prompt injection from journal content | The AI snapshot excludes free-text notes; the response grammar has no provider prose field | New context sources need the same review |
+| Hallucinated statistics or citations | Typed evidence IDs, exact numeric/unit validation, and local rendering | A selected aggregate can still be a weak observation |
+| Medical, dosing, treatment, or emergency guidance | Declarative evidence-only statement allowlist; adversarial free-prose fixtures fail closed | This is not a substitute for human R2 safety review |
+| Unreviewed or replayed outbound request | One-use receipt bound to endpoint, model, exact snapshot, and categories | UI/device confirmation semantics need independent review |
+| Oversized or reflected provider error | Bounded response bytes and redacted public exceptions | Provider availability and service terms remain external risks |
 | API-key disclosure | Platform secure storage, no preference serialization, no logging in the contract | Platform/device compromise is outside this contract |
 | Misleading provider claims | Explicit OpenAI-compatible name and capability metadata | Native provider adapters require independent tests |
 

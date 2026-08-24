@@ -9,6 +9,8 @@ import 'ai_controller.dart';
 import 'ai_settings.dart';
 import 'ai_settings_store.dart';
 
+typedef HealthRepositoryOpener = Future<HealthRepository> Function();
+
 /// Optional AI settings with remote-provider details deliberately nested under
 /// an Advanced disclosure.
 ///
@@ -22,11 +24,13 @@ class AiSettingsPane extends StatefulWidget {
     super.key,
     required this.recentReadings,
     this.unit = GlucoseUnit.mgdl,
+    this.repositoryOpener = openHealthRepository,
   });
 
   /// Readings used by the "generate now" dev action (from the dashboard).
   final List<CgmReading> recentReadings;
   final GlucoseUnit unit;
+  final HealthRepositoryOpener repositoryOpener;
 
   @override
   State<AiSettingsPane> createState() => _AiSettingsPaneState();
@@ -117,51 +121,6 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     });
   }
 
-  Future<void> _generateNow() async {
-    final store = _store;
-    if (store == null) return;
-    setState(() {
-      _busy = true;
-      _status = 'Saving provider settings…';
-    });
-    HealthRepository? repo;
-    try {
-      if (!await _persistDraft() || !mounted) {
-        return;
-      }
-      if (!_settings.enabled) {
-        setState(() => _status = 'Enable cloud AI before testing.');
-        return;
-      }
-      if (!_hasKey) {
-        setState(() => _status = 'Add an API key before testing.');
-        return;
-      }
-      setState(() => _status = 'Generating…');
-      repo = await openHealthRepository();
-      final controller = AiController(store: store, repository: repo);
-      final insight = await controller.generateRecentInsight(
-        readings: widget.recentReadings,
-        unit: widget.unit,
-      );
-      if (!mounted) return;
-      setState(() {
-        _status = insight == null
-            ? 'AI is disabled or no key set.'
-            : 'Generated & saved: "${insight.title}".';
-      });
-    } on AiGenerationException catch (error) {
-      if (!mounted) return;
-      setState(() => _status = 'Could not generate: ${error.message}');
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _status = 'Could not generate the AI insight.');
-    } finally {
-      await repo?.close();
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   Future<void> _testConnection() async {
     final store = _store;
     if (store == null) return;
@@ -204,20 +163,34 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       _busy = true;
       _status = 'Saving provider settings…';
     });
+    HealthRepository? repo;
     try {
       if (!await _persistDraft() || !mounted) return;
+      if (!_settings.enabled) {
+        setState(() => _status = 'Enable cloud AI before generating.');
+        return;
+      }
+      if (!_hasKey) {
+        setState(() => _status = 'Add an API key before generating.');
+        return;
+      }
+      repo = await widget.repositoryOpener();
       final controller = AiController(
         store: store,
-        repository: InMemoryHealthRepository(),
+        repository: repo,
       );
-      final disclosure = await controller.remoteGenerationDisclosure();
+      final preparation = await controller.prepareRecentInsightGeneration(
+        readings: widget.recentReadings,
+        unit: widget.unit,
+      );
       if (!mounted) return;
-      if (disclosure == null) {
+      if (preparation == null) {
         setState(
           () => _status = 'Enable a valid cloud provider and add an API key.',
         );
         return;
       }
+      final disclosure = preparation.disclosure;
       final approved = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -236,6 +209,8 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                 'sends raw readings or journal note text.',
               ),
               const SizedBox(height: 12),
+              Text('Recipient endpoint: ${disclosure.endpoint}'),
+              const SizedBox(height: 12),
               for (final category in disclosure.dataCategories)
                 Text('• $category'),
             ],
@@ -253,9 +228,27 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
         ),
       );
       if (approved == true && mounted) {
-        await _generateNow();
+        final receipt = controller.confirmRemoteGeneration(preparation);
+        setState(() => _status = 'Generating…');
+        final insight = await controller.generateRecentInsight(
+          preparation: preparation,
+          consentReceipt: receipt,
+        );
+        if (!mounted) return;
+        setState(() {
+          _status = insight == null
+              ? 'AI is disabled or no key set.'
+              : 'Generated & saved: "${insight.title}".';
+        });
       }
+    } on AiGenerationException catch (error) {
+      if (!mounted) return;
+      setState(() => _status = 'Could not generate: ${error.message}');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _status = 'Could not generate the AI insight.');
     } finally {
+      await repo?.close();
       if (mounted) setState(() => _busy = false);
     }
   }

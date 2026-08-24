@@ -134,18 +134,23 @@ it does not claim native Anthropic Messages support.
 
 The connection test sends only a fixed synthetic request. It does not read
 health data and does not persist an insight. A real generation first shows the
-recipient hostname and these exact possible categories: time window, aggregate
+exact recipient endpoint and these exact possible categories: time window, aggregate
 glucose statistics, journal event counts, and total logged carbohydrates when
-present. It does not send raw readings, identifiers, or journal note text.
-The remote provider's retention terms apply after the user confirms.
+present. It does not send raw readings, identifiers, or journal note text. The
+confirmation creates a one-use receipt that is bound to the endpoint, model,
+exact prepared aggregate snapshot, and categories; a changed or reused receipt
+cannot start a provider call. The remote provider's retention terms apply after
+the user confirms.
 
-The generated output must be typed JSON with deterministic evidence references.
-Unknown citations, inconsistent numeric values, free-form text, and output
-matching defined medical/dosing/treatment/emergency or prompt-injection safety
-patterns are rejected before persistence. Pattern checks do not prove that
-every unsafe statement is caught. A stored validated insight records its cited
-evidence and prompt/provider/model/runtime provenance. Redirects, credentials
-in URLs, query parameters, fragments, and non-HTTPS endpoints are rejected.
+The generated output must use a typed, evidence-only JSON declaration.
+OpenGlucose renders visible values and units from the local structured claim;
+the remote provider cannot supply free-form display text. Unknown citations,
+unsupported fields/templates, and inconsistent numeric values or units are
+rejected before persistence. A stored validated insight records statement-level
+evidence/numeric mappings and prompt/provider/model/runtime provenance. Public
+provider errors do not include raw provider output, and response bytes are
+bounded before parsing. Redirects, credentials in URLs, query parameters,
+fragments, and non-HTTPS endpoints are rejected.
 
 This is not a production-safety claim. Full delete/export verification, exact
 host OS-version capture, approved data receipts, expanded adversarial

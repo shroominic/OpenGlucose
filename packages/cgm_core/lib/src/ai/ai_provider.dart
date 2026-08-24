@@ -120,11 +120,13 @@ class AiResourceLimits {
   const AiResourceLimits({
     this.maxContextCharacters = 8000,
     this.maxOutputTokens = 512,
+    this.maxResponseBytes = 64 * 1024,
     this.timeout = const Duration(seconds: 30),
   });
 
   final int maxContextCharacters;
   final int maxOutputTokens;
+  final int maxResponseBytes;
   final Duration timeout;
 
   String? get validationError {
@@ -133,6 +135,9 @@ class AiResourceLimits {
     }
     if (maxOutputTokens < 32 || maxOutputTokens > 2048) {
       return 'AI output limit must be between 32 and 2048 tokens.';
+    }
+    if (maxResponseBytes < 1024 || maxResponseBytes > 512 * 1024) {
+      return 'AI response limit must be between 1024 and 524288 bytes.';
     }
     if (timeout < const Duration(seconds: 1) ||
         timeout > const Duration(minutes: 2)) {
@@ -301,10 +306,12 @@ class AiProviderConfig {
 class AiRemoteGenerationDisclosure {
   const AiRemoteGenerationDisclosure({
     required this.endpointHostname,
+    required this.endpoint,
     required this.dataCategories,
   });
 
   final String endpointHostname;
+  final String endpoint;
   final List<String> dataCategories;
 }
 
@@ -319,15 +326,12 @@ enum AiAuthScheme {
 
 /// Thrown when an [AiProvider] cannot produce a completion.
 class AiGenerationException implements Exception {
-  const AiGenerationException(this.message, {this.cause});
+  const AiGenerationException(this.message);
 
   final String message;
-  final Object? cause;
 
   @override
-  String toString() => cause == null
-      ? 'AiGenerationException: $message'
-      : 'AiGenerationException: $message (cause: $cause)';
+  String toString() => 'AiGenerationException: $message';
 }
 
 /// The core abstraction every AI backend implements.

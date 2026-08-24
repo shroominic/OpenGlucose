@@ -5,10 +5,10 @@ import 'ai_provider.dart';
 import 'glucose_summary.dart';
 
 /// The versioned wire contract between OpenGlucose and an AI provider.
-const int aiObservationContractVersion = 1;
+const int aiObservationContractVersion = 2;
 
 /// The version of the local prompt template used for reproducibility.
-const String aiPromptTemplateVersion = 'observation-evidence-v1';
+const String aiPromptTemplateVersion = 'observation-evidence-v2';
 
 /// A class of aggregate data that may leave the device after explicit consent.
 enum AiDataCategory {
@@ -349,34 +349,50 @@ class AiNumericClaim {
   };
 
   factory AiNumericClaim.fromJson(Map<String, Object?> json) {
+    _requireExactKeys(
+      json,
+      required: const <String>{'evidenceId', 'value', 'unit'},
+      description: 'AI numeric claims',
+    );
     final value = json['value'];
-    if (value is! num) {
+    final evidenceId = json['evidenceId'];
+    final unit = json['unit'];
+    if (value is! num ||
+        !value.isFinite ||
+        evidenceId is! String ||
+        evidenceId.isEmpty ||
+        unit is! String ||
+        unit.trim().isEmpty ||
+        unit.length > 32) {
       throw const AiOutputValidationException(
-        'AI numeric claims must contain a number.',
+        'AI numeric claims must use bounded deterministic values.',
       );
     }
-    return AiNumericClaim(
-      evidenceId: json['evidenceId'] as String? ?? '',
-      value: value,
-      unit: json['unit'] as String? ?? '',
-    );
+    return AiNumericClaim(evidenceId: evidenceId, value: value, unit: unit);
   }
 }
 
-/// A single, evidence-bound wellness statement.
+/// The only safe, declarative observation shape accepted from a provider.
+///
+/// The provider selects evidence IDs; OpenGlucose renders the visible value and
+/// unit locally from the cited deterministic evidence. There is no model-owned
+/// prose field that could carry advice, diagnoses, or mismatched measurements.
+enum AiObservationTemplate { recordedEvidence }
+
+/// A single, evidence-bound observation declaration.
 class ObservationStatement {
   const ObservationStatement({
-    required this.text,
+    required this.template,
     required this.evidenceIds,
-    this.numericClaims = const <AiNumericClaim>[],
+    required this.numericClaims,
   });
 
-  final String text;
+  final AiObservationTemplate template;
   final List<String> evidenceIds;
   final List<AiNumericClaim> numericClaims;
 
   Map<String, Object?> toJson() => <String, Object?>{
-    'text': text,
+    'template': template.name,
     'evidenceIds': evidenceIds,
     'numericClaims': numericClaims
         .map((claim) => claim.toJson())
@@ -384,17 +400,31 @@ class ObservationStatement {
   };
 
   factory ObservationStatement.fromJson(Map<String, Object?> json) {
+    _requireExactKeys(
+      json,
+      required: const <String>{'template', 'evidenceIds', 'numericClaims'},
+      description: 'AI statements',
+    );
+    final template = json['template'];
     final ids = json['evidenceIds'];
     final claims = json['numericClaims'];
-    if (ids is! List || claims != null && claims is! List) {
+    if (template is! String || ids is! List || claims is! List) {
       throw const AiOutputValidationException(
-        'AI statements must contain evidence IDs and numeric claims.',
+        'AI statements must use a safe observation template.',
+      );
+    }
+    final templateValues = AiObservationTemplate.values.where(
+      (candidate) => candidate.name == template,
+    );
+    if (templateValues.isEmpty || ids.any((value) => value is! String)) {
+      throw const AiOutputValidationException(
+        'AI statements must use known evidence IDs and templates.',
       );
     }
     return ObservationStatement(
-      text: json['text'] as String? ?? '',
-      evidenceIds: ids.map((value) => '$value').toList(growable: false),
-      numericClaims: (claims as List? ?? const <Object?>[])
+      template: templateValues.single,
+      evidenceIds: ids.cast<String>().toList(growable: false),
+      numericClaims: claims
           .map((item) {
             if (item is! Map) {
               throw const AiOutputValidationException(
@@ -409,6 +439,17 @@ class ObservationStatement {
           })
           .toList(growable: false),
     );
+  }
+
+  /// Renders this declaration using only locally validated evidence.
+  String render(Map<String, EvidenceRef> evidenceById) {
+    final evidence = evidenceById[evidenceIds.single]!;
+    return switch (template) {
+      AiObservationTemplate.recordedEvidence =>
+        'Recorded ${evidence.label.toLowerCase()}: '
+            '${_formatEvidenceValue(evidence.value)} ${evidence.unit} '
+            'in this window.',
+    };
   }
 }
 
@@ -448,10 +489,9 @@ class ObservationDraft {
     final Object? decoded;
     try {
       decoded = jsonDecode(raw);
-    } catch (error) {
-      throw AiOutputValidationException(
+    } catch (_) {
+      throw const AiOutputValidationException(
         'AI response did not use the required structured contract.',
-        cause: error,
       );
     }
     if (decoded is! Map) {
@@ -470,6 +510,11 @@ class ObservationDraft {
       );
     }
     if (kind == ObservationDraftKind.observation.name) {
+      _requireExactKeys(
+        json,
+        required: const <String>{'formatVersion', 'kind', 'statements'},
+        description: 'AI observation responses',
+      );
       final statements = json['statements'];
       if (statements is! List) {
         throw const AiOutputValidationException(
@@ -495,6 +540,11 @@ class ObservationDraft {
       );
     }
     if (kind == ObservationDraftKind.refusal.name) {
+      _requireExactKeys(
+        json,
+        required: const <String>{'formatVersion', 'kind', 'refusalReason'},
+        description: 'AI refusal responses',
+      );
       final reason = json['refusalReason'];
       if (reason is! String) {
         throw const AiOutputValidationException(
@@ -537,50 +587,11 @@ class ObservationDraft {
       for (final item in context.evidence) item.id: item,
     };
     for (final statement in statements) {
-      final safetyError = AiSafetyPolicy.validationError(statement.text);
+      final safetyError = AiSafetyPolicy.validationError(
+        statement,
+        evidenceById,
+      );
       if (safetyError != null) throw AiOutputValidationException(safetyError);
-      if (statement.evidenceIds.isEmpty) {
-        throw const AiOutputValidationException(
-          'Every AI statement needs deterministic evidence.',
-        );
-      }
-      final statementEvidence = statement.evidenceIds.toSet();
-      if (statementEvidence.length != statement.evidenceIds.length) {
-        throw const AiOutputValidationException(
-          'AI statements cannot repeat an evidence reference.',
-        );
-      }
-      for (final id in statementEvidence) {
-        if (!evidenceById.containsKey(id)) {
-          throw const AiOutputValidationException(
-            'AI statement cited unsupported evidence.',
-          );
-        }
-      }
-      for (final claim in statement.numericClaims) {
-        final evidence = evidenceById[claim.evidenceId];
-        if (evidence == null || !statementEvidence.contains(claim.evidenceId)) {
-          throw const AiOutputValidationException(
-            'AI numeric claim cited unsupported evidence.',
-          );
-        }
-        if (claim.unit != evidence.unit ||
-            !_sameNumber(claim.value, evidence.value)) {
-          throw const AiOutputValidationException(
-            'AI numeric claim did not match deterministic evidence.',
-          );
-        }
-      }
-      final claimedNumbers = statement.numericClaims
-          .map((claim) => claim.value.toDouble())
-          .toList(growable: false);
-      for (final literal in _numbersIn(statement.text)) {
-        if (!claimedNumbers.any((claim) => _sameNumber(literal, claim))) {
-          throw const AiOutputValidationException(
-            'AI statement contained an unsupported numeric claim.',
-          );
-        }
-      }
     }
   }
 
@@ -595,13 +606,13 @@ class ObservationDraft {
 /// Validates model outputs and builds the canonical evidence-only prompt.
 abstract final class AiOutputContract {
   static const String promptContract =
-      'Return only JSON matching OpenGlucose observation contract version 1. '
+      'Return only JSON matching OpenGlucose observation contract version 2. '
       'Use kind observation with one to four statements. Every statement needs '
-      'evidenceIds from the supplied evidence. Every number in a statement '
-      'needs numericClaims with the same evidenceId, value, and unit. Do not '
-      'invent facts, causal claims, measurements, diagnoses, treatment, '
-      'medication or insulin guidance, emergency guidance, or instructions. '
-      'Use cautious wellness language. If no safe observation is possible, '
+      'template recordedEvidence, exactly one evidenceId from the supplied '
+      'evidence, and exactly one numericClaim with the same evidenceId, value, '
+      'and unit. Do not include a text field or any free-form prose. '
+      'OpenGlucose renders the observation locally from the validated claim. '
+      'If no safe observation is possible, '
       'return kind refusal with one safe refusalReason. The payload has no raw '
       'readings or journal note text.';
 
@@ -630,51 +641,53 @@ abstract final class AiOutputContract {
   }
 }
 
-/// Central policy for output and prompt-injection safety checks.
+/// A declarative allowlist for safe observation declarations.
+///
+/// This intentionally does not attempt to detect unsafe language with a
+/// deny-list. The wire format cannot carry provider-authored prose at all.
 abstract final class AiSafetyPolicy {
-  static final List<RegExp> _unsafePatterns = <RegExp>[
-    RegExp(
-      r'\b(?:take|inject|increase|decrease|adjust|change)\s+(?:your\s+)?'
-      r'(?:insulin|medication|dose)\b',
-      caseSensitive: false,
+  static const Map<AiObservationTemplate, AiObservationRule>
+  safeObservationRules = <AiObservationTemplate, AiObservationRule>{
+    AiObservationTemplate.recordedEvidence: AiObservationRule(
+      exactEvidenceCount: 1,
+      exactNumericClaimCount: 1,
     ),
-    RegExp(
-      r'\b(?:diagnos(?:e|is|tic)|prescrib(?:e|ing)|treatment)\b',
-      caseSensitive: false,
-    ),
-    RegExp(
-      r'\b(?:you have|this means you have)\s+'
-      r'(?:diabetes|hypoglyc(?:emia)?|hyperglyc(?:emia)?)\b',
-      caseSensitive: false,
-    ),
-    RegExp(
-      r'\b(?:call\s+911|go\s+to\s+(?:the\s+)?emergency\s+room)\b',
-      caseSensitive: false,
-    ),
-    RegExp(
-      r'\b(?:ignore|disregard)\s+(?:all\s+)?'
-      r'(?:previous|prior)\s+(?:instructions|rules)\b',
-      caseSensitive: false,
-    ),
-    RegExp(
-      r'\b(?:system\s+prompt|developer\s+message|jailbreak)\b',
-      caseSensitive: false,
-    ),
-  ];
+  };
 
-  static String? validationError(String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty || trimmed.length > 600) {
-      return 'AI statements must be present and bounded.';
+  static String? validationError(
+    ObservationStatement statement,
+    Map<String, EvidenceRef> evidenceById,
+  ) {
+    final rule = safeObservationRules[statement.template];
+    if (rule == null) return 'AI response used an unsupported observation.';
+    if (statement.evidenceIds.length != rule.exactEvidenceCount ||
+        statement.numericClaims.length != rule.exactNumericClaimCount) {
+      return 'AI observation did not match the safe declaration grammar.';
     }
-    if (trimmed.contains(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F]'))) {
-      return 'AI statements contained unsupported control characters.';
+    final evidenceId = statement.evidenceIds.single;
+    final evidence = evidenceById[evidenceId];
+    if (evidence == null) {
+      return 'AI statement cited unsupported evidence.';
     }
-    if (_unsafePatterns.any((pattern) => pattern.hasMatch(trimmed))) {
-      return 'AI response did not meet the wellness safety contract.';
+    final claim = statement.numericClaims.single;
+    if (claim.evidenceId != evidenceId ||
+        claim.unit != evidence.unit ||
+        !_sameNumber(claim.value, evidence.value)) {
+      return 'AI numeric claim did not match deterministic evidence.';
     }
     return null;
   }
+}
+
+/// A shape in the [AiSafetyPolicy.safeObservationRules] allowlist.
+class AiObservationRule {
+  const AiObservationRule({
+    required this.exactEvidenceCount,
+    required this.exactNumericClaimCount,
+  });
+
+  final int exactEvidenceCount;
+  final int exactNumericClaimCount;
 }
 
 /// Reproducibility metadata persisted beside a validated observation.
@@ -759,7 +772,7 @@ class AiGenerationProvenance {
 }
 
 class AiOutputValidationException extends AiGenerationException {
-  const AiOutputValidationException(super.message, {super.cause});
+  const AiOutputValidationException(super.message);
 }
 
 bool _sameNumber(num first, num second) {
@@ -767,10 +780,22 @@ bool _sameNumber(num first, num second) {
   return delta <= math.max(0.001, second.abs() * 0.001);
 }
 
-Iterable<double> _numbersIn(String text) sync* {
-  final pattern = RegExp(r'[-+]?(?:\d+(?:\.\d+)?|\.\d+)');
-  for (final match in pattern.allMatches(text)) {
-    final parsed = double.tryParse(match.group(0)!);
-    if (parsed != null) yield parsed;
+String _formatEvidenceValue(num value) {
+  if (value is int || value.toDouble() == value.toDouble().roundToDouble()) {
+    return value.toInt().toString();
+  }
+  return value.toString();
+}
+
+void _requireExactKeys(
+  Map<String, Object?> json, {
+  required Set<String> required,
+  required String description,
+}) {
+  if (json.length != required.length ||
+      !json.keys.toSet().containsAll(required)) {
+    throw AiOutputValidationException(
+      '$description included unsupported or missing fields.',
+    );
   }
 }

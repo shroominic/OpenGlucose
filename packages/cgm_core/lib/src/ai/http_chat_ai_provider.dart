@@ -42,8 +42,10 @@ class HttpChatAiProvider implements AiProvider, AiCapabilityDescribingProvider {
       return trimmed;
     } on AiGenerationException {
       rethrow;
-    } catch (error) {
-      throw AiGenerationException('AI request failed.', cause: error);
+    } catch (_) {
+      // Transport errors can contain a provider response or endpoint details.
+      // Keep the public exception stable and non-sensitive.
+      throw const AiGenerationException('AI request failed.');
     }
   }
 
@@ -71,8 +73,8 @@ class HttpChatAiProvider implements AiProvider, AiCapabilityDescribingProvider {
     final Object? decoded;
     try {
       decoded = jsonDecode(body);
-    } catch (error) {
-      throw AiGenerationException('Malformed provider response.', cause: error);
+    } catch (_) {
+      throw const AiGenerationException('Malformed provider response.');
     }
     if (decoded is! Map<String, Object?>) {
       throw const AiGenerationException('Unexpected provider response shape.');

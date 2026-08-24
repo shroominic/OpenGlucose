@@ -8,6 +8,25 @@ import 'ai_provider.dart';
 import 'glucose_summary.dart';
 import 'http_chat_ai_provider.dart';
 
+/// A local, immutable generation snapshot prepared before any remote request.
+///
+/// Hosts can show the exact [context.dataCategories] to the user and bind a
+/// consent receipt to this object before they call a provider. It contains only
+/// deterministic aggregates, never raw readings or journal text.
+class AiSummaryInsightPreparation {
+  const AiSummaryInsightPreparation({
+    required this.context,
+    required this.windowStart,
+    required this.windowEnd,
+    required this.category,
+  });
+
+  final MetabolicContextSnapshot context;
+  final DateTime windowStart;
+  final DateTime windowEnd;
+  final AiInsightCategory category;
+}
+
 /// Generates structured, evidence-bound AI observations from local data.
 ///
 /// A provider is called only after deterministic coverage and evidence are
@@ -37,6 +56,30 @@ class InsightService {
   /// provider without structured output, an invalid response, or a refusal
   /// throws and leaves the repository unchanged.
   Future<AiInsight?> generateSummaryInsight({
+    required List<CgmReading> readings,
+    required DateTime windowStart,
+    required DateTime windowEnd,
+    GlucoseUnit unit = GlucoseUnit.mgdl,
+    AiInsightCategory category = AiInsightCategory.summary,
+    String locale = 'en',
+  }) async {
+    final preparation = await prepareSummaryInsight(
+      readings: readings,
+      windowStart: windowStart,
+      windowEnd: windowEnd,
+      unit: unit,
+      category: category,
+      locale: locale,
+    );
+    if (preparation == null) return null;
+    return generatePreparedSummaryInsight(preparation);
+  }
+
+  /// Prepares one local, aggregate-only insight snapshot without provider I/O.
+  ///
+  /// A host can disclose the exact snapshot categories and obtain a consent
+  /// receipt before calling [generatePreparedSummaryInsight].
+  Future<AiSummaryInsightPreparation?> prepareSummaryInsight({
     required List<CgmReading> readings,
     required DateTime windowStart,
     required DateTime windowEnd,
@@ -92,9 +135,34 @@ class InsightService {
       summary,
       locale: locale,
     );
+    return AiSummaryInsightPreparation(
+      context: context,
+      windowStart: windowStart,
+      windowEnd: windowEnd,
+      category: category,
+    );
+  }
+
+  /// Calls the provider and persists an insight from a previously prepared
+  /// local snapshot.
+  ///
+  /// Hosts must enforce their consent boundary before calling this method.
+  Future<AiInsight?> generatePreparedSummaryInsight(
+    AiSummaryInsightPreparation preparation,
+  ) async {
+    if (!_provider.isEnabled) return null;
+
+    final capability = _capabilityFor(_provider);
+    if (!capability.isAvailable || !capability.supportsStructuredOutput) {
+      throw const AiGenerationException(
+        'AI provider cannot produce structured evidence-bound observations.',
+      );
+    }
+    final contextError = preparation.context.validationError;
+    if (contextError != null) throw AiOutputValidationException(contextError);
     final request = AiRequest(
       model: _provider.modelId ?? capability.model ?? 'gpt-4o-mini',
-      messages: buildMessagesForContext(context),
+      messages: buildMessagesForContext(preparation.context),
       purpose: AiRequestPurpose.observation,
       structuredOutputVersion: aiObservationContractVersion,
       maxTokens: capability.resourceLimits.maxOutputTokens,
@@ -102,7 +170,7 @@ class InsightService {
     final response = await _provider.generate(request);
     final draft = AiOutputContract.decodeAndValidate(
       response: response,
-      context: context,
+      context: preparation.context,
     );
     if (draft.kind == ObservationDraftKind.refusal) {
       throw const AiGenerationException(
@@ -110,30 +178,42 @@ class InsightService {
       );
     }
 
-    final citedIds = draft.statements
-        .expand((statement) => statement.evidenceIds)
-        .toSet();
-    final citedEvidence = context.evidence
-        .where((evidence) => citedIds.contains(evidence.id))
+    final evidenceById = <String, EvidenceRef>{
+      for (final evidence in preparation.context.evidence)
+        evidence.id: evidence,
+    };
+    final statements = draft.statements
+        .map(
+          (statement) => AiInsightStatement(
+            text: statement.render(evidenceById),
+            evidence: statement.evidenceIds
+                .map((id) => evidenceById[id]!)
+                .toList(growable: false),
+            numericClaims: statement.numericClaims,
+          ),
+        )
         .toList(growable: false);
-    final body = draft.statements
-        .map((statement) => statement.text.trim())
-        .join('\n\n');
+    final citedEvidence = statements
+        .expand((statement) => statement.evidence)
+        .toSet()
+        .toList(growable: false);
+    final body = statements.map((statement) => statement.text).join('\n\n');
     final insight = AiInsight(
       id: _idFactory(),
       createdAt: _clock(),
-      category: category,
-      title: _titleFor(category),
+      category: preparation.category,
+      title: _titleFor(preparation.category),
       body:
           (StringBuffer(body)
                 ..write('\n\n')
                 ..write(AiDisclaimer.short))
               .toString(),
-      windowStart: windowStart,
-      windowEnd: windowEnd,
+      windowStart: preparation.windowStart,
+      windowEnd: preparation.windowEnd,
       model: _provider.modelId,
       tags: const <String>[AiDisclaimer.tag, 'ai-generated', 'evidence-bound'],
       evidence: citedEvidence,
+      statements: statements,
       provenance: AiGenerationProvenance.fromCapability(
         capability,
         endpointHostname: _endpointHostname(_provider),

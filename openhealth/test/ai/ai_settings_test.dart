@@ -9,6 +9,29 @@ import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/ai/ai_settings_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+List<CgmReading> _generationReadings() {
+  final latest = DateTime.now().subtract(const Duration(minutes: 5));
+  return List<CgmReading>.generate(145, (index) {
+    return CgmReading(
+      valueMgdl: 100 + (index % 8) * 3,
+      source: CgmRecordSource.vendor,
+      recordedAt: latest.subtract(Duration(minutes: (144 - index) * 5)),
+    );
+  });
+}
+
+Future<HealthRepository> _openMemoryRepository() async {
+  final repository = InMemoryHealthRepository();
+  await repository.init();
+  return repository;
+}
+
+const String _validObservationResponse =
+    '{"formatVersion":2,"kind":"observation","statements":['
+    '{"template":"recordedEvidence",'
+    '"evidenceIds":["journal.meal_count"],"numericClaims":['
+    '{"evidenceId":"journal.meal_count","value":0,"unit":"events"}]}]}';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -122,8 +145,13 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+        MaterialApp(
+          home: Scaffold(
+            body: AiSettingsPane(
+              recentReadings: _generationReadings(),
+              repositoryOpener: _openMemoryRepository,
+            ),
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -188,8 +216,13 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+        MaterialApp(
+          home: Scaffold(
+            body: AiSettingsPane(
+              recentReadings: _generationReadings(),
+              repositoryOpener: _openMemoryRepository,
+            ),
+          ),
         ),
       );
       await tester.pumpAndSettle();
@@ -212,6 +245,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Send aggregates to api.openai.com?'), findsOneWidget);
+      expect(
+        find.textContaining('https://api.openai.com/v1/chat/completions'),
+        findsOneWidget,
+      );
       expect(
         find.textContaining('aggregate glucose statistics'),
         findsOneWidget,
@@ -275,7 +312,7 @@ void main() {
       final repo = InMemoryHealthRepository();
       await repo.init();
       final controller = AiController(store: store, repository: repo);
-      final result = await controller.generateRecentInsight(
+      final result = await controller.prepareRecentInsightGeneration(
         readings: <CgmReading>[
           CgmReading(
             valueMgdl: 120,
@@ -350,20 +387,156 @@ void main() {
         final store = await newStore();
         await store.saveSettings(const AiSettings(enabled: true));
         await store.writeApiKey('sk-secret');
+        final repository = await _openMemoryRepository();
         final controller = AiController(
           store: store,
-          repository: InMemoryHealthRepository(),
+          repository: repository,
         );
 
-        final disclosure = await controller.remoteGenerationDisclosure();
+        final preparation = await controller.prepareRecentInsightGeneration(
+          readings: _generationReadings(),
+        );
+        final disclosure = preparation?.disclosure;
 
         expect(disclosure, isNotNull);
         expect(disclosure!.endpointHostname, 'api.openai.com');
+        expect(
+          disclosure.endpoint,
+          'https://api.openai.com/v1/chat/completions',
+        );
         expect(
           disclosure.dataCategories,
           contains('aggregate glucose statistics'),
         );
         expect(disclosure.dataCategories, contains('journal event counts'));
+        await repository.close();
+      },
+    );
+
+    test(
+      'requires one exact consent receipt before a real provider call',
+      () async {
+        final store = await newStore();
+        await store.saveSettings(const AiSettings(enabled: true));
+        await store.writeApiKey('sk-secret');
+        final repository = await _openMemoryRepository();
+        final requests = <AiRequest>[];
+        final controller = AiController(
+          store: store,
+          repository: repository,
+          transport: (request, _) async {
+            requests.add(request);
+            return _validObservationResponse;
+          },
+        );
+
+        final preparation = await controller.prepareRecentInsightGeneration(
+          readings: _generationReadings(),
+        );
+        expect(preparation, isNotNull);
+        expect(requests, isEmpty, reason: 'preparation is local-only');
+
+        final receipt = controller.confirmRemoteGeneration(preparation!);
+        final insight = await controller.generateRecentInsight(
+          preparation: preparation,
+          consentReceipt: receipt,
+        );
+
+        expect(insight, isNotNull);
+        expect(requests, hasLength(1));
+        await expectLater(
+          controller.generateRecentInsight(
+            preparation: preparation,
+            consentReceipt: receipt,
+          ),
+          throwsA(isA<AiGenerationException>()),
+        );
+        expect(requests, hasLength(1), reason: 'a consumed receipt is inert');
+        await repository.close();
+      },
+    );
+
+    test(
+      'rejects a receipt if its configured endpoint changes',
+      () async {
+        final store = await newStore();
+        await store.saveSettings(const AiSettings(enabled: true));
+        await store.writeApiKey('sk-secret');
+        final repository = await _openMemoryRepository();
+        final requests = <AiRequest>[];
+        final controller = AiController(
+          store: store,
+          repository: repository,
+          transport: (request, _) async {
+            requests.add(request);
+            return _validObservationResponse;
+          },
+        );
+        final preparation = await controller.prepareRecentInsightGeneration(
+          readings: _generationReadings(),
+        );
+        final receipt = controller.confirmRemoteGeneration(preparation!);
+        await store.saveSettings(
+          const AiSettings(
+            enabled: true,
+            baseUrl: 'https://other-provider.example/v1',
+          ),
+        );
+
+        await expectLater(
+          controller.generateRecentInsight(
+            preparation: preparation,
+            consentReceipt: receipt,
+          ),
+          throwsA(isA<AiGenerationException>()),
+        );
+        expect(requests, isEmpty);
+        await repository.close();
+      },
+    );
+
+    test(
+      'rejects a receipt for a different prepared aggregate snapshot',
+      () async {
+        final store = await newStore();
+        await store.saveSettings(const AiSettings(enabled: true));
+        await store.writeApiKey('sk-secret');
+        final repository = await _openMemoryRepository();
+        final requests = <AiRequest>[];
+        final controller = AiController(
+          store: store,
+          repository: repository,
+          transport: (request, _) async {
+            requests.add(request);
+            return _validObservationResponse;
+          },
+        );
+        final first = await controller.prepareRecentInsightGeneration(
+          readings: _generationReadings(),
+        );
+        final secondReadings = _generationReadings()
+            .map(
+              (reading) => CgmReading(
+                valueMgdl: reading.valueMgdl + 20,
+                source: reading.source,
+                recordedAt: reading.recordedAt,
+              ),
+            )
+            .toList(growable: false);
+        final second = await controller.prepareRecentInsightGeneration(
+          readings: secondReadings,
+        );
+        final receipt = controller.confirmRemoteGeneration(first!);
+
+        await expectLater(
+          controller.generateRecentInsight(
+            preparation: second!,
+            consentReceipt: receipt,
+          ),
+          throwsA(isA<AiGenerationException>()),
+        );
+        expect(requests, isEmpty);
+        await repository.close();
       },
     );
   });

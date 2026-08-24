@@ -100,8 +100,14 @@ const _request = AiRequest(
   structuredOutputVersion: aiObservationContractVersion,
 );
 
-AiProviderConfig _config(String baseUrl) =>
-    AiProviderConfig(baseUrl: baseUrl, apiKey: 'sk-private');
+AiProviderConfig _config(
+  String baseUrl, {
+  AiResourceLimits resourceLimits = const AiResourceLimits(),
+}) => AiProviderConfig(
+  baseUrl: baseUrl,
+  apiKey: 'sk-private',
+  resourceLimits: resourceLimits,
+);
 
 Future<String> _sendWithClient(_FakeClient client, AiProviderConfig config) =>
     HttpOverrides.runZoned(
@@ -199,6 +205,39 @@ void main() {
           (error) => error.message,
           'message',
           'Provider returned HTTP 400.',
+        ),
+      ),
+    );
+  });
+
+  test('bounds provider response bytes before parsing it', () async {
+    const sensitivePayload = 'private glucose note must not be retained';
+    final client = _FakeClient(
+      statusCode: HttpStatus.ok,
+      responseBody: jsonEncode(<String, Object?>{
+        'choices': <Object?>[
+          <String, Object?>{
+            'message': <String, Object?>{
+              'content': List<String>.filled(80, sensitivePayload).join(),
+            },
+          },
+        ],
+      }),
+    );
+
+    await expectLater(
+      _sendWithClient(
+        client,
+        _config(
+          'https://api.example.com/v1',
+          resourceLimits: const AiResourceLimits(maxResponseBytes: 1024),
+        ),
+      ),
+      throwsA(
+        isA<AiGenerationException>().having(
+          (error) => error.message,
+          'message',
+          'Provider response exceeded the configured size limit.',
         ),
       ),
     );
