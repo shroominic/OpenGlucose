@@ -1,13 +1,10 @@
 import 'dart:async';
 
-import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:openglucose/src/journal/fast_journal_controller.dart';
-import 'package:openglucose/src/persistence/health_store.dart';
-
-/// Opens the app's private local event store.
-typedef HealthRepositoryOpener = Future<HealthRepository> Function();
+import 'package:openglucose/src/journal/fast_journal_store.dart';
+import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
 
 /// A compact, optional local diary for manual meal, activity, and sleep logs.
 ///
@@ -17,18 +14,19 @@ class FastJournalScreen extends StatefulWidget {
   const FastJournalScreen({
     super.key,
     this.recentRise = noRecentGlucoseRise,
-    this.repositoryOpener = openHealthRepository,
+    this.repositoryLifecycle,
+    this.storeResolver = fastJournalStoreFor,
   });
 
   final FastJournalRecentRiseProvider recentRise;
-  final HealthRepositoryOpener repositoryOpener;
+  final AppHealthRepositoryLifecycle? repositoryLifecycle;
+  final FastJournalStoreResolver storeResolver;
 
   @override
   State<FastJournalScreen> createState() => _FastJournalScreenState();
 }
 
 class _FastJournalScreenState extends State<FastJournalScreen> {
-  HealthRepository? _repository;
   FastJournalController? _journal;
   Object? _loadError;
   var _loading = true;
@@ -39,56 +37,36 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
     unawaited(_load());
   }
 
-  @override
-  void dispose() {
-    final repository = _repository;
-    if (repository != null) {
-      unawaited(_closeRepository(repository));
-    }
-    super.dispose();
-  }
-
   Future<void> _load() async {
     if (!mounted) return;
     setState(() {
       _loading = true;
       _loadError = null;
     });
-    HealthRepository? openedRepository;
     try {
-      final repository = await widget.repositoryOpener();
-      openedRepository = repository;
+      final lifecycle = widget.repositoryLifecycle;
+      if (lifecycle == null) {
+        throw StateError('The local diary has no app-owned repository.');
+      }
+      final repository = await lifecycle.acquire();
       final journal = FastJournalController(
-        repository: repository,
+        store: widget.storeResolver(repository),
         recentRise: widget.recentRise,
       );
       await journal.load();
       if (!mounted) {
-        await _closeRepository(repository);
         return;
       }
       setState(() {
-        _repository = repository;
         _journal = journal;
         _loading = false;
       });
     } catch (error) {
-      if (openedRepository != null) {
-        await _closeRepository(openedRepository);
-      }
       if (!mounted) return;
       setState(() {
         _loadError = error;
         _loading = false;
       });
-    }
-  }
-
-  Future<void> _closeRepository(HealthRepository repository) async {
-    try {
-      await repository.close();
-    } catch (_) {
-      // Closing local storage must not block route disposal.
     }
   }
 
@@ -223,7 +201,7 @@ class _EmptyDiary extends StatelessWidget {
 class _JournalEntries extends StatelessWidget {
   const _JournalEntries({required this.entries});
 
-  final List<HealthEvent> entries;
+  final List<FastJournalEntry> entries;
 
   @override
   Widget build(BuildContext context) {
@@ -244,31 +222,19 @@ class _JournalEntries extends StatelessWidget {
 class _JournalEntryTile extends StatelessWidget {
   const _JournalEntryTile({required this.entry});
 
-  final HealthEvent entry;
+  final FastJournalEntry entry;
 
   @override
   Widget build(BuildContext context) {
-    final payload = entry.payload;
-    final label = switch (payload) {
-      MealPayload(:final description?) => description,
-      ExercisePayload(:final activity?) => activity,
-      SleepPayload(:final description?) => description,
-      _ => null,
-    };
-    final duration = switch (payload) {
-      ExercisePayload(:final duration?) => duration,
-      SleepPayload(:final duration?) => duration,
-      _ => null,
-    };
-    final date = DateFormat('MMM d · HH:mm').format(entry.timestamp.toLocal());
+    final date = DateFormat('MMM d · HH:mm').format(entry.occurredAt.toLocal());
     final subtitle = <String>[
       date,
-      if (duration != null) _formatDuration(duration),
+      if (entry.duration != null) _formatDuration(entry.duration!),
       if (entry.riseReference != null) 'Near a recorded rise',
     ].join(' · ');
     return ListTile(
-      leading: Icon(_iconFor(entry.type), color: const Color(0xFF0B6E69)),
-      title: Text(label ?? _labelFor(entry.type)),
+      leading: Icon(_iconFor(entry.kind), color: const Color(0xFF0B6E69)),
+      title: Text(entry.label ?? entry.kind.label),
       subtitle: Text(subtitle),
     );
   }
@@ -318,6 +284,9 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
         time.hour,
         time.minute,
       );
+      if (widget.journal.latestEligibleRiseFor(_startedAt) == null) {
+        _attachToLatestRise = false;
+      }
     });
   }
 
@@ -353,7 +322,7 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final rise = widget.journal.latestEligibleRise;
+    final rise = widget.journal.latestEligibleRiseFor(_startedAt);
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
     return SafeArea(
       top: false,
@@ -448,24 +417,10 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
   }
 }
 
-IconData _iconFor(HealthEventType type) => switch (type) {
-  HealthEventType.meal => Icons.restaurant_rounded,
-  HealthEventType.exercise => Icons.directions_walk_rounded,
-  HealthEventType.sleep => Icons.bedtime_rounded,
-  HealthEventType.note => Icons.notes_rounded,
-  HealthEventType.insulin => Icons.medication_rounded,
-  HealthEventType.medication => Icons.medication_rounded,
-  HealthEventType.custom => Icons.bookmark_outline_rounded,
-};
-
-String _labelFor(HealthEventType type) => switch (type) {
-  HealthEventType.meal => 'Meal',
-  HealthEventType.exercise => 'Activity',
-  HealthEventType.sleep => 'Sleep',
-  HealthEventType.note => 'Note',
-  HealthEventType.insulin => 'Insulin',
-  HealthEventType.medication => 'Medication',
-  HealthEventType.custom => 'Entry',
+IconData _iconFor(FastJournalKind kind) => switch (kind) {
+  FastJournalKind.meal => Icons.restaurant_rounded,
+  FastJournalKind.activity => Icons.directions_walk_rounded,
+  FastJournalKind.sleep => Icons.bedtime_rounded,
 };
 
 String _formatDuration(Duration duration) {

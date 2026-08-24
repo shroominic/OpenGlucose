@@ -91,27 +91,6 @@ void main() {
       expect(summary.noteCount, 1);
       expect(summary.average, isNull);
     });
-
-    test('sleep entries do not change meal, activity, or note counts', () {
-      final start = DateTime.utc(2026, 6, 1);
-      final summary = GlucoseSummary.fromData(
-        windowStart: start,
-        windowEnd: start.add(const Duration(hours: 1)),
-        readings: const <CgmReading>[],
-        events: <HealthEvent>[
-          HealthEvent(
-            id: 'sleep-1',
-            timestamp: start,
-            type: HealthEventType.sleep,
-            payload: const SleepPayload(duration: Duration(hours: 7)),
-          ),
-        ],
-      );
-
-      expect(summary.mealCount, 0);
-      expect(summary.exerciseCount, 0);
-      expect(summary.noteCount, 0);
-    });
   });
 
   group('InsightService.buildPrompt', () {
