@@ -159,6 +159,7 @@ class GlucoseTimelinePane extends StatelessWidget {
     required this.retainedHistoryCount,
     required this.preferences,
     required this.isSampleData,
+    this.now,
   });
 
   final CgmSessionSnapshot? snapshot;
@@ -168,12 +169,19 @@ class GlucoseTimelinePane extends StatelessWidget {
   final DisplayPreferences preferences;
   final bool isSampleData;
 
+  /// Shared presentation clock from the home screen.
+  ///
+  /// This keeps an inactive tab in sync when a timestamp or lifecycle
+  /// deadline passes without a new controller snapshot.
+  final DateTime? now;
+
   @override
   Widget build(BuildContext context) {
     final state = classifyTodayDataState(
       snapshot: snapshot,
       displayReading: displayReading,
       retainedHistoryCount: retainedHistoryCount,
+      now: now,
     );
     return CustomScrollView(
       key: const ValueKey<String>('timelineDestinationContent'),
@@ -230,6 +238,7 @@ class GlucoseTrendsPane extends StatelessWidget {
     required this.retainedHistoryCount,
     required this.preferences,
     required this.isSampleData,
+    this.now,
   });
 
   final CgmSessionSnapshot? snapshot;
@@ -239,12 +248,19 @@ class GlucoseTrendsPane extends StatelessWidget {
   final DisplayPreferences preferences;
   final bool isSampleData;
 
+  /// Shared presentation clock from the home screen.
+  ///
+  /// This keeps derived metrics hidden as soon as a live deadline passes,
+  /// even while a refresh is waiting on the device.
+  final DateTime? now;
+
   @override
   Widget build(BuildContext context) {
     final state = classifyTodayDataState(
       snapshot: snapshot,
       displayReading: displayReading,
       retainedHistoryCount: retainedHistoryCount,
+      now: now,
     );
     return CustomScrollView(
       key: const ValueKey<String>('trendsDestinationContent'),
@@ -323,33 +339,39 @@ class TodayDataStateCard extends StatelessWidget {
       TodayDataState.live => Icons.check_circle_outline,
     };
     return Semantics(
+      key: ValueKey<String>('todayStateSemantics-${state.name}'),
+      container: true,
       liveRegion: true,
-      child: Card(
-        key: ValueKey<String>('todayState-${state.name}'),
-        color: scheme.surfaceContainerHighest,
-        child: Padding(
-          padding: const EdgeInsets.all(OpenGlucoseTokens.sectionGap),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Icon(icon, color: scheme.primary),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      state.title,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w800,
+      label: state.title,
+      hint: state.description,
+      child: ExcludeSemantics(
+        child: Card(
+          key: ValueKey<String>('todayState-${state.name}'),
+          color: scheme.surfaceContainerHighest,
+          child: Padding(
+            padding: const EdgeInsets.all(OpenGlucoseTokens.sectionGap),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(icon, color: scheme.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        state.title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: OpenGlucoseTokens.compactGap),
-                    Text(state.description),
-                  ],
+                      const SizedBox(height: OpenGlucoseTokens.compactGap),
+                      Text(state.description),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

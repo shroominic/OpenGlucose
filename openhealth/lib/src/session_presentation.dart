@@ -27,6 +27,58 @@ const Duration kLiveReadingRefreshThreshold = Duration(minutes: 2);
 /// The permitted lag between the sensor session counter and its latest value.
 const int kLiveReadingSensorMinuteLagThreshold = 2;
 
+/// Returns the next wall-clock change that can make a live presentation unsafe.
+///
+/// A controller notification is not guaranteed at either boundary: a BLE
+/// refresh can be slow, or a session can stay quiet while its sensor expires.
+/// The home screen uses this deadline to re-evaluate its visual state without
+/// treating a timer as a sensor update. Sensor-relative freshness remains
+/// notification-driven because it has no wall-clock equivalent.
+DateTime? nextLivePresentationDeadline(
+  CgmSessionSnapshot? snapshot,
+  CgmReading? latestReading, {
+  DateTime? now,
+}) {
+  if (snapshot == null) {
+    return null;
+  }
+
+  final effectiveNow = now ?? DateTime.now();
+  final candidates = <DateTime>[];
+  final recordedAt = latestReading?.recordedAt;
+  if (recordedAt != null) {
+    final freshnessDeadline = recordedAt.add(kLiveReadingRefreshThreshold);
+    if (freshnessDeadline.isAfter(effectiveNow)) {
+      candidates.add(freshnessDeadline);
+    }
+  }
+
+  final sessionStart = snapshot.sessionInfo.sessionStart;
+  if (sessionStart != null) {
+    final expiryDeadline = sessionStart.add(kSensorLifeDuration);
+    if (expiryDeadline.isAfter(effectiveNow)) {
+      candidates.add(expiryDeadline);
+    }
+
+    // A sensor that reports no elapsed minute relies on the wall clock for
+    // warmup. Re-evaluate at that boundary even if its snapshot remains quiet.
+    if (snapshot.sessionInfo.elapsedMinutes == null) {
+      final warmupDeadline = sessionStart.add(
+        Duration(minutes: snapshot.sessionInfo.warmupMinutes),
+      );
+      if (warmupDeadline.isAfter(effectiveNow)) {
+        candidates.add(warmupDeadline);
+      }
+    }
+  }
+
+  if (candidates.isEmpty) {
+    return null;
+  }
+  candidates.sort();
+  return candidates.first;
+}
+
 /// Returns true when a reading needs a refresh before a surface calls it live.
 ///
 /// A recorded timestamp and a sensor-relative minute are independent checks.

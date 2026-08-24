@@ -300,6 +300,8 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
+    this.clock = DateTime.now,
+    this.foregroundFreshnessInterval = const Duration(seconds: 45),
   });
 
   final CgmAppController controller;
@@ -312,6 +314,12 @@ class OpenGlucoseApp extends StatelessWidget {
 
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
+
+  /// Presentation clock shared with the home screen.
+  final DateTime Function() clock;
+
+  /// Foreground interval for best-effort device refreshes.
+  final Duration foregroundFreshnessInterval;
 
   @override
   Widget build(BuildContext context) {
@@ -335,6 +343,8 @@ class OpenGlucoseApp extends StatelessWidget {
             home: CgmHomePage(
               controller: controller,
               messageController: messageController,
+              clock: clock,
+              foregroundFreshnessInterval: foregroundFreshnessInterval,
             ),
           ),
         ),
@@ -394,10 +404,18 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.clock = DateTime.now,
+    this.foregroundFreshnessInterval = const Duration(seconds: 45),
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
+
+  /// Presentation clock used to evaluate data age and sensor lifecycle.
+  final DateTime Function() clock;
+
+  /// Best-effort device refresh interval while the app is foregrounded.
+  final Duration foregroundFreshnessInterval;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -405,9 +423,8 @@ class CgmHomePage extends StatefulWidget {
 
 class _CgmHomePageState extends State<CgmHomePage>
     with WidgetsBindingObserver, RestorationMixin {
-  static const _foregroundFreshnessInterval = Duration(seconds: 45);
-
   Timer? _freshnessTimer;
+  Timer? _presentationDeadlineTimer;
   final RestorableInt _destinationIndex = RestorableInt(
     OpenGlucoseDestination.today.index,
   );
@@ -424,14 +441,33 @@ class _CgmHomePageState extends State<CgmHomePage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
-      unawaited(widget.controller.ensureFreshData());
-    });
+    widget.controller.addListener(_onControllerChanged);
+    _startForegroundRefreshTimer();
+    _schedulePresentationReevaluation();
+  }
+
+  @override
+  void didUpdateWidget(covariant CgmHomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onControllerChanged);
+      widget.controller.addListener(_onControllerChanged);
+    }
+    if (oldWidget.foregroundFreshnessInterval !=
+        widget.foregroundFreshnessInterval) {
+      _startForegroundRefreshTimer();
+    }
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.clock != widget.clock) {
+      _schedulePresentationReevaluation();
+    }
   }
 
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _presentationDeadlineTimer?.cancel();
+    widget.controller.removeListener(_onControllerChanged);
     _destinationIndex.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -442,7 +478,54 @@ class _CgmHomePageState extends State<CgmHomePage>
     if (state != AppLifecycleState.resumed) {
       return;
     }
+    setState(() {});
+    _schedulePresentationReevaluation();
     unawaited(widget.controller.ensureFreshData(force: true));
+  }
+
+  void _startForegroundRefreshTimer() {
+    _freshnessTimer?.cancel();
+    _freshnessTimer = Timer.periodic(widget.foregroundFreshnessInterval, (_) {
+      unawaited(widget.controller.ensureFreshData());
+    });
+  }
+
+  void _onControllerChanged() {
+    if (!mounted) {
+      return;
+    }
+    _schedulePresentationReevaluation();
+  }
+
+  /// Rebuild at the next wall-clock freshness or lifecycle boundary.
+  ///
+  /// This is deliberately separate from [CgmAppController.ensureFreshData]. A
+  /// device refresh can take time or never produce a snapshot, but that must
+  /// not leave Timeline or Trends showing values as live after their deadline.
+  void _schedulePresentationReevaluation() {
+    _presentationDeadlineTimer?.cancel();
+    final now = widget.clock();
+    final deadline = nextLivePresentationDeadline(
+      widget.controller.snapshot,
+      widget.controller.displayLatestReading,
+      now: now,
+    );
+    if (deadline == null) {
+      return;
+    }
+    final delay = deadline.difference(now);
+    _presentationDeadlineTimer = Timer(
+      delay.isNegative ? Duration.zero : delay,
+      _onPresentationDeadline,
+    );
+  }
+
+  void _onPresentationDeadline() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+    _schedulePresentationReevaluation();
   }
 
   @override
@@ -451,6 +534,7 @@ class _CgmHomePageState extends State<CgmHomePage>
       animation: widget.controller,
       builder: (context, _) {
         final snapshot = widget.controller.snapshot;
+        final presentationNow = widget.clock();
         final destination = OpenGlucoseDestination.fromRestoredIndex(
           _destinationIndex.value,
         );
@@ -489,6 +573,7 @@ class _CgmHomePageState extends State<CgmHomePage>
                       widget.controller.allHistoricalReadings.length,
                   preferences: widget.controller.displayPreferences,
                   isSampleData: widget.controller.isMockDriver,
+                  now: presentationNow,
                 ),
                 trends: GlucoseTrendsPane(
                   snapshot: snapshot,
@@ -498,6 +583,7 @@ class _CgmHomePageState extends State<CgmHomePage>
                       widget.controller.allHistoricalReadings.length,
                   preferences: widget.controller.displayPreferences,
                   isSampleData: widget.controller.isMockDriver,
+                  now: presentationNow,
                 ),
               ),
             ),
