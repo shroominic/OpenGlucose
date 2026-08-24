@@ -93,8 +93,6 @@ class GlucoseSummary {
           }
         case HealthEventType.exercise:
           exerciseCount++;
-        case HealthEventType.sleep:
-          break;
         case HealthEventType.note:
           noteCount++;
         case HealthEventType.insulin:

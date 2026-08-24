@@ -11,9 +11,6 @@ enum HealthEventType {
   /// Physical activity — typically carries an [ExercisePayload].
   exercise,
 
-  /// A user-recorded sleep period — typically carries a [SleepPayload].
-  sleep,
-
   /// A free-text note — typically carries a [NotePayload].
   note,
 
@@ -63,7 +60,6 @@ sealed class HealthEventPayload {
     return switch (json['kind']) {
       'meal' => MealPayload.fromJson(json),
       'exercise' => ExercisePayload.fromJson(json),
-      'sleep' => SleepPayload.fromJson(json),
       'note' => NotePayload.fromJson(json),
       'dose' => DosePayload.fromJson(json),
       _ => throw const FormatException('Unsupported health-event payload'),
@@ -194,44 +190,6 @@ class ExercisePayload extends HealthEventPayload {
   }
 }
 
-/// Details for a user-recorded [HealthEventType.sleep] event.
-///
-/// This describes what the person chose to record. It is separate from an
-/// imported sleep sample, which keeps source-provided sleep records and their
-/// provenance.
-class SleepPayload extends HealthEventPayload {
-  const SleepPayload({this.duration, this.description});
-
-  /// Optional length of the recorded sleep period.
-  final Duration? duration;
-
-  /// Optional user-authored label, such as `'early night'`.
-  final String? description;
-
-  @override
-  String get kind => 'sleep';
-
-  @override
-  Map<String, Object?> toJson() {
-    if (duration != null && duration!.isNegative) {
-      throw const FormatException('durationMs must not be negative');
-    }
-    return <String, Object?>{
-      'kind': kind,
-      'durationMs': duration?.inMilliseconds,
-      'description': description,
-    };
-  }
-
-  factory SleepPayload.fromJson(Map<String, Object?> json) {
-    final durationMs = _readOptionalNonNegativeInt(json, 'durationMs');
-    return SleepPayload(
-      duration: durationMs == null ? null : Duration(milliseconds: durationMs),
-      description: _readOptionalString(json, 'description'),
-    );
-  }
-}
-
 /// A free-text note for a [HealthEventType.note] event.
 class NotePayload extends HealthEventPayload {
   const NotePayload({required this.text});
@@ -290,63 +248,6 @@ class DosePayload extends HealthEventPayload {
   }
 }
 
-/// A local reference to a recent glucose rise near a manual event.
-///
-/// The reference preserves observed readings only. It does not state that the
-/// event caused, explained, or treated the rise.
-class GlucoseRiseReference {
-  const GlucoseRiseReference({
-    required this.startedAt,
-    required this.lastObservedAt,
-    required this.highestMgdl,
-  });
-
-  /// First reading in the observed relative-rise episode.
-  final DateTime startedAt;
-
-  /// Most recent reading in the observed relative-rise episode.
-  final DateTime lastObservedAt;
-
-  /// Highest reading observed in the rise episode, in mg/dL.
-  final double highestMgdl;
-
-  Map<String, Object?> toJson() {
-    _validate();
-    return <String, Object?>{
-      'startedAt': startedAt.toUtc().toIso8601String(),
-      'lastObservedAt': lastObservedAt.toUtc().toIso8601String(),
-      'highestMgdl': highestMgdl,
-    };
-  }
-
-  factory GlucoseRiseReference.fromJson(Map<String, Object?> json) {
-    final reference = GlucoseRiseReference(
-      startedAt: _readRequiredUtcDate(
-        json,
-        'startedAt',
-        formatVersion: _healthEventFormatVersion,
-      ),
-      lastObservedAt: _readRequiredUtcDate(
-        json,
-        'lastObservedAt',
-        formatVersion: _healthEventFormatVersion,
-      ),
-      highestMgdl: _readRequiredPositiveFiniteDouble(json, 'highestMgdl'),
-    );
-    reference._validate();
-    return reference;
-  }
-
-  void _validate() {
-    if (lastObservedAt.isBefore(startedAt)) {
-      throw const FormatException('lastObservedAt must not precede startedAt');
-    }
-    if (!highestMgdl.isFinite || highestMgdl <= 0) {
-      throw const FormatException('highestMgdl must be finite and positive');
-    }
-  }
-}
-
 /// A normalized, user-authored or imported event on the health timeline.
 ///
 /// This is the foundation the journaling feature builds on: meals, exercise,
@@ -359,7 +260,6 @@ class HealthEvent implements TimelineEntry {
     required this.timestamp,
     required this.type,
     this.payload,
-    this.riseReference,
     this.tags = const <String>[],
     this.source = DataSource.manual,
   });
@@ -375,11 +275,6 @@ class HealthEvent implements TimelineEntry {
 
   /// Optional structured details whose concrete type depends on [type].
   final HealthEventPayload? payload;
-
-  /// Optional observed glucose rise recorded near this event.
-  ///
-  /// It is an observational link only, not a causal claim.
-  final GlucoseRiseReference? riseReference;
 
   /// Free-form tags for filtering and grouping.
   final List<String> tags;
@@ -398,20 +293,15 @@ class HealthEvent implements TimelineEntry {
     DateTime? timestamp,
     HealthEventType? type,
     HealthEventPayload? payload,
-    GlucoseRiseReference? riseReference,
     List<String>? tags,
     DataSource? source,
     bool clearPayload = false,
-    bool clearRiseReference = false,
   }) {
     return HealthEvent(
       id: id ?? this.id,
       timestamp: timestamp ?? this.timestamp,
       type: type ?? this.type,
       payload: clearPayload ? null : (payload ?? this.payload),
-      riseReference: clearRiseReference
-          ? null
-          : (riseReference ?? this.riseReference),
       tags: tags ?? this.tags,
       source: source ?? this.source,
     );
@@ -422,14 +312,12 @@ class HealthEvent implements TimelineEntry {
       throw const FormatException('id must not be empty');
     }
     _validatePayloadCompatibility(type, payload);
-    riseReference?._validate();
     return <String, Object?>{
       'formatVersion': _healthEventFormatVersion,
       'id': id,
       'timestamp': timestamp.toUtc().toIso8601String(),
       'type': type.key,
       'payload': payload?.toJson(),
-      'riseReference': riseReference?.toJson(),
       'tags': tags,
       'source': source.key,
     };
@@ -439,7 +327,6 @@ class HealthEvent implements TimelineEntry {
     final formatVersion = _readHealthEventFormatVersion(json);
     final type = _readHealthEventType(json);
     final payload = _readPayload(json);
-    final riseReference = _readRiseReference(json);
     _validatePayloadCompatibility(type, payload);
     return HealthEvent(
       id: _readRequiredString(json, 'id', nonEmpty: true),
@@ -450,7 +337,6 @@ class HealthEvent implements TimelineEntry {
       ),
       type: type,
       payload: payload,
-      riseReference: riseReference,
       tags: _readTags(json),
       source: _readDataSource(json),
     );
@@ -496,17 +382,6 @@ double? _readOptionalNonNegativeDouble(Map<String, Object?> json, String key) {
   final result = value.toDouble();
   _validateOptionalNonNegativeDouble(result, key);
   return result;
-}
-
-double _readRequiredPositiveFiniteDouble(
-  Map<String, Object?> json,
-  String key,
-) {
-  final value = json[key];
-  if (value is! num || !value.isFinite || value <= 0) {
-    throw FormatException('$key must be a finite, positive number');
-  }
-  return value.toDouble();
 }
 
 void _validateOptionalNonNegativeDouble(double? value, String key) {
@@ -562,15 +437,6 @@ HealthEventPayload? _readPayload(Map<String, Object?> json) {
   return HealthEventPayload.fromJson(value);
 }
 
-GlucoseRiseReference? _readRiseReference(Map<String, Object?> json) {
-  final value = json['riseReference'];
-  if (value == null) return null;
-  if (value is! Map<String, Object?>) {
-    throw const FormatException('riseReference must be an object or null');
-  }
-  return GlucoseRiseReference.fromJson(value);
-}
-
 List<String> _readTags(Map<String, Object?> json) {
   final value = json['tags'];
   if (value == null) return const <String>[];
@@ -587,7 +453,6 @@ void _validatePayloadCompatibility(
   final isCompatible = switch (type) {
     HealthEventType.meal => payload == null || payload is MealPayload,
     HealthEventType.exercise => payload == null || payload is ExercisePayload,
-    HealthEventType.sleep => payload == null || payload is SleepPayload,
     HealthEventType.note => payload == null || payload is NotePayload,
     HealthEventType.insulin ||
     HealthEventType.medication => payload == null || payload is DosePayload,

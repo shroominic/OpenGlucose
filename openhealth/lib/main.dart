@@ -31,6 +31,7 @@ import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/persistence/health_store.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
+import 'package:openglucose/src/persistence/health_repository_lifecycle_scope.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -176,6 +177,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           controller: result.controller,
           healthExport: result.healthExport,
           healthContextImport: result.healthContextImport,
+          healthRepositoryLifecycle: result.healthRepositoryLifecycle,
           preferences: result.preferences,
           messageController: result.messages,
         );
@@ -346,6 +348,7 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.controller,
     required this.healthExport,
     this.healthContextImport,
+    this.healthRepositoryLifecycle,
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
@@ -354,6 +357,7 @@ class OpenGlucoseApp extends StatelessWidget {
   final CgmAppController controller;
   final HealthExportController healthExport;
   final AppleHealthContextImportController? healthContextImport;
+  final AppHealthRepositoryLifecycle? healthRepositoryLifecycle;
   final SharedPreferences preferences;
 
   /// Optional contextual-messaging engine. When null (e.g. in some tests) the
@@ -412,13 +416,16 @@ class OpenGlucoseApp extends StatelessWidget {
           controller: healthExport,
           child: AppleHealthContextImportScope(
             controller: healthContextImport,
-            child: _OnboardingGate(
-              store: OnboardingStore(preferences),
-              controller: controller,
-              unit: controller.displayPreferences.unit,
-              home: CgmHomePage(
+            child: HealthRepositoryLifecycleScope(
+              lifecycle: healthRepositoryLifecycle,
+              child: _OnboardingGate(
+                store: OnboardingStore(preferences),
                 controller: controller,
-                messageController: messageController,
+                unit: controller.displayPreferences.unit,
+                home: CgmHomePage(
+                  controller: controller,
+                  messageController: messageController,
+                ),
               ),
             ),
           ),
@@ -1659,6 +1666,9 @@ Future<void> _showSettings(
   }
   final healthExport = HealthExportScope.of(context);
   final healthContextImport = AppleHealthContextImportScope.maybeOf(context);
+  final healthRepositoryLifecycle = HealthRepositoryLifecycleScope.maybeOf(
+    context,
+  );
   var working = controller.displayPreferences;
   final scaleController = TextEditingController(
     text: working.calibrationScale.toStringAsFixed(2),
@@ -1708,6 +1718,7 @@ Future<void> _showSettings(
                       controller: controller,
                       healthExport: healthExport,
                       healthContextImport: healthContextImport,
+                      healthRepositoryLifecycle: healthRepositoryLifecycle,
                       displayPane: displayPane,
                       hasActiveSensor: snapshot != null,
                       developerPane: snapshot == null
@@ -1749,6 +1760,7 @@ class _SettingsOverview extends StatelessWidget {
     required this.controller,
     required this.healthExport,
     this.healthContextImport,
+    this.healthRepositoryLifecycle,
     required this.displayPane,
     required this.hasActiveSensor,
     this.developerPane,
@@ -1757,6 +1769,7 @@ class _SettingsOverview extends StatelessWidget {
   final CgmAppController controller;
   final HealthExportController healthExport;
   final AppleHealthContextImportController? healthContextImport;
+  final AppHealthRepositoryLifecycle? healthRepositoryLifecycle;
   final Widget displayPane;
   final bool hasActiveSensor;
   final Widget? developerPane;
@@ -1843,7 +1856,9 @@ class _SettingsOverview extends StatelessWidget {
                 icon: Icons.menu_book_outlined,
                 title: 'Diary',
                 subtitle: 'Local meal, activity, and sleep entries',
-                builder: (_) => const FastJournalScreen(),
+                builder: (_) => FastJournalScreen(
+                  repositoryLifecycle: healthRepositoryLifecycle,
+                ),
               ),
             ],
           ),
