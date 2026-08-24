@@ -8,8 +8,8 @@ recent-rise prompt, or context content. The context bridge publishes an idle
 snapshot and does not query local context stores.
 
 Turning the Context view on makes a separate, full-height route available from
-the reader history area. It does not replace the glucose reader or reserve
-space for people who only want glucose data.
+the History action on the dashboard. It does not replace the glucose reader or
+reserve space for people who only want glucose data.
 
 ## Local data and redaction boundary
 
@@ -48,9 +48,12 @@ not appear again for that episode.
 
 ## Product scope
 
-The route provides a source-safe timeline, generic diary context, and a quiet
-entry point for a user to add a meal or activity. It keeps the default glucose
-reader simple. A new persisted diary-note kind is deferred until it has a
+The route provides a source-safe timeline and generic diary context. The quiet
+`Add context to recent rise` action is on the dashboard directly below the
+History card, not inside the Context route. It opens a bounded choice for meal
+or activity only. Manual sleep remains visible in Diary, but it is deliberately
+not a recent-rise quick-add option. This preserves compatible local journal
+storage. A new persisted diary-note kind is deferred until it has a
 backwards-compatible local-protocol migration.
 
 This work does not add Health Connect or Apple Health import controls,
@@ -67,8 +70,9 @@ The required automated evidence covers these cases:
 2. The disabled context bridge performs no local context query. Enabling the
    setting permits a refresh.
 3. Bridge-to-timeline mapping retains only generic categories and approved
-   fields. It reports activity, sleep, and diary availability independently,
-   excludes restricted identifiers, and omits heart rate from the first lane.
+   fields. It reports activity, sleep, and diary availability independently by
+   visible generic source and type, excludes restricted identifiers, and omits
+   heart rate from the first lane.
 4. The final attachment preparation rejects stale readings, elapsed candidates,
    disabled policy, and prior claims. The controller rejects times outside the
    candidate range, does not write on cancellation or error, and prevents a

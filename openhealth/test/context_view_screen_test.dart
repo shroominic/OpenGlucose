@@ -14,7 +14,6 @@ import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
-import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -133,85 +132,241 @@ void main() {
     },
   );
 
-  testWidgets('opens the Context route at 320px with 2x text', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(320, 800));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final fixture = await _DashboardFixture.create(startBridge: false);
-    addTearDown(fixture.dispose);
-    await fixture.settings.setShowContextView(value: true);
+  testWidgets(
+    'enables and reaches qualified Context controls at 320px with 2x text',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final now = DateTime.utc(2026, 8, 24, 12);
+      final fixture = await _DashboardFixture.create(
+        clock: () => now,
+        driver: _UniformQualifiedRiseDriver(now),
+        repository: _SavingContextRepository(),
+      );
+      var fixtureDisposed = false;
+      addTearDown(() async {
+        if (!fixtureDisposed) await fixture.dispose();
+      });
 
-    await tester.pumpWidget(
-      MediaQuery(
-        data: const MediaQueryData(textScaler: TextScaler.linear(2)),
-        child: fixture.app(),
-      ),
-    );
-    await tester.pump();
-    expect(fixture.settings.showContextView, isTrue);
-    expect(
-      fixture.preferences.getBool('openHealth.onboarding.completed'),
-      isTrue,
-    );
-    expect(fixture.controller.visibleHistory, isNotEmpty);
-    expect(fixture.controller.snapshot, isNotNull);
-    expect(
-      computeWarmupStatus(
-        fixture.controller.snapshot!,
-        latestReading: fixture.controller.displayLatestReading,
-      ),
-      isNull,
-    );
-    expect(find.text('OpenGlucose'), findsOneWidget);
-    expect(
-      MediaQuery.textScalerOf(tester.element(find.text('OpenGlucose'))).scale(
-        14,
-      ),
-      28,
-    );
-    // Slivers below the large-text hero are built lazily. Scroll the actual
-    // dashboard rather than navigating directly to prove the real action is
-    // reachable at this viewport and scale.
-    await tester.scrollUntilVisible(
-      find.byKey(const ValueKey<String>('openContextView')),
-      240,
-    );
-    expect(
-      find.byKey(const ValueKey<String>('dashboardHistorySection')),
-      findsOneWidget,
-    );
-    await tester.ensureVisible(
-      find.byKey(const ValueKey<String>('openContextView')),
-    );
-    await tester.pumpAndSettle();
-    final contextAction = find.byKey(
-      const ValueKey<String>('openContextView'),
-    );
-    expect(tester.getCenter(contextAction).dy, inInclusiveRange(0, 800));
-    expect(tester.widget<TextButton>(contextAction).onPressed, isNotNull);
-    await tester.tap(contextAction);
-    await tester.pump();
-    expect(Navigator.of(tester.element(contextAction)).canPop(), isTrue);
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.pump(const Duration(milliseconds: 1));
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: fixture.app(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('OpenGlucose'), findsOneWidget);
+      expect(
+        MediaQuery.textScalerOf(tester.element(find.text('OpenGlucose'))).scale(
+          14,
+        ),
+        28,
+      );
 
-    expect(find.byType(ContextViewScreen), findsOneWidget);
-    expect(find.text('Glucose with context'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.byKey(const ValueKey<String>('contextViewTimeline')),
-      240,
-      scrollable: find.descendant(
-        of: find.byKey(const ValueKey<String>('contextViewScroll')),
-        matching: find.byType(Scrollable),
-      ),
-    );
-    expect(
-      find.byKey(const ValueKey<String>('contextViewTimeline')),
-      findsOneWidget,
-    );
-    expect(tester.takeException(), isNull);
+      // Use the shipped dashboard and Settings navigation. Do not mutate the
+      // settings controller directly: this confirms that the user-visible
+      // controls enable the bridge and its explicit non-clinical policy.
+      await tester.tap(find.byIcon(Icons.tune_rounded));
+      await tester.pumpAndSettle();
+      final contextDestination = find.ancestor(
+        of: find.text('Context view'),
+        matching: find.byType(ListTile),
+      );
+      expect(contextDestination, findsOneWidget);
+      await tester.ensureVisible(contextDestination);
+      await tester.pumpAndSettle();
+      await tester.tap(contextDestination);
+      await tester.pumpAndSettle();
+      expect(find.byType(ContextViewSettingsPane), findsOneWidget);
 
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      final showContext = find.byKey(
+        const ValueKey<String>('showContextViewSetting'),
+      );
+      await tester.scrollUntilVisible(
+        showContext,
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byType(ListView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.ensureVisible(showContext);
+      await tester.pumpAndSettle();
+      await tester.tap(showContext);
+      await tester.pumpAndSettle();
+
+      final threshold = find.byKey(
+        const ValueKey<String>('observedRiseThresholdSetting'),
+      );
+      await tester.scrollUntilVisible(
+        threshold,
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byType(ListView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.ensureVisible(threshold);
+      await tester.pumpAndSettle();
+      await tester.tap(threshold);
+      await tester.enterText(threshold, '20');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      final suggest = find.byKey(
+        const ValueKey<String>('suggestRecentRiseSetting'),
+      );
+      await tester.scrollUntilVisible(
+        suggest,
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byType(ListView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await tester.ensureVisible(suggest);
+      await tester.pumpAndSettle();
+      await tester.tap(suggest);
+      await tester.pumpAndSettle();
+
+      expect(fixture.settings.showContextView, isTrue);
+      expect(fixture.settings.observedRiseThresholdMgdl, 20);
+      expect(fixture.settings.suggestRecentRise, isTrue);
+      // Drain the settings-triggered cache tail while the real route is still
+      // mounted. This does not change the user-selected settings.
+      await fixture.bridge.reload();
+      await tester.pump();
+
+      // Return through the actual settings route, then let the started bridge
+      // publish the qualified rapid-rise cache created by those settings.
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(
+        fixture.bridge.snapshot.suggestionAvailability,
+        ContextBridgeSuggestionAvailability.available,
+      );
+      expect(fixture.bridge.snapshot.attachmentSuggestion, isNotNull);
+
+      // Slivers below the large-text hero are built lazily. Scroll the actual
+      // dashboard rather than navigating directly to prove the real action is
+      // reachable at this viewport and scale.
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey<String>('openContextView')),
+        240,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('dashboardHistorySection')),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('openContextView')),
+      );
+      await tester.pumpAndSettle();
+      final contextAction = find.byKey(
+        const ValueKey<String>('openContextView'),
+      );
+      expect(tester.getCenter(contextAction).dy, inInclusiveRange(0, 800));
+      expect(tester.widget<TextButton>(contextAction).onPressed, isNotNull);
+      await tester.tap(contextAction);
+      await tester.pump();
+      expect(Navigator.of(tester.element(contextAction)).canPop(), isTrue);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 1));
+
+      expect(find.byType(ContextViewScreen), findsOneWidget);
+      expect(find.text('Glucose with context'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey<String>('contextViewTimeline')),
+        240,
+        scrollable: find.descendant(
+          of: find.byKey(const ValueKey<String>('contextViewScroll')),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(
+        find.byKey(const ValueKey<String>('contextViewTimeline')),
+        findsOneWidget,
+      );
+
+      // The actual dashboard quick-add is present only for the qualified,
+      // bounded opportunity. Reopen the dashboard before exercising it.
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey<String>('addContextToRecentRise')),
+        240,
+      );
+      final addContext = find.byKey(
+        const ValueKey<String>('addContextToRecentRise'),
+      );
+      await tester.ensureVisible(addContext);
+      await tester.pumpAndSettle();
+      expect(tester.getCenter(addContext).dy, inInclusiveRange(0, 800));
+      expect(tester.widget<OutlinedButton>(addContext).onPressed, isNotNull);
+      await tester.tap(addContext);
+      await tester.pumpAndSettle();
+
+      final attachmentSheet = find.byKey(
+        const ValueKey<String>('contextAttachmentScroll'),
+      );
+      expect(attachmentSheet, findsOneWidget);
+      expect(
+        find.descendant(
+          of: attachmentSheet,
+          matching: find.text('Add context to recent rise'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.bySemanticsLabel(RegExp('^Allowed local time range:')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('contextAttachmentKind-meal')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('contextAttachmentKind-activity')),
+        findsOneWidget,
+      );
+      // Manual sleep remains available from Diary, not this recent-rise
+      // quick-add, where the two bounded options keep the choice focused.
+      expect(
+        find.byKey(const ValueKey<String>('contextAttachmentKind-sleep')),
+        findsNothing,
+      );
+      await tester.scrollUntilVisible(
+        find.text('Save context'),
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byKey(
+                const ValueKey<String>('contextAttachmentScroll'),
+              ),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      final saveContext = find.widgetWithText(FilledButton, 'Save context');
+      await tester.ensureVisible(saveContext);
+      await tester.pumpAndSettle();
+      expect(tester.widget<FilledButton>(saveContext).onPressed, isNotNull);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await fixture.dispose();
+      fixtureDisposed = true;
+    },
+  );
 
   testWidgets('bounded context add cancels and fails closed on a local error', (
     tester,
@@ -496,15 +651,24 @@ class _DashboardFixture {
 
   int get repositoryOpenCalls => repositoryOpenCounter.value;
 
-  static Future<_DashboardFixture> create({bool startBridge = true}) async {
+  static Future<_DashboardFixture> create({
+    bool startBridge = true,
+    MockScenario scenario = MockScenario.activeNormal,
+    DateTime Function()? clock,
+    CgmDriver? driver,
+    HealthRepository? repository,
+  }) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'openHealth.onboarding.completed': true,
     });
     final preferences = await SharedPreferences.getInstance();
-    final driver = DemoCgmDriver();
+    final effectiveClock = clock ?? DateTime.now;
+    final effectiveDriver =
+        driver ??
+        DemoCgmDriver(initialScenario: scenario, clock: effectiveClock);
     final controller = CgmAppController(
       preferences: preferences,
-      driver: driver,
+      driver: effectiveDriver,
     );
     await controller.initialize();
     await controller.connect(MockScenarioCatalog.sensor);
@@ -512,7 +676,7 @@ class _DashboardFixture {
     final repositoryOpenCounter = _RepositoryOpenCounter();
     final lifecycle = AppHealthRepositoryLifecycle(() async {
       repositoryOpenCounter.value++;
-      return InMemoryHealthRepository();
+      return repository ?? InMemoryHealthRepository();
     });
     final settings = ContextViewSettings(preferences);
     final bridge = ContextBridge(
@@ -521,6 +685,7 @@ class _DashboardFixture {
       contextSettingsSignal: settings,
       isContextViewEnabled: () => settings.showContextView,
       suggestionPolicyProvider: () => settings.suggestionPolicy,
+      clock: effectiveClock,
     );
     if (startBridge) {
       await bridge.start();
@@ -558,9 +723,132 @@ class _RepositoryOpenCounter {
   int value = 0;
 }
 
+/// Keeps the qualified-rise fixture deterministic while assigning one
+/// displayed CGM source to every reading. The production rapid-rise demo
+/// intentionally mixes its final broadcast value with vendor history, which
+/// the bridge correctly rejects for a candidate; this test-only session uses
+/// one eligible, completed local sequence instead.
+class _UniformQualifiedRiseDriver extends DemoCgmDriver {
+  _UniformQualifiedRiseDriver(DateTime now)
+    : _session = _FixedCgmSession(_uniformQualifiedRiseSnapshot(now)),
+      super(initialScenario: MockScenario.activeNormal, clock: () => now);
+
+  final _FixedCgmSession _session;
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async => _session;
+}
+
+class _FixedCgmSession implements CgmSession {
+  const _FixedCgmSession(this._snapshot);
+
+  final CgmSessionSnapshot _snapshot;
+
+  @override
+  CgmSessionSnapshot get currentSnapshot => _snapshot;
+
+  @override
+  Stream<CgmLogEntry> get logs => const Stream<CgmLogEntry>.empty();
+
+  @override
+  DiscoveredSensor get sensor => _snapshot.sensor;
+
+  @override
+  Stream<CgmSessionSnapshot> get snapshots =>
+      const Stream<CgmSessionSnapshot>.empty();
+
+  @override
+  CgmUnsafeAdmin? get unsafeAdmin => null;
+
+  @override
+  Future<void> disconnect() async {}
+
+  @override
+  Future<List<CgmCalibrationEntry>> fetchCalibrations() async =>
+      const <CgmCalibrationEntry>[];
+
+  @override
+  Future<void> refresh() async {}
+
+  @override
+  Future<List<CgmDiagnosticItem>> refreshDiagnostics() async =>
+      const <CgmDiagnosticItem>[];
+
+  @override
+  Future<void> refreshLiveData() async {}
+
+  @override
+  Future<void> submitCalibration({
+    required int glucoseMgdl,
+    int? sensorMinute,
+    DateTime? recordedAt,
+  }) async {}
+
+  @override
+  Future<void> syncHistory({
+    bool includeRawHistory = false,
+    int? requestedStartOffset,
+  }) async {}
+}
+
+CgmSessionSnapshot _uniformQualifiedRiseSnapshot(DateTime now) {
+  final sourceSnapshot = MockScenarioCatalog(
+    clock: () => now,
+  ).buildSnapshot(MockScenario.activeNormal);
+  final sessionStart = sourceSnapshot.sessionInfo.sessionStart!;
+  final values = <double>[120, 100, 110, 125, 130, 128, 126, 124];
+  final history = List<CgmReading>.generate(values.length, (index) {
+    final recordedAt = now.subtract(
+      Duration(minutes: (values.length - 1 - index) * 5),
+    );
+    return CgmReading(
+      valueMgdl: values[index],
+      source: CgmRecordSource.vendor,
+      sensorMinute: recordedAt.difference(sessionStart).inMinutes,
+      recordedAt: recordedAt,
+      qualifier: 1,
+    );
+  });
+  return sourceSnapshot.copyWith(
+    history: history,
+    latestReading: history.last,
+  );
+}
+
 class _SavingContextRepository extends InMemoryHealthRepository
-    with ContextAttachmentWriter {
+    with ContextAttachmentWriter
+    implements FastJournalStore, ContextAttachmentFactStore {
   int saveCalls = 0;
+
+  @override
+  Future<List<FastJournalEntry>> queryFastJournalEntries({
+    TimeWindow window = TimeWindow.all,
+    required int limit,
+  }) async => const <FastJournalEntry>[];
+
+  @override
+  Future<bool> isFastJournalRiseClaimed({
+    required DateTime riseStartedAt,
+  }) async => false;
+
+  @override
+  Future<FastJournalEntry> saveFastJournalEntry({
+    required FastJournalEntry entry,
+    FastJournalRiseReference? requestedRise,
+  }) async => requestedRise == null
+      ? entry
+      : entry.copyWith(riseReference: requestedRise);
+
+  @override
+  Future<ContextAttachmentFact?> claimContextAttachmentFact(
+    ContextAttachmentFact fact,
+  ) async => fact;
+
+  @override
+  Future<List<ContextAttachmentFact>> queryContextAttachmentFacts({
+    TimeWindow window = TimeWindow.all,
+    ContextBridgeEpisodeKey? episodeKey,
+  }) async => const <ContextAttachmentFact>[];
 
   @override
   Future<ContextAttachmentSaveResult> saveContextAttachment({

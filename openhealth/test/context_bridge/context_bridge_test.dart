@@ -765,6 +765,80 @@ void main() {
     );
 
     test(
+      'keeps Apple Health source availability separate from omitted Health Connect records',
+      () async {
+        final repository = _BridgeRepository();
+        await repository.upsertActivitySamples(<ActivitySample>[
+          _activity(
+            externalId: 'apple-workout',
+            source: DataSource.appleHealth,
+            start: _now.subtract(const Duration(minutes: 50)),
+          ),
+          // The valid source identity is retained by storage, but this future
+          // interval is omitted by the safe bridge mapper.
+          _activity(
+            externalId: 'health-connect-future-workout',
+            source: DataSource.healthConnect,
+            start: _now.subtract(const Duration(minutes: 5)),
+          ),
+        ]);
+        await repository.upsertSleepSamples(<SleepSample>[
+          _sleep(
+            externalId: 'apple-sleep',
+            source: DataSource.appleHealth,
+            start: _now.subtract(const Duration(hours: 8)),
+          ),
+          _sleep(
+            externalId: 'health-connect-future-sleep',
+            source: DataSource.healthConnect,
+            start: _now.subtract(const Duration(minutes: 5)),
+          ),
+        ]);
+        final harness = await _BridgeHarness.create(repository: repository);
+        addTearDown(harness.dispose);
+
+        final snapshot = harness.bridge.snapshot;
+        expect(
+          snapshot.activityAvailability,
+          ContextBridgeContextAvailability.partial,
+        );
+        expect(
+          snapshot.sleepAvailability,
+          ContextBridgeContextAvailability.partial,
+        );
+        expect(
+          snapshot.importedAvailabilityFor(
+            source: DataSource.appleHealth,
+            kind: ContextBridgeImportedKind.activity,
+          ),
+          ContextBridgeContextAvailability.available,
+        );
+        expect(
+          snapshot.importedAvailabilityFor(
+            source: DataSource.appleHealth,
+            kind: ContextBridgeImportedKind.sleep,
+          ),
+          ContextBridgeContextAvailability.available,
+        );
+        expect(
+          snapshot.importedAvailabilityFor(
+            source: DataSource.healthConnect,
+            kind: ContextBridgeImportedKind.activity,
+          ),
+          ContextBridgeContextAvailability.partial,
+        );
+        expect(
+          snapshot.importedAvailabilityFor(
+            source: DataSource.healthConnect,
+            kind: ContextBridgeImportedKind.sleep,
+          ),
+          ContextBridgeContextAvailability.partial,
+        );
+        expect(repository.heartRateQueryCalls, 0);
+      },
+    );
+
+    test(
       'marks only the bounded diary cache partial when it is truncated',
       () async {
         final repository = _BridgeRepository();
@@ -908,6 +982,29 @@ ActivitySample _activity({
     type: ActivityType.workout,
     source: source,
     workoutLabel: 'Workout',
+    provenance: HealthSampleProvenance(
+      identity: HealthImportIdentity(
+        platform: platform,
+        externalId: externalId,
+      ),
+      sourceApplicationId: 'source.application.secret',
+      sourceDevice: 'source-device-secret',
+      recordingMethod: HealthRecordingMethod.automatic,
+    ),
+  );
+}
+
+SleepSample _sleep({
+  required String externalId,
+  required DataSource source,
+  required DateTime start,
+}) {
+  final platform = HealthSourcePlatform.fromDataSource(source)!;
+  return SleepSample(
+    start: start,
+    end: start.add(const Duration(hours: 1)),
+    stage: SleepStage.asleep,
+    source: source,
     provenance: HealthSampleProvenance(
       identity: HealthImportIdentity(
         platform: platform,

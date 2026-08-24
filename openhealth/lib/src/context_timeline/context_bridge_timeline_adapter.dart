@@ -84,12 +84,18 @@ class ContextBridgeTimelineAdapter {
       hasVisibleRecords: visibleManualActivity.isNotEmpty,
     );
     final importedActivityAvailability = _appleHealthAvailability(
-      snapshot.activityAvailability,
+      _visibleSourceAvailability(
+        kind: ContextBridgeImportedKind.activity,
+        fallback: snapshot.activityAvailability,
+      ),
       visibleAppleActivities,
       cacheCoversQuery: cacheCoversQuery,
     );
     final importedSleepAvailability = _appleHealthAvailability(
-      snapshot.sleepAvailability,
+      _visibleSourceAvailability(
+        kind: ContextBridgeImportedKind.sleep,
+        fallback: snapshot.sleepAvailability,
+      ),
       visibleAppleSleep,
       cacheCoversQuery: cacheCoversQuery,
     );
@@ -153,6 +159,23 @@ class ContextBridgeTimelineAdapter {
           : null,
       source: DataSource.manual,
     );
+  }
+
+  ContextBridgeContextAvailability _visibleSourceAvailability({
+    required ContextBridgeImportedKind kind,
+    required ContextBridgeContextAvailability fallback,
+  }) {
+    final scoped = snapshot.importedAvailabilityFor(
+      source: DataSource.appleHealth,
+      kind: kind,
+    );
+    if (scoped != null) return scoped;
+    // A bridge that supplied source-scoped state but has no Apple Health
+    // entry must not borrow Health Connect availability for this Apple-only
+    // first surface. Old snapshots retain the reviewed type-wide fallback.
+    return snapshot.hasImportedSourceAvailabilities
+        ? ContextBridgeContextAvailability.noLocalRecords
+        : fallback;
   }
 
   static ContextDataAvailability _availabilityFor(

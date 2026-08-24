@@ -210,6 +210,76 @@ void main() {
     },
   );
 
+  test(
+    'keeps visible Apple Health lanes available when Health Connect omissions are partial',
+    () {
+      final source = ContextBridgeTimelineAdapter(
+        snapshot().copyWith(
+          importedAvailability: ContextBridgeContextAvailability.partial,
+          importedActivityAvailability:
+              ContextBridgeContextAvailability.partial,
+          importedSleepAvailability: ContextBridgeContextAvailability.partial,
+          importedSourceAvailabilities:
+              const <ContextBridgeImportedSourceAvailability>[
+                ContextBridgeImportedSourceAvailability(
+                  source: DataSource.appleHealth,
+                  kind: ContextBridgeImportedKind.activity,
+                  availability: ContextBridgeContextAvailability.available,
+                ),
+                ContextBridgeImportedSourceAvailability(
+                  source: DataSource.appleHealth,
+                  kind: ContextBridgeImportedKind.sleep,
+                  availability: ContextBridgeContextAvailability.available,
+                ),
+                ContextBridgeImportedSourceAvailability(
+                  source: DataSource.healthConnect,
+                  kind: ContextBridgeImportedKind.activity,
+                  availability: ContextBridgeContextAvailability.partial,
+                ),
+                ContextBridgeImportedSourceAvailability(
+                  source: DataSource.healthConnect,
+                  kind: ContextBridgeImportedKind.sleep,
+                  availability: ContextBridgeContextAvailability.partial,
+                ),
+              ],
+        ),
+      );
+      final result = source(
+        ContextTimelineQuery(
+          window: ContextTimelineWindow.endingAt(
+            now,
+            ContextTimelineRange.oneDay,
+          ),
+        ),
+      );
+
+      expect(
+        result.statusFor(ContextTimelineLane.activity).availability,
+        ContextDataAvailability.available,
+      );
+      expect(
+        result.statusFor(ContextTimelineLane.activity).source,
+        DataSource.appleHealth,
+      );
+      expect(
+        result.statusFor(ContextTimelineLane.sleep).availability,
+        ContextDataAvailability.available,
+      );
+      expect(
+        result.statusFor(ContextTimelineLane.sleep).source,
+        DataSource.appleHealth,
+      );
+      expect(
+        result.activitySamples.map((item) => item.source),
+        everyElement(DataSource.appleHealth),
+      );
+      expect(
+        result.sleepSamples.map((item) => item.source),
+        everyElement(DataSource.appleHealth),
+      );
+    },
+  );
+
   test('keeps manual activity available without an imported source', () {
     final source = ContextBridgeTimelineAdapter(
       snapshot().copyWith(

@@ -465,6 +465,11 @@ class ContextBridge extends ChangeNotifier {
         hasMappedItems: imported.sleepItems.isNotEmpty,
         omitted: imported.sleepOmitted,
       );
+      final importedSourceAvailabilities = _sourceImportedAvailabilities(
+        imported: imported,
+        activityResult: activityResult,
+        sleepResult: sleepResult,
+      );
       final suggestion = _suggestionFor(
         glucose: glucose,
         journalEntries: boundedJournalEntries,
@@ -483,6 +488,7 @@ class ContextBridge extends ChangeNotifier {
           ),
           importedActivityAvailability: activityAvailability,
           importedSleepAvailability: sleepAvailability,
+          importedSourceAvailabilities: importedSourceAvailabilities,
           diaryAvailability: _diaryAvailability(
             journalResult,
             diary,
@@ -761,23 +767,31 @@ class ContextBridge extends ChangeNotifier {
     required DateTime now,
   }) {
     final items = <ContextBridgeImportedItem>[];
-    var activityOmitted = false;
-    var sleepOmitted = false;
-    for (final activity in activities) {
-      final mapped = _mapActivity(activity, window: window, now: now);
+    final sourceStates = <_ImportedSourceKind, _MappedImportedSource>{};
+    void record(
+      DataSource source,
+      ContextBridgeImportedKind kind,
+      ContextBridgeImportedItem? mapped,
+    ) {
+      final state = sourceStates.putIfAbsent(
+        _ImportedSourceKind(source: source, kind: kind),
+        () => _MappedImportedSource(source: source, kind: kind),
+      );
       if (mapped == null) {
-        activityOmitted = true;
+        state.omitted = true;
       } else {
+        state.hasMappedItems = true;
         items.add(mapped);
       }
     }
+
+    for (final activity in activities) {
+      final mapped = _mapActivity(activity, window: window, now: now);
+      record(activity.source, ContextBridgeImportedKind.activity, mapped);
+    }
     for (final sample in sleep) {
       final mapped = _mapSleep(sample, window: window, now: now);
-      if (mapped == null) {
-        sleepOmitted = true;
-      } else {
-        items.add(mapped);
-      }
+      record(sample.source, ContextBridgeImportedKind.sleep, mapped);
     }
     items.sort((left, right) {
       final byTime = left.start.compareTo(right.start);
@@ -785,10 +799,41 @@ class ContextBridge extends ChangeNotifier {
     });
     return _MappedImportedItems(
       List<ContextBridgeImportedItem>.unmodifiable(items),
-      activityOmitted: activityOmitted,
-      sleepOmitted: sleepOmitted,
+      sourceStates: List<_MappedImportedSource>.unmodifiable(
+        sourceStates.values,
+      ),
     );
   }
+
+  List<ContextBridgeImportedSourceAvailability> _sourceImportedAvailabilities({
+    required _MappedImportedItems imported,
+    required _LoadResult<List<ActivitySample>> activityResult,
+    required _LoadResult<List<SleepSample>> sleepResult,
+  }) => List<ContextBridgeImportedSourceAvailability>.unmodifiable(
+    imported.sourceStates.map((state) {
+      final availability = switch (state.kind) {
+        ContextBridgeImportedKind.activity => _importedTypeAvailability(
+          activityResult,
+          hasMappedItems: state.hasMappedItems,
+          omitted: state.omitted,
+        ),
+        ContextBridgeImportedKind.sleep => _importedTypeAvailability(
+          sleepResult,
+          hasMappedItems: state.hasMappedItems,
+          omitted: state.omitted,
+        ),
+        // Heart rate is deliberately never queried or represented by this
+        // first reader surface.
+        ContextBridgeImportedKind.heartRate =>
+          ContextBridgeContextAvailability.unavailable,
+      };
+      return ContextBridgeImportedSourceAvailability(
+        source: state.source,
+        kind: state.kind,
+        availability: availability,
+      );
+    }),
+  );
 
   ContextBridgeImportedItem? _mapActivity(
     ActivitySample sample, {
@@ -1017,15 +1062,19 @@ class _SuggestionResult {
 }
 
 class _MappedImportedItems {
-  const _MappedImportedItems(
-    this.items, {
-    required this.activityOmitted,
-    required this.sleepOmitted,
-  });
+  const _MappedImportedItems(this.items, {required this.sourceStates});
 
   final List<ContextBridgeImportedItem> items;
-  final bool activityOmitted;
-  final bool sleepOmitted;
+  final List<_MappedImportedSource> sourceStates;
+
+  bool get activityOmitted => sourceStates.any(
+    (state) =>
+        state.kind == ContextBridgeImportedKind.activity && state.omitted,
+  );
+
+  bool get sleepOmitted => sourceStates.any(
+    (state) => state.kind == ContextBridgeImportedKind.sleep && state.omitted,
+  );
 
   Iterable<ContextBridgeImportedItem> get activityItems => items.where(
     (item) => item.kind == ContextBridgeImportedKind.activity,
@@ -1034,6 +1083,32 @@ class _MappedImportedItems {
   Iterable<ContextBridgeImportedItem> get sleepItems => items.where(
     (item) => item.kind == ContextBridgeImportedKind.sleep,
   );
+}
+
+@immutable
+class _ImportedSourceKind {
+  const _ImportedSourceKind({required this.source, required this.kind});
+
+  final DataSource source;
+  final ContextBridgeImportedKind kind;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _ImportedSourceKind &&
+      other.source == source &&
+      other.kind == kind;
+
+  @override
+  int get hashCode => Object.hash(source, kind);
+}
+
+class _MappedImportedSource {
+  _MappedImportedSource({required this.source, required this.kind});
+
+  final DataSource source;
+  final ContextBridgeImportedKind kind;
+  bool hasMappedItems = false;
+  bool omitted = false;
 }
 
 class _MappedDiaryItems {

@@ -132,6 +132,23 @@ class ContextBridgeImportedItem {
   final HealthRecordingMethod recordingMethod;
 }
 
+/// Availability for one generic imported source and context type.
+///
+/// This contains no platform record identity or source-app detail. It lets a
+/// narrow reader surface avoid treating an omitted record from a hidden source
+/// as partial data for a different visible source.
+class ContextBridgeImportedSourceAvailability {
+  const ContextBridgeImportedSourceAvailability({
+    required this.source,
+    required this.kind,
+    required this.availability,
+  });
+
+  final DataSource source;
+  final ContextBridgeImportedKind kind;
+  final ContextBridgeContextAvailability availability;
+}
+
 /// One local, manually authored diary item suitable for a future context UI.
 ///
 /// [id] is a bridge-generated opaque identifier. The original local diary ID
@@ -215,6 +232,8 @@ class ContextBridgeSnapshot {
     required this.suggestionsEnabled,
     this.importedActivityAvailability,
     this.importedSleepAvailability,
+    this.importedSourceAvailabilities =
+        const <ContextBridgeImportedSourceAvailability>[],
     this.refreshedAt,
     this.glucoseReadings = const <ContextBridgeReading>[],
     this.importedItems = const <ContextBridgeImportedItem>[],
@@ -256,12 +275,33 @@ class ContextBridgeSnapshot {
   ContextBridgeContextAvailability get sleepAvailability =>
       importedSleepAvailability ?? importedAvailability;
 
+  /// The most specific availability known for a generic source and event
+  /// type. A missing value means an older producer supplied only the
+  /// type-wide aggregate, so callers must fail closed or use their reviewed
+  /// backwards-compatible fallback.
+  ContextBridgeContextAvailability? importedAvailabilityFor({
+    required DataSource source,
+    required ContextBridgeImportedKind kind,
+  }) {
+    for (final value in importedSourceAvailabilities) {
+      if (value.source == source && value.kind == kind) {
+        return value.availability;
+      }
+    }
+    return null;
+  }
+
+  bool get hasImportedSourceAvailabilities =>
+      importedSourceAvailabilities.isNotEmpty;
+
   final ContextBridgeContextAvailability diaryAvailability;
   final ContextBridgeSuggestionAvailability suggestionAvailability;
   final bool suggestionsEnabled;
   final DateTime? refreshedAt;
   final List<ContextBridgeReading> glucoseReadings;
   final List<ContextBridgeImportedItem> importedItems;
+  final List<ContextBridgeImportedSourceAvailability>
+  importedSourceAvailabilities;
   final List<ContextBridgeDiaryItem> diaryItems;
   final ContextBridgeAttachmentSuggestion? attachmentSuggestion;
 
@@ -272,6 +312,7 @@ class ContextBridgeSnapshot {
     ContextBridgeContextAvailability? importedAvailability,
     ContextBridgeContextAvailability? importedActivityAvailability,
     ContextBridgeContextAvailability? importedSleepAvailability,
+    List<ContextBridgeImportedSourceAvailability>? importedSourceAvailabilities,
     ContextBridgeContextAvailability? diaryAvailability,
     ContextBridgeSuggestionAvailability? suggestionAvailability,
     bool? suggestionsEnabled,
@@ -290,6 +331,10 @@ class ContextBridgeSnapshot {
         importedActivityAvailability ?? this.importedActivityAvailability,
     importedSleepAvailability:
         importedSleepAvailability ?? this.importedSleepAvailability,
+    importedSourceAvailabilities:
+        List<ContextBridgeImportedSourceAvailability>.unmodifiable(
+          importedSourceAvailabilities ?? this.importedSourceAvailabilities,
+        ),
     diaryAvailability: diaryAvailability ?? this.diaryAvailability,
     suggestionAvailability:
         suggestionAvailability ?? this.suggestionAvailability,
