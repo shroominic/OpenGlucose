@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/context_bridge/context_attachment_fact.dart';
+import 'package:openglucose/src/context_bridge/context_attachment_writer.dart';
 import 'package:openglucose/src/context_bridge/context_bridge.dart';
 import 'package:openglucose/src/context_bridge/context_bridge_models.dart';
 import 'package:openglucose/src/demo_driver.dart';
@@ -98,7 +99,8 @@ void main() {
           repository.lastJournalWindow?.end,
           _now.add(const Duration(milliseconds: 1)),
         );
-        expect(repository.lastJournalLimit, 250);
+        expect(repository.lastJournalLimit, 251);
+        expect(repository.heartRateQueryCalls, 0);
 
         final publicValues = <Object?>[
           snapshot.glucoseReadings
@@ -516,6 +518,127 @@ void main() {
       },
     );
 
+    test(
+      'rejects an attachment when current readings select a newer candidate',
+      () async {
+        final harness = await _BridgeHarness.create(
+          history: _evolvingPeakHistory(),
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
+        addTearDown(harness.dispose);
+        final expected = harness.bridge.snapshot.attachmentSuggestion;
+        expect(expected, isNotNull);
+
+        harness.session.emit(
+          _sessionSnapshot(
+            _sensor('alpha'),
+            history: _evolvingPeakHistory(includeLaterPeak: true),
+          ),
+        );
+        await _drainBridgeQueue();
+
+        final preparation = await harness.bridge.prepareContextAttachmentSave(
+          expected!,
+        );
+        expect(
+          preparation.status,
+          ContextBridgeAttachmentPreparationStatus.staleOrSuperseded,
+        );
+      },
+    );
+
+    test('rejects an attachment when its current policy is disabled', () async {
+      final policy = ValueNotifier<ContextBridgeSuggestionPolicy>(
+        ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+          recentRisePolicy: _risePolicy,
+          disclosure: 'This is non-clinical and not medical advice.',
+        ),
+      );
+      final harness = await _BridgeHarness.create(
+        suggestionPolicyProvider: () => policy.value,
+      );
+      addTearDown(() async {
+        policy.dispose();
+        await harness.dispose();
+      });
+      final expected = harness.bridge.snapshot.attachmentSuggestion;
+      expect(expected, isNotNull);
+
+      policy.value = const ContextBridgeSuggestionPolicy.disabled();
+      final preparation = await harness.bridge.prepareContextAttachmentSave(
+        expected!,
+      );
+
+      expect(
+        preparation.status,
+        ContextBridgeAttachmentPreparationStatus.staleOrSuperseded,
+      );
+    });
+
+    test(
+      'rejects an attachment after its local freshness window elapses',
+      () async {
+        var now = _now;
+        final harness = await _BridgeHarness.create(
+          clock: () => now,
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
+        addTearDown(harness.dispose);
+        final expected = harness.bridge.snapshot.attachmentSuggestion;
+        expect(expected, isNotNull);
+
+        now = _now.add(const Duration(hours: 1));
+        final preparation = await harness.bridge.prepareContextAttachmentSave(
+          expected!,
+        );
+
+        expect(
+          preparation.status,
+          ContextBridgeAttachmentPreparationStatus.staleOrSuperseded,
+        );
+      },
+    );
+
+    test(
+      'reports an already claimed episode before it offers a writer',
+      () async {
+        final repository = _BridgeRepository();
+        final harness = await _BridgeHarness.create(
+          repository: repository,
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
+        addTearDown(harness.dispose);
+        final expected = harness.bridge.snapshot.attachmentSuggestion;
+        expect(expected, isNotNull);
+        repository.facts['already-claimed'] = _attachmentFactFor(
+          expected!,
+          journalEntryId: 'existing-entry',
+        );
+
+        final preparation = await harness.bridge.prepareContextAttachmentSave(
+          expected,
+        );
+
+        expect(
+          preparation.status,
+          ContextBridgeAttachmentPreparationStatus.alreadyClaimed,
+        );
+        expect(preparation.save, isNull);
+      },
+    );
+
     test('requires typed bridge-generated attachment links', () {
       expect(
         () => ContextBridgeCandidateId('ctx-suggestion-not-a-candidate'),
@@ -610,6 +733,70 @@ void main() {
         ContextBridgeContextAvailability.noLocalRecords,
       );
     });
+
+    test(
+      'keeps activity and sleep availability separate and omits heart-rate work',
+      () async {
+        final repository = _BridgeRepository()..failSleepQuery = true;
+        await repository.upsertActivitySamples(<ActivitySample>[
+          _activity(
+            externalId: 'local-apple-workout',
+            source: DataSource.appleHealth,
+            start: _now.subtract(const Duration(minutes: 50)),
+          ),
+        ]);
+        final harness = await _BridgeHarness.create(repository: repository);
+        addTearDown(harness.dispose);
+
+        expect(
+          harness.bridge.snapshot.activityAvailability,
+          ContextBridgeContextAvailability.available,
+        );
+        expect(
+          harness.bridge.snapshot.sleepAvailability,
+          ContextBridgeContextAvailability.unavailable,
+        );
+        expect(
+          harness.bridge.snapshot.importedAvailability,
+          ContextBridgeContextAvailability.partial,
+        );
+        expect(repository.heartRateQueryCalls, 0);
+      },
+    );
+
+    test(
+      'marks only the bounded diary cache partial when it is truncated',
+      () async {
+        final repository = _BridgeRepository();
+        for (var index = 0; index < 3; index += 1) {
+          repository.entries['entry-$index'] = FastJournalEntry(
+            id: 'entry-$index',
+            kind: FastJournalKind.meal,
+            occurredAt: _now.subtract(Duration(minutes: index + 1)),
+          );
+        }
+        final harness = await _BridgeHarness.create(
+          repository: repository,
+          cachePolicy: const ContextBridgeCachePolicy(maxDiaryEntries: 2),
+        );
+        addTearDown(harness.dispose);
+
+        expect(repository.lastJournalLimit, 3);
+        expect(harness.bridge.snapshot.diaryItems, hasLength(2));
+        expect(
+          harness.bridge.snapshot.diaryAvailability,
+          ContextBridgeContextAvailability.partial,
+        );
+        expect(
+          harness.bridge.snapshot.activityAvailability,
+          ContextBridgeContextAvailability.noLocalRecords,
+        );
+        expect(
+          harness.bridge.snapshot.sleepAvailability,
+          ContextBridgeContextAvailability.noLocalRecords,
+        );
+      },
+    );
 
     for (final scenario
         in <
@@ -829,6 +1016,22 @@ CgmReading _reading(
   isDisplayProvisional: provisional,
 );
 
+ContextAttachmentFact _attachmentFactFor(
+  ContextBridgeAttachmentSuggestion suggestion, {
+  required String journalEntryId,
+}) => ContextAttachmentFact(
+  id: 'fact-$journalEntryId',
+  journalEntryId: journalEntryId,
+  candidateId: suggestion.candidateId,
+  episodeKey: suggestion.episodeKey,
+  calculationVersion: suggestion.calculationVersion,
+  episodeStart: suggestion.episodeStart,
+  peakAt: suggestion.peakAt,
+  attachmentWindowStart: suggestion.attachmentWindowStart,
+  attachmentWindowEnd: suggestion.attachmentWindowEnd,
+  occurredAt: suggestion.episodeStart,
+);
+
 Future<void> _drainBridgeQueue() async {
   for (var index = 0; index < 16; index += 1) {
     await Future<void>.delayed(Duration.zero);
@@ -853,9 +1056,12 @@ class _BridgeHarness {
     List<CgmReading>? history,
     ContextBridgeSuggestionPolicy suggestionPolicy =
         const ContextBridgeSuggestionPolicy.disabled(),
+    ContextBridgeSuggestionPolicyProvider? suggestionPolicyProvider,
     Listenable? contextSignal,
     Listenable? contextSettingsSignal,
     ContextBridgeEnabledProvider? isContextViewEnabled,
+    ContextBridgeClock? clock,
+    ContextBridgeCachePolicy cachePolicy = const ContextBridgeCachePolicy(),
     bool demoDriver = false,
   }) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -879,8 +1085,10 @@ class _BridgeHarness {
     final bridge = ContextBridge(
       controller: controller,
       repositoryLifecycle: lifecycle,
-      clock: () => _now,
+      clock: clock ?? () => _now,
+      cachePolicy: cachePolicy,
       suggestionPolicy: suggestionPolicy,
+      suggestionPolicyProvider: suggestionPolicyProvider,
       contextChangeSignal: contextSignal,
       contextSettingsSignal: contextSettingsSignal,
       isContextViewEnabled: isContextViewEnabled,
@@ -907,6 +1115,7 @@ class _BridgeHarness {
 }
 
 class _BridgeRepository extends InMemoryHealthRepository
+    with ContextAttachmentWriter
     implements FastJournalStore, ContextAttachmentFactStore {
   final Map<String, FastJournalEntry> entries = <String, FastJournalEntry>{};
   final Map<String, ContextAttachmentFact> facts =
@@ -915,6 +1124,9 @@ class _BridgeRepository extends InMemoryHealthRepository
   int? lastJournalLimit;
   int acquireCalls = 0;
   bool failActivityQuery = false;
+  bool failSleepQuery = false;
+  int heartRateQueryCalls = 0;
+  int saveAttachmentCalls = 0;
 
   @override
   Future<List<ActivitySample>> queryActivitySamples({
@@ -925,6 +1137,24 @@ class _BridgeRepository extends InMemoryHealthRepository
       throw StateError('Simulated local activity read failure');
     }
     return super.queryActivitySamples(window: window, types: types);
+  }
+
+  @override
+  Future<List<SleepSample>> querySleepSamples({
+    TimeWindow window = TimeWindow.all,
+  }) async {
+    if (failSleepQuery) {
+      throw StateError('Simulated local sleep read failure');
+    }
+    return super.querySleepSamples(window: window);
+  }
+
+  @override
+  Future<List<HeartRateSample>> queryHeartRateSamples({
+    TimeWindow window = TimeWindow.all,
+  }) async {
+    heartRateQueryCalls++;
+    throw StateError('The first context surface must not query heart rate.');
   }
 
   @override
@@ -1004,6 +1234,29 @@ class _BridgeRepository extends InMemoryHealthRepository
             episodeKey == null || fact.episodeKey.value == episodeKey.value,
       )
       .toList(growable: false);
+
+  @override
+  Future<ContextAttachmentSaveResult> saveContextAttachment({
+    required FastJournalEntry entry,
+    required ContextAttachmentFact fact,
+  }) async {
+    saveAttachmentCalls++;
+    if (await isFastJournalRiseClaimed(riseStartedAt: fact.episodeStart) ||
+        facts.values.any(
+          (existing) => existing.episodeKey.value == fact.episodeKey.value,
+        )) {
+      return const ContextAttachmentSaveResult.alreadyClaimed();
+    }
+    final saved = entry.copyWith(
+      riseReference: FastJournalRiseReference(
+        startedAt: fact.episodeStart,
+        lastObservedAt: fact.peakAt,
+      ),
+    );
+    entries[saved.id] = saved;
+    facts[fact.id] = fact;
+    return ContextAttachmentSaveResult.saved(saved);
+  }
 }
 
 class _BridgeDriver implements CgmDriver {

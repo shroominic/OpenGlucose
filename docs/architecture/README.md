@@ -66,9 +66,10 @@ permissions, communicates connection and freshness state, and renders the UI.
 On IO platforms it constructs the AiDEX driver and Flutter transport. On web
 and in widget tests it uses a deterministic demo driver.
 
-The [context timeline preview](context-timeline-preview.md) is an isolated,
-non-shipping visual seam. It is not composed into the application or a release
-surface, and it does not perform import, persistence, or inference.
+The deterministic [context timeline preview](context-timeline-preview.md)
+remains an isolated fixture seam. Its reusable visual component is composed
+only into the explicitly enabled Context view; it does not directly perform
+import, persistence, or inference.
 
 ## Runtime flow
 

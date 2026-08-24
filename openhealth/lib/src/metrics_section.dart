@@ -57,21 +57,38 @@ class _MetricsSectionState extends State<MetricsSection> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: Text(
-                    'Patterns',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final title = Text(
+                  'Patterns',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
                   ),
-                ),
-                _TimeframeSelector(
+                );
+                final selector = _TimeframeSelector(
                   value: _timeframe,
                   onChanged: (value) => setState(() => _timeframe = value),
-                ),
-              ],
+                );
+                final useStackedHeader =
+                    constraints.maxWidth < 320 ||
+                    MediaQuery.textScalerOf(context).scale(14) > 20;
+                if (useStackedHeader) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      title,
+                      const SizedBox(height: 8),
+                      selector,
+                    ],
+                  );
+                }
+                return Row(
+                  children: <Widget>[
+                    Expanded(child: title),
+                    selector,
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 4),
             Text(

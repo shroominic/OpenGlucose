@@ -1,20 +1,23 @@
-# Context timeline preview
+# Context timeline component and deterministic preview
 
-- Status: Draft, isolated, non-shipping visual component
+- Status: reusable opt-in Context view component; fixture preview remains
+  non-shipping
 - Owner: `@shroominic`
-- Scope: typed fixture/source seam only
+- Scope: synchronous snapshot-rendering seam
 
 ## Boundary
 
-`CompactContextTimeline` is not composed into `main.dart`, Home, Settings, a
-release artifact, or a platform integration. It has no repository, platform,
-HealthKit, Health Connect, network, or persistence access. The component reads
-one synchronous `ContextTimelineSource` snapshot and can emit only an unsaved
-draft intent to a receiving feature.
+`CompactContextTimeline` is composed only into the explicitly enabled Context
+view. It is not part of the default glucose reader or a Settings screen. The
+component has no direct repository, platform, HealthKit, Health Connect,
+network, or persistence access. It reads one synchronous
+`ContextTimelineSource` snapshot and can emit only an unsaved draft intent to a
+receiving feature.
 
-The preview is collapsed by default. It does not replace a glucose surface,
-modify glucose data, add a journal record, request a permission, or make a
-medical claim.
+The deterministic fixture preview is collapsed by default. The opt-in Context
+view may choose a different expansion state. Neither use replaces the glucose
+surface, modifies glucose data, adds a journal record directly, requests a
+permission, or makes a medical claim.
 
 ## Truth rules
 
@@ -27,17 +30,18 @@ medical claim.
   it never attributes the entire rail to the newest sample's source.
 - The optional attachment prompt is generic. It is not called a glucose rise,
   pattern, explanation, or cause. It lets a receiving feature prepare an
-  unsaved draft only. There is no production prompt provider in this change.
+  unsaved draft only. The production add flow is owned outside this visual
+  component and is documented in `context-view.md`.
 - Sample snapshots carry the visible `SAMPLE DATA — NOT FROM A SENSOR` notice.
   The preview must never imply that sample, imported, stale, partial, or
   inaccessible context is live sensor data.
 
 ## Deferred work
 
-A future app-facing context surface needs a reviewed coordinator, a
-deterministic evidence-bound candidate policy before any glucose-pattern cue,
-source-priority rules, persistence/lifecycle ownership, privacy review, and
-redacted device evidence. That work is outside this preview.
+The explicit Context view now owns its reviewed bridge snapshot and bounded
+candidate policy. Default-reader placement, additional imports, source-priority
+rules, and physical-device evidence remain outside this component. The
+physical-evidence plan in `context-view.md` is **NOT RUN**.
 
 ## Deterministic evidence
 

@@ -298,8 +298,8 @@ void main() {
       'writes one linked diary entry and episode fact in one local transaction',
       () async {
         final entry = FastJournalEntry(
-          id: 'transactional-note',
-          kind: FastJournalKind.note,
+          id: 'transactional-entry',
+          kind: FastJournalKind.activity,
           occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
           label: 'Private detail',
         );
@@ -329,7 +329,7 @@ void main() {
         );
 
         final duplicateEntry = FastJournalEntry(
-          id: 'second-note',
+          id: 'second-entry',
           kind: FastJournalKind.activity,
           occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
         );
@@ -375,7 +375,7 @@ void main() {
 
         final secondEntry = FastJournalEntry(
           id: 'must-rollback-entry',
-          kind: FastJournalKind.note,
+          kind: FastJournalKind.activity,
           occurredAt: DateTime.utc(2026, 1, 3, 20, 10),
         );
         final secondFact = ContextAttachmentFact(

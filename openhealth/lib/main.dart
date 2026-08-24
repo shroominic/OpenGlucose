@@ -1379,9 +1379,9 @@ class _DashboardView extends StatelessWidget {
                     showContextAttachmentSheet(
                       context: context,
                       suggestion: attachmentSuggestion,
-                      repositoryLifecycle:
-                          HealthRepositoryLifecycleScope.maybeOf(context),
-                      refreshContext: contextBridge!.reload,
+                      prepareContextAttachmentSave:
+                          contextBridge!.prepareContextAttachmentSave,
+                      refreshContext: contextBridge.reload,
                     ),
                   ),
                   child: ExcludeSemantics(
@@ -1394,9 +1394,9 @@ class _DashboardView extends StatelessWidget {
                           showContextAttachmentSheet(
                             context: context,
                             suggestion: attachmentSuggestion,
-                            repositoryLifecycle:
-                                HealthRepositoryLifecycleScope.maybeOf(context),
-                            refreshContext: contextBridge!.reload,
+                            prepareContextAttachmentSave:
+                                contextBridge!.prepareContextAttachmentSave,
+                            refreshContext: contextBridge.reload,
                           ),
                         ),
                         icon: const Icon(Icons.add_comment_outlined, size: 18),
@@ -1655,46 +1655,66 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: <Widget>[
-                        Flexible(
-                          child: Text(
-                            bigValue,
-                            maxLines: 1,
-                            overflow: TextOverflow.fade,
-                            softWrap: false,
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              color: Colors.white,
-                              height: 0.92,
-                              fontWeight: FontWeight.w900,
-                            ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final valueAndUnit = Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: <Widget>[
+                      Flexible(
+                        child: Text(
+                          bigValue,
+                          maxLines: 1,
+                          overflow: TextOverflow.fade,
+                          softWrap: false,
+                          style: theme.textTheme.displayMedium?.copyWith(
+                            color: Colors.white,
+                            height: 0.92,
+                            fontWeight: FontWeight.w900,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Text(
-                            unitLabel,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: const Color(0xFFC7E4DD),
-                              fontWeight: FontWeight.w700,
-                            ),
+                      ),
+                      const SizedBox(width: 10),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          unitLabel,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: const Color(0xFFC7E4DD),
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Padding(
+                      ),
+                    ],
+                  );
+                  final stage = Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: _StagePill(label: stageLabel),
-                  ),
-                ],
+                  );
+                  final useStackedLayout =
+                      constraints.maxWidth < 320 ||
+                      MediaQuery.textScalerOf(context).scale(14) > 20;
+                  if (useStackedLayout) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        SizedBox(
+                          width: constraints.maxWidth,
+                          child: valueAndUnit,
+                        ),
+                        const SizedBox(height: 6),
+                        stage,
+                      ],
+                    );
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(child: valueAndUnit),
+                      const SizedBox(width: 12),
+                      stage,
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 8),
               Text(
@@ -2030,7 +2050,7 @@ class _SettingsOverview extends StatelessWidget {
               _SettingsDestination(
                 icon: Icons.menu_book_outlined,
                 title: 'Diary',
-                subtitle: 'Local meal, activity, and note entries',
+                subtitle: 'Local meal and activity entries',
                 builder: (_) => FastJournalScreen(
                   repositoryLifecycle: healthRepositoryLifecycle,
                 ),
@@ -2178,7 +2198,7 @@ class _ContextViewSettingsPaneState extends State<ContextViewSettingsPane> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Optional local context can show sleep, activity, meals, and notes beside glucose. It stays off until you choose it.',
+          'Optional local context can show sleep, activity, and meals beside glucose. It stays off until you choose it.',
         ),
         const SizedBox(height: 16),
         SwitchListTile.adaptive(

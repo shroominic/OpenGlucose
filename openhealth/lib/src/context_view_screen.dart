@@ -8,7 +8,6 @@ import 'context_timeline/compact_context_timeline.dart';
 import 'context_timeline/context_bridge_timeline_adapter.dart';
 import 'journal/fast_journal_controller.dart';
 import 'journal/fast_journal_store.dart';
-import 'persistence/health_repository_lifecycle.dart';
 
 /// Full-height, opt-in local context reader.
 ///
@@ -30,6 +29,7 @@ class ContextViewScreen extends StatelessWidget {
         body: SafeArea(
           top: false,
           child: ListView(
+            key: const ValueKey<String>('contextViewScroll'),
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
             children: <Widget>[
               Semantics(
@@ -43,7 +43,7 @@ class ContextViewScreen extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Glucose stays primary. Sleep, activity, meals, and notes are optional local context for reflection.',
+                'Glucose stays primary. Sleep, activity, and meals are optional local context for reflection.',
               ),
               const SizedBox(height: 16),
               if (snapshot.loadState == ContextBridgeLoadState.loading)
@@ -84,7 +84,10 @@ class ContextViewScreen extends StatelessWidget {
 Future<bool> showContextAttachmentSheet({
   required BuildContext context,
   required ContextBridgeAttachmentSuggestion suggestion,
-  required AppHealthRepositoryLifecycle? repositoryLifecycle,
+  required Future<ContextBridgeAttachmentPreparation> Function(
+    ContextBridgeAttachmentSuggestion expected,
+  )
+  prepareContextAttachmentSave,
   required Future<void> Function() refreshContext,
 }) async {
   final saved = await showModalBottomSheet<bool>(
@@ -93,7 +96,7 @@ Future<bool> showContextAttachmentSheet({
     showDragHandle: true,
     builder: (sheetContext) => _ContextAttachmentSheet(
       suggestion: suggestion,
-      repositoryLifecycle: repositoryLifecycle,
+      prepareContextAttachmentSave: prepareContextAttachmentSave,
       refreshContext: refreshContext,
     ),
   );
@@ -103,12 +106,15 @@ Future<bool> showContextAttachmentSheet({
 class _ContextAttachmentSheet extends StatefulWidget {
   const _ContextAttachmentSheet({
     required this.suggestion,
-    required this.repositoryLifecycle,
+    required this.prepareContextAttachmentSave,
     required this.refreshContext,
   });
 
   final ContextBridgeAttachmentSuggestion suggestion;
-  final AppHealthRepositoryLifecycle? repositoryLifecycle;
+  final Future<ContextBridgeAttachmentPreparation> Function(
+    ContextBridgeAttachmentSuggestion expected,
+  )
+  prepareContextAttachmentSave;
   final Future<void> Function() refreshContext;
 
   @override
@@ -165,40 +171,61 @@ class _ContextAttachmentSheetState extends State<_ContextAttachmentSheet> {
       _error = null;
     });
     try {
-      final lifecycle = widget.repositoryLifecycle;
-      if (lifecycle == null) {
-        throw StateError('No app-owned local context repository.');
-      }
-      final repository = await lifecycle.acquire();
-      if (repository is! ContextAttachmentWriter) {
-        throw StateError('Local context attachment is unavailable.');
-      }
-      final result =
-          await ContextAttachmentController(
-            writer: repository as ContextAttachmentWriter,
-          ).save(
-            draft: FastJournalDraft(
-              kind: _kind,
-              startedAt: _occurredAt,
-              label: _labelController.text,
-            ),
-            suggestion: widget.suggestion,
-          );
-      // The local entry/fact transaction is authoritative. A later cache
-      // refresh must not turn a completed save into a false failure message.
-      try {
-        await widget.refreshContext();
-      } catch (_) {
-        // ContextBridge normally reports its own unavailable state. The
-        // already-completed local diary transaction remains correct either
-        // way, so keep this user path non-destructive and non-diagnostic.
-      }
+      final preparation = await widget.prepareContextAttachmentSave(
+        widget.suggestion,
+      );
       if (!mounted) return;
-      if (result.status == ContextAttachmentSaveStatus.alreadyClaimed) {
+      if (preparation.status ==
+          ContextBridgeAttachmentPreparationStatus.alreadyClaimed) {
+        await _refreshAfterLocalDecision();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Context was already added for this recent observation.',
+            ),
+          ),
+        );
+        Navigator.of(context).pop(false);
+        return;
+      }
+      if (preparation.status ==
+          ContextBridgeAttachmentPreparationStatus.staleOrSuperseded) {
+        await _refreshAfterLocalDecision();
+        if (!mounted) return;
         setState(() {
           _saving = false;
-          _error = 'Context was already added for this recent observation.';
+          _error =
+              'This recent observation is no longer current. No diary entry was saved.';
         });
+        return;
+      }
+      final save = preparation.save;
+      if (!preparation.isReady ||
+          save == null ||
+          preparation.suggestion == null) {
+        throw StateError('Local context attachment is unavailable.');
+      }
+      final result = await save(
+        FastJournalDraft(
+          kind: _kind,
+          startedAt: _occurredAt,
+          label: _labelController.text,
+        ),
+      );
+      // The local entry/fact transaction is authoritative. A later cache
+      // refresh must not turn a completed save into a false failure message.
+      await _refreshAfterLocalDecision();
+      if (!mounted) return;
+      if (result.status == ContextAttachmentSaveStatus.alreadyClaimed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Context was already added for this recent observation.',
+            ),
+          ),
+        );
+        Navigator.of(context).pop(false);
         return;
       }
       Navigator.of(context).pop(true);
@@ -218,6 +245,15 @@ class _ContextAttachmentSheetState extends State<_ContextAttachmentSheet> {
     }
   }
 
+  Future<void> _refreshAfterLocalDecision() async {
+    try {
+      await widget.refreshContext();
+    } catch (_) {
+      // The bridge owns its unavailable state. A completed local decision
+      // remains truthful even when a later cache refresh cannot complete.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
@@ -230,6 +266,7 @@ class _ContextAttachmentSheetState extends State<_ContextAttachmentSheet> {
       child: Padding(
         padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottomInset),
         child: SingleChildScrollView(
+          key: const ValueKey<String>('contextAttachmentScroll'),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -350,7 +387,6 @@ class _KindPicker extends StatelessWidget {
         <FastJournalKind>[
               FastJournalKind.meal,
               FastJournalKind.activity,
-              FastJournalKind.note,
             ]
             .map(
               (kind) => ChoiceChip(

@@ -2,6 +2,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 
 void main() {
+  test('persists only base-compatible fast-journal kind keys', () {
+    expect(
+      FastJournalKind.values.map((kind) => kind.name),
+      <String>['meal', 'activity', 'sleep'],
+    );
+  });
+
   test('fast-journal entry round-trips its isolated manual protocol', () {
     final entry = FastJournalEntry(
       id: 'journal-1',

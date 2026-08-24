@@ -7,7 +7,7 @@ import 'package:openglucose/src/journal/fast_journal_controller.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
 
-/// A compact, optional local diary for manual meal, activity, and note logs.
+/// A compact, optional local diary for manual meal and activity logs.
 ///
 /// It is intentionally a Settings destination rather than a dashboard card.
 /// The glucose-reader view stays focused on current readings.
@@ -174,7 +174,7 @@ class _JournalIntro extends StatelessWidget {
             ),
             SizedBox(height: 6),
             Text(
-              'Record a meal, activity, or note. Entries stay on this '
+              'Record a meal or activity. Entries stay on this '
               'device.',
             ),
           ],
@@ -366,9 +366,7 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
                   labelText: 'Optional label',
                   hintText: _kind == FastJournalKind.meal
                       ? 'For example, breakfast'
-                      : _kind == FastJournalKind.activity
-                      ? 'For example, walk'
-                      : 'For example, felt tired',
+                      : 'For example, walk',
                 ),
               ),
               TextButton.icon(
@@ -417,16 +415,14 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
 IconData _iconFor(FastJournalKind kind) => switch (kind) {
   FastJournalKind.meal => Icons.restaurant_rounded,
   FastJournalKind.activity => Icons.directions_walk_rounded,
-  FastJournalKind.note => Icons.sticky_note_2_rounded,
   FastJournalKind.sleep => Icons.bedtime_rounded,
 };
 
-/// New manual capture intentionally stays to meal/activity/note. Older local
-/// sleep entries still decode and remain visible above for rollback safety.
+/// New capture stays to base-compatible meal/activity kinds. Older local sleep
+/// entries still decode and remain visible above for rollback safety.
 const List<FastJournalKind> _newJournalKinds = <FastJournalKind>[
   FastJournalKind.meal,
   FastJournalKind.activity,
-  FastJournalKind.note,
 ];
 
 String _formatDuration(Duration duration) {

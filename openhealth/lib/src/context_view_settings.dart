@@ -18,7 +18,17 @@ class ContextViewSettings extends ChangeNotifier {
       _suggestRecentRise = preferences.getBool(_suggestRecentRiseKey) ?? false,
       _observedRiseThresholdMgdl = preferences.getDouble(
         _observedRiseThresholdMgdlKey,
-      );
+      ) {
+    // A persisted switch without a valid visible threshold must not revive a
+    // hidden observation policy after an update or a partial preferences
+    // write. Normalize it locally on load, before any bridge can read it.
+    if (_suggestRecentRise && !hasValidObservedRiseThreshold) {
+      _suggestRecentRise = false;
+      _writeTail = _preferences
+          .setBool(_suggestRecentRiseKey, false)
+          .then<void>((_) {}, onError: (Object _) {});
+    }
+  }
 
   static const String _showContextViewKey =
       'openGlucose.contextView.showContextView';

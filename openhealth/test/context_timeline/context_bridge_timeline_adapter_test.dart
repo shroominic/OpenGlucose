@@ -104,7 +104,7 @@ void main() {
     expect(visibleText, isNot(contains('opaque-raw')));
   });
 
-  test('marks a query outside the local bridge window as partial', () {
+  test('fails closed when a query is outside the local bridge cache', () {
     final source = ContextBridgeTimelineAdapter(snapshot());
     final result = source(
       ContextTimelineQuery(
@@ -117,11 +117,11 @@ void main() {
 
     expect(
       result.statusFor(ContextTimelineLane.activity).availability,
-      ContextDataAvailability.partial,
+      ContextDataAvailability.noAccessibleData,
     );
     expect(
       result.statusFor(ContextTimelineLane.mealsAndNotes).availability,
-      ContextDataAvailability.partial,
+      ContextDataAvailability.noAccessibleData,
     );
   });
 
@@ -170,4 +170,190 @@ void main() {
       isNull,
     );
   });
+
+  test(
+    'does not turn filtered Health Connect partial data into a visible lane',
+    () {
+      final source = ContextBridgeTimelineAdapter(
+        snapshot().copyWith(
+          importedAvailability: ContextBridgeContextAvailability.partial,
+          importedActivityAvailability:
+              ContextBridgeContextAvailability.partial,
+          importedSleepAvailability:
+              ContextBridgeContextAvailability.noLocalRecords,
+          importedItems: <ContextBridgeImportedItem>[
+            ContextBridgeImportedItem(
+              id: 'opaque-health-connect-workout',
+              kind: ContextBridgeImportedKind.activity,
+              start: now.subtract(const Duration(minutes: 50)),
+              end: now.subtract(const Duration(minutes: 20)),
+              source: DataSource.healthConnect,
+              activityType: ActivityType.workout,
+            ),
+          ],
+        ),
+      );
+      final result = source(
+        ContextTimelineQuery(
+          window: ContextTimelineWindow.endingAt(
+            now,
+            ContextTimelineRange.oneDay,
+          ),
+        ),
+      );
+
+      expect(
+        result.statusFor(ContextTimelineLane.activity).availability,
+        ContextDataAvailability.noAccessibleData,
+      );
+      expect(result.statusFor(ContextTimelineLane.activity).source, isNull);
+    },
+  );
+
+  test('keeps manual activity available without an imported source', () {
+    final source = ContextBridgeTimelineAdapter(
+      snapshot().copyWith(
+        importedAvailability: ContextBridgeContextAvailability.noLocalRecords,
+        importedActivityAvailability:
+            ContextBridgeContextAvailability.noLocalRecords,
+        importedSleepAvailability:
+            ContextBridgeContextAvailability.noLocalRecords,
+        importedItems: const <ContextBridgeImportedItem>[],
+        diaryItems: <ContextBridgeDiaryItem>[
+          ContextBridgeDiaryItem(
+            id: 'opaque-manual-activity',
+            kind: 'activity',
+            occurredAt: now.subtract(const Duration(minutes: 30)),
+            hasObservationLink: false,
+            duration: const Duration(minutes: 30),
+          ),
+        ],
+      ),
+    );
+    final result = source(
+      ContextTimelineQuery(
+        window: ContextTimelineWindow.endingAt(
+          now,
+          ContextTimelineRange.oneDay,
+        ),
+      ),
+    );
+
+    expect(
+      result.statusFor(ContextTimelineLane.activity).availability,
+      ContextDataAvailability.available,
+    );
+    expect(
+      result.statusFor(ContextTimelineLane.activity).source,
+      DataSource.manual,
+    );
+    expect(
+      result.statusFor(ContextTimelineLane.mealsAndNotes).availability,
+      ContextDataAvailability.noAccessibleData,
+    );
+  });
+
+  test('keeps only the diary lane partial when its cache is truncated', () {
+    final source = ContextBridgeTimelineAdapter(
+      snapshot().copyWith(
+        diaryAvailability: ContextBridgeContextAvailability.partial,
+      ),
+    );
+    final result = source(
+      ContextTimelineQuery(
+        window: ContextTimelineWindow.endingAt(
+          now,
+          ContextTimelineRange.oneDay,
+        ),
+      ),
+    );
+
+    expect(
+      result.statusFor(ContextTimelineLane.mealsAndNotes).availability,
+      ContextDataAvailability.partial,
+    );
+    expect(
+      result.statusFor(ContextTimelineLane.activity).availability,
+      ContextDataAvailability.available,
+    );
+    expect(
+      result.statusFor(ContextTimelineLane.sleep).availability,
+      ContextDataAvailability.available,
+    );
+  });
+
+  test(
+    'fails closed for idle, loading, unavailable, and HR-only bridge snapshots',
+    () {
+      for (final loadState in <ContextBridgeLoadState>[
+        ContextBridgeLoadState.idle,
+        ContextBridgeLoadState.loading,
+        ContextBridgeLoadState.unavailable,
+      ]) {
+        final source = ContextBridgeTimelineAdapter(
+          snapshot().copyWith(loadState: loadState),
+        );
+        final result = source(
+          ContextTimelineQuery(
+            window: ContextTimelineWindow.endingAt(
+              now,
+              ContextTimelineRange.oneDay,
+            ),
+          ),
+        );
+        expect(result.events, isEmpty);
+        expect(result.activitySamples, isEmpty);
+        expect(result.sleepSamples, isEmpty);
+        for (final lane in <ContextTimelineLane>[
+          ContextTimelineLane.mealsAndNotes,
+          ContextTimelineLane.activity,
+          ContextTimelineLane.sleep,
+        ]) {
+          expect(
+            result.statusFor(lane).availability,
+            ContextDataAvailability.noAccessibleData,
+            reason: '$loadState must fail closed for ${lane.name}',
+          );
+        }
+      }
+
+      final hrOnly =
+          ContextBridgeTimelineAdapter(
+            snapshot().copyWith(
+              importedAvailability:
+                  ContextBridgeContextAvailability.noLocalRecords,
+              importedActivityAvailability:
+                  ContextBridgeContextAvailability.noLocalRecords,
+              importedSleepAvailability:
+                  ContextBridgeContextAvailability.noLocalRecords,
+              importedItems: <ContextBridgeImportedItem>[
+                ContextBridgeImportedItem(
+                  id: 'opaque-heart-rate-only',
+                  kind: ContextBridgeImportedKind.heartRate,
+                  start: now.subtract(const Duration(minutes: 10)),
+                  end: now.subtract(const Duration(minutes: 10)),
+                  source: DataSource.appleHealth,
+                  heartRateBpm: 75,
+                ),
+              ],
+            ),
+          )(
+            ContextTimelineQuery(
+              window: ContextTimelineWindow.endingAt(
+                now,
+                ContextTimelineRange.oneDay,
+              ),
+            ),
+          );
+      expect(hrOnly.heartRateSamples, isEmpty);
+      expect(
+        hrOnly.statusFor(ContextTimelineLane.activity).availability,
+        ContextDataAvailability.noAccessibleData,
+      );
+      expect(
+        hrOnly.statusFor(ContextTimelineLane.sleep).availability,
+        ContextDataAvailability.noAccessibleData,
+      );
+    },
+  );
 }

@@ -22,13 +22,11 @@ class ContextBridgeTimelineAdapter {
     // The bridge can remain source-neutral for other app surfaces. This first
     // opt-in reader deliberately presents only the Apple Health import path;
     // it neither enables nor displays Health Connect data.
-    final appleHealthItems = snapshot.importedItems
-        .where((item) => item.source == DataSource.appleHealth)
-        .toList(growable: false);
-    final importedAvailability = _appleHealthAvailability(
-      snapshot.importedAvailability,
-      appleHealthItems,
-    );
+    final appleHealthItems = cacheCoversQuery
+        ? snapshot.importedItems
+              .where((item) => item.source == DataSource.appleHealth)
+              .toList(growable: false)
+        : const <ContextBridgeImportedItem>[];
     final activities = <ActivitySample>[
       for (final item in appleHealthItems)
         if (item.kind == ContextBridgeImportedKind.activity)
@@ -49,9 +47,56 @@ class ContextBridgeTimelineAdapter {
             source: item.source,
           ),
     ];
-    final events = <HealthEvent>[
-      for (final item in snapshot.diaryItems) _eventForDiary(item),
-    ];
+    final events = cacheCoversQuery
+        ? <HealthEvent>[
+            for (final item in snapshot.diaryItems) _eventForDiary(item),
+          ]
+        : const <HealthEvent>[];
+    final visibleAppleActivities = activities
+        .where((item) => query.window.intersects(item.start, item.end))
+        .toList(growable: false);
+    final visibleAppleSleep = sleep
+        .where((item) => query.window.intersects(item.start, item.end))
+        .toList(growable: false);
+    final visibleManualMealsOrNotes = events
+        .where(
+          (item) =>
+              (item.type == HealthEventType.meal ||
+                  item.type == HealthEventType.note) &&
+              query.window.contains(item.timestamp),
+        )
+        .toList(growable: false);
+    final visibleManualActivity = events
+        .where(
+          (item) =>
+              item.type == HealthEventType.exercise &&
+              query.window.contains(item.timestamp),
+        )
+        .toList(growable: false);
+    final mealAvailability = _availabilityFor(
+      snapshot.diaryAvailability,
+      cacheCoversQuery: cacheCoversQuery,
+      hasVisibleRecords: visibleManualMealsOrNotes.isNotEmpty,
+    );
+    final manualActivityAvailability = _availabilityFor(
+      snapshot.diaryAvailability,
+      cacheCoversQuery: cacheCoversQuery,
+      hasVisibleRecords: visibleManualActivity.isNotEmpty,
+    );
+    final importedActivityAvailability = _appleHealthAvailability(
+      snapshot.activityAvailability,
+      visibleAppleActivities,
+      cacheCoversQuery: cacheCoversQuery,
+    );
+    final importedSleepAvailability = _appleHealthAvailability(
+      snapshot.sleepAvailability,
+      visibleAppleSleep,
+      cacheCoversQuery: cacheCoversQuery,
+    );
+    final activityAvailability = _combinedActivityAvailability(
+      importedActivityAvailability,
+      manualActivityAvailability,
+    );
     return ContextTimelineSnapshot(
       glucoseReadings: <CgmReading>[
         for (final reading in snapshot.glucoseReadings)
@@ -69,34 +114,20 @@ class ContextBridgeTimelineAdapter {
       laneStatuses: <ContextTimelineLaneStatus>[
         ContextTimelineLaneStatus(
           lane: ContextTimelineLane.mealsAndNotes,
-          availability: _availabilityFor(
-            snapshot.diaryAvailability,
-            cacheCoversQuery: cacheCoversQuery,
-          ),
-          source: DataSource.manual,
+          availability: mealAvailability,
+          source: visibleManualMealsOrNotes.isEmpty ? null : DataSource.manual,
         ),
         ContextTimelineLaneStatus(
           lane: ContextTimelineLane.sleep,
-          availability: _availabilityFor(
-            importedAvailability,
-            cacheCoversQuery: cacheCoversQuery,
-          ),
-          source: _singleSourceFor(
-            appleHealthItems.where(
-              (item) => item.kind == ContextBridgeImportedKind.sleep,
-            ),
-          ),
+          availability: importedSleepAvailability,
+          source: visibleAppleSleep.isEmpty ? null : DataSource.appleHealth,
         ),
         ContextTimelineLaneStatus(
           lane: ContextTimelineLane.activity,
-          availability: _availabilityFor(
-            importedAvailability,
-            cacheCoversQuery: cacheCoversQuery,
-          ),
-          source: _singleSourceFor(
-            appleHealthItems.where(
-              (item) => item.kind == ContextBridgeImportedKind.activity,
-            ),
+          availability: activityAvailability,
+          source: _activitySource(
+            hasAppleHealth: visibleAppleActivities.isNotEmpty,
+            hasManual: visibleManualActivity.isNotEmpty,
           ),
         ),
       ],
@@ -127,8 +158,12 @@ class ContextBridgeTimelineAdapter {
   static ContextDataAvailability _availabilityFor(
     ContextBridgeContextAvailability availability, {
     required bool cacheCoversQuery,
+    required bool hasVisibleRecords,
   }) {
-    if (!cacheCoversQuery) return ContextDataAvailability.partial;
+    // An idle, loading, unavailable, or insufficient cache never becomes a
+    // partial-data claim. The UI has no safe proof for the selected range.
+    if (!cacheCoversQuery) return ContextDataAvailability.noAccessibleData;
+    if (!hasVisibleRecords) return ContextDataAvailability.noAccessibleData;
     return switch (availability) {
       ContextBridgeContextAvailability.available =>
         ContextDataAvailability.available,
@@ -141,24 +176,44 @@ class ContextBridgeTimelineAdapter {
     };
   }
 
-  static ContextBridgeContextAvailability _appleHealthAvailability(
+  static ContextDataAvailability _appleHealthAvailability<T>(
     ContextBridgeContextAvailability availability,
-    List<ContextBridgeImportedItem> items,
-  ) {
-    if (items.isNotEmpty ||
-        availability != ContextBridgeContextAvailability.available) {
-      return availability;
+    List<T> visibleAppleItems, {
+    required bool cacheCoversQuery,
+  }) {
+    if (!cacheCoversQuery || visibleAppleItems.isEmpty) {
+      return ContextDataAvailability.noAccessibleData;
     }
     // A source-neutral cache can be ready while containing only data this
     // narrow Apple Health reader does not support. Do not imply a platform
     // error or permission result; simply state no accessible data here.
-    return ContextBridgeContextAvailability.noLocalRecords;
+    return _availabilityFor(
+      availability,
+      cacheCoversQuery: true,
+      hasVisibleRecords: true,
+    );
   }
 
-  static DataSource? _singleSourceFor(
-    Iterable<ContextBridgeImportedItem> items,
+  static ContextDataAvailability _combinedActivityAvailability(
+    ContextDataAvailability imported,
+    ContextDataAvailability manual,
   ) {
-    final sources = items.map((item) => item.source).toSet();
-    return sources.length == 1 ? sources.single : null;
+    if (manual == ContextDataAvailability.partial ||
+        imported == ContextDataAvailability.partial) {
+      return ContextDataAvailability.partial;
+    }
+    if (manual == ContextDataAvailability.available ||
+        imported == ContextDataAvailability.available) {
+      return ContextDataAvailability.available;
+    }
+    return ContextDataAvailability.noAccessibleData;
+  }
+
+  static DataSource? _activitySource({
+    required bool hasAppleHealth,
+    required bool hasManual,
+  }) {
+    if (hasAppleHealth == hasManual) return null;
+    return hasAppleHealth ? DataSource.appleHealth : DataSource.manual;
   }
 }

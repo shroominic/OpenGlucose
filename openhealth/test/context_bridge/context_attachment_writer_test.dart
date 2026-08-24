@@ -55,7 +55,7 @@ void main() {
 
       final result = await controller.save(
         draft: FastJournalDraft(
-          kind: FastJournalKind.note,
+          kind: FastJournalKind.activity,
           startedAt: selected,
           label: 'private note',
         ),

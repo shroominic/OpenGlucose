@@ -14,6 +14,7 @@ import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
+import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -132,6 +133,86 @@ void main() {
     },
   );
 
+  testWidgets('opens the Context route at 320px with 2x text', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(320, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final fixture = await _DashboardFixture.create(startBridge: false);
+    addTearDown(fixture.dispose);
+    await fixture.settings.setShowContextView(value: true);
+
+    await tester.pumpWidget(
+      MediaQuery(
+        data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+        child: fixture.app(),
+      ),
+    );
+    await tester.pump();
+    expect(fixture.settings.showContextView, isTrue);
+    expect(
+      fixture.preferences.getBool('openHealth.onboarding.completed'),
+      isTrue,
+    );
+    expect(fixture.controller.visibleHistory, isNotEmpty);
+    expect(fixture.controller.snapshot, isNotNull);
+    expect(
+      computeWarmupStatus(
+        fixture.controller.snapshot!,
+        latestReading: fixture.controller.displayLatestReading,
+      ),
+      isNull,
+    );
+    expect(find.text('OpenGlucose'), findsOneWidget);
+    expect(
+      MediaQuery.textScalerOf(tester.element(find.text('OpenGlucose'))).scale(
+        14,
+      ),
+      28,
+    );
+    // Slivers below the large-text hero are built lazily. Scroll the actual
+    // dashboard rather than navigating directly to prove the real action is
+    // reachable at this viewport and scale.
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey<String>('openContextView')),
+      240,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('dashboardHistorySection')),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('openContextView')),
+    );
+    await tester.pumpAndSettle();
+    final contextAction = find.byKey(
+      const ValueKey<String>('openContextView'),
+    );
+    expect(tester.getCenter(contextAction).dy, inInclusiveRange(0, 800));
+    expect(tester.widget<TextButton>(contextAction).onPressed, isNotNull);
+    await tester.tap(contextAction);
+    await tester.pump();
+    expect(Navigator.of(tester.element(contextAction)).canPop(), isTrue);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(find.byType(ContextViewScreen), findsOneWidget);
+    expect(find.text('Glucose with context'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey<String>('contextViewTimeline')),
+      240,
+      scrollable: find.descendant(
+        of: find.byKey(const ValueKey<String>('contextViewScroll')),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    expect(
+      find.byKey(const ValueKey<String>('contextViewTimeline')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('bounded context add cancels and fails closed on a local error', (
     tester,
   ) async {
@@ -149,7 +230,8 @@ void main() {
                 result = showContextAttachmentSheet(
                   context: context,
                   suggestion: suggestion,
-                  repositoryLifecycle: null,
+                  prepareContextAttachmentSave: (_) async =>
+                      const ContextBridgeAttachmentPreparation.unavailable(),
                   refreshContext: () async {
                     refreshCalls++;
                   },
@@ -166,6 +248,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Add context to recent rise'), findsOneWidget);
     expect(find.textContaining('Allowed time:'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('contextAttachmentKind-meal')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('contextAttachmentKind-activity')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('contextAttachmentKind-note')),
+      findsNothing,
+    );
     expect(
       find.bySemanticsLabel(RegExp('^Allowed local time range:')),
       findsOneWidget,
@@ -193,7 +287,6 @@ void main() {
     'keeps a completed local save successful when cache refresh is unavailable',
     (tester) async {
       final repository = _SavingContextRepository();
-      final lifecycle = AppHealthRepositoryLifecycle(() async => repository);
       Future<bool>? result;
       await tester.pumpWidget(
         MaterialApp(
@@ -204,7 +297,17 @@ void main() {
                   result = showContextAttachmentSheet(
                     context: context,
                     suggestion: _suggestion(),
-                    repositoryLifecycle: lifecycle,
+                    prepareContextAttachmentSave: (expected) async =>
+                        ContextBridgeAttachmentPreparation.ready(
+                          suggestion: expected,
+                          save: (draft) =>
+                              ContextAttachmentController(
+                                writer: repository,
+                              ).save(
+                                draft: draft,
+                                suggestion: expected,
+                              ),
+                        ),
                     refreshContext: () async {
                       throw StateError('refresh unavailable');
                     },
@@ -231,12 +334,145 @@ void main() {
         findsNothing,
       );
 
-      // Let the modal route finish its teardown before disposing the
-      // app-owned repository. This mirrors app shutdown order and ensures a
-      // completed local write cannot retain an async widget route.
+      // Let the modal route finish its teardown. The sheet has no retained
+      // repository lifecycle after the completed save.
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      await lifecycle.dispose();
+    },
+  );
+
+  testWidgets('fails closed when a bounded context candidate becomes stale', (
+    tester,
+  ) async {
+    Future<bool>? result;
+    var refreshCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => FilledButton(
+              onPressed: () {
+                result = showContextAttachmentSheet(
+                  context: context,
+                  suggestion: _suggestion(),
+                  prepareContextAttachmentSave: (_) async =>
+                      const ContextBridgeAttachmentPreparation.staleOrSuperseded(),
+                  refreshContext: () async {
+                    refreshCalls++;
+                  },
+                );
+              },
+              child: const Text('Open stale bounded context add'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open stale bounded context add'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save context'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'This recent observation is no longer current. No diary entry was saved.',
+      ),
+      findsOneWidget,
+    );
+    expect(refreshCalls, 1);
+
+    Navigator.of(tester.element(find.text('Add context to recent rise'))).pop();
+    await tester.pumpAndSettle();
+    expect(await result!, isFalse);
+  });
+
+  testWidgets('closes a claimed sheet after it refreshes the local truth', (
+    tester,
+  ) async {
+    Future<bool>? result;
+    var refreshCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => FilledButton(
+              onPressed: () {
+                result = showContextAttachmentSheet(
+                  context: context,
+                  suggestion: _suggestion(),
+                  prepareContextAttachmentSave: (_) async =>
+                      const ContextBridgeAttachmentPreparation.alreadyClaimed(),
+                  refreshContext: () async {
+                    refreshCalls++;
+                  },
+                );
+              },
+              child: const Text('Open claimed bounded context add'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open claimed bounded context add'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save context'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(refreshCalls, 1);
+    expect(find.text('Add context to recent rise'), findsNothing);
+    expect(await result!, isFalse);
+  });
+
+  testWidgets(
+    'keeps the bounded attachment sheet usable at 320px with 2x text',
+    (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(320, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: MaterialApp(
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => FilledButton(
+                  onPressed: () async {
+                    await showContextAttachmentSheet(
+                      context: context,
+                      suggestion: _suggestion(),
+                      prepareContextAttachmentSave: (_) async =>
+                          const ContextBridgeAttachmentPreparation.unavailable(),
+                      refreshContext: () async {},
+                    );
+                  },
+                  child: const Text('Open large bounded context add'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open large bounded context add'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Save context'),
+        180,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const ValueKey<String>('contextAttachmentScroll')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+
+      expect(find.text('Add context to recent rise'), findsOneWidget);
+      expect(find.text('Save context'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     },
   );
 }

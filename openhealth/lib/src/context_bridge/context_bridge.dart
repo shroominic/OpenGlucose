@@ -6,9 +6,11 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../app_controller.dart';
+import '../journal/fast_journal_controller.dart';
 import '../journal/fast_journal_store.dart';
 import '../persistence/health_repository_lifecycle.dart';
 import '../session_presentation.dart';
+import 'context_attachment_writer.dart';
 import 'context_attachment_fact.dart';
 import 'context_bridge_models.dart';
 
@@ -28,6 +30,58 @@ typedef ContextBridgeSuggestionPolicyProvider =
 /// When false, the bridge publishes an idle cache and does not query local
 /// context storage. This is intentionally separate from a suggestion policy.
 typedef ContextBridgeEnabledProvider = bool Function();
+
+/// Outcome of the bridge's final local check before an attachment write.
+///
+/// The sheet never writes from a previously displayed snapshot. It asks the
+/// bridge for a freshly validated [ready] preparation, then immediately
+/// invokes its one bounded local transaction.
+enum ContextBridgeAttachmentPreparationStatus {
+  ready,
+  staleOrSuperseded,
+  alreadyClaimed,
+  unavailable,
+}
+
+/// One bounded local save that uses a freshly revalidated suggestion.
+///
+/// This intentionally exposes no repository capability to presentation.
+typedef ContextBridgeAttachmentSave =
+    Future<ContextAttachmentSaveResult> Function(FastJournalDraft draft);
+
+class ContextBridgeAttachmentPreparation {
+  const ContextBridgeAttachmentPreparation._({
+    required this.status,
+    this.suggestion,
+    this.save,
+  });
+
+  const ContextBridgeAttachmentPreparation.ready({
+    required ContextBridgeAttachmentSuggestion suggestion,
+    required ContextBridgeAttachmentSave save,
+  }) : this._(
+         status: ContextBridgeAttachmentPreparationStatus.ready,
+         suggestion: suggestion,
+         save: save,
+       );
+
+  const ContextBridgeAttachmentPreparation.staleOrSuperseded()
+    : this._(
+        status: ContextBridgeAttachmentPreparationStatus.staleOrSuperseded,
+      );
+
+  const ContextBridgeAttachmentPreparation.alreadyClaimed()
+    : this._(status: ContextBridgeAttachmentPreparationStatus.alreadyClaimed);
+
+  const ContextBridgeAttachmentPreparation.unavailable()
+    : this._(status: ContextBridgeAttachmentPreparationStatus.unavailable);
+
+  final ContextBridgeAttachmentPreparationStatus status;
+  final ContextBridgeAttachmentSuggestion? suggestion;
+  final ContextBridgeAttachmentSave? save;
+
+  bool get isReady => status == ContextBridgeAttachmentPreparationStatus.ready;
+}
 
 /// Conservative local cache limits for the production context bridge.
 ///
@@ -188,6 +242,9 @@ class ContextBridge extends ChangeNotifier {
         window: _windowFor(now),
         glucoseAvailability: pendingInput.glucoseAvailability,
         importedAvailability: ContextBridgeContextAvailability.unavailable,
+        importedActivityAvailability:
+            ContextBridgeContextAvailability.unavailable,
+        importedSleepAvailability: ContextBridgeContextAvailability.unavailable,
         diaryAvailability: ContextBridgeContextAvailability.unavailable,
         suggestionAvailability: suggestionPolicy.isEnabled
             ? pendingInput.suggestionBlocker
@@ -202,6 +259,125 @@ class ContextBridge extends ChangeNotifier {
       onError: (Object _, StackTrace _) {},
     );
     return scheduled;
+  }
+
+  /// Revalidates one displayed attachment opportunity immediately before its
+  /// local transaction.
+  ///
+  /// A previously rendered snapshot is advisory only. This path reacquires
+  /// the app-owned repository, checks the current local setting/policy and
+  /// active readings, then verifies that the same newest candidate and
+  /// episode are still unclaimed. It never starts an import or background
+  /// task. A missing capability, changed policy, elapsed candidate, changed
+  /// reading, or claim made by another local action all fail closed.
+  Future<ContextBridgeAttachmentPreparation> prepareContextAttachmentSave(
+    ContextBridgeAttachmentSuggestion expected,
+  ) async {
+    if (_disposed || !_contextViewEnabled || !suggestionPolicy.isEnabled) {
+      return const ContextBridgeAttachmentPreparation.staleOrSuperseded();
+    }
+    try {
+      final repository = await _repositoryLifecycle.acquire();
+      if (_disposed || !_contextViewEnabled || !suggestionPolicy.isEnabled) {
+        return const ContextBridgeAttachmentPreparation.staleOrSuperseded();
+      }
+      if (repository is! FastJournalStore ||
+          repository is! ContextAttachmentFactStore ||
+          repository is! ContextAttachmentWriter) {
+        return const ContextBridgeAttachmentPreparation.unavailable();
+      }
+      final journalStore = repository as FastJournalStore;
+      final factStore = repository as ContextAttachmentFactStore;
+      final writer = repository as ContextAttachmentWriter;
+
+      final nowBeforeRead = _clock().toUtc();
+      final repositoryWindow = _halfOpenWindow(_windowFor(nowBeforeRead));
+      final journalEntries = await journalStore.queryFastJournalEntries(
+        window: repositoryWindow,
+        limit: cachePolicy.maxDiaryEntries + 1,
+      );
+      final facts = await factStore.queryContextAttachmentFacts(
+        window: repositoryWindow,
+      );
+
+      // Read all mutable inputs again after local I/O. The next synchronous
+      // save uses exactly this freshly checked writer and suggestion.
+      final now = _clock().toUtc();
+      if (_disposed || !_contextViewEnabled || !suggestionPolicy.isEnabled) {
+        return const ContextBridgeAttachmentPreparation.staleOrSuperseded();
+      }
+      final current = _suggestionFor(
+        glucose: _collectGlucose(now),
+        journalEntries: journalEntries
+            .take(cachePolicy.maxDiaryEntries)
+            .toList(
+              growable: false,
+            ),
+        facts: facts,
+        now: now,
+      );
+      if (current.availability ==
+          ContextBridgeSuggestionAvailability.attachmentAlreadyRecorded) {
+        return const ContextBridgeAttachmentPreparation.alreadyClaimed();
+      }
+      final currentSuggestion = current.value;
+      if (current.availability !=
+              ContextBridgeSuggestionAvailability.available ||
+          currentSuggestion == null ||
+          !_sameSuggestion(currentSuggestion, expected)) {
+        return const ContextBridgeAttachmentPreparation.staleOrSuperseded();
+      }
+
+      // The bounded diary cache may be truncated. Check the durable legacy
+      // claim directly as well so a high-volume diary cannot hide a prior
+      // local attachment from this final save path.
+      final legacyClaimed = await journalStore.isFastJournalRiseClaimed(
+        riseStartedAt: currentSuggestion.episodeStart,
+      );
+      if (_disposed || !_contextViewEnabled || !suggestionPolicy.isEnabled) {
+        return const ContextBridgeAttachmentPreparation.staleOrSuperseded();
+      }
+      if (legacyClaimed) {
+        return const ContextBridgeAttachmentPreparation.alreadyClaimed();
+      }
+      return ContextBridgeAttachmentPreparation.ready(
+        suggestion: currentSuggestion,
+        save: (draft) {
+          // There is no asynchronous gap between this final active-reading
+          // check and starting the repository transaction below. The store
+          // still arbitrates a concurrent durable claim atomically.
+          final saveNow = _clock().toUtc();
+          final atSave = _suggestionFor(
+            glucose: _collectGlucose(saveNow),
+            journalEntries: journalEntries
+                .take(cachePolicy.maxDiaryEntries)
+                .toList(growable: false),
+            facts: facts,
+            now: saveNow,
+          );
+          final saveSuggestion = atSave.value;
+          if (_disposed ||
+              !_contextViewEnabled ||
+              !suggestionPolicy.isEnabled ||
+              atSave.availability !=
+                  ContextBridgeSuggestionAvailability.available ||
+              saveSuggestion == null ||
+              !_sameSuggestion(saveSuggestion, currentSuggestion)) {
+            return Future<ContextAttachmentSaveResult>.error(
+              const FormatException(
+                'This recent observation is no longer current. No diary entry was saved.',
+              ),
+            );
+          }
+          return ContextAttachmentController(writer: writer).save(
+            draft: draft,
+            suggestion: saveSuggestion,
+          );
+        },
+      );
+    } on Object {
+      return const ContextBridgeAttachmentPreparation.unavailable();
+    }
   }
 
   Future<void> _reloadOne(int request) async {
@@ -226,9 +402,6 @@ class ContextBridge extends ChangeNotifier {
       final sleepFuture = _attempt(
         () => repository.querySleepSamples(window: intervalWindow),
       );
-      final heartRateFuture = _attempt(
-        () => repository.queryHeartRateSamples(window: repositoryWindow),
-      );
       final journalStore = repository is FastJournalStore
           ? repository as FastJournalStore
           : null;
@@ -239,7 +412,9 @@ class ContextBridge extends ChangeNotifier {
           : _attempt(
               () => journalStore.queryFastJournalEntries(
                 window: repositoryWindow,
-                limit: cachePolicy.maxDiaryEntries,
+                // Request one extra item so the cached diary can tell the
+                // presentation layer when its bounded local view is partial.
+                limit: cachePolicy.maxDiaryEntries + 1,
               ),
             );
       final attachmentStore = repository is ContextAttachmentFactStore
@@ -257,7 +432,6 @@ class ContextBridge extends ChangeNotifier {
 
       final activityResult = await activityFuture;
       final sleepResult = await sleepFuture;
-      final heartRateResult = await heartRateFuture;
       final journalResult = await journalFuture;
       final factResult = await factsFuture;
       if (_isSuperseded(request, glucose.sessionKey)) return;
@@ -265,18 +439,35 @@ class ContextBridge extends ChangeNotifier {
       final imported = _mapImportedItems(
         activities: activityResult.value ?? const <ActivitySample>[],
         sleep: sleepResult.value ?? const <SleepSample>[],
-        heartRate: heartRateResult.value ?? const <HeartRateSample>[],
         window: window,
         now: now,
       );
+      final journalEntries = journalResult.value ?? const <FastJournalEntry>[];
+      final diaryTruncated =
+          journalEntries.length > cachePolicy.maxDiaryEntries;
+      final boundedJournalEntries = diaryTruncated
+          ? journalEntries
+                .take(cachePolicy.maxDiaryEntries)
+                .toList(growable: false)
+          : journalEntries;
       final diary = _mapDiaryItems(
-        journalResult.value ?? const <FastJournalEntry>[],
+        boundedJournalEntries,
         window: window,
         now: now,
+      );
+      final activityAvailability = _importedTypeAvailability(
+        activityResult,
+        hasMappedItems: imported.activityItems.isNotEmpty,
+        omitted: imported.activityOmitted,
+      );
+      final sleepAvailability = _importedTypeAvailability(
+        sleepResult,
+        hasMappedItems: imported.sleepItems.isNotEmpty,
+        omitted: imported.sleepOmitted,
       );
       final suggestion = _suggestionFor(
         glucose: glucose,
-        journalEntries: journalResult.value ?? const <FastJournalEntry>[],
+        journalEntries: boundedJournalEntries,
         facts: factResult.value,
         now: now,
       );
@@ -286,13 +477,17 @@ class ContextBridge extends ChangeNotifier {
           loadState: ContextBridgeLoadState.ready,
           window: window,
           glucoseAvailability: glucose.glucoseAvailability,
-          importedAvailability: _importedAvailability(
-            activity: activityResult,
-            sleep: sleepResult,
-            heartRate: heartRateResult,
-            mapped: imported,
+          importedAvailability: _combinedImportedAvailability(
+            activityAvailability,
+            sleepAvailability,
           ),
-          diaryAvailability: _diaryAvailability(journalResult, diary),
+          importedActivityAvailability: activityAvailability,
+          importedSleepAvailability: sleepAvailability,
+          diaryAvailability: _diaryAvailability(
+            journalResult,
+            diary,
+            truncated: diaryTruncated,
+          ),
           suggestionAvailability: suggestion.availability,
           suggestionsEnabled: suggestionPolicy.isEnabled,
           refreshedAt: now,
@@ -310,6 +505,10 @@ class ContextBridge extends ChangeNotifier {
           window: window,
           glucoseAvailability: glucose.glucoseAvailability,
           importedAvailability: ContextBridgeContextAvailability.unavailable,
+          importedActivityAvailability:
+              ContextBridgeContextAvailability.unavailable,
+          importedSleepAvailability:
+              ContextBridgeContextAvailability.unavailable,
           diaryAvailability: ContextBridgeContextAvailability.unavailable,
           suggestionAvailability: suggestionPolicy.isEnabled
               ? ContextBridgeSuggestionAvailability.attachmentFactsUnavailable
@@ -539,19 +738,35 @@ class ContextBridge extends ChangeNotifier {
     );
   }
 
+  bool _sameSuggestion(
+    ContextBridgeAttachmentSuggestion current,
+    ContextBridgeAttachmentSuggestion expected,
+  ) =>
+      current.candidateId.value == expected.candidateId.value &&
+      current.episodeKey.value == expected.episodeKey.value &&
+      current.calculationVersion == expected.calculationVersion &&
+      current.episodeStart.toUtc().isAtSameMomentAs(expected.episodeStart) &&
+      current.peakAt.toUtc().isAtSameMomentAs(expected.peakAt) &&
+      current.attachmentWindowStart.toUtc().isAtSameMomentAs(
+        expected.attachmentWindowStart,
+      ) &&
+      current.attachmentWindowEnd.toUtc().isAtSameMomentAs(
+        expected.attachmentWindowEnd,
+      );
+
   _MappedImportedItems _mapImportedItems({
     required List<ActivitySample> activities,
     required List<SleepSample> sleep,
-    required List<HeartRateSample> heartRate,
     required ContextBridgeWindow window,
     required DateTime now,
   }) {
     final items = <ContextBridgeImportedItem>[];
-    var omitted = false;
+    var activityOmitted = false;
+    var sleepOmitted = false;
     for (final activity in activities) {
       final mapped = _mapActivity(activity, window: window, now: now);
       if (mapped == null) {
-        omitted = true;
+        activityOmitted = true;
       } else {
         items.add(mapped);
       }
@@ -559,15 +774,7 @@ class ContextBridge extends ChangeNotifier {
     for (final sample in sleep) {
       final mapped = _mapSleep(sample, window: window, now: now);
       if (mapped == null) {
-        omitted = true;
-      } else {
-        items.add(mapped);
-      }
-    }
-    for (final sample in heartRate) {
-      final mapped = _mapHeartRate(sample, window: window, now: now);
-      if (mapped == null) {
-        omitted = true;
+        sleepOmitted = true;
       } else {
         items.add(mapped);
       }
@@ -578,7 +785,8 @@ class ContextBridge extends ChangeNotifier {
     });
     return _MappedImportedItems(
       List<ContextBridgeImportedItem>.unmodifiable(items),
-      omitted: omitted,
+      activityOmitted: activityOmitted,
+      sleepOmitted: sleepOmitted,
     );
   }
 
@@ -632,31 +840,6 @@ class ContextBridge extends ChangeNotifier {
     );
   }
 
-  ContextBridgeImportedItem? _mapHeartRate(
-    HeartRateSample sample, {
-    required ContextBridgeWindow window,
-    required DateTime now,
-  }) {
-    final identity = _safeImportedIdentity(sample.source, sample.provenance);
-    final timestamp = sample.timestamp.toUtc();
-    if (identity == null ||
-        timestamp.isAfter(now) ||
-        !window.contains(timestamp) ||
-        !sample.bpm.isFinite ||
-        sample.bpm <= 0) {
-      return null;
-    }
-    return ContextBridgeImportedItem(
-      id: _opaqueId('heart-rate|${sample.source.name}|$identity'),
-      kind: ContextBridgeImportedKind.heartRate,
-      start: timestamp,
-      end: timestamp,
-      source: sample.source,
-      heartRateBpm: sample.bpm,
-      recordingMethod: sample.provenance!.recordingMethod,
-    );
-  }
-
   _MappedDiaryItems _mapDiaryItems(
     List<FastJournalEntry> entries, {
     required ContextBridgeWindow window,
@@ -693,35 +876,52 @@ class ContextBridge extends ChangeNotifier {
     );
   }
 
-  ContextBridgeContextAvailability _importedAvailability({
-    required _LoadResult<List<ActivitySample>> activity,
-    required _LoadResult<List<SleepSample>> sleep,
-    required _LoadResult<List<HeartRateSample>> heartRate,
-    required _MappedImportedItems mapped,
+  ContextBridgeContextAvailability _importedTypeAvailability<T>(
+    _LoadResult<List<T>> result, {
+    required bool hasMappedItems,
+    required bool omitted,
   }) {
-    final everyUnavailable =
-        !activity.isAvailable && !sleep.isAvailable && !heartRate.isAvailable;
-    if (everyUnavailable) {
+    if (!result.isAvailable) {
       return ContextBridgeContextAvailability.unavailable;
     }
-    final anyUnavailable =
-        !activity.isAvailable || !sleep.isAvailable || !heartRate.isAvailable;
-    if (anyUnavailable || mapped.omitted) {
+    if (omitted) return ContextBridgeContextAvailability.partial;
+    return hasMappedItems
+        ? ContextBridgeContextAvailability.available
+        : ContextBridgeContextAvailability.noLocalRecords;
+  }
+
+  ContextBridgeContextAvailability _combinedImportedAvailability(
+    ContextBridgeContextAvailability activity,
+    ContextBridgeContextAvailability sleep,
+  ) {
+    if (activity == ContextBridgeContextAvailability.unavailable &&
+        sleep == ContextBridgeContextAvailability.unavailable) {
+      return ContextBridgeContextAvailability.unavailable;
+    }
+    if (activity == ContextBridgeContextAvailability.partial ||
+        sleep == ContextBridgeContextAvailability.partial ||
+        activity == ContextBridgeContextAvailability.unavailable ||
+        sleep == ContextBridgeContextAvailability.unavailable) {
       return ContextBridgeContextAvailability.partial;
     }
-    return mapped.items.isEmpty
-        ? ContextBridgeContextAvailability.noLocalRecords
-        : ContextBridgeContextAvailability.available;
+    if (activity == ContextBridgeContextAvailability.available ||
+        sleep == ContextBridgeContextAvailability.available) {
+      return ContextBridgeContextAvailability.available;
+    }
+    return ContextBridgeContextAvailability.noLocalRecords;
   }
 
   ContextBridgeContextAvailability _diaryAvailability(
     _LoadResult<List<FastJournalEntry>> result,
-    _MappedDiaryItems mapped,
-  ) {
+    _MappedDiaryItems mapped, {
+    required bool truncated,
+  }) {
     if (!result.isAvailable) {
       return ContextBridgeContextAvailability.unavailable;
     }
-    if (mapped.omitted) return ContextBridgeContextAvailability.partial;
+    if (truncated || mapped.omitted) {
+      return ContextBridgeContextAvailability.partial;
+    }
     return mapped.items.isEmpty
         ? ContextBridgeContextAvailability.noLocalRecords
         : ContextBridgeContextAvailability.available;
@@ -817,10 +1017,23 @@ class _SuggestionResult {
 }
 
 class _MappedImportedItems {
-  const _MappedImportedItems(this.items, {required this.omitted});
+  const _MappedImportedItems(
+    this.items, {
+    required this.activityOmitted,
+    required this.sleepOmitted,
+  });
 
   final List<ContextBridgeImportedItem> items;
-  final bool omitted;
+  final bool activityOmitted;
+  final bool sleepOmitted;
+
+  Iterable<ContextBridgeImportedItem> get activityItems => items.where(
+    (item) => item.kind == ContextBridgeImportedKind.activity,
+  );
+
+  Iterable<ContextBridgeImportedItem> get sleepItems => items.where(
+    (item) => item.kind == ContextBridgeImportedKind.sleep,
+  );
 }
 
 class _MappedDiaryItems {

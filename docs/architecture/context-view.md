@@ -17,6 +17,12 @@ The route reads the cached `ContextBridgeSnapshot`. It does not query a
 repository, start an import, request permission, schedule background work,
 call a remote service, or call an AI model.
 
+Only after a person presses the bounded add action does the app-owned bridge
+make a local revalidation read. It checks the current setting, policy, active
+readings, newest candidate, and durable local claim immediately before its one
+local transaction. A stale, changed, disabled, or already-claimed opportunity
+does not save an entry.
+
 The route shows only generic context categories, bounded time windows, and
 approved display values. It must not display or expose source record IDs,
 sensor identifiers, device metadata, raw packets, source-app details, or
@@ -43,8 +49,9 @@ not appear again for that episode.
 ## Product scope
 
 The route provides a source-safe timeline, generic diary context, and a quiet
-entry point for a user to add a meal, activity, or note. It keeps the default
-glucose reader simple.
+entry point for a user to add a meal or activity. It keeps the default glucose
+reader simple. A new persisted diary-note kind is deferred until it has a
+backwards-compatible local-protocol migration.
 
 This work does not add Health Connect or Apple Health import controls,
 background synchronization, image capture, meal recognition, local AI,
@@ -55,16 +62,17 @@ automatic causal attribution.
 
 The required automated evidence covers these cases:
 
-1. The persisted settings default to off. Invalid or missing thresholds keep
-   recent-rise suggestions off.
+1. The persisted settings default to off. Invalid or missing thresholds are
+   normalized to keep recent-rise suggestions off.
 2. The disabled context bridge performs no local context query. Enabling the
    setting permits a refresh.
 3. Bridge-to-timeline mapping retains only generic categories and approved
-   fields. It excludes restricted identifiers and omits heart rate from the
-   first lane.
-4. The attachment controller rejects times outside the candidate range, does
-   not write on cancellation or error, and prevents a second claim for one
-   episode.
+   fields. It reports activity, sleep, and diary availability independently,
+   excludes restricted identifiers, and omits heart rate from the first lane.
+4. The final attachment preparation rejects stale readings, elapsed candidates,
+   disabled policy, and prior claims. The controller rejects times outside the
+   candidate range, does not write on cancellation or error, and prevents a
+   second claim for one episode.
 5. The settings, route, and attachment controls have semantic labels, meet a
    minimum 44 logical-pixel action height, and render at narrow width and large
    text scale without overlap or clipped critical controls.

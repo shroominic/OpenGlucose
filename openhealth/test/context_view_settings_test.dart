@@ -57,4 +57,44 @@ void main() {
       expect(relaunched.suggestRecentRise, isFalse);
     },
   );
+
+  test(
+    'normalizes a persisted enabled suggestion without a valid threshold',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openGlucose.contextView.suggestRecentRise': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final settings = ContextViewSettings(preferences);
+
+      expect(settings.suggestRecentRise, isFalse);
+      expect(settings.suggestionPolicy.isEnabled, isFalse);
+
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        preferences.getBool('openGlucose.contextView.suggestRecentRise'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'normalizes a persisted enabled suggestion with a non-positive threshold',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openGlucose.contextView.suggestRecentRise': true,
+        'openGlucose.contextView.observedRiseThresholdMgdl': 0.0,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final settings = ContextViewSettings(preferences);
+
+      expect(settings.suggestRecentRise, isFalse);
+      expect(settings.suggestionPolicy.isEnabled, isFalse);
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        preferences.getBool('openGlucose.contextView.suggestRecentRise'),
+        isFalse,
+      );
+    },
+  );
 }

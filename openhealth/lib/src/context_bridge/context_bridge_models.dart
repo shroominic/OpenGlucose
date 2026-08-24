@@ -213,6 +213,8 @@ class ContextBridgeSnapshot {
     required this.diaryAvailability,
     required this.suggestionAvailability,
     required this.suggestionsEnabled,
+    this.importedActivityAvailability,
+    this.importedSleepAvailability,
     this.refreshedAt,
     this.glucoseReadings = const <ContextBridgeReading>[],
     this.importedItems = const <ContextBridgeImportedItem>[],
@@ -235,6 +237,25 @@ class ContextBridgeSnapshot {
   final ContextBridgeWindow window;
   final ContextBridgeGlucoseAvailability glucoseAvailability;
   final ContextBridgeContextAvailability importedAvailability;
+
+  /// Availability for imported activity records only.
+  ///
+  /// Older callers can omit this field and retain the aggregate
+  /// [importedAvailability] behaviour. New reader surfaces must use the
+  /// type-specific values so an unrelated source failure cannot change the
+  /// visible activity or sleep lane state.
+  final ContextBridgeContextAvailability? importedActivityAvailability;
+
+  /// Availability for imported sleep records only. See
+  /// [importedActivityAvailability].
+  final ContextBridgeContextAvailability? importedSleepAvailability;
+
+  ContextBridgeContextAvailability get activityAvailability =>
+      importedActivityAvailability ?? importedAvailability;
+
+  ContextBridgeContextAvailability get sleepAvailability =>
+      importedSleepAvailability ?? importedAvailability;
+
   final ContextBridgeContextAvailability diaryAvailability;
   final ContextBridgeSuggestionAvailability suggestionAvailability;
   final bool suggestionsEnabled;
@@ -249,6 +270,8 @@ class ContextBridgeSnapshot {
     ContextBridgeWindow? window,
     ContextBridgeGlucoseAvailability? glucoseAvailability,
     ContextBridgeContextAvailability? importedAvailability,
+    ContextBridgeContextAvailability? importedActivityAvailability,
+    ContextBridgeContextAvailability? importedSleepAvailability,
     ContextBridgeContextAvailability? diaryAvailability,
     ContextBridgeSuggestionAvailability? suggestionAvailability,
     bool? suggestionsEnabled,
@@ -263,6 +286,10 @@ class ContextBridgeSnapshot {
     window: window ?? this.window,
     glucoseAvailability: glucoseAvailability ?? this.glucoseAvailability,
     importedAvailability: importedAvailability ?? this.importedAvailability,
+    importedActivityAvailability:
+        importedActivityAvailability ?? this.importedActivityAvailability,
+    importedSleepAvailability:
+        importedSleepAvailability ?? this.importedSleepAvailability,
     diaryAvailability: diaryAvailability ?? this.diaryAvailability,
     suggestionAvailability:
         suggestionAvailability ?? this.suggestionAvailability,

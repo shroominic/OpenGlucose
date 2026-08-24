@@ -38,6 +38,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Quick add'), findsWidgets);
+    expect(find.widgetWithText(ChoiceChip, 'Meal'), findsOneWidget);
+    expect(find.widgetWithText(ChoiceChip, 'Activity'), findsOneWidget);
+    expect(find.widgetWithText(ChoiceChip, 'Note'), findsNothing);
     expect(find.text('Save meal'), findsOneWidget);
     expect(find.text('Link near the latest observed rise'), findsOneWidget);
     expect(
