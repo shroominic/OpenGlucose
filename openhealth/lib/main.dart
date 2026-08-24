@@ -13,6 +13,7 @@ import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/journal/fast_journal_screen.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
@@ -1837,6 +1838,12 @@ class _SettingsOverview extends StatelessWidget {
                     '${controller.displayPreferences.targetLowMgdl.toStringAsFixed(0)}–'
                     '${controller.displayPreferences.targetHighMgdl.toStringAsFixed(0)}',
                 child: displayPane,
+              ),
+              _SettingsDestination(
+                icon: Icons.menu_book_outlined,
+                title: 'Diary',
+                subtitle: 'Local meal, activity, and sleep entries',
+                builder: (_) => const FastJournalScreen(),
               ),
             ],
           ),

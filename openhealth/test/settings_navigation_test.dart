@@ -46,6 +46,7 @@ void main() {
       expect(find.text('No active sensor'), findsOneWidget);
       expect(find.text('Connect a sensor'), findsOneWidget);
       expect(find.text('Sensor archive'), findsOneWidget);
+      expect(find.text('Diary'), findsOneWidget);
       expect(find.byType(TabBar), findsNothing);
       expect(find.byType(BottomSheet), findsNothing);
 

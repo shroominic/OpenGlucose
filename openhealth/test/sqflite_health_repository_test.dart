@@ -48,6 +48,39 @@ void main() {
       expect(loaded.timestamp, DateTime.utc(2026, 1, 1, 8));
     });
 
+    test(
+      'round-trips a manual sleep entry with an observed rise reference',
+      () async {
+        final event = HealthEvent(
+          id: 'sleep-1',
+          timestamp: DateTime.utc(2026, 1, 2, 22),
+          type: HealthEventType.sleep,
+          payload: const SleepPayload(
+            duration: Duration(hours: 7),
+            description: 'Early night',
+          ),
+          riseReference: GlucoseRiseReference(
+            startedAt: DateTime.utc(2026, 1, 2, 20),
+            lastObservedAt: DateTime.utc(2026, 1, 2, 20, 20),
+            highestMgdl: 195,
+          ),
+        );
+
+        await repo.upsertEvent(event);
+        final loaded = await repo.getEvent(event.id);
+
+        expect(loaded, isNotNull);
+        expect(loaded!.type, HealthEventType.sleep);
+        final payload = loaded.payload! as SleepPayload;
+        expect(
+          payload.duration,
+          const Duration(hours: 7),
+        );
+        expect(loaded.riseReference?.startedAt, DateTime.utc(2026, 1, 2, 20));
+        expect(loaded.riseReference?.highestMgdl, 195);
+      },
+    );
+
     test('upsert replaces by id', () async {
       await repo.upsertEvent(
         meal('e1', DateTime.utc(2026, 1, 1, 8), carbs: 10),
