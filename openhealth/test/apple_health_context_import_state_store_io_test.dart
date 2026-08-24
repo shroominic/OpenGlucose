@@ -373,4 +373,113 @@ void main() {
       await directory.delete(recursive: true);
     }
   });
+
+  test(
+    'preserves future staged extension fields byte-for-byte before cleanup',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'openglucose-health-import-future-staging-fields-',
+      );
+      final file = File(
+        '${directory.path}${Platform.pathSeparator}OpenGlucose'
+        '${Platform.pathSeparator}AppleHealthContextImport'
+        '${Platform.pathSeparator}import-state.json',
+      );
+      const primaryState =
+          '{"schemaVersion":1,"lastSyncedMs":1,"anchors":{"sleep":"primary-anchor"}}';
+      const futurePrevious =
+          '{"schemaVersion":2,"lastSyncedMs":2,"anchors":{"sleep":"future-previous-anchor"},"futureField":"previous"}';
+      const futureNext =
+          '{"schemaVersion":2,"lastSyncedMs":3,"anchors":{"sleep":"future-next-anchor"},"futureField":"next"}';
+      try {
+        await file.parent.create(recursive: true);
+        await file.writeAsString(primaryState, flush: true);
+        await File('${file.path}.previous').writeAsString(
+          futurePrevious,
+          flush: true,
+        );
+        await File('${file.path}.next').writeAsString(futureNext, flush: true);
+        final store = FileAppleHealthContextImportStateStore(
+          directoryProvider: () async => directory,
+          requiresBackupExclusion: false,
+        );
+
+        await expectLater(store.initialize(), throwsA(isA<UnsupportedError>()));
+
+        expect(await file.readAsString(), primaryState);
+        expect(
+          await File('${file.path}.previous').readAsString(),
+          futurePrevious,
+        );
+        expect(await File('${file.path}.next').readAsString(), futureNext);
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'keeps a durable cursor when stale previous cleanup fails',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'openglucose-health-import-stale-previous-cleanup-',
+      );
+      final file = File(
+        '${directory.path}${Platform.pathSeparator}OpenGlucose'
+        '${Platform.pathSeparator}AppleHealthContextImport'
+        '${Platform.pathSeparator}import-state.json',
+      );
+      var failStalePreviousCleanup = false;
+      try {
+        final store = FileAppleHealthContextImportStateStore(
+          directoryProvider: () async => directory,
+          requiresBackupExclusion: false,
+          fileDeletion: (candidate) async {
+            if (failStalePreviousCleanup &&
+                candidate.path == '${file.path}.previous') {
+              throw StateError('Synthetic stale previous cleanup failure.');
+            }
+            await candidate.delete();
+          },
+        );
+        await store.initialize();
+        await store.save(
+          AppleHealthContextImportState(
+            anchors: const <String, String>{'sleep': 'old-anchor'},
+          ),
+        );
+
+        failStalePreviousCleanup = true;
+        await store.save(
+          AppleHealthContextImportState(
+            anchors: const <String, String>{'sleep': 'durable-new-anchor'},
+          ),
+        );
+
+        expect(store.state.anchors, <String, String>{
+          'sleep': 'durable-new-anchor',
+        });
+        final persisted =
+            jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+        expect(
+          persisted['anchors'],
+          <String, dynamic>{'sleep': 'durable-new-anchor'},
+        );
+        expect(File('${file.path}.previous').existsSync(), isTrue);
+
+        final recovered = FileAppleHealthContextImportStateStore(
+          directoryProvider: () async => directory,
+          requiresBackupExclusion: false,
+        );
+        await recovered.initialize();
+
+        expect(recovered.state.anchors, <String, String>{
+          'sleep': 'durable-new-anchor',
+        });
+        expect(File('${file.path}.previous').existsSync(), isFalse);
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+  );
 }

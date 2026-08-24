@@ -13,6 +13,10 @@ typedef AppleHealthContextImportBackupExclusionMarker =
     Future<void> Function(
       String path,
     );
+typedef AppleHealthContextImportStateFileDeletion =
+    Future<void> Function(
+      File file,
+    );
 
 /// Versioned cursor storage for the Apple Health context importer.
 ///
@@ -25,10 +29,12 @@ class FileAppleHealthContextImportStateStore
   FileAppleHealthContextImportStateStore({
     AppleHealthContextImportStateDirectoryProvider? directoryProvider,
     AppleHealthContextImportBackupExclusionMarker? backupExclusionMarker,
+    AppleHealthContextImportStateFileDeletion? fileDeletion,
     bool? requiresBackupExclusion,
   }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
        _backupExclusionMarker =
            backupExclusionMarker ?? _markExcludedFromBackup,
+       _fileDeletion = fileDeletion ?? _deleteFile,
        _requiresBackupExclusion = requiresBackupExclusion ?? Platform.isIOS;
 
   static const int _schemaVersion = 1;
@@ -45,6 +51,7 @@ class FileAppleHealthContextImportStateStore
 
   final AppleHealthContextImportStateDirectoryProvider _directoryProvider;
   final AppleHealthContextImportBackupExclusionMarker _backupExclusionMarker;
+  final AppleHealthContextImportStateFileDeletion _fileDeletion;
   final bool _requiresBackupExclusion;
 
   AppleHealthContextImportState _state = AppleHealthContextImportState();
@@ -93,8 +100,11 @@ class FileAppleHealthContextImportStateStore
       await _excludeFromBackup(file.path);
       _state = restored;
       _initialized = true;
-      await _discardIfPresent(File('${file.path}.next'));
-      await _discardIfPresent(File('${file.path}.previous'));
+      // The primary has passed decoding and backup-exclusion verification. A
+      // stale artifact cannot invalidate that durable state, so a transient
+      // cleanup failure must not make initialization fail or replay an anchor.
+      await _discardIfPresentBestEffort(File('${file.path}.next'));
+      await _discardIfPresentBestEffort(File('${file.path}.previous'));
     } finally {
       if (!_initialized) {
         _initializationFuture = null;
@@ -224,7 +234,10 @@ class FileAppleHealthContextImportStateStore
       }
       Error.throwWithStackTrace(error, stackTrace);
     }
-    await _discardIfPresent(previous);
+    // Once the new primary has been installed and verified, `.previous` is a
+    // stale recovery artifact. Its cleanup is intentionally best effort: the
+    // durable cursor is authoritative and must be reported as saved.
+    await _discardIfPresentBestEffort(previous);
   }
 
   String _encode(AppleHealthContextImportState state) {
@@ -245,14 +258,7 @@ class FileAppleHealthContextImportStateStore
     } on FormatException {
       throw const FormatException('Apple Health import state is invalid.');
     }
-    if (decoded is! Map<String, dynamic> ||
-        decoded.keys.any(
-          (key) =>
-              key != 'schemaVersion' &&
-              key != 'lastSyncedMs' &&
-              key != 'anchors',
-        ) ||
-        decoded['schemaVersion'] is! int) {
+    if (decoded is! Map<String, dynamic> || decoded['schemaVersion'] is! int) {
       throw const FormatException('Apple Health import state is invalid.');
     }
     final version = decoded['schemaVersion'] as int;
@@ -260,6 +266,12 @@ class FileAppleHealthContextImportStateStore
       throw UnsupportedError(
         'Apple Health import state schema version $version is unsupported.',
       );
+    }
+    if (decoded.keys.any(
+      (key) =>
+          key != 'schemaVersion' && key != 'lastSyncedMs' && key != 'anchors',
+    )) {
+      throw const FormatException('Apple Health import state is invalid.');
     }
     final lastSyncedMs = decoded['lastSyncedMs'];
     if (lastSyncedMs != null && (lastSyncedMs is! int || lastSyncedMs < 0)) {
@@ -306,9 +318,20 @@ class FileAppleHealthContextImportStateStore
 
   Future<void> _discardIfPresent(File file) async {
     if (file.existsSync()) {
-      await file.delete();
+      await _fileDeletion(file);
     }
   }
+
+  Future<void> _discardIfPresentBestEffort(File file) async {
+    try {
+      await _discardIfPresent(file);
+    } catch (_) {
+      // A verified primary remains authoritative. Leave the stale artifact for
+      // a later initialization or commit cleanup attempt.
+    }
+  }
+
+  static Future<void> _deleteFile(File file) => file.delete();
 
   Future<void> _excludeFromBackup(String path) async {
     if (_requiresBackupExclusion) {
