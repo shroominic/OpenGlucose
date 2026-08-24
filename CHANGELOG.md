@@ -21,6 +21,14 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
   time and can make one time-bounded, observational rise link without claiming
   a cause. Existing v0.1.4 health-event data remains readable because diary
   records are not written into the legacy health-events table.
+- A local-only context bridge now assembles bounded active-sensor readings,
+  already-imported health context, and manual diary entries into a
+  presentation-neutral cache. It exposes opaque local identifiers only and
+  keeps optional observed-rise attachment suggestions disabled until a product
+  surface selects an explicit non-clinical policy.
+- SQLite schema four adds a separate, bounded local attachment-fact table for
+  future diary/context actions. It does not change the legacy `health_events`
+  JSON protocol.
 
 ## [0.1.4] - 2026-08-22
 

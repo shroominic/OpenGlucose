@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:openglucose/src/context_bridge/context_bridge_scope.dart';
 import 'package:openglucose/src/journal/fast_journal_controller.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
@@ -73,10 +74,14 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
   Future<void> _openQuickAdd() async {
     final journal = _journal;
     if (journal == null) return;
+    final reloadContext = ContextBridgeScope.maybeOf(context)?.reload;
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _QuickJournalSheet(journal: journal),
+      builder: (context) => _QuickJournalSheet(
+        journal: journal,
+        onSaved: reloadContext,
+      ),
     );
     if (saved == true && mounted) {
       setState(() {});
@@ -241,9 +246,10 @@ class _JournalEntryTile extends StatelessWidget {
 }
 
 class _QuickJournalSheet extends StatefulWidget {
-  const _QuickJournalSheet({required this.journal});
+  const _QuickJournalSheet({required this.journal, this.onSaved});
 
   final FastJournalController journal;
+  final Future<void> Function()? onSaved;
 
   @override
   State<_QuickJournalSheet> createState() => _QuickJournalSheetState();
@@ -304,6 +310,7 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
         ),
         attachToLatestRise: _attachToLatestRise,
       );
+      await widget.onSaved?.call();
       if (mounted) Navigator.of(context).pop(true);
     } on FormatException catch (error) {
       if (!mounted) return;

@@ -35,6 +35,9 @@ UI framework, persistence implementation, or network client.
 Its deterministic local analytics contracts include the
 [meal-response evidence](meal-response-evidence.md) and
 [recent-observed-rise candidate](recent-observed-rise-candidate.md) boundaries.
+The app-owned [local context bridge](context-bridge.md) composes those safe
+inputs into a bounded, presentation-neutral cache without starting imports or
+exposing restricted source identifiers.
 
 ### `packages/cgm_ble`
 

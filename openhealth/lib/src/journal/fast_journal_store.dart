@@ -185,8 +185,12 @@ class FastJournalEntry {
 /// or writes the entry without a reference. Implementations must make that
 /// decision atomically.
 abstract interface class FastJournalStore {
-  /// Returns local manual entries, newest first.
+  /// Returns local manual entries in [window], newest first.
+  ///
+  /// Callers that assemble a time-bounded view must always provide [window].
+  /// [limit] remains explicit so a local cache cannot load an unbounded diary.
   Future<List<FastJournalEntry>> queryFastJournalEntries({
+    TimeWindow window = TimeWindow.all,
     required int limit,
   });
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../context_bridge/context_attachment_fact.dart';
 import '../journal/fast_journal_store.dart';
 
 /// On-device, local-first [HealthRepository] backed by SQLite via `sqflite`.
@@ -24,7 +25,8 @@ import '../journal/fast_journal_store.dart';
 /// the fields used for filtering (timestamps as epoch-millis, type/category
 /// keys) promoted to dedicated, indexed columns. This keeps schema churn low as
 /// models gain fields while keeping window/type queries index-backed.
-class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
+class SqfliteHealthRepository
+    implements HealthRepository, FastJournalStore, ContextAttachmentFactStore {
   SqfliteHealthRepository({
     required String path,
     DatabaseFactory? databaseFactory,
@@ -34,7 +36,7 @@ class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
-  static const int schemaVersion = 3;
+  static const int schemaVersion = 4;
 
   static const String tableEvents = 'health_events';
   static const String tableActivity = 'activity_samples';
@@ -43,6 +45,7 @@ class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
   static const String tableImportTombstones = 'health_import_tombstones';
   static const String tableInsights = 'ai_insights';
   static const String tableFastJournalEntries = 'fast_journal_entries';
+  static const String tableContextAttachmentFacts = 'context_attachment_facts';
 
   final String _path;
   final DatabaseFactory _databaseFactory;
@@ -252,6 +255,35 @@ class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
         'WHERE rise_started_at_us IS NOT NULL',
       );
     }
+    if (from < 4 && to >= 4) {
+      // Attachment facts are additive and deliberately separate from the
+      // versioned `health_events` JSON contract. A legacy build can leave this
+      // table alone without attempting to decode a new event shape.
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableContextAttachmentFacts (
+          id TEXT PRIMARY KEY,
+          journal_entry_id TEXT NOT NULL,
+          occurred_at_ms INTEGER NOT NULL,
+          candidate_id TEXT NOT NULL,
+          calculation_version TEXT NOT NULL,
+          data TEXT NOT NULL,
+          FOREIGN KEY (journal_entry_id)
+            REFERENCES $tableFastJournalEntries(id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_journal '
+        'ON $tableContextAttachmentFacts(journal_entry_id)',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_candidate '
+        'ON $tableContextAttachmentFacts(candidate_id, calculation_version)',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_context_attachment_occurred '
+        'ON $tableContextAttachmentFacts(occurred_at_ms DESC, id DESC)',
+      );
+    }
   }
 
   /// Adds one nullable schema-v2 identity column if a downgraded v1 binary
@@ -390,14 +422,18 @@ class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
 
   @override
   Future<List<FastJournalEntry>> queryFastJournalEntries({
+    TimeWindow window = TimeWindow.all,
     required int limit,
   }) async {
     if (limit <= 0) {
       throw ArgumentError.value(limit, 'limit', 'Expected a positive limit.');
     }
+    final (clause, args) = _windowClause('occurred_at_ms', window);
     final rows = await _database.query(
       tableFastJournalEntries,
       columns: const <String>['data'],
+      where: clause.isEmpty ? null : clause,
+      whereArgs: args,
       orderBy: 'occurred_at_ms DESC, id DESC',
       limit: limit,
     );
@@ -483,6 +519,55 @@ class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
       });
       return entry;
     });
+  }
+
+  // --- Context attachment facts ------------------------------------------
+
+  @override
+  Future<void> saveContextAttachmentFact(ContextAttachmentFact fact) async {
+    final data = fact.toJson();
+    await _database.insert(tableContextAttachmentFacts, <String, Object?>{
+      'id': fact.id,
+      'journal_entry_id': fact.journalEntryId,
+      'occurred_at_ms': _ms(fact.occurredAt),
+      'candidate_id': fact.candidateId,
+      'calculation_version': fact.calculationVersion,
+      'data': jsonEncode(data),
+    });
+  }
+
+  @override
+  Future<List<ContextAttachmentFact>> queryContextAttachmentFacts({
+    TimeWindow window = TimeWindow.all,
+    String? candidateId,
+  }) async {
+    final (timeClause, args) = _windowClause('occurred_at_ms', window);
+    final clauses = <String>[if (timeClause.isNotEmpty) timeClause];
+    if (candidateId != null) {
+      if (candidateId.trim().isEmpty) {
+        throw ArgumentError.value(
+          candidateId,
+          'candidateId',
+          'Expected a non-empty candidate identifier.',
+        );
+      }
+      clauses.add('candidate_id = ?');
+      args.add(candidateId);
+    }
+    final rows = await _database.query(
+      tableContextAttachmentFacts,
+      columns: const <String>['data'],
+      where: clauses.isEmpty ? null : clauses.join(' AND '),
+      whereArgs: args,
+      orderBy: 'occurred_at_ms ASC, id ASC',
+    );
+    return rows
+        .map(
+          (row) => ContextAttachmentFact.fromJson(
+            _decode(row['data']),
+          ),
+        )
+        .toList(growable: false);
   }
 
   // --- Activity samples ----------------------------------------------------
@@ -770,6 +855,7 @@ class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
       tableHeartRate,
       tableImportTombstones,
       tableInsights,
+      tableContextAttachmentFacts,
       tableFastJournalEntries,
     ].forEach(batch.delete);
     await batch.commit(noResult: true);

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/src/context_bridge/context_attachment_fact.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/sqflite_health_repository.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -32,6 +33,22 @@ void main() {
     timestamp: ts,
     type: HealthEventType.meal,
     payload: MealPayload(carbsGrams: carbs, description: 'm$id'),
+  );
+
+  ContextAttachmentFact attachmentFact({
+    String id = 'attachment-fact',
+    required String journalEntryId,
+    required String candidateId,
+  }) => ContextAttachmentFact(
+    id: id,
+    journalEntryId: journalEntryId,
+    candidateId: candidateId,
+    calculationVersion: 'recent-observed-rise-v1',
+    episodeStart: DateTime.utc(2026, 1, 2, 20),
+    peakAt: DateTime.utc(2026, 1, 2, 20, 15),
+    attachmentWindowStart: DateTime.utc(2026, 1, 2, 19, 45),
+    attachmentWindowEnd: DateTime.utc(2026, 1, 2, 20, 30),
+    occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
   );
 
   group('events', () {
@@ -167,6 +184,27 @@ void main() {
       );
     });
 
+    test('queries manual entries in an explicit bounded range', () async {
+      await repo.saveFastJournalEntry(
+        entry: entry('old', DateTime.utc(2026, 1, 1, 22)),
+      );
+      await repo.saveFastJournalEntry(
+        entry: entry('in-range', DateTime.utc(2026, 1, 2, 22)),
+      );
+
+      final entries = await repo.queryFastJournalEntries(
+        window: TimeWindow(
+          start: DateTime.utc(2026, 1, 2),
+          end: DateTime.utc(2026, 1, 3),
+        ),
+        limit: 20,
+      );
+
+      expect(entries.map((journalEntry) => journalEntry.id), <String>[
+        'in-range',
+      ]);
+    });
+
     test(
       'a v0.1.4-style health-event reader ignores the isolated journal table',
       () async {
@@ -186,6 +224,12 @@ void main() {
           await initial.saveFastJournalEntry(
             entry: entry('new-sleep', DateTime.utc(2026, 1, 2, 22)),
             requestedRise: rise(DateTime.utc(2026, 1, 2, 20)),
+          );
+          await initial.saveContextAttachmentFact(
+            attachmentFact(
+              journalEntryId: 'new-sleep',
+              candidateId: 'ctx-suggestion-for-legacy-test',
+            ),
           );
           await initial.close();
 
@@ -219,11 +263,58 @@ void main() {
           expect(journals.map((journalEntry) => journalEntry.id), <String>[
             'new-sleep',
           ]);
+          final facts = await recovered.queryContextAttachmentFacts(
+            window: TimeWindow(
+              start: DateTime.utc(2026, 1, 2),
+              end: DateTime.utc(2026, 1, 3),
+            ),
+          );
+          expect(facts.map((fact) => fact.candidateId), <String>[
+            'ctx-suggestion-for-legacy-test',
+          ]);
           await recovered.close();
         } finally {
           await initial.close();
           await directory.delete(recursive: true);
         }
+      },
+    );
+  });
+
+  group('context attachment facts', () {
+    test(
+      'round-trips bounded additive facts without changing health events',
+      () async {
+        await repo.saveFastJournalEntry(
+          entry: FastJournalEntry(
+            id: 'journal-linked',
+            kind: FastJournalKind.meal,
+            occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+            label: 'Dinner',
+          ),
+        );
+        final fact = attachmentFact(
+          journalEntryId: 'journal-linked',
+          candidateId: 'ctx-suggestion-1',
+        );
+
+        await repo.saveContextAttachmentFact(fact);
+
+        final inRange = await repo.queryContextAttachmentFacts(
+          window: TimeWindow(
+            start: DateTime.utc(2026, 1, 2, 20),
+            end: DateTime.utc(2026, 1, 2, 21),
+          ),
+          candidateId: 'ctx-suggestion-1',
+        );
+        final outOfRange = await repo.queryContextAttachmentFacts(
+          window: TimeWindow(end: DateTime.utc(2026, 1, 2, 20)),
+        );
+
+        expect(inRange, hasLength(1));
+        expect(inRange.single.toJson(), fact.toJson());
+        expect(outOfRange, isEmpty);
+        expect(await repo.queryEvents(), isEmpty);
       },
     );
   });
@@ -543,11 +634,27 @@ void main() {
         ),
       ),
     ]);
+    await repo.saveFastJournalEntry(
+      entry: FastJournalEntry(
+        id: 'clear-journal',
+        kind: FastJournalKind.meal,
+        occurredAt: DateTime.utc(2026, 1, 1),
+      ),
+    );
+    await repo.saveContextAttachmentFact(
+      attachmentFact(
+        id: 'clear-fact',
+        journalEntryId: 'clear-journal',
+        candidateId: 'ctx-clear',
+      ),
+    );
     await repo.clear();
     expect(await repo.queryEvents(), isEmpty);
     expect(await repo.queryHeartRateSamples(), isEmpty);
     expect(await repo.queryImportTombstones(), isEmpty);
     expect(await repo.queryInsights(), isEmpty);
+    expect(await repo.queryFastJournalEntries(limit: 20), isEmpty);
+    expect(await repo.queryContextAttachmentFacts(), isEmpty);
   });
 
   group('schema / migrations', () {

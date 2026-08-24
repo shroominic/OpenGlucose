@@ -323,9 +323,11 @@ class _InMemoryFastJournalStore implements FastJournalStore {
 
   @override
   Future<List<FastJournalEntry>> queryFastJournalEntries({
+    TimeWindow window = TimeWindow.all,
     required int limit,
   }) async {
-    final entries = _entries.values.toList(growable: false)
+    final entries = _entries.values.toList()
+      ..removeWhere((entry) => !window.contains(entry.occurredAt))
       ..sort((left, right) {
         final byTime = right.occurredAt.compareTo(left.occurredAt);
         return byTime != 0 ? byTime : right.id.compareTo(left.id);

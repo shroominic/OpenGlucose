@@ -55,6 +55,18 @@ Health Connect, background delivery,
 historical glucose import, source-overlap policy, and context display remain
 unimplemented.
 
+The app-owned local context bridge may assemble already-retained active-sensor
+readings, imported samples, and manual diary entries into a bounded in-memory
+presentation cache. It does not request permissions or start an import. Its
+models use opaque bridge IDs and omit sensor serial/device/storage identifiers,
+raw packets, platform external IDs, and provenance details. The bridge can
+read an additive local attachment-fact table that records only an opaque
+candidate ID, calculation version, journal row, and bounded timing window. It
+does not store a glucose value or causal interpretation, and observed-rise
+suggestions remain off until a separate product policy explicitly enables
+non-clinical wording. Chart/context presentation and attachment actions remain
+unimplemented.
+
 Display-only preferences may remain in platform preferences. In an actual web
 build, `PreferencesHealthStateStore` delegates to `shared_preferences`, whose
 web implementation uses origin-scoped browser `localStorage`; browser clearing,

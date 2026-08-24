@@ -124,9 +124,11 @@ class _SharedJournalRepository extends InMemoryHealthRepository
 
   @override
   Future<List<FastJournalEntry>> queryFastJournalEntries({
+    TimeWindow window = TimeWindow.all,
     required int limit,
   }) async {
-    final entries = _journal.values.toList(growable: false)
+    final entries = _journal.values.toList()
+      ..removeWhere((entry) => !window.contains(entry.occurredAt))
       ..sort((left, right) => right.occurredAt.compareTo(left.occurredAt));
     return entries.take(limit).toList(growable: false);
   }

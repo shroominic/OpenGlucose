@@ -7,6 +7,8 @@ import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/apple_health_context_import.dart';
 import 'package:openglucose/src/apple_health_context_import_state_store_factory.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/context_bridge/context_bridge.dart';
+import 'package:openglucose/src/context_bridge/context_bridge_scope.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
@@ -91,6 +93,12 @@ Future<_BootstrapResult> _bootstrap() async {
     readsAllowed: !controller.isMockDriver,
   );
   await healthContextImport.initialize();
+  final contextBridge = ContextBridge(
+    controller: controller,
+    repositoryLifecycle: healthRepositoryLifecycle,
+    contextChangeSignal: healthContextImport,
+  );
+  unawaited(contextBridge.start());
   final messages = MessageController(
     preferences: preferences,
     messages: defaultMessageCatalog,
@@ -107,6 +115,7 @@ Future<_BootstrapResult> _bootstrap() async {
     preferences: preferences,
     healthExport: healthExport,
     healthContextImport: healthContextImport,
+    contextBridge: contextBridge,
     healthRepositoryLifecycle: healthRepositoryLifecycle,
     messages: messages,
   );
@@ -116,6 +125,7 @@ typedef _BootstrapResult = ({
   CgmAppController controller,
   HealthExportController healthExport,
   AppleHealthContextImportController healthContextImport,
+  ContextBridge contextBridge,
   AppHealthRepositoryLifecycle healthRepositoryLifecycle,
   MessageController messages,
   SharedPreferences preferences,
@@ -150,7 +160,10 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   void dispose() {
     unawaited(
       _future.then<void>(
-        (result) => result.healthRepositoryLifecycle.dispose(),
+        (result) async {
+          result.contextBridge.dispose();
+          await result.healthRepositoryLifecycle.dispose();
+        },
         onError: (Object _, StackTrace _) {},
       ),
     );
@@ -177,6 +190,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           controller: result.controller,
           healthExport: result.healthExport,
           healthContextImport: result.healthContextImport,
+          contextBridge: result.contextBridge,
           healthRepositoryLifecycle: result.healthRepositoryLifecycle,
           preferences: result.preferences,
           messageController: result.messages,
@@ -349,6 +363,7 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.healthExport,
     this.healthContextImport,
     this.healthRepositoryLifecycle,
+    this.contextBridge,
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
@@ -358,6 +373,7 @@ class OpenGlucoseApp extends StatelessWidget {
   final HealthExportController healthExport;
   final AppleHealthContextImportController? healthContextImport;
   final AppHealthRepositoryLifecycle? healthRepositoryLifecycle;
+  final ContextBridge? contextBridge;
   final SharedPreferences preferences;
 
   /// Optional contextual-messaging engine. When null (e.g. in some tests) the
@@ -414,17 +430,20 @@ class OpenGlucoseApp extends StatelessWidget {
         share: archivedSensorShareAction ?? _shareArchivedSensorFile,
         child: HealthExportScope(
           controller: healthExport,
-          child: AppleHealthContextImportScope(
-            controller: healthContextImport,
-            child: HealthRepositoryLifecycleScope(
-              lifecycle: healthRepositoryLifecycle,
-              child: _OnboardingGate(
-                store: OnboardingStore(preferences),
-                controller: controller,
-                unit: controller.displayPreferences.unit,
-                home: CgmHomePage(
+          child: ContextBridgeScope(
+            bridge: contextBridge,
+            child: AppleHealthContextImportScope(
+              controller: healthContextImport,
+              child: HealthRepositoryLifecycleScope(
+                lifecycle: healthRepositoryLifecycle,
+                child: _OnboardingGate(
+                  store: OnboardingStore(preferences),
                   controller: controller,
-                  messageController: messageController,
+                  unit: controller.displayPreferences.unit,
+                  home: CgmHomePage(
+                    controller: controller,
+                    messageController: messageController,
+                  ),
                 ),
               ),
             ),
