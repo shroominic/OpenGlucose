@@ -18,6 +18,44 @@ DateTime? clampedDisplayRecordedAt(DateTime? recordedAt, {DateTime? now}) {
   return localRecordedAt;
 }
 
+/// The age at which the foreground refresher must request a live update.
+///
+/// Keep this in the presentation layer so the refresher and every live
+/// surface use the same safe freshness rule.
+const Duration kLiveReadingRefreshThreshold = Duration(minutes: 2);
+
+/// The permitted lag between the sensor session counter and its latest value.
+const int kLiveReadingSensorMinuteLagThreshold = 2;
+
+/// Returns true when a reading needs a refresh before a surface calls it live.
+///
+/// A recorded timestamp and a sensor-relative minute are independent checks.
+/// If either known value is too old, this returns true. A reading with neither
+/// value is also not current enough for a live surface.
+bool needsLiveReadingRefresh(
+  CgmSessionSnapshot snapshot,
+  CgmReading? latestReading, {
+  DateTime? now,
+}) {
+  if (latestReading == null) {
+    return true;
+  }
+  final effectiveNow = now ?? DateTime.now();
+  final recordedAt = latestReading.recordedAt;
+  if (recordedAt != null &&
+      effectiveNow.difference(recordedAt) >= kLiveReadingRefreshThreshold) {
+    return true;
+  }
+  final latestMinute = latestReading.sensorMinute;
+  final elapsedMinutes = snapshot.sessionInfo.elapsedMinutes;
+  if (latestMinute != null &&
+      elapsedMinutes != null &&
+      elapsedMinutes - latestMinute >= kLiveReadingSensorMinuteLagThreshold) {
+    return true;
+  }
+  return recordedAt == null && latestMinute == null;
+}
+
 String readingTimeText(CgmReading? reading, {DateTime? now}) {
   final recordedAt = clampedDisplayRecordedAt(reading?.recordedAt, now: now);
   if (recordedAt == null) {

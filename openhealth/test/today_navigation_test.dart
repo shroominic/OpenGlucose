@@ -195,9 +195,121 @@ void main() {
       );
       await tester.pump();
       expect(tester.takeException(), isNull, reason: 'timeline width $width');
+      await tester.tap(
+        _navigationDestination(
+          Icons.insights_outlined,
+          Icons.insights_rounded,
+        ),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull, reason: 'trends width $width');
     }
 
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Trends stays usable on a live 375 pixel phone layout', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(375, 812));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final fixture = await _fixture();
+    addTearDown(fixture.controller.dispose);
+    await fixture.controller.connect(fixture.driver.scenarioSensor);
+
+    await tester.pumpWidget(fixture.app);
+    await tester.pump();
+    await tester.tap(
+      _navigationDestination(Icons.insights_outlined, Icons.insights_rounded),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey<String>('trendsDestinationContent')),
+      findsOneWidget,
+    );
+    expect(find.text('Trends'), findsWidgets);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('wide navigation uses a rail and switches to Trends', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final fixture = await _fixture();
+    addTearDown(fixture.controller.dispose);
+
+    await tester.pumpWidget(fixture.app);
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey<String>('primaryNavigationRail')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('primaryNavigationBar')),
+      findsNothing,
+    );
+    await tester.tap(
+      _railDestination(Icons.insights_outlined, Icons.insights_rounded),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey<String>('trendsDestinationContent')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('navigation exposes named destinations through semantics', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final semantics = tester.ensureSemantics();
+    final fixture = await _fixture();
+    addTearDown(fixture.controller.dispose);
+
+    await tester.pumpWidget(fixture.app);
+    await tester.pump();
+
+    expect(find.bySemanticsLabel('Primary navigation'), findsOneWidget);
+    final navigation = find.byKey(
+      const ValueKey<String>('primaryNavigationBar'),
+    );
+    expect(
+      find.descendant(
+        of: navigation,
+        matching: find.bySemanticsLabel(RegExp('^Today')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: navigation,
+        matching: find.bySemanticsLabel(RegExp('^Timeline')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: navigation,
+        matching: find.bySemanticsLabel(RegExp('^Trends')),
+      ),
+      findsOneWidget,
+    );
+    expect(find.bySemanticsLabel('Today content'), findsOneWidget);
+
+    await tester.tap(
+      _navigationDestination(Icons.insights_outlined, Icons.insights_rounded),
+    );
+    await tester.pump();
+    expect(find.bySemanticsLabel('Trends content'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    semantics.dispose();
   });
 }
 
@@ -240,6 +352,21 @@ class _Fixture {
 
 Finder _navigationDestination(IconData unselected, IconData selected) {
   final navigation = find.byKey(const ValueKey<String>('primaryNavigationBar'));
+  return _destinationIn(navigation, unselected, selected);
+}
+
+Finder _railDestination(IconData unselected, IconData selected) {
+  final navigation = find.byKey(
+    const ValueKey<String>('primaryNavigationRail'),
+  );
+  return _destinationIn(navigation, unselected, selected);
+}
+
+Finder _destinationIn(
+  Finder navigation,
+  IconData unselected,
+  IconData selected,
+) {
   final unselectedFinder = find.descendant(
     of: navigation,
     matching: find.byIcon(unselected),

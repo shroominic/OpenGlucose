@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
+import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/today_navigation.dart';
 import 'package:openglucose/src/today_state.dart';
 
@@ -97,6 +98,71 @@ void main() {
           now: _now,
         ),
         TodayDataState.live,
+      );
+    });
+
+    test('uses shared freshness and lifecycle rules before live state', () {
+      final active = catalog.buildSnapshot(MockScenario.activeNormal);
+      final latest = active.latestReading!;
+      final timestampLag = active.copyWith(
+        latestReading: latest.copyWith(
+          recordedAt: _now.subtract(kLiveReadingRefreshThreshold),
+        ),
+      );
+      final sensorMinuteLag = active.copyWith(
+        sessionInfo: active.sessionInfo.copyWith(
+          elapsedMinutes:
+              latest.sensorMinute! + kLiveReadingSensorMinuteLagThreshold,
+        ),
+      );
+      final clockExpired = active.copyWith(
+        sessionInfo: active.sessionInfo.copyWith(
+          sessionStart: _now.subtract(kSensorLifeDuration),
+        ),
+      );
+
+      expect(
+        needsLiveReadingRefresh(
+          timestampLag,
+          timestampLag.latestReading,
+          now: _now,
+        ),
+        isTrue,
+      );
+      expect(
+        classifyTodayDataState(
+          snapshot: timestampLag,
+          displayReading: timestampLag.latestReading,
+          retainedHistoryCount: 0,
+          now: _now,
+        ),
+        TodayDataState.stale,
+      );
+      expect(
+        needsLiveReadingRefresh(
+          sensorMinuteLag,
+          sensorMinuteLag.latestReading,
+          now: _now,
+        ),
+        isTrue,
+      );
+      expect(
+        classifyTodayDataState(
+          snapshot: sensorMinuteLag,
+          displayReading: sensorMinuteLag.latestReading,
+          retainedHistoryCount: 0,
+          now: _now,
+        ),
+        TodayDataState.stale,
+      );
+      expect(
+        classifyTodayDataState(
+          snapshot: clockExpired,
+          displayReading: clockExpired.latestReading,
+          retainedHistoryCount: 0,
+          now: _now,
+        ),
+        TodayDataState.inactiveSensor,
       );
     });
   });

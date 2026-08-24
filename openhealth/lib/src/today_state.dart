@@ -33,16 +33,16 @@ TodayDataState classifyTodayDataState({
         : TodayDataState.noActiveSensor;
   }
 
-  if (snapshot.health.expired || snapshot.sessionInfo.sessionStopped) {
-    return TodayDataState.inactiveSensor;
-  }
-
-  final warmup = computeWarmupStatus(
+  final lifecycle = computeSensorLifecycle(
     snapshot,
     latestReading: displayReading,
     now: now,
   );
-  if (warmup?.phase == WarmupPhase.warming) {
+  if (lifecycle.isExpired) {
+    return TodayDataState.inactiveSensor;
+  }
+
+  if (lifecycle.isWarmingUp) {
     return TodayDataState.warmup;
   }
 
@@ -54,6 +54,10 @@ TodayDataState classifyTodayDataState({
       snapshot.health.error ||
       snapshot.health.malfunction ||
       snapshot.stage != CgmSyncStage.ready) {
+    return TodayDataState.stale;
+  }
+
+  if (needsLiveReadingRefresh(snapshot, displayReading, now: now)) {
     return TodayDataState.stale;
   }
 
