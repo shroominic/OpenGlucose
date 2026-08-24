@@ -515,6 +515,27 @@ class SqfliteHealthRepository implements HealthRepository {
         .toList(growable: false);
   }
 
+  @override
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  }) {
+    final (table, timestampColumn) = switch (kind) {
+      HealthSampleKind.activity => (tableActivity, 'start_ms'),
+      HealthSampleKind.sleep => (tableSleep, 'start_ms'),
+      HealthSampleKind.heartRate => (tableHeartRate, 'timestamp_ms'),
+    };
+    return _database.delete(
+      table,
+      where: '$timestampColumn < ? AND identity_platform = ?',
+      whereArgs: <Object?>[
+        _ms(cutoff),
+        platform.key,
+      ],
+    );
+  }
+
   // --- Imported-record tombstones -----------------------------------------
 
   @override

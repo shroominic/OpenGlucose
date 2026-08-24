@@ -237,6 +237,66 @@ void main() {
     );
 
     test(
+      'expiry removes only aged records for the requested source platform',
+      () async {
+        await repo.upsertHeartRateSamples([
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 60,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'expired-apple',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 2, 8),
+            bpm: 61,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'recent-apple',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 62,
+            source: DataSource.healthConnect,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.healthConnect,
+                externalId: 'expired-other',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 63,
+            source: DataSource.appleHealth,
+          ),
+        ]);
+
+        final removed = await repo.purgeImportedSamplesBefore(
+          kind: HealthSampleKind.heartRate,
+          platform: HealthSourcePlatform.appleHealth,
+          cutoff: DateTime.utc(2026, 1, 2),
+        );
+
+        expect(removed, 1);
+        final remaining = await repo.queryHeartRateSamples();
+        expect(remaining, hasLength(3));
+        expect(
+          remaining.map((sample) => sample.provenance?.identity.externalId),
+          containsAll(<String?>['recent-apple', 'expired-other', null]),
+        );
+      },
+    );
+
+    test(
       'tombstone removes an imported record, then a re-import clears it',
       () async {
         const identity = HealthImportIdentity(
