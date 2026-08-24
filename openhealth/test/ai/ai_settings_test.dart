@@ -255,10 +255,67 @@ void main() {
       );
       expect(find.textContaining('journal event counts'), findsOneWidget);
       expect(find.text('Cancel'), findsOneWidget);
+      final semantics = tester.ensureSemantics();
+      final disclosureLabel = tester
+          .getSemantics(
+            find.byKey(const ValueKey<String>('aiRemoteGenerationDisclosure')),
+          )
+          .label;
+      expect(disclosureLabel, contains('never sends raw readings'));
+      expect(
+        disclosureLabel,
+        contains('https://api.openai.com/v1/chat/completions'),
+      );
+      expect(disclosureLabel, contains('aggregate glucose statistics'));
+      expect(disclosureLabel, contains('journal event counts'));
+      semantics.dispose();
 
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(find.text('Send aggregates to api.openai.com?'), findsNothing);
+    });
+
+    testWidgets('captures a redacted remote-generation disclosure dialog', (
+      tester,
+    ) async {
+      await tester.binding.setSurfaceSize(const Size(800, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AiSettingsPane(
+              recentReadings: _generationReadings(),
+              repositoryOpener: _openMemoryRepository,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Custom cloud provider'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Enable cloud AI'));
+      await tester.enterText(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is TextField &&
+              widget.decoration?.labelText == 'API key (stored securely)',
+        ),
+        'sk-preview',
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Generate aggregate insight'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Generate aggregate insight'));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        find.byType(AlertDialog),
+        matchesGoldenFile(
+          '../../../docs/architecture/adr/'
+          'ai-remote-generation-disclosure-redacted.png',
+        ),
+      );
     });
 
     test('AiController builds NullAiProvider when disabled', () async {
@@ -409,6 +466,62 @@ void main() {
           contains('aggregate glucose statistics'),
         );
         expect(disclosure.dataCategories, contains('journal event counts'));
+        final disclosedCategories = List<String>.from(
+          disclosure.dataCategories,
+        );
+        expect(
+          () => disclosure.dataCategories.add('raw readings'),
+          throwsUnsupportedError,
+        );
+        expect(disclosure.dataCategories, orderedEquals(disclosedCategories));
+        await repository.close();
+      },
+    );
+
+    test(
+      'a public disclosure mutation cannot change consent-bound categories',
+      () async {
+        final store = await newStore();
+        await store.saveSettings(const AiSettings(enabled: true));
+        await store.writeApiKey('sk-secret');
+        final repository = await _openMemoryRepository();
+        final requests = <AiRequest>[];
+        final controller = AiController(
+          store: store,
+          repository: repository,
+          transport: (request, _) async {
+            requests.add(request);
+            return _validObservationResponse;
+          },
+        );
+
+        final preparation = await controller.prepareRecentInsightGeneration(
+          readings: _generationReadings(),
+        );
+        expect(preparation, isNotNull);
+        final originalCategories = List<String>.from(
+          preparation!.disclosure.dataCategories,
+        );
+        expect(
+          () => preparation.disclosure.dataCategories.add('raw readings'),
+          throwsUnsupportedError,
+        );
+        expect(
+          preparation.disclosure.dataCategories,
+          orderedEquals(originalCategories),
+        );
+
+        final receipt = controller.confirmRemoteGeneration(preparation);
+        await controller.generateRecentInsight(
+          preparation: preparation,
+          consentReceipt: receipt,
+        );
+
+        expect(requests, hasLength(1));
+        expect(
+          preparation.disclosure.dataCategories,
+          orderedEquals(originalCategories),
+        );
         await repository.close();
       },
     );

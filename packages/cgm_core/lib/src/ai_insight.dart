@@ -1,3 +1,4 @@
+import 'ai/ai_disclaimer.dart';
 import 'ai/ai_output_contract.dart';
 import 'timeline.dart';
 
@@ -121,10 +122,25 @@ class AiInsightStatement {
         'Stored AI statement did not use a validated evidence mapping.',
       );
     }
+    // Older records can contain a provider-rounded number that passed the
+    // comparison tolerance at write time. Keep the evidence mapping, but
+    // canonicalize the claim before the record is returned or serialized
+    // again. This also keeps zero and fractional values exact across a disk
+    // round trip.
+    final canonicalClaims = claims
+        .map((claim) {
+          final source = evidenceById[claim.evidenceId]!;
+          return AiNumericClaim(
+            evidenceId: source.id,
+            value: source.value,
+            unit: source.unit,
+          );
+        })
+        .toList(growable: false);
     return AiInsightStatement(
       text: text,
       evidence: evidence,
-      numericClaims: claims,
+      numericClaims: canonicalClaims,
     );
   }
 }
@@ -259,27 +275,6 @@ class AiInsight implements TimelineEntry {
       return null;
     }
 
-    List<EvidenceRef> parseEvidence(Object? value) {
-      if (value is! List) return const <EvidenceRef>[];
-      final evidence = <EvidenceRef>[];
-      for (final item in value) {
-        if (item is! Map) continue;
-        try {
-          evidence.add(
-            EvidenceRef.fromJson(
-              item.map<String, Object?>(
-                (key, nestedValue) => MapEntry('$key', nestedValue),
-              ),
-            ),
-          );
-        } on AiOutputValidationException {
-          // Legacy/corrupt records remain readable without pretending they
-          // carry validated evidence.
-        }
-      }
-      return evidence;
-    }
-
     AiGenerationProvenance? parseProvenance(Object? value) {
       if (value is! Map) return null;
       return AiGenerationProvenance.fromJson(
@@ -289,11 +284,19 @@ class AiInsight implements TimelineEntry {
       );
     }
 
-    List<AiInsightStatement> parseStatements(Object? value) {
-      if (value is! List) return const <AiInsightStatement>[];
+    ({List<AiInsightStatement> statements, bool allValid}) parseStatements(
+      Object? value,
+    ) {
+      if (value is! List || value.isEmpty) {
+        return (statements: const <AiInsightStatement>[], allValid: false);
+      }
       final statements = <AiInsightStatement>[];
+      var allValid = true;
       for (final item in value) {
-        if (item is! Map) continue;
+        if (item is! Map) {
+          allValid = false;
+          continue;
+        }
         try {
           statements.add(
             AiInsightStatement.fromJson(
@@ -303,12 +306,29 @@ class AiInsight implements TimelineEntry {
             ),
           );
         } on AiOutputValidationException {
-          // Corrupt statement mappings remain unreadable rather than being
-          // shown as evidence-bound output.
+          // Do not use a partial mapping to authorize any stored provider
+          // prose. A complete v2 statement list is required for display.
+          allValid = false;
         }
       }
-      return statements;
+      return (statements: statements, allValid: allValid);
     }
+
+    final provenance = parseProvenance(json['provenance']);
+    final parsedStatements = parseStatements(json['statements']);
+    final hasValidatedV2Statements =
+        provenance?.contractVersion == aiObservationContractVersion &&
+        parsedStatements.allValid &&
+        parsedStatements.statements.isNotEmpty;
+    final validatedEvidence = <String, EvidenceRef>{
+      for (final statement in parsedStatements.statements)
+        for (final evidence in statement.evidence) evidence.id: evidence,
+    };
+    final body = hasValidatedV2Statements
+        ? _renderStoredInsightBody(parsedStatements.statements)
+        : provenance == null
+        ? json['body'] as String? ?? ''
+        : _legacyAiInsightBody;
 
     return AiInsight(
       id: json['id'] as String? ?? '',
@@ -317,7 +337,9 @@ class AiInsight implements TimelineEntry {
           DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
       category: AiInsightCategory.fromKey(json['category'] as String?),
       title: json['title'] as String? ?? '',
-      body: json['body'] as String? ?? '',
+      // Do not display a stored v1 or corrupt-v2 provider body. A v2 record
+      // displays only text re-rendered from its complete local evidence map.
+      body: body,
       windowStart: parseOpt(json['windowStart']),
       windowEnd: parseOpt(json['windowEnd']),
       confidence: (json['confidence'] as num?)?.toDouble(),
@@ -325,9 +347,13 @@ class AiInsight implements TimelineEntry {
       tags: ((json['tags'] as List<dynamic>?) ?? const <dynamic>[])
           .map((value) => '$value')
           .toList(growable: false),
-      evidence: parseEvidence(json['evidence']),
-      statements: parseStatements(json['statements']),
-      provenance: parseProvenance(json['provenance']),
+      evidence: hasValidatedV2Statements
+          ? validatedEvidence.values.toList(growable: false)
+          : const <EvidenceRef>[],
+      statements: hasValidatedV2Statements
+          ? parsedStatements.statements
+          : const <AiInsightStatement>[],
+      provenance: provenance,
     );
   }
 }
@@ -347,3 +373,14 @@ String _formatStoredValue(num value) {
   }
   return value.toString();
 }
+
+String _renderStoredInsightBody(List<AiInsightStatement> statements) =>
+    (StringBuffer(statements.map((statement) => statement.text).join('\n\n'))
+          ..write('\n\n')
+          ..write(AiDisclaimer.short))
+        .toString();
+
+const String _legacyAiInsightBody =
+    'This older AI insight is not displayed because it has no verified '
+    'evidence mapping.\n\n'
+    '${AiDisclaimer.short}';

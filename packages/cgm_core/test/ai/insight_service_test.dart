@@ -180,6 +180,73 @@ void main() {
       expect(stored.single.evidence.single.id, 'journal.meal_count');
     });
 
+    test(
+      'canonicalizes zero and fractional claims before a JSON disk round trip',
+      () async {
+        final provider = _FakeProvider()
+          ..response = jsonEncode(<String, Object?>{
+            'formatVersion': aiObservationContractVersion,
+            'kind': 'observation',
+            'statements': <Object?>[
+              <String, Object?>{
+                'template': 'recordedEvidence',
+                'evidenceIds': <String>['journal.meal_count'],
+                'numericClaims': <Object?>[
+                  <String, Object?>{
+                    'evidenceId': 'journal.meal_count',
+                    'value': 0.0005,
+                    'unit': 'events',
+                  },
+                ],
+              },
+              <String, Object?>{
+                'template': 'recordedEvidence',
+                'evidenceIds': <String>['glucose.average'],
+                'numericClaims': <Object?>[
+                  <String, Object?>{
+                    'evidenceId': 'glucose.average',
+                    // This rounded provider value is accepted by the input
+                    // comparison tolerance. Persisted data must use the
+                    // exact local aggregate instead.
+                    'value': 124.8,
+                    'unit': 'mg/dL',
+                  },
+                ],
+              },
+            ],
+          });
+        final service = InsightService(
+          repository: repo,
+          provider: provider,
+          idFactory: () => 'canonical-id',
+          clock: () => DateTime.utc(2026, 6, 1, 10),
+        );
+
+        final insight = await service.generateSummaryInsight(
+          readings: _synthReadings(start, 145),
+          windowStart: start,
+          windowEnd: end,
+        );
+        final diskJson =
+            jsonDecode(jsonEncode(insight!.toJson())) as Map<String, Object?>;
+        final restored = AiInsight.fromJson(diskJson);
+        final zero = restored.statements.singleWhere(
+          (statement) => statement.evidence.single.id == 'journal.meal_count',
+        );
+        final fractional = restored.statements.singleWhere(
+          (statement) => statement.evidence.single.id == 'glucose.average',
+        );
+
+        expect(zero.evidence.single.value, 0);
+        expect(zero.numericClaims.single.value, 0);
+        expect(
+          fractional.numericClaims.single.value,
+          fractional.evidence.single.value,
+        );
+        expect(fractional.numericClaims.single.value, isNot(124.8));
+      },
+    );
+
     test('disabled provider returns null and does no I/O', () async {
       final provider = _FakeProvider(enabled: false);
       final service = InsightService(repository: repo, provider: provider);

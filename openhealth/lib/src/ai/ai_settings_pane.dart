@@ -200,20 +200,25 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                   ..write('?'))
                 .toString(),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              const Text(
-                'This real generation sends only these categories. It never '
-                'sends raw readings or journal note text.',
-              ),
-              const SizedBox(height: 12),
-              Text('Recipient endpoint: ${disclosure.endpoint}'),
-              const SizedBox(height: 12),
-              for (final category in disclosure.dataCategories)
-                Text('• $category'),
-            ],
+          content: Semantics(
+            key: const ValueKey<String>('aiRemoteGenerationDisclosure'),
+            container: true,
+            label: _remoteGenerationDisclosureLabel(disclosure),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  'This real generation sends only these categories. It never '
+                  'sends raw readings or journal note text.',
+                ),
+                const SizedBox(height: 12),
+                Text('Recipient endpoint: ${disclosure.endpoint}'),
+                const SizedBox(height: 12),
+                for (final category in disclosure.dataCategories)
+                  Text('• $category'),
+              ],
+            ),
           ),
           actions: <Widget>[
             TextButton(
@@ -427,6 +432,14 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     );
   }
 }
+
+String _remoteGenerationDisclosureLabel(
+  AiRemoteGenerationDisclosure disclosure,
+) =>
+    'Remote generation privacy disclosure. This real generation sends only '
+    'the listed aggregate categories and never sends raw readings or journal '
+    'note text. Recipient endpoint: ${disclosure.endpoint}. Data categories: '
+    '${disclosure.dataCategories.join(', ')}.';
 
 class _ComingSoonBadge extends StatelessWidget {
   const _ComingSoonBadge();

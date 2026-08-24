@@ -78,6 +78,7 @@ unrecorded failed-check bypasses are not waivers. Expired waivers block release.
 | Dependency/secret scanning       | Supply chain            | Enforced in repository; external execution unverified    | `.github/workflows/security.yml` and `.github/dependabot.yml`              | `@shroominic` | —                                 |
 | Private vulnerability intake     | Security reports        | Enabled and verified                                     | GitHub repository API reported the setting enabled 2026-08-14              | `@shroominic` | —                                 |
 | Accessibility verification       | Mobile UI               | Planned                                                  | No established semantics/device lane                                       | `@shroominic` | Before production-readiness claim |
+| AI remote-generation boundary    | Restricted health data/AI | Contract and local consent tests enforced; independent R2 review pending | `docs/architecture/adr/0004-ai-evidence-safety-contract.md`, redacted disclosure evidence | `@shroominic` | Before public distribution |
 | Protected branch/required checks | Integration             | Unverified external                                      | Requires repository-admin evidence                                         | `@shroominic` | Before merging the feature train  |
 
 Update this register as controls become enforced, verified, waived, or no longer

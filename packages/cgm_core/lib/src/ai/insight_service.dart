@@ -183,15 +183,30 @@ class InsightService {
         evidence.id: evidence,
     };
     final statements = draft.statements
-        .map(
-          (statement) => AiInsightStatement(
+        .map((statement) {
+          final statementEvidence = statement.evidenceIds
+              .map((id) => evidenceById[id]!)
+              .toList(growable: false);
+          // The contract permits a small comparison tolerance for provider
+          // JSON number formatting. Persist only the exact local values,
+          // however, so future display and disk round trips cannot retain a
+          // provider-rounded (or zero-adjacent) numeric claim.
+          final canonicalClaims = statement.numericClaims
+              .map((claim) {
+                final evidence = evidenceById[claim.evidenceId]!;
+                return AiNumericClaim(
+                  evidenceId: evidence.id,
+                  value: evidence.value,
+                  unit: evidence.unit,
+                );
+              })
+              .toList(growable: false);
+          return AiInsightStatement(
             text: statement.render(evidenceById),
-            evidence: statement.evidenceIds
-                .map((id) => evidenceById[id]!)
-                .toList(growable: false),
-            numericClaims: statement.numericClaims,
-          ),
-        )
+            evidence: statementEvidence,
+            numericClaims: canonicalClaims,
+          );
+        })
         .toList(growable: false);
     final citedEvidence = statements
         .expand((statement) => statement.evidence)

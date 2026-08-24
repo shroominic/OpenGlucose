@@ -304,14 +304,19 @@ class AiProviderConfig {
 
 /// The information a host must show before it sends an observation remotely.
 class AiRemoteGenerationDisclosure {
-  const AiRemoteGenerationDisclosure({
+  AiRemoteGenerationDisclosure({
     required this.endpointHostname,
     required this.endpoint,
-    required this.dataCategories,
-  });
+    required List<String> dataCategories,
+  }) : dataCategories = List<String>.unmodifiable(dataCategories);
 
   final String endpointHostname;
   final String endpoint;
+
+  /// A frozen copy of the categories shown at consent time.
+  ///
+  /// Callers must not be able to alter the public disclosure after the
+  /// preparation has bound these categories into its one-use consent receipt.
   final List<String> dataCategories;
 }
 

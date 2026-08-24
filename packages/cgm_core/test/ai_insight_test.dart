@@ -116,6 +116,11 @@ void main() {
         aiPromptTemplateVersion,
       );
       expect(restored.provenance!.runtimeVersion, 'Android 16');
+      expect(
+        restored.body,
+        'Recorded average glucose: 111 mg/dL in this window.\n\n'
+        '${AiDisclaimer.short}',
+      );
     });
 
     test('copyWith can clear optional fields', () {
@@ -151,6 +156,7 @@ void main() {
           'createdAt': end.toIso8601String(),
           'category': 'summary',
           'title': 'Summary',
+          'body': 'Take insulin now.',
           'statements': <Object?>[
             <String, Object?>{
               'text': 'Take insulin now.',
@@ -175,10 +181,50 @@ void main() {
               ],
             },
           ],
+          'provenance': AiGenerationProvenance(
+            contractVersion: aiObservationContractVersion,
+            promptTemplateVersion: aiPromptTemplateVersion,
+            providerKind: AiProviderKind.openAiCompatibleRemote,
+            executionLocation: AiExecutionLocation.remote,
+            locale: 'en',
+            model: 'test-model',
+            modelVersion: 'test-model',
+            runtimeVersion: 'test-os',
+          ).toJson(),
         });
 
         expect(restored.statements, isEmpty);
+        expect(restored.evidence, isEmpty);
+        expect(restored.body, isNot(contains('Take insulin now.')));
+        expect(restored.body, contains('not displayed'));
       },
     );
+
+    test('suppresses an arbitrary legacy v1 AI body before display', () {
+      final restored = AiInsight.fromJson(<String, Object?>{
+        'id': 'legacy-ai',
+        'createdAt': DateTime.utc(2026, 2, 2).toIso8601String(),
+        'category': 'recommendation',
+        'title': 'Provider title',
+        'body': 'Take insulin now and change your treatment.',
+        'provenance': AiGenerationProvenance(
+          contractVersion: 1,
+          promptTemplateVersion: 'observation-evidence-v1',
+          providerKind: AiProviderKind.openAiCompatibleRemote,
+          executionLocation: AiExecutionLocation.remote,
+          locale: 'en',
+          model: 'legacy-model',
+          modelVersion: 'legacy-model',
+          runtimeVersion: 'legacy-os',
+        ).toJson(),
+      });
+
+      expect(restored.statements, isEmpty);
+      expect(restored.evidence, isEmpty);
+      expect(restored.body, isNot(contains('Take insulin now')));
+      expect(restored.body, isNot(contains('treatment')));
+      expect(restored.body, contains('no verified evidence mapping'));
+      expect(restored.body, contains(AiDisclaimer.short));
+    });
   });
 }

@@ -3,7 +3,9 @@
 OpenGlucose is local-first, not data-free. This document separates required
 policy from the checked-in implementation status and outstanding verification.
 Platform store disclosures and applicable legal obligations require an assigned
-privacy owner before public distribution.
+privacy owner before public distribution. The accountable privacy/safety owner
+for the AI remote-generation boundary is `@shroominic`; independent R2 review
+is still required before public distribution.
 
 ## Classification and flows
 
@@ -154,5 +156,5 @@ fragments, and non-HTTPS endpoints are rejected.
 
 This is not a production-safety claim. Full delete/export verification, exact
 host OS-version capture, approved data receipts, expanded adversarial
-evaluation, an accountable privacy/safety owner, and independent R2 review are
-still required before public distribution.
+evaluation, and independent R2 review are still required before public
+distribution.
