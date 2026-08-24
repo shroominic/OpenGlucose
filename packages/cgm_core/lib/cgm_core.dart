@@ -10,5 +10,6 @@ export 'src/health_repository.dart';
 export 'src/health_samples.dart';
 export 'src/in_memory_health_repository.dart';
 export 'src/meal_response.dart';
+export 'src/recent_observed_rise.dart';
 export 'src/timeline.dart';
 export 'src/weekly_recap.dart';

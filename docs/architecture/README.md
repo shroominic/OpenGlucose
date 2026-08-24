@@ -32,6 +32,10 @@ metadata, session information, capabilities, diagnostics, structured logs, and
 the driver/session interfaces. It must not import a vendor driver, BLE plugin,
 UI framework, persistence implementation, or network client.
 
+Its deterministic local analytics contracts include the
+[meal-response evidence](meal-response-evidence.md) and
+[recent-observed-rise candidate](recent-observed-rise-candidate.md) boundaries.
+
 ### `packages/cgm_ble`
 
 Defines scan, connection, bonding, service, characteristic, and notification
