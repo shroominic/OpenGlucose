@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../journal/fast_journal_store.dart';
+
 /// On-device, local-first [HealthRepository] backed by SQLite via `sqflite`.
 ///
 /// Why sqflite (vs. hive/isar): the repository's core access pattern is
@@ -22,7 +24,7 @@ import 'package:sqflite/sqflite.dart';
 /// the fields used for filtering (timestamps as epoch-millis, type/category
 /// keys) promoted to dedicated, indexed columns. This keeps schema churn low as
 /// models gain fields while keeping window/type queries index-backed.
-class SqfliteHealthRepository implements HealthRepository {
+class SqfliteHealthRepository implements HealthRepository, FastJournalStore {
   SqfliteHealthRepository({
     required String path,
     DatabaseFactory? databaseFactory,
@@ -32,7 +34,7 @@ class SqfliteHealthRepository implements HealthRepository {
        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
-  static const int schemaVersion = 2;
+  static const int schemaVersion = 3;
 
   static const String tableEvents = 'health_events';
   static const String tableActivity = 'activity_samples';
@@ -40,6 +42,7 @@ class SqfliteHealthRepository implements HealthRepository {
   static const String tableHeartRate = 'heart_rate_samples';
   static const String tableImportTombstones = 'health_import_tombstones';
   static const String tableInsights = 'ai_insights';
+  static const String tableFastJournalEntries = 'fast_journal_entries';
 
   final String _path;
   final DatabaseFactory _databaseFactory;
@@ -223,6 +226,32 @@ class SqfliteHealthRepository implements HealthRepository {
         )
       ''');
     }
+    if (from < 3 && to >= 3) {
+      // Fast-journal records use a dedicated, versioned protocol. They are not
+      // stored in `health_events`, so a v0.1.4 binary can continue to read its
+      // known health-event JSON while ignoring this table entirely.
+      //
+      // `IF NOT EXISTS` also repairs the version marker after a legacy binary
+      // has lowered SQLite's user_version but left the additive table intact.
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableFastJournalEntries (
+          id TEXT PRIMARY KEY,
+          occurred_at_ms INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          rise_started_at_us INTEGER,
+          data TEXT NOT NULL
+        )
+      ''');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_fast_journal_occurred '
+        'ON $tableFastJournalEntries(occurred_at_ms DESC, id DESC)',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_fast_journal_rise_claim '
+        'ON $tableFastJournalEntries(rise_started_at_us) '
+        'WHERE rise_started_at_us IS NOT NULL',
+      );
+    }
   }
 
   /// Adds one nullable schema-v2 identity column if a downgraded v1 binary
@@ -254,6 +283,9 @@ class SqfliteHealthRepository implements HealthRepository {
   );
 
   static int _ms(DateTime t) => t.toUtc().millisecondsSinceEpoch;
+
+  /// Preserves the complete episode key used by the one-time rise claim.
+  static int _us(DateTime t) => t.toUtc().microsecondsSinceEpoch;
 
   /// Builds a `WHERE` clause + args for [column] within [window].
   static (String, List<Object?>) _windowClause(
@@ -352,6 +384,105 @@ class SqfliteHealthRepository implements HealthRepository {
     return rows
         .map((r) => HealthEvent.fromJson(_decode(r['data'])))
         .toList(growable: false);
+  }
+
+  // --- Fast journal -------------------------------------------------------
+
+  @override
+  Future<List<FastJournalEntry>> queryFastJournalEntries({
+    required int limit,
+  }) async {
+    if (limit <= 0) {
+      throw ArgumentError.value(limit, 'limit', 'Expected a positive limit.');
+    }
+    final rows = await _database.query(
+      tableFastJournalEntries,
+      columns: const <String>['data'],
+      orderBy: 'occurred_at_ms DESC, id DESC',
+      limit: limit,
+    );
+    return rows
+        .map((row) => FastJournalEntry.fromJson(_decode(row['data'])))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<bool> isFastJournalRiseClaimed({
+    required DateTime riseStartedAt,
+  }) async {
+    final rows = await _database.query(
+      tableFastJournalEntries,
+      columns: const <String>['id'],
+      where: 'rise_started_at_us = ?',
+      whereArgs: <Object?>[_us(riseStartedAt)],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  @override
+  Future<FastJournalEntry> saveFastJournalEntry({
+    required FastJournalEntry entry,
+    FastJournalRiseReference? requestedRise,
+  }) async {
+    if (entry.riseReference != null) {
+      throw ArgumentError.value(
+        entry,
+        'entry',
+        'The store owns the atomic observed-rise claim.',
+      );
+    }
+    entry.toJson();
+    requestedRise?.toJson();
+    final database = _database;
+    return database.transaction((transaction) async {
+      final withoutRise = entry.toJson();
+      if (requestedRise == null) {
+        await transaction.insert(tableFastJournalEntries, <String, Object?>{
+          'id': entry.id,
+          'occurred_at_ms': _ms(entry.occurredAt),
+          'kind': entry.kind.name,
+          'rise_started_at_us': null,
+          'data': jsonEncode(withoutRise),
+        });
+        return entry;
+      }
+
+      final attached = entry.copyWith(riseReference: requestedRise);
+      final attachedData = attached.toJson();
+      final requestedStart = _us(requestedRise.startedAt);
+      final inserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableFastJournalEntries(
+          id, occurred_at_ms, kind, rise_started_at_us, data
+        ) SELECT ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM $tableFastJournalEntries
+          WHERE rise_started_at_us = ?
+        )
+        ''',
+        <Object?>[
+          attached.id,
+          _ms(attached.occurredAt),
+          attached.kind.name,
+          requestedStart,
+          jsonEncode(attachedData),
+          requestedStart,
+        ],
+      );
+      if (inserted != 0) return attached;
+
+      // Another serialized transaction already claimed the newest episode.
+      // Preserve this manual entry without overstating a rise relationship.
+      await transaction.insert(tableFastJournalEntries, <String, Object?>{
+        'id': entry.id,
+        'occurred_at_ms': _ms(entry.occurredAt),
+        'kind': entry.kind.name,
+        'rise_started_at_us': null,
+        'data': jsonEncode(withoutRise),
+      });
+      return entry;
+    });
   }
 
   // --- Activity samples ----------------------------------------------------
@@ -515,6 +646,27 @@ class SqfliteHealthRepository implements HealthRepository {
         .toList(growable: false);
   }
 
+  @override
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  }) {
+    final (table, timestampColumn) = switch (kind) {
+      HealthSampleKind.activity => (tableActivity, 'start_ms'),
+      HealthSampleKind.sleep => (tableSleep, 'start_ms'),
+      HealthSampleKind.heartRate => (tableHeartRate, 'timestamp_ms'),
+    };
+    return _database.delete(
+      table,
+      where: '$timestampColumn < ? AND identity_platform = ?',
+      whereArgs: <Object?>[
+        _ms(cutoff),
+        platform.key,
+      ],
+    );
+  }
+
   // --- Imported-record tombstones -----------------------------------------
 
   @override
@@ -618,6 +770,7 @@ class SqfliteHealthRepository implements HealthRepository {
       tableHeartRate,
       tableImportTombstones,
       tableInsights,
+      tableFastJournalEntries,
     ].forEach(batch.delete);
     await batch.commit(noResult: true);
   }
