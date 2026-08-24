@@ -16,12 +16,17 @@ void main() {
       expect(event.payload, isNull);
     });
 
-    test('copyWith updates fields and can clear payload', () {
+    test('copyWith updates fields and can clear optional values', () {
       final event = HealthEvent(
         id: 'e1',
         timestamp: DateTime.utc(2026, 1, 1),
         type: HealthEventType.meal,
         payload: const MealPayload(carbsGrams: 30),
+        riseReference: GlucoseRiseReference(
+          startedAt: DateTime.utc(2026, 1, 1, 8),
+          lastObservedAt: DateTime.utc(2026, 1, 1, 8, 15),
+          highestMgdl: 205,
+        ),
       );
 
       final updated = event.copyWith(
@@ -32,8 +37,12 @@ void main() {
       expect(updated.tags, ['a']);
       expect((updated.payload as MealPayload).carbsGrams, 30);
 
-      final cleared = event.copyWith(clearPayload: true);
+      final cleared = event.copyWith(
+        clearPayload: true,
+        clearRiseReference: true,
+      );
       expect(cleared.payload, isNull);
+      expect(cleared.riseReference, isNull);
       expect(cleared.id, 'e1');
     });
   });
@@ -92,6 +101,34 @@ void main() {
       expect(payload.duration, const Duration(minutes: 42));
       expect(payload.intensity, ExerciseIntensity.vigorous);
       expect(payload.energyKcal, 510);
+    });
+
+    test('sleep payload and observational rise reference round-trip', () {
+      final event = HealthEvent(
+        id: 'sleep-1',
+        timestamp: DateTime.utc(2026, 2, 4, 22),
+        type: HealthEventType.sleep,
+        payload: const SleepPayload(
+          duration: Duration(hours: 7, minutes: 30),
+          description: 'early night',
+        ),
+        riseReference: GlucoseRiseReference(
+          startedAt: DateTime.utc(2026, 2, 4, 20),
+          lastObservedAt: DateTime.utc(2026, 2, 4, 20, 20),
+          highestMgdl: 194,
+        ),
+      );
+
+      final out = roundTrip(event);
+      final payload = out.payload as SleepPayload;
+      expect(payload.duration, const Duration(hours: 7, minutes: 30));
+      expect(payload.description, 'early night');
+      expect(out.riseReference?.startedAt, DateTime.utc(2026, 2, 4, 20));
+      expect(
+        out.riseReference?.lastObservedAt,
+        DateTime.utc(2026, 2, 4, 20, 20),
+      );
+      expect(out.riseReference?.highestMgdl, 194);
     });
 
     test('note payload round-trips', () {
@@ -237,6 +274,17 @@ void main() {
           json: <String, Object?>{
             ...validJson(),
             'payload': <String, Object?>{'kind': 'future-thing'},
+          },
+        ),
+        (
+          name: 'malformed rise reference',
+          json: <String, Object?>{
+            ...validJson(),
+            'riseReference': <String, Object?>{
+              'startedAt': '2026-01-01T00:00:00.000Z',
+              'lastObservedAt': '2025-12-31T23:59:00.000Z',
+              'highestMgdl': 190,
+            },
           },
         ),
       ];
