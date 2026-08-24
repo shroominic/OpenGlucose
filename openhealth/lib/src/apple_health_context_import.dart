@@ -6,7 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'health_state_store.dart';
+import 'apple_health_context_import_state.dart';
+import 'persistence/health_repository_lifecycle.dart';
 
 /// The maximum time span a single Apple Health import may request.
 ///
@@ -63,6 +64,8 @@ enum AppleHealthContextAuthorizationStatus { requested, unavailable, failed }
 enum AppleHealthContextAccessState {
   off,
   unavailable,
+  locked,
+  retry,
   authorizationRequested,
   ready,
   noAccessibleData,
@@ -76,6 +79,8 @@ enum AppleHealthContextImportStatus {
   noAccessibleData,
   partial,
   unavailable,
+  locked,
+  retry,
   anchorInvalid,
   notEnabled,
   failed,
@@ -296,6 +301,8 @@ class HealthKitContextImportService implements AppleHealthContextImportService {
     _requireSchemaVersion(map);
     final status = _decodeStatus(map['status']);
     if (status == AppleHealthContextImportStatus.unavailable ||
+        status == AppleHealthContextImportStatus.locked ||
+        status == AppleHealthContextImportStatus.retry ||
         status == AppleHealthContextImportStatus.failed) {
       return AppleHealthContextImportResult(status: status);
     }
@@ -333,7 +340,14 @@ class HealthKitContextImportService implements AppleHealthContextImportService {
     final mayHaveMore = _requiredBool(map, 'mayHaveMore');
     if (status == AppleHealthContextImportStatus.failed ||
         status == AppleHealthContextImportStatus.unavailable ||
+        status == AppleHealthContextImportStatus.locked ||
+        status == AppleHealthContextImportStatus.retry ||
         status == AppleHealthContextImportStatus.anchorInvalid) {
+      _requireEmptyBatch(map);
+      return AppleHealthContextTypeBatch(type: type, status: status);
+    }
+    if (status == AppleHealthContextImportStatus.noAccessibleData &&
+        map['nextAnchor'] == null) {
       _requireEmptyBatch(map);
       return AppleHealthContextTypeBatch(type: type, status: status);
     }
@@ -501,6 +515,8 @@ class HealthKitContextImportService implements AppleHealthContextImportService {
         'noAccessibleData' => AppleHealthContextImportStatus.noAccessibleData,
         'partial' => AppleHealthContextImportStatus.partial,
         'unavailable' => AppleHealthContextImportStatus.unavailable,
+        'locked' => AppleHealthContextImportStatus.locked,
+        'retry' => AppleHealthContextImportStatus.retry,
         'anchorInvalid' => AppleHealthContextImportStatus.anchorInvalid,
         'failed' => AppleHealthContextImportStatus.failed,
         _ => throw const FormatException(
@@ -625,9 +641,6 @@ class HealthKitContextImportService implements AppleHealthContextImportService {
   }
 }
 
-/// Supplies an app-lifetime local health repository on first successful sync.
-typedef HealthRepositoryFactory = Future<HealthRepository> Function();
-
 /// Supplies the wall clock at the composition edge and in deterministic tests.
 typedef AppleHealthContextClock = DateTime Function();
 
@@ -636,33 +649,32 @@ typedef AppleHealthContextClock = DateTime Function();
 class AppleHealthContextImportController extends ChangeNotifier {
   AppleHealthContextImportController({
     required SharedPreferences preferences,
-    HealthStateStore? healthStateStore,
-    HealthRepositoryFactory? repositoryFactory,
+    AppleHealthContextImportStateStore? importStateStore,
+    AppHealthRepositoryLifecycle? repositoryLifecycle,
     AppleHealthContextImportService? service,
     AppleHealthContextClock? clock,
     this.readsAllowed = true,
   }) : _preferences = preferences,
-       _healthStateStore =
-           healthStateStore ??
+       _importStateStore =
+           importStateStore ??
            (readsAllowed
-               ? throw ArgumentError.notNull('healthStateStore')
-               : PreferencesHealthStateStore(preferences)),
-       _repositoryFactory =
-           repositoryFactory ??
-           (() => Future<HealthRepository>.error(
-             StateError('Apple Health context repository is not configured.'),
-           )),
+               ? throw ArgumentError.notNull('importStateStore')
+               : InMemoryAppleHealthContextImportStateStore()),
+       _repositoryLifecycle =
+           repositoryLifecycle ??
+           AppHealthRepositoryLifecycle(
+             () => Future<HealthRepository>.error(
+               StateError('Apple Health context repository is not configured.'),
+             ),
+           ),
        _service = service ?? HealthKitContextImportService(),
        _clock = clock ?? DateTime.now;
 
   static const _enabledKey = 'openHealth.appleHealthContextImport.enabled';
-  static const _lastSyncedKey =
-      'openHealth.appleHealthContextImport.lastSyncedMs';
-  static const _anchorPrefix = 'openHealth.appleHealthContextImport.anchor.';
 
   final SharedPreferences _preferences;
-  final HealthStateStore _healthStateStore;
-  final HealthRepositoryFactory _repositoryFactory;
+  final AppleHealthContextImportStateStore _importStateStore;
+  final AppHealthRepositoryLifecycle _repositoryLifecycle;
   final AppleHealthContextImportService _service;
   final AppleHealthContextClock _clock;
 
@@ -670,7 +682,6 @@ class AppleHealthContextImportController extends ChangeNotifier {
   /// personal Apple Health data. It is independent from user consent.
   final bool readsAllowed;
 
-  Future<HealthRepository>? _repositoryFuture;
   final Map<AppleHealthContextDataType, String> _anchors =
       <AppleHealthContextDataType, String>{};
   bool _enabled = false;
@@ -705,7 +716,8 @@ class AppleHealthContextImportController extends ChangeNotifier {
       return;
     }
     try {
-      _restoreRestrictedState();
+      await _importStateStore.initialize();
+      _restoreImportState(_importStateStore.state);
     } on Object {
       _enabled = false;
       _anchors.clear();
@@ -874,6 +886,16 @@ class AppleHealthContextImportController extends ChangeNotifier {
         _statusMessage = 'Apple Health is unavailable on this device.';
         await _preferences.setBool(_enabledKey, false);
         return result;
+      case AppleHealthContextImportStatus.locked:
+        _accessState = AppleHealthContextAccessState.locked;
+        _statusMessage =
+            'Unlock this iPhone and try Apple Health import again.';
+        return result;
+      case AppleHealthContextImportStatus.retry:
+        _accessState = AppleHealthContextAccessState.retry;
+        _statusMessage =
+            'Apple Health context import could not finish. Try again.';
+        return result;
       case AppleHealthContextImportStatus.failed:
         _accessState = AppleHealthContextAccessState.failed;
         _statusMessage = 'Apple Health context import could not be completed.';
@@ -896,10 +918,12 @@ class AppleHealthContextImportController extends ChangeNotifier {
     var anyFailure = result.status == AppleHealthContextImportStatus.partial;
     var mayHaveMore = false;
     _validateResult(result);
-    final repository = await _repository();
+    final repository = await _repositoryLifecycle.acquire();
     for (final batch in result.batches) {
       if (batch.status == AppleHealthContextImportStatus.failed ||
           batch.status == AppleHealthContextImportStatus.unavailable ||
+          batch.status == AppleHealthContextImportStatus.locked ||
+          batch.status == AppleHealthContextImportStatus.retry ||
           batch.status == AppleHealthContextImportStatus.anchorInvalid) {
         if (batch.status == AppleHealthContextImportStatus.anchorInvalid) {
           await _clearAnchor(batch.type);
@@ -909,7 +933,22 @@ class AppleHealthContextImportController extends ChangeNotifier {
       }
       try {
         _validateBatch(batch, window: window);
+        if (batch.nextAnchor == null) {
+          // A native no-data error has no new cursor. It is intentionally
+          // indistinguishable from an empty unreadable result, but cannot
+          // advance the rolling predicate or trigger retention expiry.
+          continue;
+        }
         await _persistBatch(repository, batch);
+        // An anchored query with a rolling predicate cannot later report every
+        // deletion for a record that has fallen outside that predicate. Purge
+        // only the matching platform/type window before its cursor advances,
+        // so a failed purge leaves the old anchor in place for a safe retry.
+        await repository.purgeImportedSamplesBefore(
+          kind: batch.type.sampleKind,
+          platform: HealthSourcePlatform.appleHealth,
+          cutoff: window.start,
+        );
         await _persistAnchor(batch.type, batch.nextAnchor!);
         anyPersisted = true;
         mayHaveMore = mayHaveMore || batch.mayHaveMore;
@@ -928,11 +967,8 @@ class AppleHealthContextImportController extends ChangeNotifier {
       );
     }
 
+    await _persistImportState(lastSyncedAt: syncedAt);
     _lastSyncedAt = syncedAt;
-    await _healthStateStore.setString(
-      _lastSyncedKey,
-      _lastSyncedAt!.millisecondsSinceEpoch.toString(),
-    );
     final recordCount = result.recordCount;
     if (recordCount == 0 && result.deletionCount == 0 && !anyFailure) {
       _accessState = AppleHealthContextAccessState.noAccessibleData;
@@ -981,41 +1017,42 @@ class AppleHealthContextImportController extends ChangeNotifier {
     String anchor,
   ) async {
     final normalized = HealthKitContextImportService._validateAnchor(anchor);
-    await _healthStateStore.setString(_anchorKey(type), normalized);
+    await _persistImportState(
+      anchors: <AppleHealthContextDataType, String>{
+        ..._anchors,
+        type: normalized,
+      },
+    );
     _anchors[type] = normalized;
   }
 
   Future<void> _clearAnchor(AppleHealthContextDataType type) async {
-    await _healthStateStore.remove(_anchorKey(type));
+    final updated = <AppleHealthContextDataType, String>{..._anchors}
+      ..remove(type);
+    await _persistImportState(anchors: updated);
     _anchors.remove(type);
   }
 
-  Future<HealthRepository> _repository() async {
-    final future = _repositoryFuture ??= _repositoryFactory();
-    try {
-      return await future;
-    } on Object {
-      if (identical(_repositoryFuture, future)) {
-        _repositoryFuture = null;
-      }
-      rethrow;
-    }
+  Future<void> _persistImportState({
+    Map<AppleHealthContextDataType, String>? anchors,
+    DateTime? lastSyncedAt,
+  }) {
+    final selectedAnchors = anchors ?? _anchors;
+    return _importStateStore.save(
+      AppleHealthContextImportState(
+        lastSyncedAt: lastSyncedAt ?? _lastSyncedAt,
+        anchors: <String, String>{
+          for (final entry in selectedAnchors.entries)
+            entry.key.nativeKey: entry.value,
+        },
+      ),
+    );
   }
 
-  void _restoreRestrictedState() {
-    final lastSynced = _healthStateStore.getString(_lastSyncedKey);
-    if (lastSynced != null) {
-      final milliseconds = int.tryParse(lastSynced);
-      if (milliseconds == null || milliseconds < 0) {
-        throw const FormatException('Apple Health last-sync state is invalid.');
-      }
-      _lastSyncedAt = DateTime.fromMillisecondsSinceEpoch(
-        milliseconds,
-        isUtc: true,
-      );
-    }
+  void _restoreImportState(AppleHealthContextImportState state) {
+    _lastSyncedAt = state.lastSyncedAt;
     for (final type in AppleHealthContextDataType.values) {
-      final anchor = _healthStateStore.getString(_anchorKey(type));
+      final anchor = state.anchors[type.nativeKey];
       if (anchor != null) {
         _anchors[type] = HealthKitContextImportService._validateAnchor(anchor);
       }
@@ -1030,7 +1067,11 @@ class AppleHealthContextImportController extends ChangeNotifier {
         batch.status != AppleHealthContextImportStatus.noAccessibleData) {
       throw const FormatException('Apple Health batch status is invalid.');
     }
-    if (batch.nextAnchor == null) {
+    if (batch.nextAnchor == null &&
+        (batch.status != AppleHealthContextImportStatus.noAccessibleData ||
+            batch.recordCount != 0 ||
+            batch.deletionCount != 0 ||
+            batch.mayHaveMore)) {
       throw const FormatException('Apple Health batch is missing an anchor.');
     }
     switch (batch.type) {
@@ -1150,6 +1191,8 @@ class AppleHealthContextImportController extends ChangeNotifier {
       (batch) =>
           batch.status == AppleHealthContextImportStatus.failed ||
           batch.status == AppleHealthContextImportStatus.unavailable ||
+          batch.status == AppleHealthContextImportStatus.locked ||
+          batch.status == AppleHealthContextImportStatus.retry ||
           batch.status == AppleHealthContextImportStatus.anchorInvalid,
     );
     if (result.status == AppleHealthContextImportStatus.ok && hasTypeFailure) {
@@ -1164,7 +1207,4 @@ class AppleHealthContextImportController extends ChangeNotifier {
       );
     }
   }
-
-  static String _anchorKey(AppleHealthContextDataType type) =>
-      '$_anchorPrefix${type.nativeKey}';
 }

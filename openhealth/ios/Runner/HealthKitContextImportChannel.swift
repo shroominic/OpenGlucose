@@ -176,12 +176,20 @@ final class HealthKitContextImportChannel {
       anchor: anchor,
       limit: Self.maximumRecordsPerType
     ) { [weak self] _, samples, deletedObjects, nextAnchor, error in
-      guard let self, error == nil, let nextAnchor else {
-        completion(Self.failedTypeResponse(type))
+      guard let self else {
+        completion(Self.typeResponse(type, status: "retry"))
+        return
+      }
+      if let error {
+        completion(Self.typeResponse(type, status: Self.queryErrorStatus(error)))
+        return
+      }
+      guard let nextAnchor else {
+        completion(Self.typeResponse(type, status: "retry"))
         return
       }
       guard let encodedNextAnchor = Self.encodeAnchor(nextAnchor) else {
-        completion(Self.failedTypeResponse(type))
+        completion(Self.typeResponse(type, status: "retry"))
         return
       }
       let sourceSamples = samples ?? []
@@ -194,14 +202,14 @@ final class HealthKitContextImportChannel {
           start: start,
           end: end
         ) else {
-          completion(Self.failedTypeResponse(type))
+          completion(Self.typeResponse(type, status: "retry"))
           return
         }
         encodedSamples.append(encodedSample)
       }
       let deletedIds = (deletedObjects ?? []).map { $0.uuid.uuidString }
       guard Set(deletedIds).count == deletedIds.count else {
-        completion(Self.failedTypeResponse(type))
+        completion(Self.typeResponse(type, status: "retry"))
         return
       }
       let totalObjects = encodedSamples.count + deletedIds.count
@@ -267,15 +275,15 @@ final class HealthKitContextImportChannel {
 
   private func provenancePayload(for sample: HKSample) -> [String: Any] {
     let source = sample.sourceRevision.source
-    let userEntered = (sample.metadata?[HKMetadataKeyWasUserEntered] as? NSNumber)?
-      .boolValue == true
     return [
       "id": sample.uuid.uuidString,
       "sourceApplicationId": Self.nonBlank(source.bundleIdentifier) ?? NSNull(),
       "sourceName": Self.nonBlank(source.name) ?? NSNull(),
       "sourceDevice": Self.nonBlank(sample.device?.name) ?? NSNull(),
       "sourceDeviceModel": Self.nonBlank(sample.device?.model) ?? NSNull(),
-      "recordingMethod": userEntered ? "manual" : "automatic",
+      "recordingMethod": Self.recordingMethod(
+        wasUserEntered: sample.metadata?[HKMetadataKeyWasUserEntered] as? NSNumber
+      ),
       "sourceRevision": Self.nonBlank(sample.sourceRevision.version) ?? NSNull(),
     ]
   }
@@ -354,6 +362,41 @@ final class HealthKitContextImportChannel {
     }
   }
 
+  static func recordingMethod(wasUserEntered: NSNumber?) -> String {
+    guard let wasUserEntered else {
+      return "unknown"
+    }
+    return wasUserEntered.boolValue ? "manual" : "automatic"
+  }
+
+  static func queryErrorStatus(_ error: Error) -> String {
+    let nsError = error as NSError
+    return queryErrorStatus(domain: nsError.domain, code: nsError.code)
+  }
+
+  static func queryErrorStatus(domain: String, code: Int) -> String {
+    guard domain == HKErrorDomain,
+      let healthError = HKError.Code(rawValue: code)
+    else {
+      return "retry"
+    }
+    switch healthError {
+    case .errorHealthDataUnavailable, .errorHealthDataRestricted:
+      return "unavailable"
+    case .errorDatabaseInaccessible:
+      return "locked"
+    case .errorNoData,
+      .errorAuthorizationDenied,
+      .errorAuthorizationNotDetermined,
+      .errorRequiredAuthorizationDenied:
+      // Read permission is intentionally opaque. These cases use the same
+      // public state as an empty bounded query and reveal no native details.
+      return "noAccessibleData"
+    default:
+      return "retry"
+    }
+  }
+
   private static func aggregateStatus(_ results: [[String: Any]]) -> String {
     if results.count != ContextType.allCases.count {
       return "failed"
@@ -362,7 +405,20 @@ final class HealthKitContextImportChannel {
     guard statuses.count == ContextType.allCases.count else {
       return "failed"
     }
-    if statuses.contains("failed") || statuses.contains("anchorInvalid") {
+    if Set(statuses) == ["unavailable"] {
+      return "unavailable"
+    }
+    if Set(statuses) == ["locked"] {
+      return "locked"
+    }
+    if Set(statuses) == ["retry"] {
+      return "retry"
+    }
+    if statuses.contains("failed") ||
+      statuses.contains("anchorInvalid") ||
+      statuses.contains("unavailable") ||
+      statuses.contains("locked") ||
+      statuses.contains("retry") {
       return "partial"
     }
     let itemCount = results.reduce(0) { total, result in
@@ -373,10 +429,13 @@ final class HealthKitContextImportChannel {
     return itemCount == 0 ? "noAccessibleData" : "ok"
   }
 
-  private static func failedTypeResponse(_ type: ContextType) -> [String: Any] {
+  private static func typeResponse(
+    _ type: ContextType,
+    status: String
+  ) -> [String: Any] {
     [
       "type": type.rawValue,
-      "status": "failed",
+      "status": status,
       "samples": [],
       "deletedIds": [],
       "nextAnchor": NSNull(),

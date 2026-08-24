@@ -6,33 +6,50 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/apple_health_context_import.dart';
+import 'package:openglucose/src/apple_health_context_import_state.dart';
 import 'package:openglucose/src/demo_driver.dart';
-import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _enabledKey = 'openHealth.appleHealthContextImport.enabled';
-const _lastSyncedKey = 'openHealth.appleHealthContextImport.lastSyncedMs';
-const _anchorPrefix = 'openHealth.appleHealthContextImport.anchor.';
 
-class _MemoryHealthStateStore implements HealthStateStore {
-  final Map<String, String> values = <String, String>{};
+class _MemoryAppleHealthContextImportStateStore
+    implements AppleHealthContextImportStateStore {
+  _MemoryAppleHealthContextImportStateStore({
+    Map<String, String> anchors = const <String, String>{},
+    DateTime? lastSyncedAt,
+  }) : _state = AppleHealthContextImportState(
+         anchors: anchors,
+         lastSyncedAt: lastSyncedAt,
+       );
+
+  AppleHealthContextImportState _state;
+  bool _initialized = false;
+
+  Map<String, String> get anchors => _state.anchors;
+  DateTime? get lastSyncedAt => _state.lastSyncedAt;
 
   @override
-  String? getString(String key) => values[key];
-
-  @override
-  Future<void> initialize() async {}
-
-  @override
-  Future<void> remove(String key) async {
-    values.remove(key);
+  AppleHealthContextImportState get state {
+    if (!_initialized) {
+      throw StateError('State store is not initialized.');
+    }
+    return _state;
   }
 
   @override
-  Future<void> setString(String key, String value) async {
-    values[key] = value;
+  Future<void> initialize() async {
+    _initialized = true;
+  }
+
+  @override
+  Future<void> save(AppleHealthContextImportState state) async {
+    _state = AppleHealthContextImportState(
+      anchors: state.anchors,
+      lastSyncedAt: state.lastSyncedAt,
+    );
   }
 }
 
@@ -88,6 +105,24 @@ class _FailingSleepRepository extends InMemoryHealthRepository {
   @override
   Future<void> upsertSleepSamples(Iterable<SleepSample> samples) async {
     throw StateError('synthetic repository failure');
+  }
+}
+
+class _FailingExpiryRepository extends InMemoryHealthRepository {
+  @override
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  }) {
+    if (kind == HealthSampleKind.heartRate) {
+      throw StateError('synthetic expiry failure');
+    }
+    return super.purgeImportedSamplesBefore(
+      kind: kind,
+      platform: platform,
+      cutoff: cutoff,
+    );
   }
 }
 
@@ -163,16 +198,17 @@ void main() {
 
   AppleHealthContextImportController controller({
     required SharedPreferences preferences,
-    required HealthStateStore stateStore,
+    required AppleHealthContextImportStateStore stateStore,
     required HealthRepository repository,
     required _FakeContextService service,
+    AppleHealthContextClock? clock,
     bool readsAllowed = true,
   }) => AppleHealthContextImportController(
     preferences: preferences,
-    healthStateStore: stateStore,
-    repositoryFactory: () async => repository,
+    importStateStore: stateStore,
+    repositoryLifecycle: AppHealthRepositoryLifecycle(() async => repository),
     service: service,
-    clock: () => now,
+    clock: clock ?? () => now,
     readsAllowed: readsAllowed,
   );
 
@@ -181,7 +217,7 @@ void main() {
     final service = _FakeContextService();
     final context = controller(
       preferences: preferences,
-      stateStore: _MemoryHealthStateStore(),
+      stateStore: _MemoryAppleHealthContextImportStateStore(),
       repository: InMemoryHealthRepository(),
       service: service,
     );
@@ -200,7 +236,7 @@ void main() {
     final service = _FakeContextService();
     final context = controller(
       preferences: preferences,
-      stateStore: _MemoryHealthStateStore(),
+      stateStore: _MemoryAppleHealthContextImportStateStore(),
       repository: InMemoryHealthRepository(),
       service: service,
     );
@@ -225,7 +261,7 @@ void main() {
     'imports source-aware context in a bounded window and persists anchors',
     () async {
       final preferences = await loadPreferences();
-      final stateStore = _MemoryHealthStateStore();
+      final stateStore = _MemoryAppleHealthContextImportStateStore();
       final repository = InMemoryHealthRepository();
       final service = _FakeContextService();
       final sleepAt = now.subtract(const Duration(hours: 8));
@@ -316,23 +352,19 @@ void main() {
             .platform,
         HealthSourcePlatform.appleHealth,
       );
-      expect(stateStore.values['${_anchorPrefix}sleep'], 'anchor-sleep-1');
-      expect(stateStore.values['${_anchorPrefix}workout'], 'anchor-workout-1');
+      expect(stateStore.anchors['sleep'], 'anchor-sleep-1');
+      expect(stateStore.anchors['workout'], 'anchor-workout-1');
       expect(
-        stateStore.values['${_anchorPrefix}heartRate'],
+        stateStore.anchors['heartRate'],
         'anchor-heart-rate-1',
       );
-      expect(
-        stateStore.values[_lastSyncedKey],
-        now.millisecondsSinceEpoch.toString(),
-      );
-      expect(preferences.containsKey(_lastSyncedKey), isFalse);
+      expect(stateStore.lastSyncedAt, now);
     },
   );
 
   test('uses stored anchors and replaces repeated source identities', () async {
     final preferences = await loadPreferences();
-    final stateStore = _MemoryHealthStateStore();
+    final stateStore = _MemoryAppleHealthContextImportStateStore();
     final repository = InMemoryHealthRepository();
     final firstService = _FakeContextService()
       ..results.add(
@@ -404,12 +436,12 @@ void main() {
     final samples = await repository.querySleepSamples();
     expect(samples, hasLength(1));
     expect(samples.single.stage, SleepStage.deep);
-    expect(stateStore.values['${_anchorPrefix}sleep'], 'anchor-sleep-2');
+    expect(stateStore.anchors['sleep'], 'anchor-sleep-2');
   });
 
   test('applies a returned deletion as an Apple Health tombstone', () async {
     final preferences = await loadPreferences();
-    final stateStore = _MemoryHealthStateStore();
+    final stateStore = _MemoryAppleHealthContextImportStateStore();
     final repository = InMemoryHealthRepository();
     final service = _FakeContextService()
       ..results.addAll(<AppleHealthContextImportResult>[
@@ -473,9 +505,113 @@ void main() {
     expect(tombstones.single.provenance.isDeleted, isTrue);
   });
 
+  test(
+    'purges aged Apple Health records before a rolling-window anchor advances',
+    () async {
+      final preferences = await loadPreferences();
+      final stateStore = _MemoryAppleHealthContextImportStateStore();
+      final repository = InMemoryHealthRepository();
+      final service = _FakeContextService();
+      var currentTime = now;
+      final agedTimestamp = now.subtract(const Duration(days: 29));
+      service.results.addAll(<AppleHealthContextImportResult>[
+        AppleHealthContextImportResult(
+          status: AppleHealthContextImportStatus.ok,
+          batches: <AppleHealthContextTypeBatch>[
+            _sleepBatch(),
+            _workoutBatch(),
+            _heartRateBatch(
+              samples: <HeartRateSample>[
+                HeartRateSample(
+                  timestamp: agedTimestamp,
+                  bpm: 70,
+                  source: DataSource.appleHealth,
+                  provenance: _provenance('aged-heart-rate'),
+                ),
+              ],
+            ),
+          ],
+        ),
+        AppleHealthContextImportResult(
+          status: AppleHealthContextImportStatus.noAccessibleData,
+          batches: <AppleHealthContextTypeBatch>[
+            _sleepBatch(
+              status: AppleHealthContextImportStatus.noAccessibleData,
+              anchor: 'anchor-sleep-2',
+            ),
+            _workoutBatch(
+              status: AppleHealthContextImportStatus.noAccessibleData,
+              anchor: 'anchor-workout-2',
+            ),
+            _heartRateBatch(
+              status: AppleHealthContextImportStatus.noAccessibleData,
+              anchor: 'anchor-heart-rate-2',
+            ),
+          ],
+        ),
+      ]);
+      final context = controller(
+        preferences: preferences,
+        stateStore: stateStore,
+        repository: repository,
+        service: service,
+        clock: () => currentTime,
+      );
+      await context.initialize();
+      await context.setEnabled(enabled: true);
+      await context.syncNow();
+
+      expect(await repository.queryHeartRateSamples(), hasLength(1));
+      currentTime = now.add(const Duration(days: 2));
+      final result = await context.syncNow();
+
+      expect(result.status, AppleHealthContextImportStatus.noAccessibleData);
+      expect(await repository.queryHeartRateSamples(), isEmpty);
+      expect(
+        stateStore.anchors['heartRate'],
+        'anchor-heart-rate-2',
+      );
+      expect(
+        service.anchors.last[AppleHealthContextDataType.heartRate],
+        'anchor-heart-rate-1',
+      );
+    },
+  );
+
+  test('does not advance an anchor when rolling-window expiry fails', () async {
+    final preferences = await loadPreferences();
+    final stateStore = _MemoryAppleHealthContextImportStateStore();
+    final service = _FakeContextService()
+      ..results.add(
+        AppleHealthContextImportResult(
+          status: AppleHealthContextImportStatus.ok,
+          batches: <AppleHealthContextTypeBatch>[
+            _sleepBatch(),
+            _workoutBatch(),
+            _heartRateBatch(),
+          ],
+        ),
+      );
+    final context = controller(
+      preferences: preferences,
+      stateStore: stateStore,
+      repository: _FailingExpiryRepository(),
+      service: service,
+    );
+    await context.initialize();
+    await context.setEnabled(enabled: true);
+
+    final result = await context.syncNow();
+
+    expect(result.status, AppleHealthContextImportStatus.partial);
+    expect(stateStore.anchors['sleep'], 'anchor-sleep-1');
+    expect(stateStore.anchors['workout'], 'anchor-workout-1');
+    expect(stateStore.anchors.containsKey('heartRate'), isFalse);
+  });
+
   test('does not advance a type anchor when local persistence fails', () async {
     final preferences = await loadPreferences();
-    final stateStore = _MemoryHealthStateStore();
+    final stateStore = _MemoryAppleHealthContextImportStateStore();
     final service = _FakeContextService()
       ..results.add(
         AppleHealthContextImportResult(
@@ -509,10 +645,10 @@ void main() {
     final result = await context.syncNow();
 
     expect(result.status, AppleHealthContextImportStatus.partial);
-    expect(stateStore.values.containsKey('${_anchorPrefix}sleep'), isFalse);
-    expect(stateStore.values['${_anchorPrefix}workout'], 'anchor-workout-1');
+    expect(stateStore.anchors.containsKey('sleep'), isFalse);
+    expect(stateStore.anchors['workout'], 'anchor-workout-1');
     expect(
-      stateStore.values['${_anchorPrefix}heartRate'],
+      stateStore.anchors['heartRate'],
       'anchor-heart-rate-1',
     );
   });
@@ -521,7 +657,7 @@ void main() {
     'does not persist or advance an out-of-window Apple Health type',
     () async {
       final preferences = await loadPreferences();
-      final stateStore = _MemoryHealthStateStore();
+      final stateStore = _MemoryAppleHealthContextImportStateStore();
       final repository = InMemoryHealthRepository();
       final service = _FakeContextService()
         ..results.add(
@@ -557,10 +693,10 @@ void main() {
 
       expect(result.status, AppleHealthContextImportStatus.partial);
       expect(await repository.querySleepSamples(), isEmpty);
-      expect(stateStore.values.containsKey('${_anchorPrefix}sleep'), isFalse);
-      expect(stateStore.values['${_anchorPrefix}workout'], 'anchor-workout-1');
+      expect(stateStore.anchors.containsKey('sleep'), isFalse);
+      expect(stateStore.anchors['workout'], 'anchor-workout-1');
       expect(
-        stateStore.values['${_anchorPrefix}heartRate'],
+        stateStore.anchors['heartRate'],
         'anchor-heart-rate-1',
       );
     },
@@ -570,7 +706,7 @@ void main() {
     'rejects an aggregate success result that contains a failed type',
     () async {
       final preferences = await loadPreferences();
-      final stateStore = _MemoryHealthStateStore();
+      final stateStore = _MemoryAppleHealthContextImportStateStore();
       final service = _FakeContextService()
         ..results.add(
           AppleHealthContextImportResult(
@@ -597,7 +733,7 @@ void main() {
       final result = await context.syncNow();
 
       expect(result.status, AppleHealthContextImportStatus.failed);
-      expect(stateStore.values, isEmpty);
+      expect(stateStore.anchors, isEmpty);
       expect(context.statusMessage, isNot(contains('failed type')));
     },
   );
@@ -606,8 +742,9 @@ void main() {
     'clears only the malformed type anchor for a partial native result',
     () async {
       final preferences = await loadPreferences();
-      final stateStore = _MemoryHealthStateStore()
-        ..values['${_anchorPrefix}sleep'] = 'stored-sleep-anchor';
+      final stateStore = _MemoryAppleHealthContextImportStateStore(
+        anchors: const <String, String>{'sleep': 'stored-sleep-anchor'},
+      );
       final service = _FakeContextService()
         ..results.add(
           AppleHealthContextImportResult(
@@ -634,10 +771,10 @@ void main() {
       final result = await context.syncNow();
 
       expect(result.status, AppleHealthContextImportStatus.partial);
-      expect(stateStore.values.containsKey('${_anchorPrefix}sleep'), isFalse);
-      expect(stateStore.values['${_anchorPrefix}workout'], 'anchor-workout-1');
+      expect(stateStore.anchors.containsKey('sleep'), isFalse);
+      expect(stateStore.anchors['workout'], 'anchor-workout-1');
       expect(
-        stateStore.values['${_anchorPrefix}heartRate'],
+        stateStore.anchors['heartRate'],
         'anchor-heart-rate-1',
       );
     },
@@ -651,7 +788,7 @@ void main() {
         ..results.add(_noAccessibleDataResult());
       final context = controller(
         preferences: preferences,
-        stateStore: _MemoryHealthStateStore(),
+        stateStore: _MemoryAppleHealthContextImportStateStore(),
         repository: InMemoryHealthRepository(),
         service: service,
       );
@@ -672,13 +809,69 @@ void main() {
   );
 
   test(
+    'surfaces a safe locked-state message without native error detail',
+    () async {
+      final preferences = await loadPreferences();
+      final service = _FakeContextService()
+        ..results.add(
+          const AppleHealthContextImportResult(
+            status: AppleHealthContextImportStatus.locked,
+          ),
+        );
+      final context = controller(
+        preferences: preferences,
+        stateStore: _MemoryAppleHealthContextImportStateStore(),
+        repository: InMemoryHealthRepository(),
+        service: service,
+      );
+      await context.initialize();
+      await context.setEnabled(enabled: true);
+
+      final result = await context.syncNow();
+
+      expect(result.status, AppleHealthContextImportStatus.locked);
+      expect(context.accessState, AppleHealthContextAccessState.locked);
+      expect(context.statusMessage, contains('Unlock'));
+      expect(context.statusMessage, isNot(contains('HKError')));
+    },
+  );
+
+  test(
+    'surfaces a safe retry-state message without native error detail',
+    () async {
+      final preferences = await loadPreferences();
+      final service = _FakeContextService()
+        ..results.add(
+          const AppleHealthContextImportResult(
+            status: AppleHealthContextImportStatus.retry,
+          ),
+        );
+      final context = controller(
+        preferences: preferences,
+        stateStore: _MemoryAppleHealthContextImportStateStore(),
+        repository: InMemoryHealthRepository(),
+        service: service,
+      );
+      await context.initialize();
+      await context.setEnabled(enabled: true);
+
+      final result = await context.syncNow();
+
+      expect(result.status, AppleHealthContextImportStatus.retry);
+      expect(context.accessState, AppleHealthContextAccessState.retry);
+      expect(context.statusMessage, contains('Try again'));
+      expect(context.statusMessage, isNot(contains('synthetic')));
+    },
+  );
+
+  test(
     'does not call Apple Health in a mode that disallows personal reads',
     () async {
       final preferences = await loadPreferences();
       final service = _FakeContextService();
       final context = controller(
         preferences: preferences,
-        stateStore: _MemoryHealthStateStore(),
+        stateStore: _MemoryAppleHealthContextImportStateStore(),
         repository: InMemoryHealthRepository(),
         service: service,
         readsAllowed: false,
@@ -699,7 +892,7 @@ void main() {
     'fails closed on an incomplete source result and does not expose errors',
     () async {
       final preferences = await loadPreferences();
-      final stateStore = _MemoryHealthStateStore();
+      final stateStore = _MemoryAppleHealthContextImportStateStore();
       final service = _FakeContextService()
         ..results.add(
           AppleHealthContextImportResult(
@@ -719,7 +912,7 @@ void main() {
       final result = await context.syncNow();
 
       expect(result.status, AppleHealthContextImportStatus.failed);
-      expect(stateStore.values, isEmpty);
+      expect(stateStore.anchors, isEmpty);
       expect(context.statusMessage, isNot(contains('synthetic')));
     },
   );
@@ -751,6 +944,83 @@ void main() {
     expect(result.status, AppleHealthContextImportStatus.failed);
   });
 
+  test(
+    'native transport accepts no-data batches that cannot advance a cursor',
+    () async {
+      const channel = MethodChannel('test.apple-health-context-no-data');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'sync') {
+          return <String, Object?>{
+            'schemaVersion': 1,
+            'status': 'noAccessibleData',
+            'results': <Object?>[
+              for (final type in <String>['sleep', 'workout', 'heartRate'])
+                <String, Object?>{
+                  'type': type,
+                  'status': 'noAccessibleData',
+                  'samples': <Object?>[],
+                  'deletedIds': <Object?>[],
+                  'nextAnchor': null,
+                  'mayHaveMore': false,
+                },
+            ],
+          };
+        }
+        return <String, Object>{'schemaVersion': 1, 'status': 'available'};
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final service = HealthKitContextImportService(
+        channel: channel,
+        supportCheck: () => true,
+      );
+
+      final result = await service.importContext(
+        window: AppleHealthContextImportWindow(
+          start: now.subtract(kAppleHealthContextImportRange),
+          end: now,
+        ),
+        anchors: const <AppleHealthContextDataType, String>{},
+      );
+
+      expect(result.status, AppleHealthContextImportStatus.noAccessibleData);
+      expect(result.batches, hasLength(3));
+      expect(
+        result.batches.every((batch) => batch.nextAnchor == null),
+        isTrue,
+      );
+    },
+  );
+
+  test('native transport preserves a safe locked state', () async {
+    const channel = MethodChannel('test.apple-health-context-locked');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'sync') {
+        return <String, Object>{'schemaVersion': 1, 'status': 'locked'};
+      }
+      return <String, Object>{'schemaVersion': 1, 'status': 'available'};
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final service = HealthKitContextImportService(
+      channel: channel,
+      supportCheck: () => true,
+    );
+
+    final result = await service.importContext(
+      window: AppleHealthContextImportWindow(
+        start: now.subtract(kAppleHealthContextImportRange),
+        end: now,
+      ),
+      anchors: const <AppleHealthContextDataType, String>{},
+    );
+
+    expect(result.status, AppleHealthContextImportStatus.locked);
+    expect(result.batches, isEmpty);
+  });
+
   testWidgets('settings exposes the separate opt-in import control', (
     tester,
   ) async {
@@ -758,7 +1028,7 @@ void main() {
     final service = _FakeContextService();
     final context = controller(
       preferences: preferences,
-      stateStore: _MemoryHealthStateStore(),
+      stateStore: _MemoryAppleHealthContextImportStateStore(),
       repository: InMemoryHealthRepository(),
       service: service,
     );

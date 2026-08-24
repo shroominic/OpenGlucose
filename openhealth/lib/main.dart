@@ -5,6 +5,7 @@ import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/apple_health_context_import.dart';
+import 'package:openglucose/src/apple_health_context_import_state_store_factory.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
@@ -28,6 +29,7 @@ import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/persistence/health_store.dart';
+import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -64,6 +66,11 @@ Future<_BootstrapResult> _bootstrap() async {
   }
   final preferences = await SharedPreferences.getInstance();
   final healthStateStore = createHealthStateStore(preferences);
+  final healthContextImportStateStore =
+      createAppleHealthContextImportStateStore();
+  final healthRepositoryLifecycle = AppHealthRepositoryLifecycle(
+    openHealthRepository,
+  );
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
@@ -77,8 +84,8 @@ Future<_BootstrapResult> _bootstrap() async {
   )..initialize();
   final healthContextImport = AppleHealthContextImportController(
     preferences: preferences,
-    healthStateStore: healthStateStore,
-    repositoryFactory: openHealthRepository,
+    importStateStore: healthContextImportStateStore,
+    repositoryLifecycle: healthRepositoryLifecycle,
     readsAllowed: !controller.isMockDriver,
   );
   await healthContextImport.initialize();
@@ -98,6 +105,7 @@ Future<_BootstrapResult> _bootstrap() async {
     preferences: preferences,
     healthExport: healthExport,
     healthContextImport: healthContextImport,
+    healthRepositoryLifecycle: healthRepositoryLifecycle,
     messages: messages,
   );
 }
@@ -106,6 +114,7 @@ typedef _BootstrapResult = ({
   CgmAppController controller,
   HealthExportController healthExport,
   AppleHealthContextImportController healthContextImport,
+  AppHealthRepositoryLifecycle healthRepositoryLifecycle,
   MessageController messages,
   SharedPreferences preferences,
 });
@@ -134,6 +143,17 @@ class _BootstrapApp extends StatefulWidget {
 
 class _BootstrapAppState extends State<_BootstrapApp> {
   late final Future<_BootstrapResult> _future = _bootstrap();
+
+  @override
+  void dispose() {
+    unawaited(
+      _future.then<void>(
+        (result) => result.healthRepositoryLifecycle.dispose(),
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

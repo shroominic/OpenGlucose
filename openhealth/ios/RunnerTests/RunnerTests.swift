@@ -1,4 +1,5 @@
 import Foundation
+import HealthKit
 @testable import Runner
 import XCTest
 
@@ -50,6 +51,52 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(HealthKitContextImportChannel.sleepStage(4), "deep")
     XCTAssertEqual(HealthKitContextImportChannel.sleepStage(5), "rem")
     XCTAssertEqual(HealthKitContextImportChannel.sleepStage(1), "asleep")
+  }
+
+  func testHealthContextImportMapsAbsentUserEnteredMetadataToUnknown() {
+    XCTAssertEqual(
+      HealthKitContextImportChannel.recordingMethod(wasUserEntered: nil),
+      "unknown"
+    )
+    XCTAssertEqual(
+      HealthKitContextImportChannel.recordingMethod(wasUserEntered: NSNumber(value: true)),
+      "manual"
+    )
+    XCTAssertEqual(
+      HealthKitContextImportChannel.recordingMethod(wasUserEntered: NSNumber(value: false)),
+      "automatic"
+    )
+  }
+
+  func testHealthContextImportMapsNativeErrorsToSafePublicStates() {
+    XCTAssertEqual(
+      HealthKitContextImportChannel.queryErrorStatus(
+        domain: HKErrorDomain,
+        code: HKError.Code.errorNoData.rawValue
+      ),
+      "noAccessibleData"
+    )
+    XCTAssertEqual(
+      HealthKitContextImportChannel.queryErrorStatus(
+        domain: HKErrorDomain,
+        code: HKError.Code.errorHealthDataUnavailable.rawValue
+      ),
+      "unavailable"
+    )
+    XCTAssertEqual(
+      HealthKitContextImportChannel.queryErrorStatus(
+        domain: HKErrorDomain,
+        code: HKError.Code.errorDatabaseInaccessible.rawValue
+      ),
+      "locked"
+    )
+    XCTAssertEqual(
+      HealthKitContextImportChannel.queryErrorStatus(
+        domain: "untrusted.error.domain",
+        code: 1
+      ),
+      "retry"
+    )
   }
 
   func testLegacyDefaultsArePurgedAndOnlyTargetIsMigrated() throws {

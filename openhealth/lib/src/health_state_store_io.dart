@@ -47,13 +47,16 @@ class FileHealthStateStore implements HealthStateStore {
       'openHealth.healthExport.lastSyncedMs';
   static const _healthExportWatermarkKey =
       'openHealth.healthExport.watermarkMs';
-  static const _appleHealthContextImportLastSyncedKey =
+  // These draft-only v3 keys briefly held Apple Health import cursors. They
+  // are accepted only so a newer app can remove them safely; new code must use
+  // the separate versioned import-state store instead.
+  static const _deprecatedAppleHealthContextImportLastSyncedKey =
       'openHealth.appleHealthContextImport.lastSyncedMs';
-  static const _appleHealthContextImportAnchorSleepKey =
+  static const _deprecatedAppleHealthContextImportAnchorSleepKey =
       'openHealth.appleHealthContextImport.anchor.sleep';
-  static const _appleHealthContextImportAnchorWorkoutKey =
+  static const _deprecatedAppleHealthContextImportAnchorWorkoutKey =
       'openHealth.appleHealthContextImport.anchor.workout';
-  static const _appleHealthContextImportAnchorHeartRateKey =
+  static const _deprecatedAppleHealthContextImportAnchorHeartRateKey =
       'openHealth.appleHealthContextImport.anchor.heartRate';
   static const _privacyChannel = MethodChannel(
     'com.openglucose.app/privacy_storage',
@@ -125,6 +128,18 @@ class FileHealthStateStore implements HealthStateStore {
       needsRewrite = true;
     }
 
+    // A draft implementation placed import cursors in schema-v3 restricted
+    // state. Drop those opaque cursors rather than carrying them into the new
+    // contract. Replaying the bounded source query is idempotent by stable
+    // identity and safer than coupling two independent state schemas.
+    final deprecatedSnapshotKeys = metadataValues.keys
+        .where(_isDeprecatedAppleHealthContextImportKey)
+        .toList(growable: false);
+    for (final key in deprecatedSnapshotKeys) {
+      metadataValues.remove(key);
+      needsRewrite = true;
+    }
+
     // Validate the metadata schema before recovering history transactions or
     // changing the persisted blob naming format. Future app versions must
     // remain untouched rather than being partially downgraded by an older
@@ -172,6 +187,17 @@ class FileHealthStateStore implements HealthStateStore {
       final removed = await _legacyPreferences.remove(key);
       if (!removed && _legacyPreferences.containsKey(key)) {
         throw StateError('Could not remove migrated restricted state: $key');
+      }
+    }
+
+    final deprecatedPreferenceKeys = _legacyPreferences
+        .getKeys()
+        .where(_isDeprecatedAppleHealthContextImportKey)
+        .toList(growable: false);
+    for (final key in deprecatedPreferenceKeys) {
+      final removed = await _legacyPreferences.remove(key);
+      if (!removed && _legacyPreferences.containsKey(key)) {
+        throw StateError('Could not remove obsolete import state: $key');
       }
     }
 
@@ -576,7 +602,9 @@ class FileHealthStateStore implements HealthStateStore {
   Map<String, String> _decodeValues(Map<String, dynamic> encodedValues) {
     final values = <String, String>{};
     for (final entry in encodedValues.entries) {
-      if (!_isRestrictedKey(entry.key) || entry.value is! String) {
+      if ((!_isRestrictedKey(entry.key) &&
+              !_isDeprecatedAppleHealthContextImportKey(entry.key)) ||
+          entry.value is! String) {
         throw const FormatException(
           'Restricted health-state values are invalid.',
         );
@@ -646,12 +674,14 @@ class FileHealthStateStore implements HealthStateStore {
         key.startsWith(_historyPrefix) ||
         key.startsWith(_bondTransferPrefix) ||
         key == _healthExportLastSyncedKey ||
-        key == _healthExportWatermarkKey ||
-        key == _appleHealthContextImportLastSyncedKey ||
-        key == _appleHealthContextImportAnchorSleepKey ||
-        key == _appleHealthContextImportAnchorWorkoutKey ||
-        key == _appleHealthContextImportAnchorHeartRateKey;
+        key == _healthExportWatermarkKey;
   }
+
+  static bool _isDeprecatedAppleHealthContextImportKey(String key) =>
+      key == _deprecatedAppleHealthContextImportLastSyncedKey ||
+      key == _deprecatedAppleHealthContextImportAnchorSleepKey ||
+      key == _deprecatedAppleHealthContextImportAnchorWorkoutKey ||
+      key == _deprecatedAppleHealthContextImportAnchorHeartRateKey;
 
   static bool _isHistoryKey(String key) => key.startsWith(_historyPrefix);
 
@@ -661,8 +691,7 @@ class FileHealthStateStore implements HealthStateStore {
       return value;
     }
     if ((key == _healthExportLastSyncedKey ||
-            key == _healthExportWatermarkKey ||
-            key == _appleHealthContextImportLastSyncedKey) &&
+            key == _healthExportWatermarkKey) &&
         value is int &&
         value >= 0) {
       return value.toString();

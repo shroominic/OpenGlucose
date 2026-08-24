@@ -19,10 +19,6 @@ const _appleHealthContextImportLastSyncedKey =
     'openHealth.appleHealthContextImport.lastSyncedMs';
 const _appleHealthContextImportSleepAnchorKey =
     'openHealth.appleHealthContextImport.anchor.sleep';
-const _appleHealthContextImportWorkoutAnchorKey =
-    'openHealth.appleHealthContextImport.anchor.workout';
-const _appleHealthContextImportHeartRateAnchorKey =
-    'openHealth.appleHealthContextImport.anchor.heartRate';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -155,63 +151,84 @@ void main() {
     },
   );
 
-  test('persists only the known Apple Health context cursors', () async {
-    final directory = await _temporaryDirectory('context-import-cursors');
-    SharedPreferences.setMockInitialValues(const <String, Object>{});
-    final preferences = await SharedPreferences.getInstance();
-    final store = FileHealthStateStore(
-      legacyPreferences: preferences,
-      directoryProvider: () async => directory,
-      requiresBackupExclusion: false,
-    );
-    await store.initialize();
+  test(
+    'rejects Apple Health import cursors from the strict v3 state schema',
+    () async {
+      final directory = await _temporaryDirectory('context-import-cursors');
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+      await store.initialize();
 
-    await store.setString(
-      _appleHealthContextImportLastSyncedKey,
-      '1787572800000',
-    );
-    await store.setString(
-      _appleHealthContextImportSleepAnchorKey,
-      'opaque-test-anchor-sleep',
-    );
-    await store.setString(
-      _appleHealthContextImportWorkoutAnchorKey,
-      'opaque-test-anchor-workout',
-    );
-    await store.setString(
-      _appleHealthContextImportHeartRateAnchorKey,
-      'opaque-test-anchor-heart-rate',
-    );
+      expect(
+        () => store.getString(_appleHealthContextImportLastSyncedKey),
+        throwsArgumentError,
+      );
+      expect(
+        () => store.getString(_appleHealthContextImportSleepAnchorKey),
+        throwsArgumentError,
+      );
+      expect(
+        () => store.setString(
+          _appleHealthContextImportLastSyncedKey,
+          '1787572800000',
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => store.setString(
+          _appleHealthContextImportSleepAnchorKey,
+          'opaque-anchor',
+        ),
+        throwsArgumentError,
+      );
 
-    expect(
-      store.getString(_appleHealthContextImportLastSyncedKey),
-      '1787572800000',
-    );
-    expect(
-      store.getString(_appleHealthContextImportSleepAnchorKey),
-      'opaque-test-anchor-sleep',
-    );
-    expect(
-      store.getString(_appleHealthContextImportWorkoutAnchorKey),
-      'opaque-test-anchor-workout',
-    );
-    expect(
-      store.getString(_appleHealthContextImportHeartRateAnchorKey),
-      'opaque-test-anchor-heart-rate',
-    );
-    expect(
-      () => store.setString(
-        'openHealth.appleHealthContextImport.anchor.unknown',
-        'opaque-test-anchor',
-      ),
-      throwsArgumentError,
-    );
+      final values = (await _readEnvelope(directory))['values'];
+      expect(values, isNot(contains(_appleHealthContextImportLastSyncedKey)));
+      expect(values, isNot(contains(_appleHealthContextImportSleepAnchorKey)));
+    },
+  );
 
-    final values = (await _readEnvelope(directory))['values'];
-    expect(values, contains(_appleHealthContextImportSleepAnchorKey));
-    expect(values, contains(_appleHealthContextImportWorkoutAnchorKey));
-    expect(values, contains(_appleHealthContextImportHeartRateAnchorKey));
-  });
+  test(
+    'removes draft Apple Health cursors from an existing v3 snapshot',
+    () async {
+      final directory = await _temporaryDirectory('legacy-import-cursors');
+      await _stateFile(directory).writeAsString(
+        _encodedEnvelope(
+          <String, String>{
+            _lastSensorKey: '{"deviceId":"sensor-1"}',
+            _appleHealthContextImportLastSyncedKey: '1787572800000',
+            _appleHealthContextImportSleepAnchorKey: 'opaque-anchor',
+          },
+          schemaVersion: 3,
+        ),
+        flush: true,
+      );
+      SharedPreferences.setMockInitialValues(const <String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+
+      await store.initialize();
+
+      expect(store.getString(_lastSensorKey), contains('sensor-1'));
+      expect(
+        () => store.getString(_appleHealthContextImportLastSyncedKey),
+        throwsArgumentError,
+      );
+      final values = (await _readEnvelope(directory))['values'];
+      expect(values, contains(_lastSensorKey));
+      expect(values, isNot(contains(_appleHealthContextImportLastSyncedKey)));
+      expect(values, isNot(contains(_appleHealthContextImportSleepAnchorKey)));
+    },
+  );
 
   test('does not remove legacy data when backup exclusion fails', () async {
     final directory = await _temporaryDirectory('exclusion-failure');

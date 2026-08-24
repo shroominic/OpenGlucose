@@ -105,8 +105,10 @@ records are not blindly summed.
 The local storage contract retains typed platform identity, source provenance,
 revisions, and tombstones. The iOS context-import implementation now uses native
 `HKAnchoredObjectQuery` for user-triggered, bounded sleep/workout/heart-rate
-imports. It persists one restricted anchor per type only after the matching
-local changes are durable, and applies returned deleted objects as tombstones.
+imports. It persists one anchor per type in a separate versioned,
+backup-excluded import-state file only after matching local changes and
+source/type-scoped rolling-window expiry are durable, and applies returned
+deleted objects as tombstones.
 The first UI is a dedicated opt-in control, not an overlay. iOS can make denied
 and empty reads indistinguishable, so it reports `No accessible data` rather
 than claiming a permission outcome. Health Connect, historical glucose import,
