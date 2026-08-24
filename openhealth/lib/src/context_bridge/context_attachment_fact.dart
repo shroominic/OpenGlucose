@@ -225,7 +225,8 @@ abstract interface class ContextAttachmentFactStore {
   ///
   /// Returns [fact] only when this call makes the first durable claim for the
   /// session-scoped episode. It returns null when a journal row or episode has
-  /// already been claimed. Implementations must make this decision in one
+  /// already been claimed. An unrelated duplicate fact ID is a storage error,
+  /// not a claimed episode. Implementations must make this decision in one
   /// transaction so concurrent presentation actions cannot create two facts.
   Future<ContextAttachmentFact?> claimContextAttachmentFact(
     ContextAttachmentFact fact,

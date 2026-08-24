@@ -34,9 +34,10 @@ IDs, or provenance objects. The bridge never requests permissions, starts an
 import, schedules background work, or calls AI.
 
 For this cache, an active session is stricter than a presentation snapshot: it
-must be ready, non-stopped, non-expired, and have a known non-future start.
-Each retained reading must have a sensor-relative minute at or after warmup, or
-a normalized timestamp at or after the known warmup end. The bridge rejects
+must be ready, non-stopped, pass the same time-based lifecycle-expiry predicate
+as the application controller, and have a known non-future start. Each
+retained reading must have a sensor-relative minute at or after warmup, or a
+normalized timestamp at or after the known warmup end. The bridge rejects
 unknown placement rather than retaining it as a chart helper can do.
 
 Observed-rise suggestions are disabled by default. Enabling them requires an
@@ -50,7 +51,9 @@ revision ID, calculation version, and bounded time window without storing
 glucose values or source identifiers. They also carry a stable session-scoped
 opaque episode key derived from the private session key plus the episode start,
 not the mutable candidate peak. SQLite atomically claims that key through a
-unique index; competing actions retain at most one fact.
+unique index; competing actions retain at most one fact. A null claim result
+means an existing journal or episode claim; an unrelated fact-ID collision
+fails instead of being reported as a claim.
 
 ## Alternatives considered
 

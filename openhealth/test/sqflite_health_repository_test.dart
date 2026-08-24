@@ -377,6 +377,45 @@ void main() {
         expect(persisted.single.episodeKey.value, sharedEpisode.value);
       },
     );
+
+    test('fails an unrelated duplicate attachment fact ID collision', () async {
+      await repo.saveFastJournalEntry(
+        entry: FastJournalEntry(
+          id: 'journal-original',
+          kind: FastJournalKind.meal,
+          occurredAt: DateTime.utc(2026, 1, 2, 20, 10),
+        ),
+      );
+      await repo.saveFastJournalEntry(
+        entry: FastJournalEntry(
+          id: 'journal-unrelated',
+          kind: FastJournalKind.activity,
+          occurredAt: DateTime.utc(2026, 1, 2, 20, 11),
+        ),
+      );
+      final claimed = attachmentFact(
+        id: 'shared-fact-id',
+        journalEntryId: 'journal-original',
+        candidate: candidateId('888888888888888888888888'),
+        episode: episodeKey('999999999999999999999999'),
+      );
+      final collision = attachmentFact(
+        id: 'shared-fact-id',
+        journalEntryId: 'journal-unrelated',
+        candidate: candidateId('aaaaaaaaaaaaaaaaaaaaaaaa'),
+        episode: episodeKey('bbbbbbbbbbbbbbbbbbbbbbbb'),
+      );
+
+      expect(await repo.claimContextAttachmentFact(claimed), same(claimed));
+      await expectLater(
+        repo.claimContextAttachmentFact(collision),
+        throwsStateError,
+      );
+
+      final facts = await repo.queryContextAttachmentFacts();
+      expect(facts, hasLength(1));
+      expect(facts.single.toJson(), claimed.toJson());
+    });
   });
 
   group('samples', () {

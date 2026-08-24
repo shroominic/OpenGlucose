@@ -576,7 +576,45 @@ class SqfliteHealthRepository
           jsonEncode(data),
         ],
       );
-      return inserted == 0 ? null : fact;
+      if (inserted != 0) return fact;
+
+      // `INSERT OR IGNORE` also suppresses an unrelated primary-key
+      // collision. It is only a successful no-op when a durable claim already
+      // exists for this journal row or stable episode. Inspect the conflict in
+      // the same transaction so an opaque fact-ID bug cannot look like a
+      // completed attachment.
+      final conflicts = await transaction.query(
+        tableContextAttachmentFacts,
+        columns: const <String>['id', 'journal_entry_id', 'episode_key'],
+        where: 'id = ? OR journal_entry_id = ? OR episode_key = ?',
+        whereArgs: <Object?>[
+          fact.id,
+          fact.journalEntryId,
+          fact.episodeKey.value,
+        ],
+      );
+      final hasUnrelatedIdCollision = conflicts.any(
+        (row) =>
+            row['id'] == fact.id &&
+            row['journal_entry_id'] != fact.journalEntryId &&
+            row['episode_key'] != fact.episodeKey.value,
+      );
+      if (hasUnrelatedIdCollision) {
+        throw StateError(
+          'Context attachment fact ID collides with a different journal '
+          'entry and episode.',
+        );
+      }
+      final hasExistingClaim = conflicts.any(
+        (row) =>
+            row['journal_entry_id'] == fact.journalEntryId ||
+            row['episode_key'] == fact.episodeKey.value,
+      );
+      if (hasExistingClaim) return null;
+      throw StateError(
+        'Context attachment claim was ignored without an existing journal '
+        'or episode claim.',
+      );
     });
   }
 

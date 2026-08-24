@@ -7,8 +7,10 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/context_bridge/context_attachment_fact.dart';
 import 'package:openglucose/src/context_bridge/context_bridge.dart';
 import 'package:openglucose/src/context_bridge/context_bridge_models.dart';
+import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
+import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 final DateTime _now = DateTime.utc(2026, 8, 24, 12);
@@ -324,6 +326,53 @@ void main() {
             await harness.dispose();
           }
         }
+      },
+    );
+
+    test(
+      'rejects a ready unflagged session after its sensor lifetime',
+      () async {
+        // Use a demo-shaped driver so the app controller deliberately does not
+        // retire this snapshot. This proves the bridge admits no readings or
+        // suggestion during the controller's normal retirement window.
+        final harness = await _BridgeHarness.create(
+          demoDriver: true,
+          suggestionPolicy:
+              ContextBridgeSuggestionPolicy.nonClinicalObservedRise(
+                recentRisePolicy: _risePolicy,
+                disclosure: 'This is non-clinical and not medical advice.',
+              ),
+        );
+        addTearDown(harness.dispose);
+        final pastLifetime = _sessionSnapshot(
+          _sensor('alpha'),
+          history: _qualifiedHistory(),
+          sessionInfo: CgmSessionInfo(
+            sessionStart: _now.subtract(
+              kSensorLifeDuration + const Duration(seconds: 1),
+            ),
+          ),
+        );
+
+        expect(pastLifetime.stage, CgmSyncStage.ready);
+        expect(pastLifetime.health.expired, isFalse);
+        harness.session.emit(pastLifetime);
+        await harness.bridge.reload();
+
+        expect(
+          harness.bridge.snapshot.loadState,
+          ContextBridgeLoadState.ready,
+        );
+        expect(
+          harness.bridge.snapshot.glucoseAvailability,
+          ContextBridgeGlucoseAvailability.noActiveSession,
+        );
+        expect(
+          harness.bridge.snapshot.suggestionAvailability,
+          ContextBridgeSuggestionAvailability.noActiveSession,
+        );
+        expect(harness.bridge.snapshot.glucoseReadings, isEmpty);
+        expect(harness.bridge.snapshot.attachmentSuggestion, isNull);
       },
     );
 
@@ -778,6 +827,7 @@ class _BridgeHarness {
     ContextBridgeSuggestionPolicy suggestionPolicy =
         const ContextBridgeSuggestionPolicy.disabled(),
     Listenable? contextSignal,
+    bool demoDriver = false,
   }) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -787,7 +837,7 @@ class _BridgeHarness {
     );
     final controller = CgmAppController(
       preferences: preferences,
-      driver: _BridgeDriver(session),
+      driver: demoDriver ? _BridgeDemoDriver(session) : _BridgeDriver(session),
       reconnectDelay: Duration.zero,
     );
     await controller.initialize();
@@ -889,8 +939,19 @@ class _BridgeRepository extends InMemoryHealthRepository
     ContextAttachmentFact fact,
   ) async {
     fact.toJson();
+    final idConflict = facts[fact.id];
+    if (idConflict != null &&
+        idConflict.journalEntryId != fact.journalEntryId &&
+        idConflict.episodeKey.value != fact.episodeKey.value) {
+      throw StateError(
+        'Context attachment fact ID collides with a different journal '
+        'entry and episode.',
+      );
+    }
     if (facts.values.any(
-      (existing) => existing.episodeKey.value == fact.episodeKey.value,
+      (existing) =>
+          existing.journalEntryId == fact.journalEntryId ||
+          existing.episodeKey.value == fact.episodeKey.value,
     )) {
       return null;
     }
@@ -924,6 +985,18 @@ class _BridgeDriver implements CgmDriver {
     Duration? timeout,
     bool allowDuplicates = true,
   }) async* {}
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor _) async => session;
+}
+
+class _BridgeDemoDriver extends DemoCgmDriver {
+  _BridgeDemoDriver(this.session) : super(clock: () => _now);
+
+  final _BridgeSession session;
+
+  @override
+  String get driverId => 'context-bridge-driver';
 
   @override
   Future<CgmSession> connect(DiscoveredSensor _) async => session;

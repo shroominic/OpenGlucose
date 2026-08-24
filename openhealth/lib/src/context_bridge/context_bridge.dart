@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import '../app_controller.dart';
 import '../journal/fast_journal_store.dart';
 import '../persistence/health_repository_lifecycle.dart';
+import '../session_presentation.dart';
 import 'context_attachment_fact.dart';
 import 'context_bridge_models.dart';
 
@@ -837,10 +838,20 @@ _ContextActiveSession? _activeContextSession(
 ) {
   if (snapshot == null ||
       snapshot.stage != CgmSyncStage.ready ||
-      snapshot.sessionInfo.sessionStopped ||
-      snapshot.health.expired ||
       snapshot.sensor.driverId.trim().isEmpty ||
       snapshot.sensor.storageKey.trim().isEmpty) {
+    return null;
+  }
+  // Use the same lifecycle predicate that retires a sensor in the app
+  // controller. The health flag alone does not cover a ready snapshot whose
+  // sensor lifetime has elapsed before asynchronous retirement completes.
+  if (computeSensorLifecycle(
+    snapshot,
+    latestReading:
+        snapshot.latestReading ??
+        (snapshot.history.isEmpty ? null : snapshot.history.last),
+    now: now.toUtc(),
+  ).isExpired) {
     return null;
   }
   final sessionStart = snapshot.sessionInfo.sessionStart?.toUtc();

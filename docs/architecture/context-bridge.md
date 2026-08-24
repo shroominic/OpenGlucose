@@ -12,8 +12,8 @@ feature.
 `ContextBridge` is owned by the Flutter application composition root. It reads
 only data that the app already has:
 
-- the current ready, non-stopped, non-expired active-sensor session history
-  after a provable warmup boundary;
+- the current ready, non-stopped, lifecycle-non-expired active-sensor session
+  history after a provable warmup boundary;
 - source-aware activity, sleep, and heart-rate samples already in the local
   health repository;
 - local manual fast-journal entries; and
@@ -29,11 +29,13 @@ they do not receive or query a repository.
 The bridge never starts a Health import, requests permissions, creates
 background work, calls an AI model, or connects to a remote service.
 
-The active session must have a known, non-future session start. Each retained
-reading must prove that it is post-warmup through a sensor-relative minute or
-a normalized timestamp after that session's warmup end. The bridge drops a
-reading whose placement is unknown. It does not reuse retained history while a
-session is connecting, stopped, or expired.
+The active session must have a known, non-future session start and pass the
+same time-based lifecycle-expiry predicate used by the application controller.
+Each retained reading must prove that it is post-warmup through a
+sensor-relative minute or a normalized timestamp after that session's warmup
+end. The bridge drops a reading whose placement is unknown. It does not reuse
+retained history while a session is connecting, stopped, explicitly expired,
+or past its sensor lifetime.
 
 ## Privacy boundary
 
@@ -73,7 +75,9 @@ episode key derives from the private active-session key plus the episode start;
 it does not include the mutable candidate peak. The store atomically claims
 that episode key once, so a later higher peak cannot re-enable or duplicate an
 attachment. It stores no glucose values, raw packets, sensor identifiers, or
-external platform identifiers.
+external platform identifiers. A claim returns no attachment only when the
+journal row or episode was already claimed; an unrelated opaque fact-ID
+collision is a storage failure.
 
 The table is deliberately separate from the legacy `health_events` JSON
 contract. Schema-four attachment rows remain readable during migration, but

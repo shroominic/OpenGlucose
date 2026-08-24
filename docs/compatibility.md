@@ -151,7 +151,10 @@ Schema five adds a nullable `episode_key` column and a unique partial index for
 new format-two facts. A format-two fact carries typed bridge-generated opaque
 candidate and session-scoped episode links. The episode key uses the private
 session discriminator plus the episode start, so a new higher peak cannot make
-a second claim. The claim insert and unique index are atomic. Schema-four rows
+a second claim. The claim insert and unique index are atomic. A null claim
+result is valid only when the journal row or episode is already claimed; an
+unrelated fact-ID collision fails rather than being treated as a claim.
+Schema-four rows
 remain readable, but do not have enough private session data to backfill a
 safe episode key; they are not used to suppress a schema-five episode claim.
 The migration is additive, so a v0.1.4-style legacy binary that lowers
