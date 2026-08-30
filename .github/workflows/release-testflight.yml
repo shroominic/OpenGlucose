@@ -1,0 +1,712 @@
+name: TestFlight Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing stable vMAJOR.MINOR.PATCH tag to deliver
+        required: true
+        type: string
+      audience:
+        description: TestFlight audience to deliver
+        required: true
+        type: choice
+        options:
+          - internal
+          - external
+      phase:
+        description: One controlled TestFlight phase
+        required: true
+        type: choice
+        options:
+          - upload
+          - submit_review
+          - notify
+      upload_run_id:
+        description: Required only for external submit_review or notify
+        required: false
+        type: string
+
+# Do not cancel an upload or notification. Apple does not make either request
+# safely retryable after a runner is interrupted. This must remain one constant
+# repository-wide group: a newer tag must wait and then revalidate rather than
+# crossing an App Store Connect boundary alongside an older tag.
+concurrency:
+  group: openglucose-testflight-delivery
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  FLUTTER_VERSION: "3.41.6"
+
+jobs:
+  validate:
+    name: Validate immutable stable release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      audience: ${{ steps.request.outputs.audience }}
+      build_number: ${{ steps.release.outputs.build_number }}
+      ipa_name: ${{ steps.release.outputs.ipa_name }}
+      phase: ${{ steps.request.outputs.phase }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      upload_claim_artifact_name: ${{ steps.release.outputs.upload_claim_artifact_name }}
+      notification_claim_artifact_name: ${{ steps.release.outputs.notification_claim_artifact_name }}
+      notification_receipt_artifact_name: ${{ steps.release.outputs.notification_receipt_artifact_name }}
+      state_artifact_name: ${{ steps.release.outputs.state_artifact_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Select the requested phase
+        id: request
+        shell: bash
+        env:
+          INPUT_AUDIENCE: ${{ inputs.audience }}
+          INPUT_PHASE: ${{ inputs.phase }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REF_NAME: ${{ github.ref_name }}
+          WORKFLOW_REF_PROTECTED: ${{ github.ref_protected }}
+          WORKFLOW_REF_TYPE: ${{ github.ref_type }}
+          WORKFLOW_DEFINITION_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+
+          audience=$INPUT_AUDIENCE
+          phase=$INPUT_PHASE
+          release_tag=$INPUT_RELEASE_TAG
+          upload_run_id=$INPUT_UPLOAD_RUN_ID
+
+          case "$audience" in internal | external) ;; *) exit 1 ;; esac
+          case "$phase" in upload | submit_review | notify) ;; *) exit 1 ;; esac
+          [[ "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          expected_ref="refs/tags/$release_tag"
+          expected_workflow_ref="$GITHUB_REPOSITORY/.github/workflows/release-testflight.yml@$expected_ref"
+          test "$WORKFLOW_REF" = "$expected_ref"
+          test "$WORKFLOW_REF_NAME" = "$release_tag"
+          test "$WORKFLOW_REF_TYPE" = tag
+          test "$WORKFLOW_REF_PROTECTED" = true
+          test "$WORKFLOW_DEFINITION_REF" = "$expected_workflow_ref"
+          if [[ "$audience" == internal ]]; then
+            test "$phase" = upload
+          fi
+          if [[ "$phase" == upload ]]; then
+            test -z "$upload_run_id"
+          else
+            test "$audience" = external
+            [[ "$upload_run_id" =~ ^[1-9][0-9]*$ ]]
+          fi
+
+          {
+            printf 'audience=%s\n' "$audience"
+            printf 'phase=%s\n' "$phase"
+            printf 'release_tag=%s\n' "$release_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out the immutable tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.request.outputs.release_tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate protected future tag, release, version, and main ancestry
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          version=$(sed -n 's/^version: \([0-9][0-9.]*+[0-9][0-9]*\)$/\1/p' openhealth/pubspec.yaml)
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+([1-9][0-9]*)$ ]]
+          test "$RELEASE_TAG" = "v${version%%+*}"
+          build_number=${version##*+}
+          source_sha=$(git rev-parse HEAD)
+          test "$source_sha" = "$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          ./scripts/verify-testflight-release-tag.sh "$RELEASE_TAG" "$source_sha"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          {
+            printf 'build_number=%s\n' "$build_number"
+            printf 'ipa_name=openglucose-%s.ipa\n' "$version"
+            printf 'release_tag=%s\n' "$RELEASE_TAG"
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'upload_claim_artifact_name=testflight-upload-claim-%s\n' "$version"
+            printf 'notification_claim_artifact_name=testflight-notification-claim-%s\n' "$version"
+            printf 'notification_receipt_artifact_name=testflight-notification-receipt-%s\n' "$version"
+            printf 'state_artifact_name=testflight-state-%s\n' "$version"
+            printf 'version=%s\n' "$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fail closed on an existing external boundary claim
+        shell: bash
+        env:
+          AUDIENCE: ${{ steps.request.outputs.audience }}
+          NOTIFICATION_CLAIM_ARTIFACT_NAME: ${{ steps.release.outputs.notification_claim_artifact_name }}
+          PHASE: ${{ steps.request.outputs.phase }}
+          UPLOAD_CLAIM_ARTIFACT_NAME: ${{ steps.release.outputs.upload_claim_artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          active_artifact_count() {
+            local artifact_name="$1"
+            gh api --method GET --paginate \
+              "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+              -f per_page=100 \
+              -f "name=$artifact_name" |
+              jq -s '[.[] | .artifacts[]? | select(.expired == false)] | length'
+          }
+
+          if [[ "$AUDIENCE" == external && "$PHASE" == upload ]]; then
+            test "$(active_artifact_count "$UPLOAD_CLAIM_ARTIFACT_NAME")" = 0 || {
+              printf 'An external upload claim already exists for this exact build. Reconcile App Store Connect; do not re-upload.\n' >&2
+              exit 1
+            }
+          fi
+          if [[ "$PHASE" == notify ]]; then
+            test "$(active_artifact_count "$NOTIFICATION_CLAIM_ARTIFACT_NAME")" = 0 || {
+              printf 'A tester-notification claim already exists for this exact build. Reconcile App Store Connect; do not notify again.\n' >&2
+              exit 1
+            }
+          fi
+
+  upload:
+    name: Build and upload ${{ needs.validate.outputs.audience }} TestFlight candidate
+    if: needs.validate.outputs.phase == 'upload'
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 180
+    environment:
+      name: ${{ needs.validate.outputs.audience == 'internal' && 'testflight-internal-upload' || 'testflight-external-upload' }}
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      TESTFLIGHT_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+      TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS: "yes"
+    steps:
+      - name: Check out exact validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install pinned native release tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          fastlane_version=$(sed -n '1p' .fastlane-version)
+          cocoapods_version=$(sed -n '1p' .cocoapods-version)
+          gem install --user-install --no-document fastlane -v "$fastlane_version"
+          gem install --user-install --no-document cocoapods -v "$cocoapods_version"
+          user_gem_bin=$(ruby -e 'require "rubygems"; print File.join(Gem.user_dir, "bin")')
+          test -x "$user_gem_bin/fastlane"
+          test -x "$user_gem_bin/pod"
+          printf '%s\n' "$user_gem_bin" >> "$GITHUB_PATH"
+
+      - name: Run immutable release checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          make bootstrap
+          make tooling-check format-check lint test-unit test-integration
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      # Environment approval occurs before this job starts. Recheck the remote
+      # tag after that approval and before release credentials are decoded.
+      - name: Revalidate protected stable tag after approval before signing
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          ./scripts/verify-testflight-release-tag.sh "$RELEASE_TAG" "$SOURCE_SHA"
+
+      - name: Build, verify, and persist the external upload claim
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+          APP_STORE_PROFILE_UUID: ${{ vars.APP_STORE_PROFILE_UUID }}
+          ASC_API_ISSUER_ID: ${{ vars.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ vars.ASC_API_KEY_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          IOS_APP_STORE_PROFILE_BASE64: ${{ secrets.IOS_APP_STORE_PROFILE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_SHA1: ${{ vars.IOS_DISTRIBUTION_CERTIFICATE_SHA1 }}
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          IOS_LIVE_ACTIVITY_PROFILE_BASE64: ${{ secrets.IOS_LIVE_ACTIVITY_PROFILE_BASE64 }}
+          LIVE_ACTIVITY_APP_STORE_PROFILE_UUID: ${{ vars.LIVE_ACTIVITY_APP_STORE_PROFILE_UUID }}
+          LIVE_ACTIVITY_BUNDLE_ID: ${{ vars.LIVE_ACTIVITY_BUNDLE_ID }}
+          RELEASE_AUDIENCE: ${{ needs.validate.outputs.audience }}
+          RELEASE_BUILD_NUMBER: ${{ needs.validate.outputs.build_number }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TESTFLIGHT_EXTERNAL_TESTER_COUNT: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_COUNT }}
+          TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 }}
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP }}
+          TESTFLIGHT_GROUP_ID: ${{ vars.TESTFLIGHT_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_GROUP: ${{ vars.TESTFLIGHT_INTERNAL_GROUP }}
+          TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_TESTER_ID: ${{ vars.TESTFLIGHT_INTERNAL_TESTER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          require_value() {
+            [[ -n "${!1:-}" ]] || { printf 'Required TestFlight configuration %s is missing.\n' "$1" >&2; exit 1; }
+          }
+          decode_base64() {
+            printf '%s' "$1" | /usr/bin/base64 -D > "$2"
+            test -s "$2"
+            chmod 600 "$2"
+          }
+
+          for name in APPLE_TEAM_ID APP_BUNDLE_ID APP_STORE_PROFILE_UUID ASC_API_ISSUER_ID ASC_API_KEY_ID ASC_API_KEY_P8_BASE64 IOS_APP_STORE_PROFILE_BASE64 IOS_DISTRIBUTION_CERTIFICATE_SHA1 IOS_DISTRIBUTION_P12_BASE64 IOS_DISTRIBUTION_P12_PASSWORD IOS_LIVE_ACTIVITY_PROFILE_BASE64 LIVE_ACTIVITY_APP_STORE_PROFILE_UUID LIVE_ACTIVITY_BUNDLE_ID TESTFLIGHT_GROUP TESTFLIGHT_GROUP_ID TESTFLIGHT_INTERNAL_TESTER_ID; do
+            require_value "$name"
+          done
+          if [[ "$RELEASE_AUDIENCE" == external ]]; then
+            for name in TESTFLIGHT_EXTERNAL_TESTER_COUNT TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 TESTFLIGHT_INTERNAL_GROUP TESTFLIGHT_INTERNAL_GROUP_ID; do require_value "$name"; done
+          fi
+
+          material_dir="$RUNNER_TEMP/openglucose-testflight-material"
+          state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+          keychain_path="$RUNNER_TEMP/openglucose-testflight.keychain-db"
+          app_profile_destination=
+          live_profile_destination=
+          cleanup() {
+            set +e
+            test -z "$app_profile_destination" || rm -f -- "$app_profile_destination"
+            test -z "$live_profile_destination" || rm -f -- "$live_profile_destination"
+            security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+            rm -rf -- "$material_dir"
+          }
+          if [[ "$RELEASE_AUDIENCE" == internal ]]; then
+            trap cleanup EXIT HUP INT TERM
+          fi
+          test ! -e "$material_dir" && test ! -e "$state_dir" && test ! -e "$keychain_path"
+          mkdir -m 700 "$material_dir" "$state_dir"
+
+          asc_key_path="$material_dir/AuthKey_$ASC_API_KEY_ID.p8"
+          p12_path="$material_dir/distribution.p12"
+          app_profile_path="$material_dir/app.mobileprovision"
+          live_profile_path="$material_dir/live-activity.mobileprovision"
+          decode_base64 "$ASC_API_KEY_P8_BASE64" "$asc_key_path"
+          decode_base64 "$IOS_DISTRIBUTION_P12_BASE64" "$p12_path"
+          decode_base64 "$IOS_APP_STORE_PROFILE_BASE64" "$app_profile_path"
+          decode_base64 "$IOS_LIVE_ACTIVITY_PROFILE_BASE64" "$live_profile_path"
+          unset ASC_API_KEY_P8_BASE64 IOS_DISTRIBUTION_P12_BASE64 IOS_APP_STORE_PROFILE_BASE64 IOS_LIVE_ACTIVITY_PROFILE_BASE64
+
+          keychain_password=$(openssl rand -hex 32)
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 7200 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$p12_path" -k "$keychain_path" -P "$IOS_DISTRIBUTION_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          unset IOS_DISTRIBUTION_P12_PASSWORD
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+          expected_certificate=$(printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_SHA1" | tr '[:lower:]' '[:upper:]')
+          security find-identity -v -p codesigning "$keychain_path" | grep -F "$expected_certificate" | grep -F '"Apple Distribution:' >/dev/null
+          export IOS_DISTRIBUTION_CERTIFICATE_SHA1="$expected_certificate"
+
+          app_profile_plist="$material_dir/app-profile.plist"
+          live_profile_plist="$material_dir/live-activity-profile.plist"
+          security cms -D -i "$app_profile_path" > "$app_profile_plist"
+          security cms -D -i "$live_profile_path" > "$live_profile_plist"
+          app_profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$app_profile_plist")
+          live_profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$live_profile_plist")
+          test "$app_profile_uuid" = "$APP_STORE_PROFILE_UUID"
+          test "$live_profile_uuid" = "$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID"
+          profile_directory="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profile_directory"
+          app_profile_destination="$profile_directory/$app_profile_uuid.mobileprovision"
+          live_profile_destination="$profile_directory/$live_profile_uuid.mobileprovision"
+          test ! -e "$app_profile_destination" && test ! -e "$live_profile_destination"
+          cp "$app_profile_path" "$app_profile_destination"
+          cp "$live_profile_path" "$live_profile_destination"
+          chmod 600 "$app_profile_destination" "$live_profile_destination"
+
+          changelog=$(<"docs/release-notes/v${RELEASE_VERSION%%+*}.md")
+          phase_environment=()
+          if [[ "$RELEASE_AUDIENCE" == external ]]; then
+            phase_environment+=(DISTRIBUTE_EXTERNAL=yes TESTFLIGHT_STOP_AFTER_UPLOAD_CLAIM=yes TESTFLIGHT_UPLOAD_CONTINUATION_TOKEN_PATH="$state_dir/upload-continuation-token" TESTFLIGHT_INTERNAL_GROUP="$TESTFLIGHT_INTERNAL_GROUP" TESTFLIGHT_INTERNAL_GROUP_ID="$TESTFLIGHT_INTERNAL_GROUP_ID")
+          else
+            phase_environment+=(DISTRIBUTE_EXTERNAL=no TESTFLIGHT_TESTER_ID="$TESTFLIGHT_INTERNAL_TESTER_ID")
+          fi
+          (
+            cd openhealth
+            env -u GEM_HOME -u GEM_PATH \
+              "${phase_environment[@]}" \
+              APPLE_TEAM_ID="$APPLE_TEAM_ID" APP_BUNDLE_ID="$APP_BUNDLE_ID" APP_STORE_PROFILE_UUID="$APP_STORE_PROFILE_UUID" ASC_API_ISSUER_ID="$ASC_API_ISSUER_ID" ASC_API_KEY_ID="$ASC_API_KEY_ID" ASC_API_KEY_PATH="$asc_key_path" DISTRIBUTE_INTERNAL=yes LIVE_ACTIVITY_APP_STORE_PROFILE_UUID="$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID" LIVE_ACTIVITY_BUNDLE_ID="$LIVE_ACTIVITY_BUNDLE_ID" RELEASE_APPROVED=yes RELEASE_COMMIT="$RELEASE_COMMIT" RELEASE_VERSION="$RELEASE_VERSION" TESTFLIGHT_CHANGELOG="$changelog" TESTFLIGHT_EXTERNAL_TESTER_COUNT="$TESTFLIGHT_EXTERNAL_TESTER_COUNT" TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256="$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" TESTFLIGHT_GROUP="$TESTFLIGHT_GROUP" TESTFLIGHT_GROUP_ID="$TESTFLIGHT_GROUP_ID" TESTFLIGHT_INTERNAL_TESTER_ID="$TESTFLIGHT_INTERNAL_TESTER_ID" TESTFLIGHT_MODE="$RELEASE_AUDIENCE" TESTFLIGHT_NOTIFICATION_RECEIPT_PATH="$state_dir/notification.json" TESTFLIGHT_UPLOAD_PROVENANCE_PATH="$state_dir/upload-provenance.json" \
+              ./scripts/testflight.sh
+          )
+
+          ipa=$(find openhealth/build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print)
+          test -n "$ipa" && test "$(printf '%s\n' "$ipa" | wc -l | tr -d ' ')" = 1
+          if [[ "$RELEASE_AUDIENCE" == external ]]; then
+            test -f "$state_dir/upload-provenance.json.attempt" && test ! -L "$state_dir/upload-provenance.json.attempt"
+            test ! -e "$state_dir/upload-provenance.json" && test ! -L "$state_dir/upload-provenance.json"
+            test -f "$state_dir/upload-continuation-token" && test ! -L "$state_dir/upload-continuation-token"
+            test "$(stat -f '%Lp' "$state_dir/upload-provenance.json.attempt")" = 400
+            test "$(stat -f '%Lp' "$state_dir/upload-continuation-token")" = 600
+          fi
+
+      - name: Persist external upload claim before pilot
+        if: needs.validate.outputs.audience == 'external'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.validate.outputs.upload_claim_artifact_name }}
+          path: ${{ runner.temp }}/openglucose-testflight-state/upload-provenance.json.attempt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Resume persisted external upload claim and upload
+        if: needs.validate.outputs.audience == 'external'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+          APP_STORE_PROFILE_UUID: ${{ vars.APP_STORE_PROFILE_UUID }}
+          ASC_API_ISSUER_ID: ${{ vars.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ vars.ASC_API_KEY_ID }}
+          IOS_DISTRIBUTION_CERTIFICATE_SHA1: ${{ vars.IOS_DISTRIBUTION_CERTIFICATE_SHA1 }}
+          LIVE_ACTIVITY_APP_STORE_PROFILE_UUID: ${{ vars.LIVE_ACTIVITY_APP_STORE_PROFILE_UUID }}
+          LIVE_ACTIVITY_BUNDLE_ID: ${{ vars.LIVE_ACTIVITY_BUNDLE_ID }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TESTFLIGHT_EXTERNAL_TESTER_COUNT: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_COUNT }}
+          TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 }}
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP }}
+          TESTFLIGHT_GROUP_ID: ${{ vars.TESTFLIGHT_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_GROUP: ${{ vars.TESTFLIGHT_INTERNAL_GROUP }}
+          TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_TESTER_ID: ${{ vars.TESTFLIGHT_INTERNAL_TESTER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          require_value() {
+            [[ -n "${!1:-}" ]] || { printf 'Required TestFlight configuration %s is missing.\n' "$1" >&2; exit 1; }
+          }
+          for name in APPLE_TEAM_ID APP_BUNDLE_ID APP_STORE_PROFILE_UUID ASC_API_ISSUER_ID ASC_API_KEY_ID IOS_DISTRIBUTION_CERTIFICATE_SHA1 LIVE_ACTIVITY_APP_STORE_PROFILE_UUID LIVE_ACTIVITY_BUNDLE_ID TESTFLIGHT_EXTERNAL_TESTER_COUNT TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 TESTFLIGHT_GROUP TESTFLIGHT_GROUP_ID TESTFLIGHT_INTERNAL_GROUP TESTFLIGHT_INTERNAL_GROUP_ID TESTFLIGHT_INTERNAL_TESTER_ID; do
+            require_value "$name"
+          done
+
+          material_dir="$RUNNER_TEMP/openglucose-testflight-material"
+          state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+          asc_key_path="$material_dir/AuthKey_$ASC_API_KEY_ID.p8"
+          test -d "$material_dir" && test "$(stat -f '%Lp' "$material_dir")" = 700
+          test -d "$state_dir" && test "$(stat -f '%Lp' "$state_dir")" = 700
+          test -f "$asc_key_path" && test ! -L "$asc_key_path"
+          test "$(stat -f '%Lp' "$asc_key_path")" = 600
+          changelog=$(<"docs/release-notes/v${RELEASE_VERSION%%+*}.md")
+          (
+            cd openhealth
+            env -u GEM_HOME -u GEM_PATH \
+              APPLE_TEAM_ID="$APPLE_TEAM_ID" APP_BUNDLE_ID="$APP_BUNDLE_ID" APP_STORE_PROFILE_UUID="$APP_STORE_PROFILE_UUID" ASC_API_ISSUER_ID="$ASC_API_ISSUER_ID" ASC_API_KEY_ID="$ASC_API_KEY_ID" ASC_API_KEY_PATH="$asc_key_path" DISTRIBUTE_EXTERNAL=yes DISTRIBUTE_INTERNAL=yes IOS_DISTRIBUTION_CERTIFICATE_SHA1="$IOS_DISTRIBUTION_CERTIFICATE_SHA1" LIVE_ACTIVITY_APP_STORE_PROFILE_UUID="$LIVE_ACTIVITY_APP_STORE_PROFILE_UUID" LIVE_ACTIVITY_BUNDLE_ID="$LIVE_ACTIVITY_BUNDLE_ID" RELEASE_APPROVED=yes RELEASE_COMMIT="$RELEASE_COMMIT" RELEASE_VERSION="$RELEASE_VERSION" TESTFLIGHT_CHANGELOG="$changelog" TESTFLIGHT_EXTERNAL_TESTER_COUNT="$TESTFLIGHT_EXTERNAL_TESTER_COUNT" TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256="$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" TESTFLIGHT_GROUP="$TESTFLIGHT_GROUP" TESTFLIGHT_GROUP_ID="$TESTFLIGHT_GROUP_ID" TESTFLIGHT_INTERNAL_GROUP="$TESTFLIGHT_INTERNAL_GROUP" TESTFLIGHT_INTERNAL_GROUP_ID="$TESTFLIGHT_INTERNAL_GROUP_ID" TESTFLIGHT_INTERNAL_TESTER_ID="$TESTFLIGHT_INTERNAL_TESTER_ID" TESTFLIGHT_MODE=external TESTFLIGHT_NOTIFICATION_RECEIPT_PATH="$state_dir/notification.json" TESTFLIGHT_RESUME_UPLOAD=yes TESTFLIGHT_STOP_AFTER_UPLOAD=yes TESTFLIGHT_UPLOAD_CONTINUATION_TOKEN_PATH="$state_dir/upload-continuation-token" TESTFLIGHT_UPLOAD_PROVENANCE_PATH="$state_dir/upload-provenance.json" \
+              ./scripts/testflight.sh
+          )
+
+      - name: Prepare the verified IPA evidence
+        shell: bash
+        env:
+          RELEASE_AUDIENCE: ${{ needs.validate.outputs.audience }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          ipa=$(find openhealth/build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print)
+          test -n "$ipa" && test "$(printf '%s\n' "$ipa" | wc -l | tr -d ' ')" = 1
+          mkdir -p dist
+          cp "$ipa" "dist/openglucose-$RELEASE_VERSION.ipa"
+          if [[ "$RELEASE_AUDIENCE" == external ]]; then
+            state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+            test -f "$state_dir/upload-provenance.json" && test ! -L "$state_dir/upload-provenance.json"
+            test -f "$state_dir/upload-provenance.json.attempt" && test ! -L "$state_dir/upload-provenance.json.attempt"
+            test "$(stat -f '%Lp' "$state_dir/upload-provenance.json")" = 400
+            test "$(stat -f '%Lp' "$state_dir/upload-provenance.json.attempt")" = 400
+            expected_sha=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("ipaSha256")' "$state_dir/upload-provenance.json")
+            actual_sha=$(shasum -a 256 "dist/openglucose-$RELEASE_VERSION.ipa" | awk '{print $1}')
+            test "$actual_sha" = "$expected_sha"
+          fi
+
+      - name: Upload verified IPA workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: testflight-ipa-${{ needs.validate.outputs.version }}
+          path: dist/${{ needs.validate.outputs.ipa_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attest verified IPA
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/${{ needs.validate.outputs.ipa_name }}
+
+      - name: Retain immutable external upload state
+        if: needs.validate.outputs.audience == 'external'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.validate.outputs.state_artifact_name }}
+          path: |
+            ${{ runner.temp }}/openglucose-testflight-state/upload-provenance.json
+            ${{ runner.temp }}/openglucose-testflight-state/upload-provenance.json.attempt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove release material from the runner
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+          material_dir="$RUNNER_TEMP/openglucose-testflight-material"
+          keychain_path="$RUNNER_TEMP/openglucose-testflight.keychain-db"
+          app_profile_destination=
+          live_profile_destination=
+          if [[ -f "$material_dir/app-profile.plist" ]]; then
+            app_profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$material_dir/app-profile.plist" 2>/dev/null)
+            app_profile_destination="$HOME/Library/MobileDevice/Provisioning Profiles/$app_profile_uuid.mobileprovision"
+          fi
+          if [[ -f "$material_dir/live-activity-profile.plist" ]]; then
+            live_profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$material_dir/live-activity-profile.plist" 2>/dev/null)
+            live_profile_destination="$HOME/Library/MobileDevice/Provisioning Profiles/$live_profile_uuid.mobileprovision"
+          fi
+          test -z "$app_profile_destination" || rm -f -- "$app_profile_destination"
+          test -z "$live_profile_destination" || rm -f -- "$live_profile_destination"
+          security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+          rm -rf -- "$state_dir" "$material_dir"
+
+  external_follow_up:
+    name: ${{ needs.validate.outputs.phase }} external TestFlight delivery
+    if: needs.validate.outputs.phase == 'submit_review' || needs.validate.outputs.phase == 'notify'
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment:
+      name: ${{ needs.validate.outputs.phase == 'submit_review' && 'testflight-external-review' || 'testflight-external-notify' }}
+    permissions:
+      actions: read
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      TESTFLIGHT_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+      TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS: "yes"
+    steps:
+      - name: Check out exact validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install pinned native release tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          gem install --user-install --no-document fastlane -v "$(sed -n '1p' .fastlane-version)"
+          gem install --user-install --no-document cocoapods -v "$(sed -n '1p' .cocoapods-version)"
+          printf '%s\n' "$(ruby -e 'require "rubygems"; print File.join(Gem.user_dir, "bin")')" >> "$GITHUB_PATH"
+
+      - name: Restore immutable upload state
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.validate.outputs.state_artifact_name }}
+          path: ${{ runner.temp }}/openglucose-testflight-download
+          run-id: ${{ inputs.upload_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Submit the approved external build for beta review
+        if: needs.validate.outputs.phase == 'submit_review'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+          ASC_API_ISSUER_ID: ${{ vars.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ vars.ASC_API_KEY_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          LIVE_ACTIVITY_BUNDLE_ID: ${{ vars.LIVE_ACTIVITY_BUNDLE_ID }}
+          RELEASE_BUILD_NUMBER: ${{ needs.validate.outputs.build_number }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TESTFLIGHT_EXTERNAL_TESTER_COUNT: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_COUNT }}
+          TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 }}
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP }}
+          TESTFLIGHT_GROUP_ID: ${{ vars.TESTFLIGHT_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_GROUP: ${{ vars.TESTFLIGHT_INTERNAL_GROUP }}
+          TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_TESTER_ID: ${{ vars.TESTFLIGHT_INTERNAL_TESTER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in APPLE_TEAM_ID APP_BUNDLE_ID ASC_API_ISSUER_ID ASC_API_KEY_ID ASC_API_KEY_P8_BASE64 LIVE_ACTIVITY_BUNDLE_ID TESTFLIGHT_EXTERNAL_TESTER_COUNT TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 TESTFLIGHT_GROUP TESTFLIGHT_GROUP_ID TESTFLIGHT_INTERNAL_GROUP TESTFLIGHT_INTERNAL_GROUP_ID TESTFLIGHT_INTERNAL_TESTER_ID; do
+            [[ -n "${!name:-}" ]] || { printf 'Required TestFlight configuration %s is missing.\n' "$name" >&2; exit 1; }
+          done
+          state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+          download_dir="$RUNNER_TEMP/openglucose-testflight-download"
+          material_dir="$RUNNER_TEMP/openglucose-testflight-follow-up"
+          test ! -e "$state_dir" && test ! -e "$material_dir"
+          mkdir -m 700 "$state_dir" "$material_dir"
+          trap 'rm -rf -- "$state_dir" "$material_dir"' EXIT HUP INT TERM
+          for file in upload-provenance.json upload-provenance.json.attempt; do
+            test -f "$download_dir/$file" && test ! -L "$download_dir/$file"
+            cp "$download_dir/$file" "$state_dir/$file"
+            chmod 400 "$state_dir/$file"
+          done
+          asc_key_path="$material_dir/AuthKey_$ASC_API_KEY_ID.p8"
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | /usr/bin/base64 -D > "$asc_key_path"
+          test -s "$asc_key_path"
+          chmod 600 "$asc_key_path"
+          unset ASC_API_KEY_P8_BASE64
+          (
+            cd openhealth
+            env -u GEM_HOME -u GEM_PATH \
+              APPLE_TEAM_ID="$APPLE_TEAM_ID" APP_BUNDLE_ID="$APP_BUNDLE_ID" ASC_API_ISSUER_ID="$ASC_API_ISSUER_ID" ASC_API_KEY_ID="$ASC_API_KEY_ID" ASC_API_KEY_PATH="$asc_key_path" DISTRIBUTE_EXTERNAL=yes DISTRIBUTE_INTERNAL=yes LIVE_ACTIVITY_BUNDLE_ID="$LIVE_ACTIVITY_BUNDLE_ID" RELEASE_APPROVED=yes RELEASE_COMMIT="$RELEASE_COMMIT" RELEASE_VERSION="$RELEASE_VERSION" TESTFLIGHT_EXTERNAL_TESTER_COUNT="$TESTFLIGHT_EXTERNAL_TESTER_COUNT" TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256="$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" TESTFLIGHT_GROUP="$TESTFLIGHT_GROUP" TESTFLIGHT_GROUP_ID="$TESTFLIGHT_GROUP_ID" TESTFLIGHT_INTERNAL_GROUP="$TESTFLIGHT_INTERNAL_GROUP" TESTFLIGHT_INTERNAL_GROUP_ID="$TESTFLIGHT_INTERNAL_GROUP_ID" TESTFLIGHT_INTERNAL_TESTER_ID="$TESTFLIGHT_INTERNAL_TESTER_ID" TESTFLIGHT_MODE=external TESTFLIGHT_NOTIFICATION_RECEIPT_PATH="$state_dir/notification.json" TESTFLIGHT_NOTIFY_ONLY=yes TESTFLIGHT_STOP_AFTER_REVIEW=yes TESTFLIGHT_UPLOAD_PROVENANCE_PATH="$state_dir/upload-provenance.json" \
+              ./scripts/testflight.sh
+          )
+
+      - name: Create durable notification claim
+        if: needs.validate.outputs.phase == 'notify'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+          ASC_API_ISSUER_ID: ${{ vars.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ vars.ASC_API_KEY_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          LIVE_ACTIVITY_BUNDLE_ID: ${{ vars.LIVE_ACTIVITY_BUNDLE_ID }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TESTFLIGHT_EXTERNAL_TESTER_COUNT: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_COUNT }}
+          TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 }}
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP }}
+          TESTFLIGHT_GROUP_ID: ${{ vars.TESTFLIGHT_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_GROUP: ${{ vars.TESTFLIGHT_INTERNAL_GROUP }}
+          TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_TESTER_ID: ${{ vars.TESTFLIGHT_INTERNAL_TESTER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in APPLE_TEAM_ID APP_BUNDLE_ID ASC_API_ISSUER_ID ASC_API_KEY_ID ASC_API_KEY_P8_BASE64 LIVE_ACTIVITY_BUNDLE_ID TESTFLIGHT_EXTERNAL_TESTER_COUNT TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 TESTFLIGHT_GROUP TESTFLIGHT_GROUP_ID TESTFLIGHT_INTERNAL_GROUP TESTFLIGHT_INTERNAL_GROUP_ID TESTFLIGHT_INTERNAL_TESTER_ID; do
+            [[ -n "${!name:-}" ]] || { printf 'Required TestFlight configuration %s is missing.\n' "$name" >&2; exit 1; }
+          done
+          state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+          download_dir="$RUNNER_TEMP/openglucose-testflight-download"
+          material_dir="$RUNNER_TEMP/openglucose-testflight-follow-up"
+          test ! -e "$state_dir" && test ! -e "$material_dir"
+          mkdir -m 700 "$state_dir" "$material_dir"
+          for file in upload-provenance.json upload-provenance.json.attempt; do
+            test -f "$download_dir/$file" && test ! -L "$download_dir/$file"
+            cp "$download_dir/$file" "$state_dir/$file"
+            chmod 400 "$state_dir/$file"
+          done
+          asc_key_path="$material_dir/AuthKey_$ASC_API_KEY_ID.p8"
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | /usr/bin/base64 -D > "$asc_key_path"
+          test -s "$asc_key_path"
+          chmod 600 "$asc_key_path"
+          unset ASC_API_KEY_P8_BASE64
+          (
+            cd openhealth
+            env -u GEM_HOME -u GEM_PATH \
+              APPLE_TEAM_ID="$APPLE_TEAM_ID" APP_BUNDLE_ID="$APP_BUNDLE_ID" ASC_API_ISSUER_ID="$ASC_API_ISSUER_ID" ASC_API_KEY_ID="$ASC_API_KEY_ID" ASC_API_KEY_PATH="$asc_key_path" DISTRIBUTE_EXTERNAL=yes DISTRIBUTE_INTERNAL=yes LIVE_ACTIVITY_BUNDLE_ID="$LIVE_ACTIVITY_BUNDLE_ID" RELEASE_APPROVED=yes RELEASE_COMMIT="$RELEASE_COMMIT" RELEASE_VERSION="$RELEASE_VERSION" TESTFLIGHT_EXTERNAL_TESTER_COUNT="$TESTFLIGHT_EXTERNAL_TESTER_COUNT" TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256="$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" TESTFLIGHT_GROUP="$TESTFLIGHT_GROUP" TESTFLIGHT_GROUP_ID="$TESTFLIGHT_GROUP_ID" TESTFLIGHT_INTERNAL_GROUP="$TESTFLIGHT_INTERNAL_GROUP" TESTFLIGHT_INTERNAL_GROUP_ID="$TESTFLIGHT_INTERNAL_GROUP_ID" TESTFLIGHT_INTERNAL_TESTER_ID="$TESTFLIGHT_INTERNAL_TESTER_ID" TESTFLIGHT_MODE=external TESTFLIGHT_NOTIFICATION_RECEIPT_PATH="$state_dir/notification.json" TESTFLIGHT_NOTIFY_ONLY=yes TESTFLIGHT_STOP_AFTER_NOTIFICATION_CLAIM=yes TESTFLIGHT_UPLOAD_PROVENANCE_PATH="$state_dir/upload-provenance.json" \
+              ./scripts/testflight.sh
+          )
+          test -f "$state_dir/notification.json" && test ! -L "$state_dir/notification.json"
+          test "$(stat -f '%Lp' "$state_dir/notification.json")" = 600
+
+      - name: Persist notification claim before send
+        if: needs.validate.outputs.phase == 'notify'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.validate.outputs.notification_claim_artifact_name }}
+          path: ${{ runner.temp }}/openglucose-testflight-state/notification.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Send notification from persisted claim
+        if: needs.validate.outputs.phase == 'notify'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APP_BUNDLE_ID: ${{ vars.APP_BUNDLE_ID }}
+          ASC_API_ISSUER_ID: ${{ vars.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_ID: ${{ vars.ASC_API_KEY_ID }}
+          LIVE_ACTIVITY_BUNDLE_ID: ${{ vars.LIVE_ACTIVITY_BUNDLE_ID }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.source_sha }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TESTFLIGHT_EXTERNAL_TESTER_COUNT: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_COUNT }}
+          TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256: ${{ vars.TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 }}
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP }}
+          TESTFLIGHT_GROUP_ID: ${{ vars.TESTFLIGHT_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_GROUP: ${{ vars.TESTFLIGHT_INTERNAL_GROUP }}
+          TESTFLIGHT_INTERNAL_GROUP_ID: ${{ vars.TESTFLIGHT_INTERNAL_GROUP_ID }}
+          TESTFLIGHT_INTERNAL_TESTER_ID: ${{ vars.TESTFLIGHT_INTERNAL_TESTER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in APPLE_TEAM_ID APP_BUNDLE_ID ASC_API_ISSUER_ID ASC_API_KEY_ID LIVE_ACTIVITY_BUNDLE_ID TESTFLIGHT_EXTERNAL_TESTER_COUNT TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256 TESTFLIGHT_GROUP TESTFLIGHT_GROUP_ID TESTFLIGHT_INTERNAL_GROUP TESTFLIGHT_INTERNAL_GROUP_ID TESTFLIGHT_INTERNAL_TESTER_ID; do
+            [[ -n "${!name:-}" ]] || { printf 'Required TestFlight configuration %s is missing.\n' "$name" >&2; exit 1; }
+          done
+          state_dir="$RUNNER_TEMP/openglucose-testflight-state"
+          material_dir="$RUNNER_TEMP/openglucose-testflight-follow-up"
+          asc_key_path="$material_dir/AuthKey_$ASC_API_KEY_ID.p8"
+          test -d "$state_dir" && test "$(stat -f '%Lp' "$state_dir")" = 700
+          test -d "$material_dir" && test "$(stat -f '%Lp' "$material_dir")" = 700
+          test -f "$asc_key_path" && test ! -L "$asc_key_path"
+          test "$(stat -f '%Lp' "$asc_key_path")" = 600
+          test -f "$state_dir/notification.json" && test ! -L "$state_dir/notification.json"
+          test "$(stat -f '%Lp' "$state_dir/notification.json")" = 600
+          (
+            cd openhealth
+            env -u GEM_HOME -u GEM_PATH \
+              APPLE_TEAM_ID="$APPLE_TEAM_ID" APP_BUNDLE_ID="$APP_BUNDLE_ID" ASC_API_ISSUER_ID="$ASC_API_ISSUER_ID" ASC_API_KEY_ID="$ASC_API_KEY_ID" ASC_API_KEY_PATH="$asc_key_path" DISTRIBUTE_EXTERNAL=yes DISTRIBUTE_INTERNAL=yes LIVE_ACTIVITY_BUNDLE_ID="$LIVE_ACTIVITY_BUNDLE_ID" RELEASE_APPROVED=yes RELEASE_COMMIT="$RELEASE_COMMIT" RELEASE_VERSION="$RELEASE_VERSION" TESTFLIGHT_EXTERNAL_TESTER_COUNT="$TESTFLIGHT_EXTERNAL_TESTER_COUNT" TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256="$TESTFLIGHT_EXTERNAL_TESTER_IDS_SHA256" TESTFLIGHT_GROUP="$TESTFLIGHT_GROUP" TESTFLIGHT_GROUP_ID="$TESTFLIGHT_GROUP_ID" TESTFLIGHT_INTERNAL_GROUP="$TESTFLIGHT_INTERNAL_GROUP" TESTFLIGHT_INTERNAL_GROUP_ID="$TESTFLIGHT_INTERNAL_GROUP_ID" TESTFLIGHT_INTERNAL_TESTER_ID="$TESTFLIGHT_INTERNAL_TESTER_ID" TESTFLIGHT_MODE=external TESTFLIGHT_NOTIFICATION_RECEIPT_PATH="$state_dir/notification.json" TESTFLIGHT_NOTIFY_ONLY=yes TESTFLIGHT_SEND_CLAIMED_NOTIFICATION=yes TESTFLIGHT_UPLOAD_PROVENANCE_PATH="$state_dir/upload-provenance.json" \
+              ./scripts/testflight.sh
+          )
+          test "$(stat -f '%Lp' "$state_dir/notification.json")" = 400
+
+      - name: Retain completed notification receipt
+        if: needs.validate.outputs.phase == 'notify'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.validate.outputs.notification_receipt_artifact_name }}
+          path: ${{ runner.temp }}/openglucose-testflight-state/notification.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove follow-up release material from the runner
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -rf -- "$RUNNER_TEMP/openglucose-testflight-state" \
+            "$RUNNER_TEMP/openglucose-testflight-follow-up" \
+            "$RUNNER_TEMP/openglucose-testflight-download"
