@@ -6,6 +6,13 @@ import 'package:intl/intl.dart';
 
 import 'context_timeline_models.dart';
 
+/// Visual density for the same local, read-only context data.
+///
+/// The compact card remains available for embedded previews. The full-screen
+/// form is used by the dedicated opt-in route, where a chart and a simple
+/// chronology need more room than a card stack.
+enum ContextTimelinePresentation { card, fullScreen }
+
 /// A compact, opt-in rendering of source-attributed body context.
 ///
 /// Glucose remains the main visual signal. Context is collapsed by default,
@@ -20,6 +27,7 @@ class CompactContextTimeline extends StatefulWidget {
     this.initiallyExpanded = false,
     this.onAttachmentRequested,
     this.showHeartRate = true,
+    this.presentation = ContextTimelinePresentation.card,
   });
 
   final ContextTimelineSource source;
@@ -27,6 +35,8 @@ class CompactContextTimeline extends StatefulWidget {
   final ContextTimelineRange initialRange;
   final bool initiallyExpanded;
   final ValueChanged<ContextAttachmentDraft>? onAttachmentRequested;
+
+  final ContextTimelinePresentation presentation;
 
   /// Whether the optional heart-rate rail belongs in this visual surface.
   /// The production context route starts glucose-first and leaves it off.
@@ -55,6 +65,16 @@ class _CompactContextTimelineState extends State<CompactContextTimeline> {
       now: widget.now,
       range: _range,
     );
+
+    if (widget.presentation == ContextTimelinePresentation.fullScreen) {
+      return _FullScreenContextTimeline(
+        projection: projection,
+        selectedRange: _range,
+        onRangeSelected: (range) => setState(() => _range = range),
+        onAttachmentRequested: widget.onAttachmentRequested,
+        showHeartRate: widget.showHeartRate,
+      );
+    }
 
     final content = Padding(
       padding: const EdgeInsets.all(16),
@@ -128,6 +148,237 @@ class _CompactContextTimelineState extends State<CompactContextTimeline> {
             ),
     );
   }
+}
+
+class _FullScreenContextTimeline extends StatelessWidget {
+  const _FullScreenContextTimeline({
+    required this.projection,
+    required this.selectedRange,
+    required this.onRangeSelected,
+    required this.onAttachmentRequested,
+    required this.showHeartRate,
+  });
+
+  final ContextTimelineProjection projection;
+  final ContextTimelineRange selectedRange;
+  final ValueChanged<ContextTimelineRange> onRangeSelected;
+  final ValueChanged<ContextAttachmentDraft>? onAttachmentRequested;
+  final bool showHeartRate;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasTimelineData =
+        projection.glucoseReadings.isNotEmpty || projection.items.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: Semantics(
+                header: true,
+                child: Text(
+                  'Timeline',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ),
+            Icon(
+              Icons.auto_graph_rounded,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        _RangePicker(selected: selectedRange, onSelected: onRangeSelected),
+        const SizedBox(height: 14),
+        if (projection.isSampleData) ...<Widget>[
+          const _SampleDataNotice(),
+          const SizedBox(height: 12),
+        ],
+        _ContextTimelinePlot(
+          projection: projection,
+          showHeartRate: showHeartRate,
+          aspectRatio: 1.48,
+          mealUsesWarmAmber: true,
+        ),
+        if (!hasTimelineData) ...<Widget>[
+          const SizedBox(height: 16),
+          _EmptyFullScreenTimeline(projection: projection),
+        ] else if (projection.items.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 22),
+          Text(
+            'Events',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 6),
+          _ChronologicalContextItems(items: projection.items),
+        ],
+        if (projection.attachmentPrompt != null &&
+            onAttachmentRequested != null) ...<Widget>[
+          const SizedBox(height: 16),
+          _FullScreenAttachmentAction(
+            prompt: projection.attachmentPrompt!,
+            onAttachmentRequested: onAttachmentRequested!,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _EmptyFullScreenTimeline extends StatelessWidget {
+  const _EmptyFullScreenTimeline({required this.projection});
+
+  final ContextTimelineProjection projection;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = projection.laneStatuses
+        .where(
+          (item) => item.availability != ContextDataAvailability.available,
+        )
+        .map((item) => item.availability.title)
+        .toSet()
+        .join(', ');
+    return Text(
+      status.isEmpty
+          ? 'No events in this period.'
+          : 'No events in this period. $status.',
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+}
+
+class _ChronologicalContextItems extends StatelessWidget {
+  const _ChronologicalContextItems({required this.items});
+
+  final List<ContextTimelineItem> items;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible =
+        items
+            .where((item) => item.kind != ContextTimelineItemKind.heartRate)
+            .toList(growable: false)
+          ..sort((left, right) => right.start.compareTo(left.start));
+    if (visible.isEmpty) return const SizedBox.shrink();
+    return Column(
+      children: <Widget>[
+        for (var index = 0; index < visible.length; index++) ...<Widget>[
+          _ChronologicalContextItem(item: visible[index]),
+          if (index != visible.length - 1)
+            Divider(
+              height: 1,
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ChronologicalContextItem extends StatelessWidget {
+  const _ChronologicalContextItem({required this.item});
+
+  final ContextTimelineItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final time = DateFormat('MMM d · HH:mm').format(item.start.toLocal());
+    final source = item.source.contextLabel;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _ContextItemButton._showItemDetails(context, item),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: _backgroundFor(item.kind, theme.colorScheme),
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: Icon(
+                  _ContextItemButton._iconFor(item.kind),
+                  size: 19,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      item.title,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$time · $source',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Color _backgroundFor(ContextTimelineItemKind kind, ColorScheme colors) =>
+      switch (kind) {
+        ContextTimelineItemKind.sleep => colors.tertiaryContainer,
+        ContextTimelineItemKind.meal => _mealSurfaceColor(colors),
+        ContextTimelineItemKind.workout ||
+        ContextTimelineItemKind.movement => colors.secondaryContainer,
+        ContextTimelineItemKind.note => colors.primaryContainer,
+        ContextTimelineItemKind.heartRate => colors.surfaceContainerHigh,
+      };
+}
+
+class _FullScreenAttachmentAction extends StatelessWidget {
+  const _FullScreenAttachmentAction({
+    required this.prompt,
+    required this.onAttachmentRequested,
+  });
+
+  final ContextAttachmentPrompt prompt;
+  final ValueChanged<ContextAttachmentDraft> onAttachmentRequested;
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+    onPressed: () => _ContextAttachmentPromptCard._showAttachmentSheet(
+      context,
+      prompt,
+      onAttachmentRequested,
+    ),
+    icon: const Icon(Icons.add_comment_outlined),
+    label: const Text('Add an event'),
+  );
 }
 
 class _TimelineHeader extends StatelessWidget {
@@ -217,10 +468,14 @@ class _ContextTimelinePlot extends StatelessWidget {
   const _ContextTimelinePlot({
     required this.projection,
     required this.showHeartRate,
+    this.aspectRatio = 1.72,
+    this.mealUsesWarmAmber = false,
   });
 
   final ContextTimelineProjection projection;
   final bool showHeartRate;
+  final double aspectRatio;
+  final bool mealUsesWarmAmber;
 
   @override
   Widget build(BuildContext context) {
@@ -239,7 +494,7 @@ class _ContextTimelinePlot extends StatelessWidget {
       label: semanticLabel.toString(),
       child: ExcludeSemantics(
         child: AspectRatio(
-          aspectRatio: 1.72,
+          aspectRatio: aspectRatio,
           child: DecoratedBox(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
@@ -251,6 +506,7 @@ class _ContextTimelinePlot extends StatelessWidget {
                 projection: projection,
                 colorScheme: theme.colorScheme,
                 showHeartRate: showHeartRate,
+                mealUsesWarmAmber: mealUsesWarmAmber,
               ),
             ),
           ),
@@ -265,11 +521,13 @@ class _ContextTimelinePainter extends CustomPainter {
     required this.projection,
     required this.colorScheme,
     required this.showHeartRate,
+    required this.mealUsesWarmAmber,
   });
 
   final ContextTimelineProjection projection;
   final ColorScheme colorScheme;
   final bool showHeartRate;
+  final bool mealUsesWarmAmber;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -405,7 +663,9 @@ class _ContextTimelinePainter extends CustomPainter {
     for (final item in markers) {
       final x = _xFor(item.start, chartRect);
       final color = item.kind == ContextTimelineItemKind.meal
-          ? colorScheme.error
+          ? mealUsesWarmAmber
+                ? _mealMarkerColor(colorScheme)
+                : colorScheme.error
           : colorScheme.tertiary;
       final paint = Paint()
         ..color = color
@@ -446,8 +706,21 @@ class _ContextTimelinePainter extends CustomPainter {
   bool shouldRepaint(_ContextTimelinePainter oldDelegate) =>
       oldDelegate.projection != projection ||
       oldDelegate.colorScheme != colorScheme ||
-      oldDelegate.showHeartRate != showHeartRate;
+      oldDelegate.showHeartRate != showHeartRate ||
+      oldDelegate.mealUsesWarmAmber != mealUsesWarmAmber;
 }
+
+/// Meals use a warm amber rather than the error palette. Red is reserved for
+/// failures and safety-critical states elsewhere in the product.
+Color _mealMarkerColor(ColorScheme colors) =>
+    colors.brightness == Brightness.dark
+    ? const Color(0xFFFFC857)
+    : const Color(0xFFA95A00);
+
+Color _mealSurfaceColor(ColorScheme colors) =>
+    colors.brightness == Brightness.dark
+    ? const Color(0xFF5A3F0A)
+    : const Color(0xFFFFE1A3);
 
 class _ContextLegend extends StatelessWidget {
   const _ContextLegend({required this.projection, required this.showHeartRate});

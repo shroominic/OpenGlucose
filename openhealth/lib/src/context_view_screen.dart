@@ -25,27 +25,13 @@ class ContextViewScreen extends StatelessWidget {
       final snapshot = bridge.snapshot;
       final now = snapshot.refreshedAt ?? snapshot.window.end;
       return Scaffold(
-        appBar: AppBar(title: const Text('Context')),
+        appBar: AppBar(title: const Text('Glucose with context')),
         body: SafeArea(
           top: false,
           child: ListView(
             key: const ValueKey<String>('contextViewScroll'),
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
             children: <Widget>[
-              Semantics(
-                header: true,
-                child: Text(
-                  'Glucose with context',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Glucose stays primary. Sleep, activity, and meals are optional local context for reflection.',
-              ),
-              const SizedBox(height: 16),
               if (snapshot.loadState == ContextBridgeLoadState.loading)
                 Semantics(
                   liveRegion: true,
@@ -59,14 +45,18 @@ class ContextViewScreen extends StatelessWidget {
                 source: ContextBridgeTimelineAdapter(snapshot).call,
                 now: now,
                 initiallyExpanded: true,
+                presentation: ContextTimelinePresentation.fullScreen,
                 // Heart-rate context is deliberately held for a later, focused
                 // visual surface. It does not take space in this first lane.
                 showHeartRate: false,
               ),
-              const SizedBox(height: 16),
-              const Text(
-                'Context records timing and observations. They do not prove a cause or provide medical, treatment, or dosing guidance.',
-                style: TextStyle(color: Color(0xFF5B6E6A), height: 1.35),
+              const SizedBox(height: 20),
+              Text(
+                'Events show timing and observations only. They do not identify a cause or provide medical guidance.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF5B6E6A),
+                  height: 1.35,
+                ),
               ),
             ],
           ),
@@ -280,21 +270,37 @@ class _ContextAttachmentSheetState extends State<_ContextAttachmentSheet> {
                   ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
                 ),
               ),
-              const SizedBox(height: 8),
-              Text(widget.suggestion.safetyBoundary),
-              const SizedBox(height: 12),
+              const SizedBox(height: 4),
+              Text(
+                'Record a meal or activity in the time window around this observation.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF5B6E6A),
+                ),
+              ),
+              const SizedBox(height: 14),
               Semantics(
                 container: true,
                 label: 'Allowed local time range: $limit',
-                child: Card(
-                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                   child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text('Allowed time: $limit'),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    child: Text(
+                      'Allowed time: $limit',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
               _KindPicker(
                 selected: _kind,
                 enabled: !_saving,
@@ -317,6 +323,13 @@ class _ContextAttachmentSheetState extends State<_ContextAttachmentSheet> {
                 icon: const Icon(Icons.schedule_rounded),
                 label: Text(
                   'When: ${DateFormat('MMM d · HH:mm').format(_occurredAt)}',
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                widget.suggestion.safetyBoundary,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF5B6E6A),
                 ),
               ),
               Semantics(

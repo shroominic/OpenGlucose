@@ -122,16 +122,16 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         children: <Widget>[
           const _JournalIntro(),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           FilledButton.icon(
             key: const ValueKey<String>('fastJournalQuickAdd'),
             onPressed: _openQuickAdd,
             icon: const Icon(Icons.add_rounded),
-            label: const Text('Quick add'),
+            label: const Text('Add meal or activity'),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 28),
           Text(
-            'Recent entries',
+            'Recent',
             style: Theme.of(
               context,
             ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
@@ -145,7 +145,11 @@ class _FastJournalScreenState extends State<FastJournalScreen> {
           const Text(
             'This diary records timing and observations. It does not identify '
             'causes or give treatment or dosing guidance.',
-            style: TextStyle(color: Color(0xFF5B6E6A), height: 1.35),
+            style: TextStyle(
+              color: Color(0xFF5B6E6A),
+              height: 1.35,
+              fontSize: 12,
+            ),
           ),
         ],
       ),
@@ -157,31 +161,25 @@ class _JournalIntro extends StatelessWidget {
   const _JournalIntro();
 
   @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFE6EFEA),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: const Padding(
-        padding: EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text(
-              'Private local diary',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-            ),
-            SizedBox(height: 6),
-            Text(
-              'Record a meal or activity. Entries stay on this '
-              'device.',
-            ),
-          ],
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: <Widget>[
+      Text(
+        'Private local diary',
+        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w800,
         ),
       ),
-    );
-  }
+      const SizedBox(height: 2),
+      Text(
+        'Meals and activity you add stay on this device.',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    ],
+  );
 }
 
 class _EmptyDiary extends StatelessWidget {
@@ -189,10 +187,13 @@ class _EmptyDiary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: const Padding(
-        padding: EdgeInsets.all(18),
-        child: Text('No diary entries yet.'),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Text(
+        'No diary entries yet.',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
@@ -204,19 +205,31 @@ class _JournalEntries extends StatelessWidget {
   final List<FastJournalEntry> entries;
 
   @override
-  Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: <Widget>[
-          for (var index = 0; index < entries.length; index++) ...<Widget>[
-            _JournalEntryTile(entry: entries[index]),
-            if (index != entries.length - 1) const Divider(height: 1),
-          ],
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: <Widget>[
+      for (final group in _groupEntries(entries)) ...<Widget>[
+        Padding(
+          padding: const EdgeInsets.only(top: 12, bottom: 4),
+          child: Text(
+            _formatDay(group.day),
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        for (var index = 0; index < group.entries.length; index++) ...<Widget>[
+          _JournalEntryTile(entry: group.entries[index]),
+          if (index != group.entries.length - 1)
+            Divider(
+              height: 1,
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
         ],
-      ),
-    );
-  }
+      ],
+    ],
+  );
 }
 
 class _JournalEntryTile extends StatelessWidget {
@@ -226,16 +239,49 @@ class _JournalEntryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final date = DateFormat('MMM d · HH:mm').format(entry.occurredAt.toLocal());
+    final date = DateFormat('HH:mm').format(entry.occurredAt.toLocal());
     final subtitle = <String>[
       date,
       if (entry.duration != null) _formatDuration(entry.duration!),
       if (entry.riseReference != null) 'Near a recorded rise',
     ].join(' · ');
-    return ListTile(
-      leading: Icon(_iconFor(entry.kind), color: const Color(0xFF0B6E69)),
-      title: Text(entry.label ?? entry.kind.label),
-      subtitle: Text(subtitle),
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 11),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: _backgroundFor(entry.kind, colors),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(_iconFor(entry.kind), color: colors.onSurface),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  entry.label ?? entry.kind.label,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -335,13 +381,21 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
+              const _JournalSheetHandle(),
               Text(
                 'Quick add',
                 style: Theme.of(
                   context,
                 ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 4),
+              Text(
+                'Choose what happened and when.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
               Wrap(
                 spacing: 8,
                 children: _newJournalKinds
@@ -411,6 +465,68 @@ class _QuickJournalSheetState extends State<_QuickJournalSheet> {
     );
   }
 }
+
+class _JournalSheetHandle extends StatelessWidget {
+  const _JournalSheetHandle();
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Container(
+      width: 34,
+      height: 4,
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.outlineVariant,
+        borderRadius: BorderRadius.circular(99),
+      ),
+    ),
+  );
+}
+
+class _JournalDayGroup {
+  const _JournalDayGroup({required this.day, required this.entries});
+
+  final DateTime day;
+  final List<FastJournalEntry> entries;
+}
+
+List<_JournalDayGroup> _groupEntries(List<FastJournalEntry> entries) {
+  final grouped = <DateTime, List<FastJournalEntry>>{};
+  final sorted = List<FastJournalEntry>.of(entries)
+    ..sort((left, right) => right.occurredAt.compareTo(left.occurredAt));
+  for (final entry in sorted) {
+    final local = entry.occurredAt.toLocal();
+    final day = DateTime(local.year, local.month, local.day);
+    grouped.putIfAbsent(day, () => <FastJournalEntry>[]).add(entry);
+  }
+  final groups =
+      grouped.entries
+          .map(
+            (entry) => _JournalDayGroup(day: entry.key, entries: entry.value),
+          )
+          .toList(growable: false)
+        ..sort((left, right) => right.day.compareTo(left.day));
+  return groups;
+}
+
+String _formatDay(DateTime day) {
+  final today = DateUtils.dateOnly(DateTime.now());
+  if (DateUtils.isSameDay(day, today)) return 'Today';
+  if (DateUtils.isSameDay(day, today.subtract(const Duration(days: 1)))) {
+    return 'Yesterday';
+  }
+  return DateFormat('EEEE, MMM d').format(day);
+}
+
+Color _backgroundFor(FastJournalKind kind, ColorScheme colors) =>
+    switch (kind) {
+      FastJournalKind.meal =>
+        colors.brightness == Brightness.dark
+            ? const Color(0xFF5A3F0A)
+            : const Color(0xFFFFE1A3),
+      FastJournalKind.activity => colors.secondaryContainer,
+      FastJournalKind.sleep => colors.tertiaryContainer,
+    };
 
 IconData _iconFor(FastJournalKind kind) => switch (kind) {
   FastJournalKind.meal => Icons.restaurant_rounded,
