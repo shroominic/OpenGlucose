@@ -29,6 +29,7 @@
 		AEF02CD831388240EB791BCE /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9A3F3866D70875832C57844 /* SwiftUI.framework */; };
 		C22A0F3121F3DC145DF706B6 /* GlucoseLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D855B9851A289C72801204A3 /* GlucoseLiveActivityAttributes.swift */; };
 		E14A0002F2D54BCB87610002 /* PrivacyStorageChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E14A0001F2D54BCB87610001 /* PrivacyStorageChannel.swift */; };
+		E15A0002F2D54BCB87610002 /* ExportShareChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15A0001F2D54BCB87610001 /* ExportShareChannel.swift */; };
 		E13A0002F2D54BCB87610002 /* NativeRestrictedStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E13A0001F2D54BCB87610001 /* NativeRestrictedStateStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -109,6 +110,7 @@
 		D9CD6248FCC2BF8D99C90C3D /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		E9A3F3866D70875832C57844 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS14.0.sdk/System/Library/Frameworks/SwiftUI.framework; sourceTree = DEVELOPER_DIR; };
 		E14A0001F2D54BCB87610001 /* PrivacyStorageChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyStorageChannel.swift; sourceTree = "<group>"; };
+		E15A0001F2D54BCB87610001 /* ExportShareChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportShareChannel.swift; sourceTree = "<group>"; };
 		E13A0001F2D54BCB87610001 /* NativeRestrictedStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeRestrictedStateStore.swift; sourceTree = "<group>"; };
 		E13A0003F2D54BCB87610003 /* LiveActivity.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = LiveActivity.xcconfig; path = Flutter/LiveActivity.xcconfig; sourceTree = "<group>"; };
 		F1661D12E3A5B0B8F7EADF7F /* ActivityKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ActivityKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS14.0.sdk/System/Library/Frameworks/ActivityKit.framework; sourceTree = DEVELOPER_DIR; };
@@ -243,6 +245,7 @@
 				1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */,
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
+				E15A0001F2D54BCB87610001 /* ExportShareChannel.swift */,
 				E14A0001F2D54BCB87610001 /* PrivacyStorageChannel.swift */,
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
 				16C4FAEE38C24B8B8A121001 /* AidexBackgroundMonitor.swift */,
@@ -505,6 +508,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
+				E15A0002F2D54BCB87610002 /* ExportShareChannel.swift in Sources */,
 				E14A0002F2D54BCB87610002 /* PrivacyStorageChannel.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,

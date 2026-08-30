@@ -237,6 +237,69 @@ final class RunnerTests: XCTestCase {
   }
 }
 
+final class ExportSharePresentationPolicyTests: XCTestCase {
+  func testIPhoneDoesNotUsePopoverPresentation() {
+    XCTAssertFalse(
+      ExportShareChannel.shouldConfigurePopover(interfaceIdiom: .phone)
+    )
+  }
+
+  func testIPadUsesRequiredPopoverPresentation() {
+    XCTAssertTrue(
+      ExportShareChannel.shouldConfigurePopover(interfaceIdiom: .pad)
+    )
+  }
+
+  func testExportShareAcceptsOnlyReadableTemporaryFiles() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "openglucose-export-share-policy-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let allowedDirectory = root.appendingPathComponent(
+      "tmp",
+      isDirectory: true
+    )
+    let outsideDirectory = root.appendingPathComponent(
+      "outside",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: allowedDirectory,
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+      at: outsideDirectory,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let allowedFile = allowedDirectory.appendingPathComponent("export.csv")
+    let outsideFile = outsideDirectory.appendingPathComponent("export.csv")
+    try Data("test export".utf8).write(to: allowedFile)
+    try Data("test export".utf8).write(to: outsideFile)
+
+    XCTAssertEqual(
+      try ExportShareChannel.validatedTemporaryFile(
+        allowedFile.path,
+        temporaryDirectory: allowedDirectory
+      ),
+      allowedFile
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedTemporaryFile(
+        outsideFile.path,
+        temporaryDirectory: allowedDirectory
+      )
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedTemporaryFile(
+        allowedDirectory.appendingPathComponent("missing.csv").path,
+        temporaryDirectory: allowedDirectory
+      )
+    )
+  }
+}
+
 final class LiveActivityLockScreenRedactionTests: XCTestCase {
   func testLiveGlucoseRequiresExplicitSensitiveContentConsent() throws {
     let payload: [String: Any] = [
