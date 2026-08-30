@@ -74,6 +74,10 @@ abstract interface class HealthRepository {
   // --- Activity samples ----------------------------------------------------
 
   /// Inserts/replaces many activity samples in a single transaction.
+  ///
+  /// A sample with [ActivitySample.provenance] replaces the existing activity
+  /// row with the same platform-owned import identity. Legacy or manual
+  /// samples without provenance are appended for backwards compatibility.
   Future<void> upsertActivitySamples(Iterable<ActivitySample> samples);
 
   /// Removes every activity sample whose [ActivitySample.start] falls in
@@ -90,6 +94,10 @@ abstract interface class HealthRepository {
   // --- Sleep samples -------------------------------------------------------
 
   /// Inserts/replaces many sleep samples in a single transaction.
+  ///
+  /// A sample with [SleepSample.provenance] replaces the existing sleep row
+  /// with the same platform-owned import identity. Legacy or manual samples
+  /// without provenance are appended for backwards compatibility.
   Future<void> upsertSleepSamples(Iterable<SleepSample> samples);
 
   /// Removes every sleep sample whose [SleepSample.start] falls in [window].
@@ -105,6 +113,11 @@ abstract interface class HealthRepository {
   // --- Heart-rate samples --------------------------------------------------
 
   /// Inserts/replaces many heart-rate samples in a single transaction.
+  ///
+  /// A sample with [HeartRateSample.provenance] replaces the existing
+  /// heart-rate row with the same platform-owned import identity. Legacy or
+  /// manual samples without provenance are appended for backwards
+  /// compatibility.
   Future<void> upsertHeartRateSamples(Iterable<HeartRateSample> samples);
 
   /// Removes every heart-rate sample whose [HeartRateSample.timestamp] falls in
@@ -115,6 +128,40 @@ abstract interface class HealthRepository {
   /// [window], sorted chronologically ascending.
   Future<List<HeartRateSample>> queryHeartRateSamples({
     TimeWindow window = TimeWindow.all,
+  });
+
+  /// Removes only imported samples for [platform] whose local timestamp is
+  /// before [cutoff]. Manual and legacy samples remain untouched.
+  ///
+  /// This retention operation deliberately does not create source-deletion
+  /// tombstones. It is used when a bounded platform query advances beyond a
+  /// record that can no longer be reconciled by that query's predicate.
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  });
+
+  // --- Imported-record tombstones -----------------------------------------
+
+  /// Applies source-reported record deletions by stable import identity.
+  ///
+  /// Each tombstone removes the matching visible imported sample (if present)
+  /// and retains a local deletion record. This permits an incremental importer
+  /// to reconcile a deletion even when the platform does not return the old
+  /// interval or measurement values.
+  Future<void> reconcileImportTombstones(
+    Iterable<HealthImportTombstone> tombstones,
+  );
+
+  /// Returns retained source-deletion tombstones in deterministic order.
+  ///
+  /// This is an importer/recovery contract, not a timeline/UI query. The
+  /// returned provenance contains restricted identifiers and must remain
+  /// local-only.
+  Future<List<HealthImportTombstone>> queryImportTombstones({
+    HealthSampleKind? kind,
+    HealthSourcePlatform? platform,
   });
 
   // --- AI insights ---------------------------------------------------------

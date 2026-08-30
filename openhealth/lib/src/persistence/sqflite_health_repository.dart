@@ -3,6 +3,10 @@ import 'dart:convert';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../context_bridge/context_attachment_fact.dart';
+import '../context_bridge/context_attachment_writer.dart';
+import '../journal/fast_journal_store.dart';
+
 /// On-device, local-first [HealthRepository] backed by SQLite via `sqflite`.
 ///
 /// Why sqflite (vs. hive/isar): the repository's core access pattern is
@@ -22,7 +26,12 @@ import 'package:sqflite/sqflite.dart';
 /// the fields used for filtering (timestamps as epoch-millis, type/category
 /// keys) promoted to dedicated, indexed columns. This keeps schema churn low as
 /// models gain fields while keeping window/type queries index-backed.
-class SqfliteHealthRepository implements HealthRepository {
+class SqfliteHealthRepository
+    implements
+        HealthRepository,
+        FastJournalStore,
+        ContextAttachmentFactStore,
+        ContextAttachmentWriter {
   SqfliteHealthRepository({
     required String path,
     DatabaseFactory? databaseFactory,
@@ -32,13 +41,16 @@ class SqfliteHealthRepository implements HealthRepository {
        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 5;
 
   static const String tableEvents = 'health_events';
   static const String tableActivity = 'activity_samples';
   static const String tableSleep = 'sleep_samples';
   static const String tableHeartRate = 'heart_rate_samples';
+  static const String tableImportTombstones = 'health_import_tombstones';
   static const String tableInsights = 'ai_insights';
+  static const String tableFastJournalEntries = 'fast_journal_entries';
+  static const String tableContextAttachmentFacts = 'context_attachment_facts';
 
   final String _path;
   final DatabaseFactory _databaseFactory;
@@ -66,6 +78,7 @@ class SqfliteHealthRepository implements HealthRepository {
           await _migrate(db, 0, version);
         },
         onUpgrade: _migrate,
+        onDowngrade: _rejectDowngrade,
       ),
     );
   }
@@ -101,6 +114,8 @@ class SqfliteHealthRepository implements HealthRepository {
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           start_ms INTEGER NOT NULL,
           type TEXT NOT NULL,
+          identity_platform TEXT,
+          external_id TEXT,
           data TEXT NOT NULL
         )
       ''');
@@ -110,26 +125,55 @@ class SqfliteHealthRepository implements HealthRepository {
       await db.execute(
         'CREATE INDEX idx_activity_type ON $tableActivity(type)',
       );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_activity_import_identity ON $tableActivity('
+        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
+        'AND external_id IS NOT NULL',
+      );
 
       await db.execute('''
         CREATE TABLE $tableSleep (
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           start_ms INTEGER NOT NULL,
+          identity_platform TEXT,
+          external_id TEXT,
           data TEXT NOT NULL
         )
       ''');
       await db.execute('CREATE INDEX idx_sleep_start ON $tableSleep(start_ms)');
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_sleep_import_identity ON $tableSleep('
+        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
+        'AND external_id IS NOT NULL',
+      );
 
       await db.execute('''
         CREATE TABLE $tableHeartRate (
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp_ms INTEGER NOT NULL,
+          identity_platform TEXT,
+          external_id TEXT,
           data TEXT NOT NULL
         )
       ''');
       await db.execute(
         'CREATE INDEX idx_hr_ts ON $tableHeartRate(timestamp_ms)',
       );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_hr_import_identity ON $tableHeartRate('
+        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
+        'AND external_id IS NOT NULL',
+      );
+
+      await db.execute('''
+        CREATE TABLE $tableImportTombstones (
+          sample_kind TEXT NOT NULL,
+          identity_platform TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          data TEXT NOT NULL,
+          PRIMARY KEY (sample_kind, identity_platform, external_id)
+        )
+      ''');
 
       await db.execute('''
         CREATE TABLE $tableInsights (
@@ -146,10 +190,146 @@ class SqfliteHealthRepository implements HealthRepository {
         'CREATE INDEX idx_insights_category ON $tableInsights(category)',
       );
     }
-    // Future migrations: if (from < 2) { ... } // bump [schemaVersion] too.
+    if (from < 2 && to >= 2) {
+      // A schema-v1 binary has no downgrade callback. sqflite therefore lowers
+      // `user_version` when that binary opens a v2 database, while retaining
+      // these additive v2 columns. Probe before every ALTER so a later v2
+      // launch repairs that version marker instead of treating the database as
+      // corrupt and failing on duplicate columns.
+      //
+      // Existing v1 rows remain untouched and nullable so legacy/manual rows
+      // retain their append-only semantics.
+      await _addColumnIfMissing(db, tableActivity, 'identity_platform');
+      await _addColumnIfMissing(db, tableActivity, 'external_id');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_import_identity '
+        'ON $tableActivity(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
+      );
+      await _addColumnIfMissing(db, tableSleep, 'identity_platform');
+      await _addColumnIfMissing(db, tableSleep, 'external_id');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_import_identity '
+        'ON $tableSleep(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
+      );
+      await _addColumnIfMissing(db, tableHeartRate, 'identity_platform');
+      await _addColumnIfMissing(db, tableHeartRate, 'external_id');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_hr_import_identity '
+        'ON $tableHeartRate(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
+      );
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableImportTombstones (
+          sample_kind TEXT NOT NULL,
+          identity_platform TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          data TEXT NOT NULL,
+          PRIMARY KEY (sample_kind, identity_platform, external_id)
+        )
+      ''');
+    }
+    if (from < 3 && to >= 3) {
+      // Fast-journal records use a dedicated, versioned protocol. They are not
+      // stored in `health_events`, so a v0.1.4 binary can continue to read its
+      // known health-event JSON while ignoring this table entirely.
+      //
+      // `IF NOT EXISTS` also repairs the version marker after a legacy binary
+      // has lowered SQLite's user_version but left the additive table intact.
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableFastJournalEntries (
+          id TEXT PRIMARY KEY,
+          occurred_at_ms INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          rise_started_at_us INTEGER,
+          data TEXT NOT NULL
+        )
+      ''');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_fast_journal_occurred '
+        'ON $tableFastJournalEntries(occurred_at_ms DESC, id DESC)',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_fast_journal_rise_claim '
+        'ON $tableFastJournalEntries(rise_started_at_us) '
+        'WHERE rise_started_at_us IS NOT NULL',
+      );
+    }
+    if (from < 4 && to >= 4) {
+      // Attachment facts are additive and deliberately separate from the
+      // versioned `health_events` JSON contract. A legacy build can leave this
+      // table alone without attempting to decode a new event shape.
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableContextAttachmentFacts (
+          id TEXT PRIMARY KEY,
+          journal_entry_id TEXT NOT NULL,
+          occurred_at_ms INTEGER NOT NULL,
+          candidate_id TEXT NOT NULL,
+          calculation_version TEXT NOT NULL,
+          data TEXT NOT NULL,
+          FOREIGN KEY (journal_entry_id)
+            REFERENCES $tableFastJournalEntries(id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_journal '
+        'ON $tableContextAttachmentFacts(journal_entry_id)',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_candidate '
+        'ON $tableContextAttachmentFacts(candidate_id, calculation_version)',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_context_attachment_occurred '
+        'ON $tableContextAttachmentFacts(occurred_at_ms DESC, id DESC)',
+      );
+    }
+    if (from < 5 && to >= 5) {
+      // Schema four linked claims to a mutable candidate identity. Keep those
+      // rows readable, but add a separate nullable column for the strict
+      // session-scoped episode key used by all schema-five writes. A legacy
+      // row cannot be safely backfilled because it never stored the private
+      // session discriminator needed to prove its episode scope.
+      await _addColumnIfMissing(db, tableContextAttachmentFacts, 'episode_key');
+      await db.execute('DROP INDEX IF EXISTS idx_context_attachment_candidate');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_context_attachment_episode '
+        'ON $tableContextAttachmentFacts(episode_key) '
+        'WHERE episode_key IS NOT NULL',
+      );
+    }
   }
 
+  /// Adds one nullable schema-v2 identity column if a downgraded v1 binary
+  /// already reset the SQLite version marker while leaving the v2 table shape.
+  static Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    final exists = columns.any((entry) => entry['name'] == column);
+    if (!exists) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column TEXT');
+    }
+  }
+
+  /// Keeps a future schema from being silently relabelled as this version.
+  ///
+  /// Version one shipped without this guard, so [_migrate] separately repairs
+  /// the historical v2 -> v1 -> v2 marker rollback. Future downgrades fail
+  /// closed instead of risking an unknown schema being written by this binary.
+  static Future<void> _rejectDowngrade(Database _, int from, int to) =>
+      throw StateError(
+        'Refusing local health database downgrade from schema $from to $to. '
+        'Use a schema-version-$from or newer build.',
+      );
+
   static int _ms(DateTime t) => t.toUtc().millisecondsSinceEpoch;
+
+  /// Preserves the complete episode key used by the one-time rise claim.
+  static int _us(DateTime t) => t.toUtc().microsecondsSinceEpoch;
 
   /// Builds a `WHERE` clause + args for [column] within [window].
   static (String, List<Object?>) _windowClause(
@@ -250,17 +430,349 @@ class SqfliteHealthRepository implements HealthRepository {
         .toList(growable: false);
   }
 
+  // --- Fast journal -------------------------------------------------------
+
+  @override
+  Future<List<FastJournalEntry>> queryFastJournalEntries({
+    TimeWindow window = TimeWindow.all,
+    required int limit,
+  }) async {
+    if (limit <= 0) {
+      throw ArgumentError.value(limit, 'limit', 'Expected a positive limit.');
+    }
+    final (clause, args) = _windowClause('occurred_at_ms', window);
+    final rows = await _database.query(
+      tableFastJournalEntries,
+      columns: const <String>['data'],
+      where: clause.isEmpty ? null : clause,
+      whereArgs: args,
+      orderBy: 'occurred_at_ms DESC, id DESC',
+      limit: limit,
+    );
+    return rows
+        .map((row) => FastJournalEntry.fromJson(_decode(row['data'])))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<bool> isFastJournalRiseClaimed({
+    required DateTime riseStartedAt,
+  }) async {
+    final rows = await _database.query(
+      tableFastJournalEntries,
+      columns: const <String>['id'],
+      where: 'rise_started_at_us = ?',
+      whereArgs: <Object?>[_us(riseStartedAt)],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  @override
+  Future<FastJournalEntry> saveFastJournalEntry({
+    required FastJournalEntry entry,
+    FastJournalRiseReference? requestedRise,
+  }) async {
+    if (entry.riseReference != null) {
+      throw ArgumentError.value(
+        entry,
+        'entry',
+        'The store owns the atomic observed-rise claim.',
+      );
+    }
+    entry.toJson();
+    requestedRise?.toJson();
+    final database = _database;
+    return database.transaction((transaction) async {
+      final withoutRise = entry.toJson();
+      if (requestedRise == null) {
+        await transaction.insert(tableFastJournalEntries, <String, Object?>{
+          'id': entry.id,
+          'occurred_at_ms': _ms(entry.occurredAt),
+          'kind': entry.kind.name,
+          'rise_started_at_us': null,
+          'data': jsonEncode(withoutRise),
+        });
+        return entry;
+      }
+
+      final attached = entry.copyWith(riseReference: requestedRise);
+      final attachedData = attached.toJson();
+      final requestedStart = _us(requestedRise.startedAt);
+      final inserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableFastJournalEntries(
+          id, occurred_at_ms, kind, rise_started_at_us, data
+        ) SELECT ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM $tableFastJournalEntries
+          WHERE rise_started_at_us = ?
+        )
+        ''',
+        <Object?>[
+          attached.id,
+          _ms(attached.occurredAt),
+          attached.kind.name,
+          requestedStart,
+          jsonEncode(attachedData),
+          requestedStart,
+        ],
+      );
+      if (inserted != 0) return attached;
+
+      // Another serialized transaction already claimed the newest episode.
+      // Preserve this manual entry without overstating a rise relationship.
+      await transaction.insert(tableFastJournalEntries, <String, Object?>{
+        'id': entry.id,
+        'occurred_at_ms': _ms(entry.occurredAt),
+        'kind': entry.kind.name,
+        'rise_started_at_us': null,
+        'data': jsonEncode(withoutRise),
+      });
+      return entry;
+    });
+  }
+
+  @override
+  Future<ContextAttachmentSaveResult> saveContextAttachment({
+    required FastJournalEntry entry,
+    required ContextAttachmentFact fact,
+  }) async {
+    if (entry.riseReference != null) {
+      throw ArgumentError.value(
+        entry,
+        'entry',
+        'The context attachment writer owns the local observation link.',
+      );
+    }
+    if (!fact.isStableEpisodeClaim || fact.journalEntryId != entry.id) {
+      throw ArgumentError.value(
+        fact,
+        'fact',
+        'Expected a stable fact for the supplied local journal entry.',
+      );
+    }
+    if (!fact.occurredAt.toUtc().isAtSameMomentAs(entry.occurredAt.toUtc())) {
+      throw ArgumentError.value(
+        fact,
+        'fact',
+        'Context fact timing must match the local journal entry.',
+      );
+    }
+    entry.toJson();
+    final factData = jsonEncode(fact.toJson());
+    final attached = entry.copyWith(
+      riseReference: FastJournalRiseReference(
+        startedAt: fact.episodeStart,
+        lastObservedAt: fact.peakAt,
+      ),
+    );
+    final entryData = jsonEncode(attached.toJson());
+    final requestedStart = _us(fact.episodeStart);
+    return _database.transaction((transaction) async {
+      // A current fact and an older fast-journal link are both durable claims.
+      // Check both before writing so a rollback to a legacy build cannot
+      // silently create a second local attachment for the same episode.
+      final existingFact = await transaction.query(
+        tableContextAttachmentFacts,
+        columns: const <String>['episode_key'],
+        where: 'episode_key = ?',
+        whereArgs: <Object?>[fact.episodeKey.value],
+        limit: 1,
+      );
+      final existingJournal = await transaction.query(
+        tableFastJournalEntries,
+        columns: const <String>['id'],
+        where: 'rise_started_at_us = ?',
+        whereArgs: <Object?>[requestedStart],
+        limit: 1,
+      );
+      if (existingFact.isNotEmpty || existingJournal.isNotEmpty) {
+        return const ContextAttachmentSaveResult.alreadyClaimed();
+      }
+
+      final journalInserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableFastJournalEntries(
+          id, occurred_at_ms, kind, rise_started_at_us, data
+        ) VALUES (?, ?, ?, ?, ?)
+        ''',
+        <Object?>[
+          attached.id,
+          _ms(attached.occurredAt),
+          attached.kind.name,
+          requestedStart,
+          entryData,
+        ],
+      );
+      if (journalInserted == 0) {
+        final claim = await transaction.query(
+          tableFastJournalEntries,
+          columns: const <String>['id'],
+          where: 'rise_started_at_us = ?',
+          whereArgs: <Object?>[requestedStart],
+          limit: 1,
+        );
+        if (claim.isNotEmpty) {
+          return const ContextAttachmentSaveResult.alreadyClaimed();
+        }
+        throw StateError('Local context journal ID collides with an entry.');
+      }
+
+      final factInserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableContextAttachmentFacts(
+          id, journal_entry_id, occurred_at_ms, candidate_id, episode_key,
+          calculation_version, data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        <Object?>[
+          fact.id,
+          fact.journalEntryId,
+          _ms(fact.occurredAt),
+          fact.candidateId.value,
+          fact.episodeKey.value,
+          fact.calculationVersion,
+          factData,
+        ],
+      );
+      if (factInserted == 0) {
+        // Throwing from this transaction rolls back the journal write too.
+        // A fact conflict after the earlier checks is never safe to turn into
+        // a half-saved attachment.
+        throw StateError('Local context fact claim could not be saved.');
+      }
+      return ContextAttachmentSaveResult.saved(attached);
+    });
+  }
+
+  // --- Context attachment facts ------------------------------------------
+
+  @override
+  Future<ContextAttachmentFact?> claimContextAttachmentFact(
+    ContextAttachmentFact fact,
+  ) async {
+    if (!fact.isStableEpisodeClaim) {
+      throw ArgumentError.value(
+        fact,
+        'fact',
+        'Expected typed bridge-generated candidate and episode links.',
+      );
+    }
+    final data = fact.toJson();
+    return _database.transaction((transaction) async {
+      // The unique episode-key index and this single INSERT make a claim
+      // atomic. A later peak can carry a new candidate ID, but it cannot
+      // create a second local fact for the same active-session episode.
+      final inserted = await transaction.rawInsert(
+        '''
+        INSERT OR IGNORE INTO $tableContextAttachmentFacts(
+          id, journal_entry_id, occurred_at_ms, candidate_id, episode_key,
+          calculation_version, data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        <Object?>[
+          fact.id,
+          fact.journalEntryId,
+          _ms(fact.occurredAt),
+          fact.candidateId.value,
+          fact.episodeKey.value,
+          fact.calculationVersion,
+          jsonEncode(data),
+        ],
+      );
+      if (inserted != 0) return fact;
+
+      // `INSERT OR IGNORE` also suppresses an unrelated primary-key
+      // collision. It is only a successful no-op when a durable claim already
+      // exists for this journal row or stable episode. Inspect the conflict in
+      // the same transaction so an opaque fact-ID bug cannot look like a
+      // completed attachment.
+      final conflicts = await transaction.query(
+        tableContextAttachmentFacts,
+        columns: const <String>['id', 'journal_entry_id', 'episode_key'],
+        where: 'id = ? OR journal_entry_id = ? OR episode_key = ?',
+        whereArgs: <Object?>[
+          fact.id,
+          fact.journalEntryId,
+          fact.episodeKey.value,
+        ],
+      );
+      final hasUnrelatedIdCollision = conflicts.any(
+        (row) =>
+            row['id'] == fact.id &&
+            row['journal_entry_id'] != fact.journalEntryId &&
+            row['episode_key'] != fact.episodeKey.value,
+      );
+      if (hasUnrelatedIdCollision) {
+        throw StateError(
+          'Context attachment fact ID collides with a different journal '
+          'entry and episode.',
+        );
+      }
+      final hasExistingClaim = conflicts.any(
+        (row) =>
+            row['journal_entry_id'] == fact.journalEntryId ||
+            row['episode_key'] == fact.episodeKey.value,
+      );
+      if (hasExistingClaim) return null;
+      throw StateError(
+        'Context attachment claim was ignored without an existing journal '
+        'or episode claim.',
+      );
+    });
+  }
+
+  @override
+  Future<List<ContextAttachmentFact>> queryContextAttachmentFacts({
+    TimeWindow window = TimeWindow.all,
+    ContextBridgeEpisodeKey? episodeKey,
+  }) async {
+    final (timeClause, args) = _windowClause('occurred_at_ms', window);
+    final clauses = <String>[if (timeClause.isNotEmpty) timeClause];
+    if (episodeKey != null) {
+      if (!episodeKey.isBridgeGenerated) {
+        throw ArgumentError.value(
+          episodeKey,
+          'episodeKey',
+          'Expected a bridge-generated episode key.',
+        );
+      }
+      clauses.add('episode_key = ?');
+      args.add(episodeKey.value);
+    }
+    final rows = await _database.query(
+      tableContextAttachmentFacts,
+      columns: const <String>['data'],
+      where: clauses.isEmpty ? null : clauses.join(' AND '),
+      whereArgs: args,
+      orderBy: 'occurred_at_ms ASC, id ASC',
+    );
+    return rows
+        .map((row) => ContextAttachmentFact.fromJson(_decode(row['data'])))
+        .toList(growable: false);
+  }
+
   // --- Activity samples ----------------------------------------------------
 
   @override
   Future<void> upsertActivitySamples(Iterable<ActivitySample> samples) async {
+    final values = samples.toList(growable: false);
+    _validateSampleBatch(
+      values,
+      kind: HealthSampleKind.activity,
+      provenanceOf: (sample) => sample.provenance,
+      encode: (sample) => sample.toJson(),
+    );
     final batch = _database.batch();
-    for (final s in samples) {
+    for (final s in values) {
+      _clearTombstoneInBatch(batch, HealthSampleKind.activity, s.provenance);
       batch.insert(tableActivity, {
         'start_ms': _ms(s.start),
         'type': s.type.key,
+        ..._identityColumns(s.provenance),
         'data': jsonEncode(s.toJson()),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
@@ -304,12 +816,21 @@ class SqfliteHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertSleepSamples(Iterable<SleepSample> samples) async {
+    final values = samples.toList(growable: false);
+    _validateSampleBatch(
+      values,
+      kind: HealthSampleKind.sleep,
+      provenanceOf: (sample) => sample.provenance,
+      encode: (sample) => sample.toJson(),
+    );
     final batch = _database.batch();
-    for (final s in samples) {
+    for (final s in values) {
+      _clearTombstoneInBatch(batch, HealthSampleKind.sleep, s.provenance);
       batch.insert(tableSleep, {
         'start_ms': _ms(s.start),
+        ..._identityColumns(s.provenance),
         'data': jsonEncode(s.toJson()),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
@@ -345,12 +866,21 @@ class SqfliteHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertHeartRateSamples(Iterable<HeartRateSample> samples) async {
+    final values = samples.toList(growable: false);
+    _validateSampleBatch(
+      values,
+      kind: HealthSampleKind.heartRate,
+      provenanceOf: (sample) => sample.provenance,
+      encode: (sample) => sample.toJson(),
+    );
     final batch = _database.batch();
-    for (final s in samples) {
+    for (final s in values) {
+      _clearTombstoneInBatch(batch, HealthSampleKind.heartRate, s.provenance);
       batch.insert(tableHeartRate, {
         'timestamp_ms': _ms(s.timestamp),
+        ..._identityColumns(s.provenance),
         'data': jsonEncode(s.toJson()),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
@@ -381,6 +911,77 @@ class SqfliteHealthRepository implements HealthRepository {
     );
     return rows
         .map((r) => HeartRateSample.fromJson(_decode(r['data'])))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  }) {
+    final (table, timestampColumn) = switch (kind) {
+      HealthSampleKind.activity => (tableActivity, 'start_ms'),
+      HealthSampleKind.sleep => (tableSleep, 'start_ms'),
+      HealthSampleKind.heartRate => (tableHeartRate, 'timestamp_ms'),
+    };
+    return _database.delete(
+      table,
+      where: '$timestampColumn < ? AND identity_platform = ?',
+      whereArgs: <Object?>[_ms(cutoff), platform.key],
+    );
+  }
+
+  // --- Imported-record tombstones -----------------------------------------
+
+  @override
+  Future<void> reconcileImportTombstones(
+    Iterable<HealthImportTombstone> tombstones,
+  ) async {
+    final values = tombstones.toList(growable: false);
+    _validateTombstoneBatch(values);
+    final batch = _database.batch();
+    for (final tombstone in values) {
+      final identity = tombstone.provenance.identity;
+      batch.delete(
+        _tableFor(tombstone.kind),
+        where: 'identity_platform = ? AND external_id = ?',
+        whereArgs: [identity.platform.key, identity.externalId],
+      );
+      batch.insert(tableImportTombstones, {
+        'sample_kind': tombstone.kind.key,
+        'identity_platform': identity.platform.key,
+        'external_id': identity.externalId,
+        'data': jsonEncode(tombstone.toJson()),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  @override
+  Future<List<HealthImportTombstone>> queryImportTombstones({
+    HealthSampleKind? kind,
+    HealthSourcePlatform? platform,
+  }) async {
+    final clauses = <String>[];
+    final args = <Object?>[];
+    if (kind != null) {
+      clauses.add('sample_kind = ?');
+      args.add(kind.key);
+    }
+    if (platform != null) {
+      clauses.add('identity_platform = ?');
+      args.add(platform.key);
+    }
+    final rows = await _database.query(
+      tableImportTombstones,
+      columns: ['data'],
+      where: clauses.isEmpty ? null : clauses.join(' AND '),
+      whereArgs: args,
+      orderBy: 'sample_kind ASC, identity_platform ASC, external_id ASC',
+    );
+    return rows
+        .map((row) => HealthImportTombstone.fromJson(_decode(row['data'])))
         .toList(growable: false);
   }
 
@@ -432,10 +1033,85 @@ class SqfliteHealthRepository implements HealthRepository {
       tableActivity,
       tableSleep,
       tableHeartRate,
+      tableImportTombstones,
       tableInsights,
+      tableContextAttachmentFacts,
+      tableFastJournalEntries,
     ].forEach(batch.delete);
     await batch.commit(noResult: true);
   }
+
+  static Map<String, Object?> _identityColumns(
+    HealthSampleProvenance? provenance,
+  ) => <String, Object?>{
+    'identity_platform': provenance?.identity.platform.key,
+    'external_id': provenance?.identity.externalId,
+  };
+
+  static void _clearTombstoneInBatch(
+    Batch batch,
+    HealthSampleKind kind,
+    HealthSampleProvenance? provenance,
+  ) {
+    if (provenance == null) return;
+    final identity = provenance.identity;
+    batch.delete(
+      tableImportTombstones,
+      where: 'sample_kind = ? AND identity_platform = ? AND external_id = ?',
+      whereArgs: [kind.key, identity.platform.key, identity.externalId],
+    );
+  }
+
+  static void _validateSampleBatch<T>(
+    Iterable<T> samples, {
+    required HealthSampleKind kind,
+    required HealthSampleProvenance? Function(T) provenanceOf,
+    required Map<String, Object?> Function(T) encode,
+  }) {
+    final seen = <String>{};
+    for (final sample in samples) {
+      encode(sample);
+      final provenance = provenanceOf(sample);
+      if (provenance == null) continue;
+      if (provenance.isDeleted) {
+        throw ArgumentError(
+          'Use reconcileImportTombstones for source-reported deletions.',
+        );
+      }
+      if (!seen.add(_identityKey(kind, provenance.identity))) {
+        throw ArgumentError(
+          'A sample batch must not contain a duplicate import identity.',
+        );
+      }
+    }
+  }
+
+  static void _validateTombstoneBatch(
+    Iterable<HealthImportTombstone> tombstones,
+  ) {
+    final seen = <String>{};
+    for (final tombstone in tombstones) {
+      tombstone.toJson();
+      if (!seen.add(
+        _identityKey(tombstone.kind, tombstone.provenance.identity),
+      )) {
+        throw ArgumentError(
+          'A tombstone batch must not contain a duplicate import identity.',
+        );
+      }
+    }
+  }
+
+  static String _identityKey(
+    HealthSampleKind kind,
+    HealthImportIdentity identity,
+  ) => '${kind.key}:${identity.stableKey}';
+
+  static String _tableFor(HealthSampleKind kind) => switch (kind) {
+    HealthSampleKind.activity => tableActivity,
+    HealthSampleKind.sleep => tableSleep,
+    HealthSampleKind.heartRate => tableHeartRate,
+  };
 
   static Map<String, Object?> _decode(Object? data) {
     return jsonDecode(data! as String) as Map<String, Object?>;

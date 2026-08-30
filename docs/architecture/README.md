@@ -32,6 +32,13 @@ metadata, session information, capabilities, diagnostics, structured logs, and
 the driver/session interfaces. It must not import a vendor driver, BLE plugin,
 UI framework, persistence implementation, or network client.
 
+Its deterministic local analytics contracts include the
+[meal-response evidence](meal-response-evidence.md) and
+[recent-observed-rise candidate](recent-observed-rise-candidate.md) boundaries.
+The app-owned [local context bridge](context-bridge.md) composes those safe
+inputs into a bounded, presentation-neutral cache without starting imports or
+exposing restricted source identifiers.
+
 ### `packages/cgm_ble`
 
 Defines scan, connection, bonding, service, characteristic, and notification
@@ -58,6 +65,11 @@ Composes drivers, stores presentation preferences/history, owns runtime
 permissions, communicates connection and freshness state, and renders the UI.
 On IO platforms it constructs the AiDEX driver and Flutter transport. On web
 and in widget tests it uses a deterministic demo driver.
+
+The deterministic [context timeline preview](context-timeline-preview.md)
+remains an isolated fixture seam. Its reusable visual component is composed
+only into the explicitly enabled Context view; it does not directly perform
+import, persistence, or inference.
 
 ## Runtime flow
 

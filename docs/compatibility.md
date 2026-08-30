@@ -109,6 +109,61 @@ metadata rewrite resumes from either old or new names. If both names exist with
 different contents, startup preserves both and fails closed for manual recovery
 instead of guessing which glucose history is authoritative.
 
+The local health SQLite repository schema two adds nullable source-platform and
+external-record identity columns plus a local tombstone table. Schema-one rows
+remain byte-for-byte JSON-compatible and are not retroactively assigned an
+identity. The forward migration is additive and transaction-backed. A
+schema-one binary can read the stored sample JSON after the upgrade, but cannot
+preserve the identity columns when it writes new imports; do not continue
+imports after a downgrade. Roll forward to a schema-two build before importing
+again. A schema-one binary can lower SQLite's `user_version` while leaving the
+additive schema-two columns in place. Schema two probes the table shape before
+each additive migration, so a later schema-two launch restores the version
+marker without duplicate-column failure. That recovery preserves existing rows;
+it does not make schema-one writes source-aware.
+
+The schema-two binary rejects an attempt to open a higher, unknown SQLite
+schema version. It leaves that higher version marker unchanged rather than
+silently relabelling an unrecognized schema as version two.
+
+Schema three adds an isolated `fast_journal_entries` table for the optional
+local diary. Its records use a separate strict fast-journal format one with an
+explicit manual source, selected occurrence time, optional duration, and an
+optional time-bounded observed-rise reference. The reference persists no
+glucose value and is atomically claimed once by its exact rise-start instant.
+It is not written into `health_events`: a v0.1.4 binary continues to decode
+only its known health-event JSON and ignores the additive table. A v0.1.4
+launch can lower SQLite's version marker while leaving the additive table in
+place; a schema-three launch recreates its table/index declarations with
+`IF NOT EXISTS` and preserves existing diary rows. Do not manually edit either
+table. The current partial diary has no edit or delete flow, so its one-time
+observational claim stays durable until a separately reviewed lifecycle policy
+exists.
+
+Schema four adds the isolated `context_attachment_facts` table. Its format-one
+facts link a manual diary row to an opaque candidate ID, calculation version,
+and bounded timing window. It stores no glucose value, sensor identifier, raw
+packet, or platform external ID, and it does not change the strict legacy
+`health_events` JSON protocol. The foreign key to `fast_journal_entries`
+prevents an orphaned fact.
+
+Schema five adds a nullable `episode_key` column and a unique partial index for
+new format-two facts. A format-two fact carries typed bridge-generated opaque
+candidate and session-scoped episode links. The episode key uses the private
+session discriminator plus the episode start, so a new higher peak cannot make
+a second claim. The claim insert and unique index are atomic. A null claim
+result is valid only when the journal row or episode is already claimed; an
+unrelated fact-ID collision fails rather than being treated as a claim.
+Schema-four rows
+remain readable, but do not have enough private session data to backfill a
+safe episode key; they are not used to suppress a schema-five episode claim.
+The migration is additive, so a v0.1.4-style legacy binary that lowers
+SQLite's version marker while leaving unknown tables in place can roll forward
+again without deleting facts or diary rows. Do not continue writing context
+data after a downgrade; roll forward to a schema-five build for recovery. A
+schema-five build rejects unknown higher SQLite schema versions and leaves
+their version marker intact.
+
 Downgrading to a schema-two app after filename migration is unsupported: the
 older app cannot locate schema-three blobs even though their bytes remain on
 disk. Roll forward to a schema-three build and preserve the original app

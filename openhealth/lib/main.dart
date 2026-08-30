@@ -4,13 +4,21 @@ import 'dart:ui';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
+import 'package:openglucose/src/apple_health_context_import.dart';
+import 'package:openglucose/src/apple_health_context_import_state_store_factory.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/context_bridge/context_bridge.dart';
+import 'package:openglucose/src/context_bridge/context_bridge_models.dart';
+import 'package:openglucose/src/context_bridge/context_bridge_scope.dart';
+import 'package:openglucose/src/context_view_screen.dart';
+import 'package:openglucose/src/context_view_settings.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/journal/fast_journal_screen.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
@@ -26,6 +34,9 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/persistence/health_store.dart';
+import 'package:openglucose/src/persistence/health_repository_lifecycle.dart';
+import 'package:openglucose/src/persistence/health_repository_lifecycle_scope.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -62,6 +73,12 @@ Future<_BootstrapResult> _bootstrap() async {
   }
   final preferences = await SharedPreferences.getInstance();
   final healthStateStore = createHealthStateStore(preferences);
+  final contextViewSettings = ContextViewSettings(preferences);
+  final healthContextImportStateStore =
+      createAppleHealthContextImportStateStore();
+  final healthRepositoryLifecycle = AppHealthRepositoryLifecycle(
+    openHealthRepository,
+  );
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
@@ -73,6 +90,22 @@ Future<_BootstrapResult> _bootstrap() async {
     healthStateStore: healthStateStore,
     writesAllowed: !controller.isMockDriver,
   )..initialize();
+  final healthContextImport = AppleHealthContextImportController(
+    preferences: preferences,
+    importStateStore: healthContextImportStateStore,
+    repositoryLifecycle: healthRepositoryLifecycle,
+    readsAllowed: !controller.isMockDriver,
+  );
+  await healthContextImport.initialize();
+  final contextBridge = ContextBridge(
+    controller: controller,
+    repositoryLifecycle: healthRepositoryLifecycle,
+    contextChangeSignal: healthContextImport,
+    contextSettingsSignal: contextViewSettings,
+    isContextViewEnabled: () => contextViewSettings.showContextView,
+    suggestionPolicyProvider: () => contextViewSettings.suggestionPolicy,
+  );
+  unawaited(contextBridge.start());
   final messages = MessageController(
     preferences: preferences,
     messages: defaultMessageCatalog,
@@ -88,6 +121,10 @@ Future<_BootstrapResult> _bootstrap() async {
     controller: controller,
     preferences: preferences,
     healthExport: healthExport,
+    healthContextImport: healthContextImport,
+    contextBridge: contextBridge,
+    contextViewSettings: contextViewSettings,
+    healthRepositoryLifecycle: healthRepositoryLifecycle,
     messages: messages,
   );
 }
@@ -95,6 +132,10 @@ Future<_BootstrapResult> _bootstrap() async {
 typedef _BootstrapResult = ({
   CgmAppController controller,
   HealthExportController healthExport,
+  AppleHealthContextImportController healthContextImport,
+  ContextBridge contextBridge,
+  ContextViewSettings contextViewSettings,
+  AppHealthRepositoryLifecycle healthRepositoryLifecycle,
   MessageController messages,
   SharedPreferences preferences,
 });
@@ -125,6 +166,18 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   late final Future<_BootstrapResult> _future = _bootstrap();
 
   @override
+  void dispose() {
+    unawaited(
+      _future.then<void>((result) async {
+        result.contextBridge.dispose();
+        result.contextViewSettings.dispose();
+        await result.healthRepositoryLifecycle.dispose();
+      }, onError: (Object _, StackTrace _) {}),
+    );
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<_BootstrapResult>(
       future: _future,
@@ -143,6 +196,10 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         return OpenGlucoseApp(
           controller: result.controller,
           healthExport: result.healthExport,
+          healthContextImport: result.healthContextImport,
+          contextBridge: result.contextBridge,
+          contextViewSettings: result.contextViewSettings,
+          healthRepositoryLifecycle: result.healthRepositoryLifecycle,
           preferences: result.preferences,
           messageController: result.messages,
         );
@@ -233,6 +290,23 @@ class HealthExportScope extends InheritedNotifier<HealthExportController> {
   }
 }
 
+/// Provides the opt-in Apple Health context importer when the app composition
+/// includes it. The nullable scope keeps existing preview/test compositions
+/// fail-closed: they expose no read controls unless a controller is supplied.
+class AppleHealthContextImportScope
+    extends InheritedNotifier<AppleHealthContextImportController> {
+  const AppleHealthContextImportScope({
+    super.key,
+    AppleHealthContextImportController? controller,
+    required super.child,
+  }) : super(notifier: controller);
+
+  static AppleHealthContextImportController? maybeOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<AppleHealthContextImportScope>()
+          ?.notifier;
+}
+
 /// Shares one prepared archived-sensor file through the platform share sheet.
 ///
 /// The callback is injectable so tests can verify the exact native payload.
@@ -295,6 +369,10 @@ class OpenGlucoseApp extends StatelessWidget {
     super.key,
     required this.controller,
     required this.healthExport,
+    this.healthContextImport,
+    this.healthRepositoryLifecycle,
+    this.contextBridge,
+    this.contextViewSettings,
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
@@ -302,6 +380,10 @@ class OpenGlucoseApp extends StatelessWidget {
 
   final CgmAppController controller;
   final HealthExportController healthExport;
+  final AppleHealthContextImportController? healthContextImport;
+  final AppHealthRepositoryLifecycle? healthRepositoryLifecycle;
+  final ContextBridge? contextBridge;
+  final ContextViewSettings? contextViewSettings;
   final SharedPreferences preferences;
 
   /// Optional contextual-messaging engine. When null (e.g. in some tests) the
@@ -356,15 +438,27 @@ class OpenGlucoseApp extends StatelessWidget {
       // completed/skipped the gate falls straight through on later launches.
       home: _ArchivedSensorShareScope(
         share: archivedSensorShareAction ?? _shareArchivedSensorFile,
-        child: HealthExportScope(
-          controller: healthExport,
-          child: _OnboardingGate(
-            store: OnboardingStore(preferences),
-            controller: controller,
-            unit: controller.displayPreferences.unit,
-            home: CgmHomePage(
-              controller: controller,
-              messageController: messageController,
+        child: ContextViewSettingsScope(
+          settings: contextViewSettings ?? ContextViewSettings(preferences),
+          child: HealthExportScope(
+            controller: healthExport,
+            child: ContextBridgeScope(
+              bridge: contextBridge,
+              child: AppleHealthContextImportScope(
+                controller: healthContextImport,
+                child: HealthRepositoryLifecycleScope(
+                  lifecycle: healthRepositoryLifecycle,
+                  child: _OnboardingGate(
+                    store: OnboardingStore(preferences),
+                    controller: controller,
+                    unit: controller.displayPreferences.unit,
+                    home: CgmHomePage(
+                      controller: controller,
+                      messageController: messageController,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -1135,6 +1229,17 @@ class _DashboardView extends StatelessWidget {
     );
     final isWarmingUp = warmup?.phase == WarmupPhase.warming;
     final remainingLife = sensorLifeText(snapshot.sessionInfo.sessionStart);
+    final contextSettings = ContextViewSettingsScope.maybeOf(context);
+    final contextBridge = ContextBridgeScope.maybeOf(context);
+    final contextViewEnabled = contextSettings?.showContextView ?? false;
+    final attachmentSuggestion =
+        contextViewEnabled && contextSettings?.suggestRecentRise == true
+        ? contextBridge?.snapshot.attachmentSuggestion
+        : null;
+    final canAttachContext =
+        attachmentSuggestion != null &&
+        contextBridge?.snapshot.suggestionAvailability ==
+            ContextBridgeSuggestionAvailability.available;
 
     return RefreshIndicator(
       onRefresh: controller.sync,
@@ -1231,23 +1336,19 @@ class _DashboardView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        Row(
-                          children: <Widget>[
-                            Expanded(
-                              child: Text(
-                                'History',
-                                style: theme.textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w900,
+                        _HistoryHeader(
+                          readingCount: history.length,
+                          showContextAction:
+                              contextViewEnabled && contextBridge != null,
+                          onOpenContext: contextBridge == null
+                              ? null
+                              : () => Navigator.of(context).push<void>(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => ContextViewScreen(
+                                      bridge: contextBridge,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                            Text(
-                              '${history.length} readings',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: const Color(0xFF5B6E6A),
-                              ),
-                            ),
-                          ],
                         ),
                         const SizedBox(height: 12),
                         SizedBox(
@@ -1259,6 +1360,48 @@ class _DashboardView extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (!isWarmingUp && canAttachContext)
+            SliverToBoxAdapter(
+              key: const ValueKey<String>('recentContextAction'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                child: Semantics(
+                  container: true,
+                  button: true,
+                  label:
+                      'Add context to recent rise. This records timing only and does not identify a cause.',
+                  onTap: () => unawaited(
+                    showContextAttachmentSheet(
+                      context: context,
+                      suggestion: attachmentSuggestion,
+                      prepareContextAttachmentSave:
+                          contextBridge!.prepareContextAttachmentSave,
+                      refreshContext: contextBridge.reload,
+                    ),
+                  ),
+                  child: ExcludeSemantics(
+                    child: SizedBox(
+                      width: double.infinity,
+                      height: 44,
+                      child: OutlinedButton.icon(
+                        key: const ValueKey<String>('addContextToRecentRise'),
+                        onPressed: () => unawaited(
+                          showContextAttachmentSheet(
+                            context: context,
+                            suggestion: attachmentSuggestion,
+                            prepareContextAttachmentSave:
+                                contextBridge!.prepareContextAttachmentSave,
+                            refreshContext: contextBridge.reload,
+                          ),
+                        ),
+                        icon: const Icon(Icons.add_comment_outlined, size: 18),
+                        label: const Text('Add context to recent rise'),
+                      ),
                     ),
                   ),
                 ),
@@ -1329,6 +1472,96 @@ class _MetricChip extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The compact history heading preserves the default reader layout while
+/// keeping the opt-in Context action usable with large text and narrow widths.
+class _HistoryHeader extends StatelessWidget {
+  const _HistoryHeader({
+    required this.readingCount,
+    required this.showContextAction,
+    this.onOpenContext,
+  });
+
+  final int readingCount;
+  final bool showContextAction;
+  final VoidCallback? onOpenContext;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final title = Text(
+      'History',
+      style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+    );
+    final count = Text(
+      '$readingCount readings',
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: const Color(0xFF5B6E6A),
+      ),
+    );
+    final action = Semantics(
+      container: true,
+      button: true,
+      label: 'Open context view from History',
+      onTap: onOpenContext,
+      child: ExcludeSemantics(
+        child: SizedBox(
+          height: 44,
+          child: TextButton.icon(
+            key: const ValueKey<String>('openContextView'),
+            onPressed: onOpenContext,
+            icon: const Icon(Icons.layers_outlined, size: 18),
+            label: const Text('Context'),
+          ),
+        ),
+      ),
+    );
+    // Keep the normal reader header structurally identical while context is
+    // off. The optional control must not reserve space or shift the familiar
+    // History layout for a reader who has not opted in.
+    if (!showContextAction) {
+      return Row(
+        children: <Widget>[
+          Expanded(child: title),
+          count,
+        ],
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isCompact =
+            constraints.maxWidth < 360 ||
+            MediaQuery.textScalerOf(context).scale(1) >= 1.4;
+        if (isCompact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              title,
+              const SizedBox(height: 4),
+              count,
+              if (showContextAction) ...<Widget>[
+                const SizedBox(height: 4),
+                action,
+              ],
+            ],
+          );
+        }
+        return Row(
+          children: <Widget>[
+            Expanded(child: title),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: <Widget>[
+                count,
+                if (showContextAction) action,
+              ],
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1422,46 +1655,66 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: <Widget>[
-                        Flexible(
-                          child: Text(
-                            bigValue,
-                            maxLines: 1,
-                            overflow: TextOverflow.fade,
-                            softWrap: false,
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              color: Colors.white,
-                              height: 0.92,
-                              fontWeight: FontWeight.w900,
-                            ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final valueAndUnit = Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: <Widget>[
+                      Flexible(
+                        child: Text(
+                          bigValue,
+                          maxLines: 1,
+                          overflow: TextOverflow.fade,
+                          softWrap: false,
+                          style: theme.textTheme.displayMedium?.copyWith(
+                            color: Colors.white,
+                            height: 0.92,
+                            fontWeight: FontWeight.w900,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Text(
-                            unitLabel,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: const Color(0xFFC7E4DD),
-                              fontWeight: FontWeight.w700,
-                            ),
+                      ),
+                      const SizedBox(width: 10),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          unitLabel,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: const Color(0xFFC7E4DD),
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Padding(
+                      ),
+                    ],
+                  );
+                  final stage = Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: _StagePill(label: stageLabel),
-                  ),
-                ],
+                  );
+                  final useStackedLayout =
+                      constraints.maxWidth < 320 ||
+                      MediaQuery.textScalerOf(context).scale(14) > 20;
+                  if (useStackedLayout) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        SizedBox(
+                          width: constraints.maxWidth,
+                          child: valueAndUnit,
+                        ),
+                        const SizedBox(height: 6),
+                        stage,
+                      ],
+                    );
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(child: valueAndUnit),
+                      const SizedBox(width: 12),
+                      stage,
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 8),
               Text(
@@ -1603,6 +1856,11 @@ Future<void> _showSettings(
     unawaited(controller.loadCalibrations());
   }
   final healthExport = HealthExportScope.of(context);
+  final healthContextImport = AppleHealthContextImportScope.maybeOf(context);
+  final healthRepositoryLifecycle = HealthRepositoryLifecycleScope.maybeOf(
+    context,
+  );
+  final contextViewSettings = ContextViewSettingsScope.maybeOf(context);
   var working = controller.displayPreferences;
   final scaleController = TextEditingController(
     text: working.calibrationScale.toStringAsFixed(2),
@@ -1651,6 +1909,9 @@ Future<void> _showSettings(
                     child: _SettingsOverview(
                       controller: controller,
                       healthExport: healthExport,
+                      healthContextImport: healthContextImport,
+                      healthRepositoryLifecycle: healthRepositoryLifecycle,
+                      contextViewSettings: contextViewSettings,
                       displayPane: displayPane,
                       hasActiveSensor: snapshot != null,
                       developerPane: snapshot == null
@@ -1691,6 +1952,9 @@ class _SettingsOverview extends StatelessWidget {
   const _SettingsOverview({
     required this.controller,
     required this.healthExport,
+    this.healthContextImport,
+    this.healthRepositoryLifecycle,
+    this.contextViewSettings,
     required this.displayPane,
     required this.hasActiveSensor,
     this.developerPane,
@@ -1698,6 +1962,9 @@ class _SettingsOverview extends StatelessWidget {
 
   final CgmAppController controller;
   final HealthExportController healthExport;
+  final AppleHealthContextImportController? healthContextImport;
+  final AppHealthRepositoryLifecycle? healthRepositoryLifecycle;
+  final ContextViewSettings? contextViewSettings;
   final Widget displayPane;
   final bool hasActiveSensor;
   final Widget? developerPane;
@@ -1780,6 +2047,24 @@ class _SettingsOverview extends StatelessWidget {
                     '${controller.displayPreferences.targetHighMgdl.toStringAsFixed(0)}',
                 child: displayPane,
               ),
+              _SettingsDestination(
+                icon: Icons.menu_book_outlined,
+                title: 'Diary',
+                subtitle: 'Local meal and activity entries',
+                builder: (_) => FastJournalScreen(
+                  repositoryLifecycle: healthRepositoryLifecycle,
+                ),
+              ),
+              if (contextViewSettings case final settings?)
+                _SettingsDestination(
+                  icon: Icons.layers_outlined,
+                  title: 'Context view',
+                  subtitle: settings.showContextView
+                      ? 'Optional context is on'
+                      : 'Optional context is off',
+                  listenable: settings,
+                  builder: (_) => ContextViewSettingsPane(settings: settings),
+                ),
             ],
           ),
         ),
@@ -1798,6 +2083,7 @@ class _SettingsOverview extends StatelessWidget {
                 subtitle: 'Glucose export and health data controls',
                 child: IntegrationsSettingsPane(
                   healthExport: healthExport,
+                  healthContextImport: healthContextImport,
                   controller: controller,
                 ),
               ),
@@ -1857,6 +2143,113 @@ class _SettingsOverview extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Local controls for the optional context reader surface.
+///
+/// The controls are intentionally kept in Settings. They do not add a card,
+/// prompt, platform import, or repository query to the default reader view.
+class ContextViewSettingsPane extends StatefulWidget {
+  const ContextViewSettingsPane({super.key, required this.settings});
+
+  final ContextViewSettings settings;
+
+  @override
+  State<ContextViewSettingsPane> createState() =>
+      _ContextViewSettingsPaneState();
+}
+
+class _ContextViewSettingsPaneState extends State<ContextViewSettingsPane> {
+  late final TextEditingController _thresholdController = TextEditingController(
+    text: widget.settings.observedRiseThresholdMgdl?.toString() ?? '',
+  );
+  String? _thresholdError;
+
+  @override
+  void dispose() {
+    _thresholdController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _setSuggestionEnabled(bool value) async {
+    final saved = await widget.settings.setSuggestRecentRise(value: value);
+    if (!mounted) return;
+    setState(() {
+      _thresholdError = saved
+          ? null
+          : 'Enter a positive local observation threshold before enabling suggestions.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.settings,
+    builder: (context, _) => ListView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+      children: <Widget>[
+        Semantics(
+          header: true,
+          child: Text(
+            'Context view',
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Optional local context can show sleep, activity, and meals beside glucose. It stays off until you choose it.',
+        ),
+        const SizedBox(height: 16),
+        SwitchListTile.adaptive(
+          key: const ValueKey<String>('showContextViewSetting'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Show context view'),
+          subtitle: const Text(
+            'Add a small Context action in History. This does not import data.',
+          ),
+          value: widget.settings.showContextView,
+          onChanged: (value) =>
+              unawaited(widget.settings.setShowContextView(value: value)),
+        ),
+        const Divider(),
+        TextField(
+          key: const ValueKey<String>('observedRiseThresholdSetting'),
+          controller: _thresholdController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          textInputAction: TextInputAction.done,
+          decoration: InputDecoration(
+            labelText: 'Observed rise threshold (mg/dL)',
+            helperText:
+                'Required before a suggestion can be enabled. This is a local non-clinical observation threshold, not a treatment target.',
+            errorText: _thresholdError,
+          ),
+          onChanged: (value) {
+            unawaited(widget.settings.setObservedRiseThresholdText(value));
+            if (_thresholdError != null) {
+              setState(() => _thresholdError = null);
+            }
+          },
+        ),
+        const SizedBox(height: 8),
+        SwitchListTile.adaptive(
+          key: const ValueKey<String>('suggestRecentRiseSetting'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Suggest context for a recent observed rise'),
+          subtitle: const Text(
+            'At most one quiet local prompt. It records timing only and does not identify a cause.',
+          ),
+          value: widget.settings.suggestRecentRise,
+          onChanged: _setSuggestionEnabled,
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'No Apple Health import, background task, cloud analysis, or AI request is started by these settings.',
+          style: TextStyle(color: Color(0xFF5B6E6A), height: 1.35),
+        ),
+      ],
+    ),
+  );
 }
 
 class _SettingsHero extends StatelessWidget {
