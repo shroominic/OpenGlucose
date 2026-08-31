@@ -9,6 +9,7 @@ enforcement detail is already implemented.
 | [0001](0001-package-boundaries.md)      | Accepted | Separate domain, BLE transport, vendor protocol, platform adapter, and app composition  |
 | [0002](0002-local-first-health-data.md) | Accepted | Keep health data local by default and make movement explicit                            |
 | [0003](0003-platform-release-model.md)  | Accepted | Build source-bound mobile artifacts and release only through fail-closed platform lanes |
+| [0004](0004-app-localization.md)        | Accepted | Use a user-controlled English/Simplified Chinese language policy across app and live UI |
 
 ## Adding an ADR
 
