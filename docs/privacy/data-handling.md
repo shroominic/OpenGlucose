@@ -3,7 +3,9 @@
 OpenGlucose is local-first, not data-free. This document separates required
 policy from the checked-in implementation status and outstanding verification.
 Platform store disclosures and applicable legal obligations require an assigned
-privacy owner before public distribution.
+privacy owner before public distribution. The accountable privacy/safety owner
+for the AI remote-generation boundary is `@shroominic`; independent R2 review
+is still required before public distribution.
 
 ## Classification and flows
 
@@ -128,12 +130,31 @@ review. Follow
 
 ## AI
 
-AI is off by default and requires a user-supplied key. The current Generate
-action sends a 24-hour aggregate to the HTTPS provider URL shown in settings:
-reading count, average, range, standard deviation, time in/below/above range,
-estimated A1c, meal/exercise/note counts, and total logged carbohydrates. It
-does not send raw readings or note text. The UI discloses those categories and
-that provider retention terms apply. Redirects, credentials in URLs, query
-parameters, and non-HTTPS endpoints are rejected. Before public distribution,
-the prompt/model/policy still requires representative medical/dosing
-adversarial evaluation and an accountable privacy/safety owner.
+AI is off by default and needs a user-supplied key held in platform secure
+storage. The shipped remote path is OpenAI-compatible chat-completions only;
+it does not claim native Anthropic Messages support.
+
+The connection test sends only a fixed synthetic request. It does not read
+health data and does not persist an insight. A real generation first shows the
+exact recipient endpoint and these exact possible categories: time window, aggregate
+glucose statistics, journal event counts, and total logged carbohydrates when
+present. It does not send raw readings, identifiers, or journal note text. The
+confirmation creates a one-use receipt that is bound to the endpoint, model,
+exact prepared aggregate snapshot, and categories; a changed or reused receipt
+cannot start a provider call. The remote provider's retention terms apply after
+the user confirms.
+
+The generated output must use a typed, evidence-only JSON declaration.
+OpenGlucose renders visible values and units from the local structured claim;
+the remote provider cannot supply free-form display text. Unknown citations,
+unsupported fields/templates, and inconsistent numeric values or units are
+rejected before persistence. A stored validated insight records statement-level
+evidence/numeric mappings and prompt/provider/model/runtime provenance. Public
+provider errors do not include raw provider output, and response bytes are
+bounded before parsing. Redirects, credentials in URLs, query parameters,
+fragments, and non-HTTPS endpoints are rejected.
+
+This is not a production-safety claim. Full delete/export verification, exact
+host OS-version capture, approved data receipts, expanded adversarial
+evaluation, and independent R2 review are still required before public
+distribution.

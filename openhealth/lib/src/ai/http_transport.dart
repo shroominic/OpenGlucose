@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cgm_core/cgm_core.dart';
 
@@ -8,25 +9,30 @@ import 'package:cgm_core/cgm_core.dart';
 /// [HttpClient] so the app needs no extra HTTP dependency.
 ///
 /// This is the single place in the app that makes the outbound, user-opted-in
-/// BYO-key request. It POSTs an OpenAI/Anthropic-compatible chat-completions
+/// BYO-key request. It POSTs an OpenAI-compatible chat-completions
 /// body and returns the parsed assistant text. All failures surface as
 /// [AiGenerationException] so callers never crash.
 class HttpAiTransport {
-  HttpAiTransport({Duration? timeout})
-    : _timeout = timeout ?? const Duration(seconds: 30);
+  HttpAiTransport({Duration? timeout}) : _timeoutOverride = timeout;
 
-  final Duration _timeout;
+  final Duration? _timeoutOverride;
 
   /// The injectable transport function passed to [HttpChatAiProvider].
   AiTransport get call => _send;
 
   Future<String> _send(AiRequest request, AiProviderConfig config) async {
-    final uri = _resolveEndpoint(config.baseUrl);
+    final uri = config.endpoint;
+    if (uri == null) {
+      throw AiGenerationException(
+        config.validationError ?? 'AI provider configuration is invalid.',
+      );
+    }
+    final timeout = _timeoutOverride ?? config.resourceLimits.timeout;
     final body = HttpChatAiProvider.buildRequestBody(request, config);
 
-    final client = HttpClient()..connectionTimeout = _timeout;
+    final client = HttpClient()..connectionTimeout = timeout;
     try {
-      final httpRequest = await client.postUrl(uri).timeout(_timeout);
+      final httpRequest = await client.postUrl(uri).timeout(timeout);
       // A redirect could forward the API key and health summary to a different
       // origin. Provider endpoints are therefore required to answer directly.
       httpRequest.followRedirects = false;
@@ -42,15 +48,15 @@ class HttpAiTransport {
           );
         case AiAuthScheme.xApiKey:
           httpRequest.headers.set('x-api-key', config.apiKey);
-          httpRequest.headers.set('anthropic-version', '2023-06-01');
       }
       httpRequest.add(utf8.encode(jsonEncode(body)));
 
-      final response = await httpRequest.close().timeout(_timeout);
-      final responseBody = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(_timeout);
+      final response = await httpRequest.close().timeout(timeout);
+      final responseBytes = await _readBoundedResponse(
+        response,
+        maxBytes: config.resourceLimits.maxResponseBytes,
+      ).timeout(timeout);
+      final responseBody = utf8.decode(responseBytes);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw AiGenerationException(_providerErrorMessage(response.statusCode));
@@ -58,10 +64,10 @@ class HttpAiTransport {
       return HttpChatAiProvider.parseResponseBody(responseBody);
     } on AiGenerationException {
       rethrow;
-    } on TimeoutException catch (error) {
-      throw AiGenerationException('AI request timed out.', cause: error);
-    } catch (error) {
-      throw AiGenerationException('AI request failed.', cause: error);
+    } on TimeoutException {
+      throw const AiGenerationException('AI request timed out.');
+    } catch (_) {
+      throw const AiGenerationException('AI request failed.');
     } finally {
       client.close(force: true);
     }
@@ -70,30 +76,21 @@ class HttpAiTransport {
   static String _providerErrorMessage(int statusCode) =>
       'Provider returned HTTP $statusCode.';
 
-  static Uri _resolveEndpoint(String baseUrl) {
-    final uri = Uri.tryParse(baseUrl.trim());
-    if (uri == null ||
-        !uri.isAbsolute ||
-        uri.scheme.toLowerCase() != 'https' ||
-        uri.host.isEmpty ||
-        uri.userInfo.isNotEmpty ||
-        uri.query.isNotEmpty ||
-        uri.fragment.isNotEmpty) {
-      throw const AiGenerationException(
-        'AI base URL must be an absolute HTTPS URL without credentials, '
-        'query parameters, or a fragment.',
-      );
+  static Future<Uint8List> _readBoundedResponse(
+    Stream<List<int>> response, {
+    required int maxBytes,
+  }) async {
+    final bytes = BytesBuilder(copy: false);
+    var length = 0;
+    await for (final chunk in response) {
+      length += chunk.length;
+      if (length > maxBytes) {
+        throw const AiGenerationException(
+          'Provider response exceeded the configured size limit.',
+        );
+      }
+      bytes.add(chunk);
     }
-
-    var normalizedPath = uri.path;
-    while (normalizedPath.endsWith('/')) {
-      normalizedPath = normalizedPath.substring(0, normalizedPath.length - 1);
-    }
-
-    // Allow callers to pass either a base (…/v1) or the full path.
-    final endpointPath = normalizedPath.endsWith('/chat/completions')
-        ? normalizedPath
-        : '$normalizedPath/chat/completions';
-    return uri.replace(path: endpointPath, query: null, fragment: null);
+    return bytes.takeBytes();
   }
 }
