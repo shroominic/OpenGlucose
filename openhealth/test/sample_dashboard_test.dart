@@ -50,7 +50,7 @@ void main() {
         find.byKey(const ValueKey<String>('sampleDashboard')),
         findsOneWidget,
       );
-      expect(find.text('SAMPLE DATA — NOT FROM A SENSOR'), findsOneWidget);
+      expect(find.text('Sample data — not from a sensor'), findsOneWidget);
       expect(find.textContaining('Connected'), findsNothing);
       expect(controller.snapshot, isNull);
       expect(controller.sensors, isEmpty);
@@ -78,7 +78,7 @@ void main() {
         find.byKey(const ValueKey<String>('sampleWeeklyRecapBanner')),
         findsOneWidget,
       );
-      expect(find.text('SAMPLE DATA — NOT FROM A SENSOR'), findsOneWidget);
+      expect(find.text('Sample data — not from a sensor'), findsOneWidget);
       expect(controller.snapshot, isNull);
       expect(healthStateStore.snapshot, restrictedStateBefore);
 

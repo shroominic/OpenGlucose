@@ -505,12 +505,12 @@ class _DayPatternCard extends StatelessWidget {
       child: Column(
         children: <Widget>[
           for (var i = 0; i < entries.length; i++)
-              _DayBar(
-                // 2024-01-01 was a Monday. [dayOfWeekAverages] is always
-                // Monday through Sunday, independently of the recap window.
-                label: DateFormat.E(
-                  _dateLocaleName(context),
-                ).format(DateTime(2024, 1, entries[i].weekday)),
+            _DayBar(
+              // 2024-01-01 was a Monday. [dayOfWeekAverages] is always
+              // Monday through Sunday, independently of the recap window.
+              label: DateFormat.E(
+                _dateLocaleName(context),
+              ).format(DateTime(2024, 1, entries[i].weekday)),
               averageMgdl: entries[i].averageMgdl,
               maxMgdl: maxAvg,
               valueText: entries[i].averageMgdl == null

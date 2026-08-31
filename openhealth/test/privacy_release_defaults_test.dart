@@ -146,7 +146,9 @@ void main() {
       );
       expect(
         iosWidget,
-        contains('return LiveActivityText.staleGlucoseUnavailable(for: language)'),
+        contains(
+          'return LiveActivityText.staleGlucoseUnavailable(for: language)',
+        ),
       );
       expect(ios, contains('addingTimeInterval(10 * 60)'));
       expect(ios, isNot(contains('addingTimeInterval(15 * 60)')));

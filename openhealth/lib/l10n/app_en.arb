@@ -1,0 +1,838 @@
+{
+  "@@locale": "en",
+  "appTitle": "OpenGlucose",
+  "settings": "Settings",
+  "cancel": "Cancel",
+  "save": "Save",
+  "saveSettings": "Save settings",
+  "close": "Close",
+  "back": "Back",
+  "done": "Done",
+  "continueLabel": "Continue",
+  "skip": "Skip",
+  "connect": "Connect",
+  "disconnect": "Disconnect",
+  "tryAgain": "Try again",
+  "scanAgain": "Scan again",
+  "findMySensor": "Find my sensor",
+  "scanning": "Scanning…",
+  "nearbySensors": "Nearby sensors",
+  "sensorsFound": "{count} found",
+  "@sensorsFound": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "noSensorsFound": "No sensors found yet. Hold your phone near your sensor and try again.",
+  "exploreSampleData": "Explore sample data",
+  "sampleDataNotSensor": "Sample data — not from a sensor",
+  "sensor": "Sensor",
+  "sensors": "Sensors",
+  "currentSensor": "Current sensor",
+  "connectSensor": "Connect a sensor",
+  "sensorArchive": "Sensor archive",
+  "glucoseAndDisplay": "Glucose & display",
+  "appleHealth": "Apple Health",
+  "privacyAndData": "Privacy & data",
+  "aboutOpenGlucose": "About OpenGlucose",
+  "advanced": "Advanced",
+  "language": "Language",
+  "appLanguage": "App language",
+  "languageSystem": "Follow device language",
+  "languageSystemDescription": "Uses Simplified Chinese on Chinese devices and English on other devices.",
+  "languageEnglish": "English",
+  "languageSimplifiedChinese": "Simplified Chinese",
+  "languageSimplifiedChineseNative": "简体中文",
+  "languageCurrent": "Current: {language}",
+  "@languageCurrent": {
+    "placeholders": {
+      "language": {
+        "type": "String"
+      }
+    }
+  },
+  "languageChangeDescription": "Choose the language used throughout OpenGlucose. This does not change your sensor data.",
+  "sensorStatusSubtitle": "Status, life, identity, and connection",
+  "noSensorActive": "No sensor is active",
+  "sensorArchiveSubtitle": "Previous sensor sessions and exports",
+  "displaySubtitle": "Units, target range, and chart style",
+  "appleHealthSubtitle": "Glucose export and health data controls",
+  "privacySubtitle": "Local storage and retention",
+  "aboutSubtitle": "Version, purpose, and open-source project",
+  "advancedSubtitle": "Diagnostics and developer tools",
+  "history": "History",
+  "patterns": "Patterns",
+  "weeklyRecap": "Weekly recap",
+  "viewWeeklyRecap": "View weekly recap",
+  "latestReadingAt": "Latest reading at {time}",
+  "@latestReadingAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "supportCodeCopied": "Support code copied",
+  "copySupportCode": "Copy support code",
+  "chooseAnotherSensor": "Choose another sensor",
+  "reviewMove": "Review move",
+  "moveNeedsSupport": "Move needs support",
+  "moveSensorToAnotherPhone": "Move sensor to another phone",
+  "sensorDetails": "Sensor details",
+  "serial": "Serial",
+  "model": "Model",
+  "firmware": "Firmware",
+  "sensorStart": "Sensor start",
+  "readingCount": "{count} {count, plural, one{reading} other{readings}}",
+  "@readingCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "showGlucoseInLiveNotification": "Show glucose in live notification",
+  "showGlucoseInLiveNotificationDescription": "Allows glucose values, trends, and update times to appear in the Android live notification or iOS Live Activity. Anyone who can view your lock screen may see this health data.",
+  "showSampleDashboard": "Open sample dashboard",
+  "sampleDashboard": "Sample dashboard",
+  "openSampleWeeklyRecap": "Open sample weekly recap",
+  "welcomeTitle": "Welcome to OpenGlucose",
+  "welcomeBody": "An open-source, local-first way to watch your glucose. Built for wellness, sport and self-experimentation — not as a medical device.",
+  "storedLocallyTitle": "Stored locally by default",
+  "storedLocallyBody": "History stays on this device. Optional Apple Health or AI features share data only when you enable them.",
+  "openSourceTitle": "Open source & hackable",
+  "openSourceBody": "MIT-licensed. Inspect it, extend it, make it yours.",
+  "wellnessDisclaimer": "OpenGlucose is for wellness and self-experimentation. It is not a medical device and not a substitute for medical advice.",
+  "howItWorksTitle": "How it works",
+  "howItWorksBody": "Apply your Aidex X sensor, pair it over Bluetooth, and let it warm up. After that, readings stream straight to your phone.",
+  "applySensorTitle": "Apply the sensor",
+  "applySensorBody": "A small all-in-one sensor you wear for up to 15 days.",
+  "warmupTitle": "About 1 hour warm-up",
+  "warmupBody": "The sensor calibrates itself before the first reading.",
+  "readingEveryMinuteTitle": "A reading every minute",
+  "readingEveryMinuteBody": "Live values and trends, refreshed continuously.",
+  "targetRangeTitle": "Set your target range",
+  "targetRangeBody": "Choose the range you want to stay within. You can change this any time in settings.",
+  "targetRangeHint": "Most people start with 70–180 mg/dL (about 3.9–10 mmol/L).",
+  "readyTitle": "You're all set",
+  "readyBody": "Have your Aidex X sensor on and nearby. We’ll scan for it over Bluetooth and connect — then your live dashboard takes over.",
+  "turnOnBluetoothTitle": "Turn on Bluetooth",
+  "turnOnBluetoothBody": "Keep your phone close to the sensor while it pairs.",
+  "watchItComeAliveTitle": "Watch it come alive",
+  "watchItComeAliveBody": "Trends and readings appear as soon as warm-up finishes.",
+  "connectMySensor": "Connect my sensor",
+  "lifeRemainingUnavailable": "Life remaining unavailable",
+  "sensorExpired": "Sensor expired",
+  "hoursLeft": "{count} {count, plural, one{hour} other{hours}} left",
+  "@hoursLeft": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "daysLeft": "{count} {count, plural, one{day} other{days}} left",
+  "@daysLeft": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "minutesShort": "min",
+  "waitingForFirstReading": "waiting for first reading",
+  "warmingUp": "Warming up",
+  "warmupComplete": "Warmup complete",
+  "warmup": "Warmup",
+  "waiting": "Waiting",
+  "notSyncedYet": "Not synced yet",
+  "syncedJustNow": "Synced just now",
+  "syncedMinutesAgo": "Synced {count} min ago",
+  "@syncedMinutesAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncedHoursAgo": "Synced {count} {count, plural, one{hour} other{hours}} ago",
+  "@syncedHoursAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncedDaysAgo": "Synced {count} {count, plural, one{day} other{days}} ago",
+  "@syncedDaysAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "stageError": "Error",
+  "stageDisconnected": "Disconnected",
+  "stageReconnecting": "Reconnecting",
+  "stageSettingUp": "Setting up",
+  "stageConnected": "Connected",
+  "stageConnecting": "Connecting",
+  "stageLive": "Live",
+  "attentionNeeded": "Attention needed",
+  "updatedAt": "Updated {time}",
+  "@updatedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "openAppToViewGlucose": "Open the app to view your glucose",
+  "sensorWarmingUp": "Sensor warming up",
+  "waitingForSensor": "Waiting for sensor",
+  "waitingForGlucoseUpdate": "Waiting for glucose update",
+  "stale": "Stale",
+  "glucoseUnavailable": "Glucose unavailable",
+  "bluetoothPermissionRequired": "OpenGlucose needs Bluetooth access. In your phone settings, allow Bluetooth and any nearby-device permissions requested by the app. Some phones also require Location to be allowed and turned on for scanning. Then try again.",
+  "bluetoothOff": "Bluetooth is off. Turn it on in your phone's quick settings or Settings, then try scanning again.",
+  "bluetoothUnavailable": "Bluetooth is not available on this phone right now. Restart Bluetooth or the phone, then try again.",
+  "pairingRejected": "The phone did not complete pairing. Keep it close and accept the pairing prompt. If this sensor is already bonded or connected to another phone, stop that connection before trying again. Do not reset an active sensor.",
+  "pairingTimedOut": "Pairing timed out. Keep the phone close and accept the system pairing prompt. If another phone is using this sensor, stop that connection before trying again.",
+  "sensorPossiblyInUse": "The sensor became unavailable during setup. It may be out of range or already bonded or connected to another phone. Keep it close and stop the other connection, if applicable, before trying again. Do not reset an active sensor.",
+  "sensorDisconnected": "The sensor disconnected. Keep the phone close and try again.",
+  "bluetoothSetupTimedOut": "Bluetooth setup timed out. Keep the phone close and try again.",
+  "bluetoothSetupFailed": "Bluetooth setup could not be completed. Restart Bluetooth and try again.",
+  "appPurpose": "OpenGlucose is wellness/reference software, not a medical device. Do not use it for diagnosis, medication or insulin dosing, treatment decisions, or emergency monitoring.",
+  "unit": "Unit",
+  "chartStyle": "Chart style",
+  "targetLow": "Target low (mg/dL)",
+  "targetHigh": "Target high (mg/dL)",
+  "targetRangeInvalid": "Enter an increasing target glucose range.",
+  "line": "Line",
+  "dots": "Dots",
+  "candles": "Candles",
+  "preferencesSection": "Preferences",
+  "dataAndIntegrationsSection": "Data & integrations",
+  "appSection": "App",
+  "archivedSensorsCount": "{count} previous {count, plural, one{sensor} other{sensors}}",
+  "@archivedSensorsCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "aiAndModels": "AI & models",
+  "noActiveSensor": "No active sensor",
+  "previousDataStaysOnThisPhone": "Your previous data stays on this phone.",
+  "inactiveSensorExpired": "Your last sensor expired. Your previous readings are still here—connect a new sensor to resume live glucose.",
+  "inactiveSensorReplaced": "Your previous sensor was replaced. Its readings are still here—connect your new sensor to resume live glucose.",
+  "inactiveSensorDisconnected": "No sensor is active. Your previous readings are still here—connect a sensor to resume live glucose.",
+  "inactiveSensorWelcome": "Your glucose, on your terms. Connect your sensor to see live readings and trends.",
+  "bluetoothOffTitle": "Bluetooth is off",
+  "bluetoothPermissionTitle": "Bluetooth access needed",
+  "bluetoothUnavailableTitle": "Bluetooth is unavailable",
+  "scanSensorsFailedTitle": "Could not scan for sensors",
+  "scanSensorHelp": "Check Bluetooth, keep the sensor nearby, and try again.",
+  "scanSensorHelpShort": "Check Bluetooth and try scanning again.",
+  "yourGlucoseHistory": "Your glucose history",
+  "firstReading": "First reading",
+  "latestReading": "Latest reading",
+  "storedSessions": "Stored sessions",
+  "historySessionSeparation": "Each sensor keeps its own chart in Sensor archive, so separate sessions are never joined into one line.",
+  "demoDataWarning": "DEMO DATA — NOT REAL GLUCOSE",
+  "lastAt": "last {time}",
+  "@lastAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "failedToStart": "Failed to start: {error}",
+  "@failedToStart": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "counter": "Counter {count}",
+  "@counter": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "demoTransport": "Demo transport",
+  "unknownSensorResponse": "The sensor response is unknown. Do not reconnect or forget the Android bond. Contact support for a reviewed recovery.",
+  "reviewInterruptedSensorMove": "Review interrupted sensor move",
+  "interruptedSensorMoveReview": "Open Android Bluetooth settings before you continue. Confirm that the sensor is not listed as paired. If it is listed, choose Forget first. This action only clears the app safety marker. It does not contact the sensor or change a Bluetooth bond.",
+  "interruptedSelectedSensorMoveReview": "Open Android Bluetooth settings. Confirm that the sensor is not listed as paired. If it is listed, choose Forget first. Continuing clears the app safety marker and archives this selection. It does not contact the sensor or change a Bluetooth bond.",
+  "checkedBluetooth": "I checked Bluetooth",
+  "interruptedSensorMoveCouldNotClear": "The interrupted sensor move could not be cleared.",
+  "sensorNoLongerActive": "This sensor is no longer active",
+  "inactiveSensorSettingsDescription": "Return to Settings to review Sensor archive or connect another sensor.",
+  "backToSettings": "Back to Settings",
+  "sensorArchiveEmpty": "Previous sensors will appear here after they expire or are replaced.",
+  "previousSensor": "Previous sensor",
+  "archiveSessionSummary": "{reason} · {readings}{date}",
+  "@archiveSessionSummary": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      },
+      "readings": {
+        "type": "String"
+      },
+      "date": {
+        "type": "String"
+      }
+    }
+  },
+  "archiveHistoryOnly": "{reason} · history only, not connected",
+  "@archiveHistoryOnly": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "readings": "Readings",
+  "started": "Started",
+  "ended": "Ended",
+  "recapThisSensor": "Recap this sensor",
+  "exportData": "Export data",
+  "exportArchivedSensorData": "Export archived sensor data",
+  "storedGlucoseReadings": "{count} stored glucose {count, plural, one{reading} other{readings}}",
+  "@storedGlucoseReadings": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "hiddenWarmupDisclosure": "{count} warmup {count, plural, one{reading is} other{readings are}} included for a complete export. These remain hidden from charts, recaps, and Apple Health.",
+  "@hiddenWarmupDisclosure": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "dateRangeUnavailable": "Date range unavailable",
+  "fileFormat": "File format",
+  "includedInFile": "Included in the file",
+  "exportIncludesGlucose": "• Glucose values in mg/dL and mmol/L",
+  "exportIncludesTiming": "• Reading times, source, and sensor minute",
+  "exportIncludesQuality": "• Raw quality fields and provisional state",
+  "exportIncludesArchive": "• Archive reason and session timing",
+  "exportExcludesIdentity": "Sensor serials, device IDs, and storage identifiers are not included.",
+  "shareFormat": "Share {format}",
+  "@shareFormat": {
+    "placeholders": {
+      "format": {
+        "type": "String"
+      }
+    }
+  },
+  "csvExportDescription": "Best for importing into most spreadsheet and analysis apps.",
+  "txtExportDescription": "A tab-separated plain-text file that is easy to inspect anywhere.",
+  "xlsxExportDescription": "A real Excel workbook with glucose measurements stored as numbers.",
+  "archivedSensorExportFailed": "The archived sensor data could not be exported.",
+  "archiveReasonExpired": "Expired",
+  "archiveReasonReplaced": "Replaced",
+  "archiveReasonDisconnected": "Disconnected",
+  "storedInMacAppContainer": "Stored in this Mac app container",
+  "storedOnIphone": "Stored on this iPhone",
+  "localDataMacDescription": "Sensor identity and glucose history remain local. Backup exclusion is not verified for this preview; check this Mac's backup policy.",
+  "localDataIphoneDescription": "Sensor identity and glucose history remain local and are excluded from device backups.",
+  "noOpenGlucoseCloud": "No OpenGlucose cloud",
+  "noOpenGlucoseCloudDescription": "Data leaves the app only when you explicitly enable an integration.",
+  "appVersion": "Version {version}",
+  "@appVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "aboutAppDescription": "A local-first, open-source wellness app for viewing your own glucose data. OpenGlucose is not a medical device and does not provide diagnosis or treatment advice.",
+  "displaySettings": "Display settings",
+  "targetLowMgdl": "Target low (mg/dL)",
+  "targetHighMgdl": "Target high (mg/dL)",
+  "reviewSelectedInterruptedMove": "Review interrupted move",
+  "removeAllSensorPhoneBonds": "Remove all sensor phone bonds?",
+  "moveSensorToAnotherPhoneQuestion": "Move sensor to another phone?",
+  "removeAllSensorPhoneBondsDescription": "This sensor only supports removing every phone bond stored by the transmitter. It will disconnect from this phone and all other phones. The sensor session is not reset. Keep the sensor close and do not retry if an error appears.",
+  "moveSensorToAnotherPhoneDescription": "This removes this phone's bond from the sensor and Android, then disconnects. The sensor session is not reset. Keep the sensor close and do not retry if an error appears.",
+  "moveSensor": "Move sensor",
+  "sensorReadyToPairAnotherPhone": "Sensor is ready to pair with another phone.",
+  "sensorCannotMoveSafely": "The sensor cannot be moved safely.",
+  "sensorTransferStopped": "Sensor transfer stopped. Do not retry automatically.",
+  "developer": "Developer",
+  "mockScenario": "Mock scenario",
+  "simulatedSensorState": "Simulated sensor state",
+  "engineeringControls": "Engineering controls",
+  "engineeringControlsDescription": "Advanced corrections for diagnostics and sensor-data troubleshooting.",
+  "calibrationScale": "Calibration scale",
+  "calibrationOffset": "Calibration offset",
+  "cropFirstSamples": "Crop first N samples",
+  "engineeringValuesInvalid": "Enter valid engineering correction values.",
+  "engineeringSettingsSaved": "Engineering settings saved.",
+  "saveEngineeringSettings": "Save engineering settings",
+  "clearActiveSensorCache": "Clear active sensor cache",
+  "clearActiveSensorCacheDescription": "Clears only the active sensor’s local cache. Sensor archive is not deleted, and available readings may download again from the sensor.",
+  "metadata": "Metadata",
+  "diagnostics": "Diagnostics",
+  "noDiagnosticsLoaded": "No diagnostics loaded yet.",
+  "calibrations": "Calibrations",
+  "noCalibrationEntries": "No calibration entries loaded.",
+  "logs": "Logs",
+  "noLogs": "No logs yet.",
+  "clearActiveSensorCacheQuestion": "Clear active sensor cache?",
+  "clearActiveSensorCacheReview": "This removes only the locally cached history for the active sensor. Archived sensors are kept, and available readings may download again.",
+  "clearCache": "Clear cache",
+  "activeSensorCacheCleared": "Active sensor cache cleared.",
+  "noActiveSensorCacheCleared": "No active sensor cache was cleared.",
+  "timeframeHoursShort": "{hours}h",
+  "@timeframeHoursShort": {
+    "placeholders": {
+      "hours": {
+        "type": "int"
+      }
+    }
+  },
+  "timeframeDaysShort": "{days}d",
+  "@timeframeDaysShort": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "timeframeAll": "ALL",
+  "chartMinute": "Minute {minute}",
+  "@chartMinute": {
+    "placeholders": {
+      "minute": {
+        "type": "int"
+      }
+    }
+  },
+  "chartAxisMinute": "m{minute}",
+  "@chartAxisMinute": {
+    "placeholders": {
+      "minute": {
+        "type": "int"
+      }
+    }
+  },
+  "patternsDescription": "Observations for self-experimentation, not medical metrics.",
+  "timeInRange": "Time in range",
+  "belowAbove": "Below / above",
+  "belowAboveRange": "Below / above range",
+  "average": "Average",
+  "variabilityCv": "Variability (CV)",
+  "estimatedGmi": "Estimated GMI",
+  "spikes": "Spikes",
+  "unavailable": "Unavailable",
+  "timeInRangeExplanation": "Share of readings between {low} and {high}.",
+  "@timeInRangeExplanation": {
+    "placeholders": {
+      "low": {
+        "type": "String"
+      },
+      "high": {
+        "type": "String"
+      }
+    }
+  },
+  "belowAboveExplanation": "How often readings were below the low mark or above the high mark.",
+  "averageExplanation": "Mean of all readings in this time window.",
+  "variabilityExplanation": "How spread out readings are around the average (SD {standardDeviation}). Lower looks steadier.",
+  "@variabilityExplanation": {
+    "placeholders": {
+      "standardDeviation": {
+        "type": "String"
+      }
+    }
+  },
+  "estimatedGmiExplanation": "A rough indicator derived from the 14-day average glucose. Not a lab result.",
+  "spikesExplanation": "Times readings rose past {high}.",
+  "@spikesExplanation": {
+    "placeholders": {
+      "high": {
+        "type": "String"
+      }
+    }
+  },
+  "patternsInsufficientCoverage": "Not enough readings in this {timeframe} window yet. {readingCount, plural, =0{No readings} one{{readingCount} reading} other{{readingCount} readings}} across {activeDays, plural, =0{0 days} one{{activeDays} day} other{{activeDays} days}}; patterns appear after at least {minimumReadings} readings across {minimumActiveDays, plural, one{{minimumActiveDays} day} other{{minimumActiveDays} days}}.",
+  "@patternsInsufficientCoverage": {
+    "placeholders": {
+      "timeframe": {
+        "type": "String"
+      },
+      "readingCount": {
+        "type": "int"
+      },
+      "activeDays": {
+        "type": "int"
+      },
+      "minimumReadings": {
+        "type": "int"
+      },
+      "minimumActiveDays": {
+        "type": "int"
+      }
+    }
+  },
+  "samplePreviewTitle": "See how OpenGlucose works",
+  "samplePreviewDescription": "This private preview is generated in memory. It cannot connect, export, notify, or be mixed with your real glucose history.",
+  "glucoseHistory": "Glucose history",
+  "sampleBadge": "SAMPLE",
+  "sampleWeeklyRecap": "Sample weekly recap",
+  "sensorLifecycle": "Sensor lifecycle",
+  "sensorLifecycleUnknownBody": "Life remaining is unavailable while the sensor session is being verified.",
+  "active": "Active",
+  "expiringSoon": "Expiring soon",
+  "expired": "Expired",
+  "lifeUsed": "used",
+  "warmupTimeLeft": "{minutes} min left",
+  "@warmupTimeLeft": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "sensorAge": "Sensor age",
+  "timeRemaining": "Time remaining",
+  "totalLife": "Total life",
+  "sensorTotalLife": "{days} days",
+  "@sensorTotalLife": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "lastSync": "Last sync",
+  "notYet": "Not yet",
+  "justNow": "Just now",
+  "minutesAgo": "{count} min ago",
+  "@minutesAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "hoursAgo": "{count} {count, plural, one{hour} other{hours}} ago",
+  "@hoursAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "daysAgo": "{count} {count, plural, one{day} other{days}} ago",
+  "@daysAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "sensorWarmupLifecycleBanner": "Warming up — readings stabilize after the first hour. Keep the sensor on and your phone nearby.",
+  "sensorExpiringSoonBanner": "This sensor expires in {remaining}. Have a replacement ready so you do not miss readings.",
+  "@sensorExpiringSoonBanner": {
+    "placeholders": {
+      "remaining": {
+        "type": "String"
+      }
+    }
+  },
+  "sensorExpiredDetails": "This sensor reached the end of its 15-day life. The readings below are frozen at the last known values — they are kept for your records but are no longer live.",
+  "lastReadingPreservedBelow": "Last reading is preserved below.",
+  "lastReadingAndHistoryPreserved": "Last reading {time}. Your history is preserved.",
+  "@lastReadingAndHistoryPreserved": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "nextSteps": "Next steps",
+  "replaceExpiredSensorStep": "Remove and dispose of the expired sensor.",
+  "applyReplacementSensorStep": "Apply a new Aidex X sensor and wait for about 1 hour of warmup.",
+  "startNewSensorSessionStep": "Tap below to start a new sensor session.",
+  "replaceSensor": "Replace sensor",
+  "weeklyRecapDescription": "Patterns and observations from your last 7 days — for self-experimentation, not medical advice.",
+  "weeklyOverviewTitle": "This week at a glance",
+  "weeklyOverviewSubtitle": "{activeDays} of 7 days with readings · {readingCount, plural, one{{readingCount} reading} other{{readingCount} readings}}.",
+  "@weeklyOverviewSubtitle": {
+    "placeholders": {
+      "activeDays": {
+        "type": "int"
+      },
+      "readingCount": {
+        "type": "int"
+      }
+    }
+  },
+  "belowAboveRangeExplanation": "Share of readings below your low mark and above your high mark.",
+  "weeklyAverageExplanation": "Mean of every reading this week.",
+  "lowestHighest": "Lowest / highest",
+  "observedRangeExplanation": "Observed range inside this seven-day window.",
+  "variabilityExplanationNoSd": "How spread out readings are around the average. Lower looks steadier.",
+  "dataCoverage": "Data coverage",
+  "dataCoverageDescription": "How much information this recap is based on.",
+  "timestampedReadingsExplanation": "Timestamped readings inside this seven-day window.",
+  "daysRepresented": "Days represented",
+  "daysRepresentedExplanation": "Calendar days containing at least one reading.",
+  "observedSpan": "Observed span",
+  "observedSpanExplanation": "Time between the first and last included reading.",
+  "durationDays": "{value} days",
+  "@durationDays": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "durationHours": "{value} {value, plural, one{hour} other{hours}}",
+  "@durationHours": {
+    "placeholders": {
+      "value": {
+        "type": "int"
+      }
+    }
+  },
+  "daysOfSeven": "{activeDays} of 7",
+  "@daysOfSeven": {
+    "placeholders": {
+      "activeDays": {
+        "type": "int"
+      }
+    }
+  },
+  "versusLastWeek": "Versus last week",
+  "weekOverWeekChange": "Week-over-week change.",
+  "previousWeekComparisonDescription": "The previous week has {readingCount, plural, =0{no readings} one{{readingCount} reading} other{{readingCount} readings}} across {activeDays, plural, =0{0 days} one{{activeDays} day} other{{activeDays} days}}. Comparisons appear only when both weeks have enough coverage.",
+  "@previousWeekComparisonDescription": {
+    "placeholders": {
+      "readingCount": {
+        "type": "int"
+      },
+      "activeDays": {
+        "type": "int"
+      }
+    }
+  },
+  "versusLastWeekDescription": "How this week compares with the seven days before.",
+  "noPriorWeek": "no prior week",
+  "aboutTheSame": "about the same",
+  "percentagePoints": "{value} pts",
+  "@percentagePoints": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "daysByTimeInRange": "Days by time in range",
+  "daysByTimeInRangeDescription": "Ranked by time spent in range.",
+  "mostInRange": "Most in range",
+  "leastInRange": "Least in range",
+  "weekdayRangeSummary": "{day} · {percent}% in range · avg {average}",
+  "@weekdayRangeSummary": {
+    "placeholders": {
+      "day": {
+        "type": "String"
+      },
+      "percent": {
+        "type": "int"
+      },
+      "average": {
+        "type": "String"
+      }
+    }
+  },
+  "topSpikes": "Top spikes",
+  "topSpikesDescription": "Biggest upward swings this week.",
+  "noSpikesThisWeek": "No readings rose past {high} this week.",
+  "@noSpikesThisWeek": {
+    "placeholders": {
+      "high": {
+        "type": "String"
+      }
+    }
+  },
+  "spikeRiseExplanation": "Rose {amount} from {baseline}.",
+  "@spikeRiseExplanation": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      },
+      "baseline": {
+        "type": "String"
+      }
+    }
+  },
+  "weeklyDailyAveragesTitle": "This week's daily averages",
+  "weeklyDailyAveragesDescription": "Average reading for each day in this seven-day window.",
+  "notEnoughReadingsYet": "Not enough readings yet",
+  "weeklyInsufficientCoverage": "This seven-day window currently has {readingCount, plural, =0{no readings} one{{readingCount} reading} other{{readingCount} readings}} across {activeDays, plural, =0{0 days} one{{activeDays} day} other{{activeDays} days}}. Patterns appear after at least {minimumReadings} readings across {minimumActiveDays, plural, one{{minimumActiveDays} day} other{{minimumActiveDays} days}}, so sparse history is not presented as a reliable trend.",
+  "@weeklyInsufficientCoverage": {
+    "placeholders": {
+      "readingCount": {
+        "type": "int"
+      },
+      "activeDays": {
+        "type": "int"
+      },
+      "minimumReadings": {
+        "type": "int"
+      },
+      "minimumActiveDays": {
+        "type": "int"
+      }
+    }
+  },
+  "weeklyRecapDisclaimer": "These are wellness observations for self-experimentation. OpenGlucose is not a medical device, and this recap is not a diagnosis or medical advice. Consult a qualified professional for health decisions.",
+  "aiInsights": "AI insights",
+  "onDeviceModel": "On-device model",
+  "onDeviceModelDescription": "Planned · private local inference with a downloaded model",
+  "comingSoon": "Coming soon",
+  "onDeviceModelStatus": "On-device model status: {status}",
+  "@onDeviceModelStatus": {
+    "placeholders": {
+      "status": {
+        "type": "String"
+      }
+    }
+  },
+  "aiWellnessPrivacyNotice": "Wellness and self-experimentation only—not medical advice, diagnosis, or dosing. AI remains off unless you explicitly configure it. A future on-device model will keep inference local; the advanced cloud option below sends only aggregate statistics, never raw readings or note text.",
+  "customCloudProvider": "Custom cloud provider",
+  "advancedSendsAggregatesOffDevice": "Advanced · sends aggregates off-device",
+  "enableCloudAi": "Enable cloud AI",
+  "cloudAiDisabledByDefault": "Off by default. Requires your own API key.",
+  "apiBaseUrl": "API base URL",
+  "aiModel": "Model",
+  "authScheme": "Auth scheme",
+  "authSchemeBearer": "Bearer (OpenAI-compatible)",
+  "authSchemeXApiKey": "x-api-key (Anthropic)",
+  "apiKeyStoredSecurely": "API key (stored securely)",
+  "apiKeySavedMask": "•••••••• (saved)",
+  "pasteApiKey": "Paste your key",
+  "apiKeySavedHint": "A key is saved. Leave blank to keep it.",
+  "apiKeyPlainTextHint": "Never stored in plain text.",
+  "saveProvider": "Save provider",
+  "removeKey": "Remove key",
+  "testWithAggregates": "Test with aggregates",
+  "providerSettingsSaved": "Saved.",
+  "apiKeyRemoved": "API key removed.",
+  "savingProviderSettings": "Saving provider settings…",
+  "enableCloudAiBeforeTesting": "Enable cloud AI before testing.",
+  "addApiKeyBeforeTesting": "Add an API key before testing.",
+  "generatingAiInsight": "Generating…",
+  "aiDisabledOrNoKey": "AI is disabled or no key set.",
+  "generatedAndSaved": "Generated & saved: \"{title}\".",
+  "@generatedAndSaved": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "couldNotGenerateAiInsight": "Could not generate the AI insight.",
+  "integrations": "Integrations",
+  "integrationsIntro": "Send your glucose readings to other apps you control. Nothing leaves your device unless you turn it on.",
+  "appleHealthExportDescription": "When you opt in and tap Sync now, glucose values and timestamps are written to Apple Health as blood glucose samples. An interrupted sync may write a duplicate when retried.",
+  "appleHealthOnlyOnIos": "Apple Health is only available on iOS.",
+  "appleHealthDisabledWithSimulatedData": "Apple Health export is disabled while using simulated or mock sensor data.",
+  "exportToAppleHealth": "Export to Apple Health",
+  "neverSynced": "Never synced",
+  "lastSyncedAt": "Last synced {time}",
+  "@lastSyncedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "syncNow": "Sync now",
+  "appleHealthExportUnavailableInThisMode": "Apple Health export is unavailable in this mode.",
+  "appleHealthAccessNotGranted": "Apple Health access was not granted.",
+  "turnOnAppleHealthBeforeSyncing": "Turn on Apple Health export before syncing.",
+  "appleHealthSyncedReadings": "Synced {count} {count, plural, one{reading} other{readings}}.",
+  "@appleHealthSyncedReadings": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "appleHealthSyncPartial": "Synced {count} {count, plural, one{reading} other{readings}}, then export stopped.",
+  "@appleHealthSyncPartial": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "appleHealthSyncPartialWithReason": "Synced {count} {count, plural, one{reading} other{readings}}, then export stopped: {reason}",
+  "@appleHealthSyncPartialWithReason": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "appleHealthAlreadyUpToDate": "Already up to date.",
+  "appleHealthExportFailed": "Export failed.",
+  "appleHealthSampleRejected": "HealthKit rejected a glucose sample.",
+  "appleHealthCouldNotSaveSample": "Apple Health could not save a glucose sample.",
+  "appleHealthExportCouldNotComplete": "Apple Health export could not be completed.",
+  "appleHealthWritesDisabled": "Apple Health writes are disabled for this mode.",
+  "macosPreviewLimitations": "macOS preview limitations",
+  "macosTransportPreview": "macOS transport preview",
+  "macosTransportPreviewDescription": "Real AiDEX pairing, reconnect, and live readings are not verified on Mac hardware. This build cannot remove a system Bluetooth bond or run Move sensor. Use the Move sensor action on the current Android phone before a controlled Mac test.",
+  "aiUnavailableInMacosPreview": "AI unavailable in macOS preview",
+  "macosPreviewAiUnavailableDescription": "This ad-hoc-signed preview cannot supply the macOS Keychain capability required to store an API key. Cloud AI remains disabled. Do not paste a key into this preview.",
+  "messageWarmupTitle": "Warming up",
+  "messageWarmupBody": "Your sensor is settling in. Readings begin after about an hour — no action needed.",
+  "messageTapReadingTitle": "Tip",
+  "messageTapReadingBody": "Tap a point on the chart to see the exact reading and time.",
+  "scenarioWarmup": "Warmup",
+  "scenarioActiveNormal": "Active — normal",
+  "scenarioActiveHigh": "Active — high (alert)",
+  "scenarioActiveLow": "Active — low (alert)",
+  "scenarioRapidRise": "Rapid rise",
+  "scenarioRapidFall": "Rapid fall",
+  "scenarioExpiringSoon": "Expiring soon",
+  "scenarioExpired": "Expired",
+  "scenarioSignalLoss": "Signal loss",
+  "scenarioDisconnected": "Disconnected",
+  "scenarioMultiSensorHistory": "Multi-sensor history",
+  "scenarioError": "Error",
+  "scenarioWarmupDescription": "Inside the ~1h warmup window — no readings yet.",
+  "scenarioActiveNormalDescription": "Healthy in-range glucose, gently waving.",
+  "scenarioActiveHighDescription": "Sustained high glucose — triggers a high alert.",
+  "scenarioActiveLowDescription": "Sustained low glucose — triggers a low alert.",
+  "scenarioRapidRiseDescription": "Glucose climbing fast (rising trend).",
+  "scenarioRapidFallDescription": "Glucose dropping fast (falling trend).",
+  "scenarioExpiringSoonDescription": "A few hours left on the 15-day sensor.",
+  "scenarioExpiredDescription": "Sensor expired — offboarding state.",
+  "scenarioSignalLossDescription": "Connected but signal lost — readings are stale.",
+  "scenarioDisconnectedDescription": "Disconnected with last-known data.",
+  "scenarioMultiSensorHistoryDescription": "Current sensor with carried-over previous-sensor history.",
+  "scenarioErrorDescription": "Hard error with no usable data."
+}
