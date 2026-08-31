@@ -18,7 +18,7 @@ private enum ExportShareError: LocalizedError {
     case .invalidFile:
       return "The prepared export file is unavailable."
     case .invalidLocation:
-      return "The prepared export file must be in temporary storage."
+      return "The prepared export file must be in the export cache."
     case .unavailablePresenter:
       return "The export share sheet has no active presentation window."
     case .presentationFailed:
@@ -32,8 +32,11 @@ private enum ExportShareError: LocalizedError {
 /// `share_plus` currently configures `popoverPresentationController` on
 /// iPhone as well as iPad. On iOS 26 this can strand the activity controller
 /// and block later share sheets. This bridge passes the file URL directly to
-/// UIKit and configures a popover only when iPad requires one.
+/// UIKit and configures a popover only when iPad requires one. It accepts only
+/// a regular file in an app-cache child named `openglucose-export-*`.
 final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelegate {
+  private static let exportDirectoryPrefix = "openglucose-export-"
+
   private let channel: FlutterMethodChannel
   private var pendingActivity: UIActivityViewController?
   private var pendingResult: FlutterResult?
@@ -75,7 +78,7 @@ final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelega
         throw ExportShareError.busy
       }
       let arguments = try Self.arguments(call.arguments)
-      let fileURL = try Self.validatedTemporaryFile(arguments["filePath"])
+      let fileURL = try Self.validatedExportFile(arguments["filePath"])
       guard let presenter = Self.activePresenter() else {
         throw ExportShareError.unavailablePresenter
       }
@@ -182,29 +185,44 @@ final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelega
     return normalized.isEmpty ? nil : normalized
   }
 
-  static func validatedTemporaryFile(
+  static func validatedExportFile(
     _ value: Any?,
-    temporaryDirectory: URL = FileManager.default.temporaryDirectory
+    cachesDirectory: URL? = FileManager.default.urls(
+      for: .cachesDirectory,
+      in: .userDomainMask
+    ).first
   ) throws -> URL {
     guard let filePath = nonEmptyString(value) else {
       throw ExportShareError.invalidArguments
     }
-    let fileURL = URL(fileURLWithPath: filePath)
-      .standardizedFileURL
-      .resolvingSymlinksInPath()
-    let temporaryDirectory = temporaryDirectory
-      .standardizedFileURL
-      .resolvingSymlinksInPath()
-    guard fileURL.path.hasPrefix(temporaryDirectory.path + "/") else {
+    guard let cachesDirectory else {
       throw ExportShareError.invalidLocation
     }
-    var isDirectory = ObjCBool(false)
+    let originalFileURL = URL(fileURLWithPath: filePath).standardizedFileURL
+    let originalValues = try? originalFileURL.resourceValues(
+      forKeys: [.isSymbolicLinkKey]
+    )
+    guard originalValues?.isSymbolicLink != true else {
+      throw ExportShareError.invalidFile
+    }
+    let fileURL = originalFileURL
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+    let resolvedCachesDirectory = cachesDirectory
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+    let exportDirectory = fileURL.deletingLastPathComponent()
     guard
-      FileManager.default.fileExists(
-        atPath: fileURL.path,
-        isDirectory: &isDirectory
-      ),
-      !isDirectory.boolValue,
+      exportDirectory.deletingLastPathComponent() == resolvedCachesDirectory,
+      exportDirectory.lastPathComponent.hasPrefix(exportDirectoryPrefix)
+    else {
+      throw ExportShareError.invalidLocation
+    }
+    let resourceValues = try? fileURL.resourceValues(
+      forKeys: [.isRegularFileKey]
+    )
+    guard
+      resourceValues?.isRegularFile == true,
       FileManager.default.isReadableFile(atPath: fileURL.path)
     else {
       throw ExportShareError.invalidFile

@@ -99,10 +99,11 @@ Stable session IDs, storage keys, serials, device IDs, display names, model,
 firmware, and driver IDs are omitted. The filename is neutral. Native exports
 use one scoped temporary directory, delete their source file after the share
 sheet completes, and remove stale OpenGlucose/share-plugin cache copies at the
-next launch. The app-owned iOS activity-sheet bridge accepts files only from
-temporary storage and configures popover presentation only on iPad; iPhone
-uses the standard activity-sheet presentation. Startup also removes the exact
-legacy
+next launch. The app-owned iOS activity-sheet bridge accepts only readable
+regular files in immediate `openglucose-export-*` children of the app cache;
+resolved paths cannot escape that scope. It configures popover presentation
+only on iPad; iPhone uses the standard activity-sheet presentation. Startup
+also removes the exact legacy
 `openhealth_<sensor-id>_<timestamp>.csv` regular-file shape that older builds
 wrote into the platform cache; near-matches, other extensions, directories,
 and unrelated cache entries are left untouched. Cleanup is best effort because
