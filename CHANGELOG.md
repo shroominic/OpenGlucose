@@ -10,11 +10,22 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-31
+
 ### Fixed
 
 - Archived sensor exports now open a native iOS share sheet reliably on
   iOS 26. The iPhone path no longer uses popover presentation configuration;
   iPad keeps its required anchored popover behavior.
+
+### Changed
+
+- The repository now includes a protected, tag-bound TestFlight delivery
+  workflow. A release owner selects each upload, external-review, and tester
+  notification phase explicitly; publishing a GitHub Release does not start
+  TestFlight delivery.
+- Android build tooling is aligned with Gradle 9.7 (#65). This maintenance
+  update does not change Android app behavior.
 
 ## [0.1.4] - 2026-08-22
 
@@ -178,7 +189,8 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/shroominic/OpenGlucose/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/shroominic/OpenGlucose/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shroominic/OpenGlucose/compare/v0.1.1...v0.1.2
