@@ -5,6 +5,7 @@ import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/archived_sensor_export_diagnostics.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
@@ -334,46 +335,49 @@ class OpenGlucoseApp extends StatelessWidget {
       brightness: Brightness.light,
       surface: const Color(0xFFFFF8F1),
     );
-    return MaterialApp(
-      title: 'OpenGlucose',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: colorScheme,
-        scaffoldBackgroundColor: const Color(0xFFF6EFE6),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-        ),
-        cardTheme: CardThemeData(
-          color: Colors.white.withValues(alpha: 0.94),
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xFFF4F6F2),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
+    return _ArchivedSensorShareScope(
+      share: archivedSensorShareAction ?? _shareArchivedSensorFile,
+      child: HealthExportScope(
+        controller: healthExport,
+        child: MaterialApp(
+          title: 'OpenGlucose',
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorScheme: colorScheme,
+            scaffoldBackgroundColor: const Color(0xFFF6EFE6),
+            useMaterial3: true,
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              surfaceTintColor: Colors.transparent,
+            ),
+            cardTheme: CardThemeData(
+              color: Colors.white.withValues(alpha: 0.94),
+              surfaceTintColor: Colors.transparent,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            inputDecorationTheme: InputDecorationTheme(
+              filled: true,
+              fillColor: const Color(0xFFF4F6F2),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
+              ),
+            ),
           ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-          ),
-        ),
-      ),
-      // --- TASK-007 onboarding gate ---
-      // First-run only: show the skippable onboarding flow, then hand off to
-      // the existing scan/connect home. Persisted via OnboardingStore; once
-      // completed/skipped the gate falls straight through on later launches.
-      home: _ArchivedSensorShareScope(
-        share: archivedSensorShareAction ?? _shareArchivedSensorFile,
-        child: HealthExportScope(
-          controller: healthExport,
-          child: _OnboardingGate(
+          // --- TASK-007 onboarding gate ---
+          // First-run only: show the skippable onboarding flow, then hand off
+          // to the existing scan/connect home. Persisted via OnboardingStore;
+          // once completed/skipped the gate falls straight through on later
+          // launches.
+          home: _OnboardingGate(
             store: OnboardingStore(preferences),
             controller: controller,
             unit: controller.displayPreferences.unit,
@@ -382,9 +386,9 @@ class OpenGlucoseApp extends StatelessWidget {
               messageController: messageController,
             ),
           ),
+          // --- end TASK-007 onboarding gate ---
         ),
       ),
-      // --- end TASK-007 onboarding gate ---
     );
   }
 }
@@ -2171,7 +2175,7 @@ class _SensorArchivePane extends StatelessWidget {
   }
 }
 
-class _ArchivedSensorDetail extends StatelessWidget {
+class _ArchivedSensorDetail extends StatefulWidget {
   const _ArchivedSensorDetail({
     required this.controller,
     required this.session,
@@ -2181,7 +2185,56 @@ class _ArchivedSensorDetail extends StatelessWidget {
   final ArchivedSensorSession session;
 
   @override
+  State<_ArchivedSensorDetail> createState() => _ArchivedSensorDetailState();
+}
+
+class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
+  ArchivedSensorExportStage? _exportStage;
+
+  Future<void> _chooseAndExport(
+    BuildContext buttonContext, {
+    required List<CgmReading> rawReadings,
+    required int displayReadingCount,
+  }) async {
+    if (_exportStage != null) {
+      return;
+    }
+    final format = await _chooseArchivedSensorExportFormat(
+      buttonContext,
+      session: widget.session,
+      readings: rawReadings,
+      displayReadingCount: displayReadingCount,
+    );
+    if (format == null ||
+        !mounted ||
+        !buttonContext.mounted ||
+        _exportStage != null) {
+      return;
+    }
+    setState(() => _exportStage = ArchivedSensorExportStage.preparing);
+    try {
+      await _exportArchivedSensorData(
+        buttonContext,
+        format: format,
+        session: widget.session,
+        readings: rawReadings,
+        onStageChanged: (stage) {
+          if (mounted && stage != _exportStage) {
+            setState(() => _exportStage = stage);
+          }
+        },
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _exportStage = null);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final session = widget.session;
     final rawReadings = controller.readingsForArchivedSensor(session);
     final readings = controller.displayReadingsForArchivedSensor(session);
     final theme = Theme.of(context);
@@ -2276,25 +2329,26 @@ class _ArchivedSensorDetail extends StatelessWidget {
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   key: const ValueKey<String>('exportArchivedSensorData'),
-                  onPressed: () async {
-                    final format = await _chooseArchivedSensorExportFormat(
-                      buttonContext,
-                      session: session,
-                      readings: rawReadings,
-                      displayReadingCount: readings.length,
-                    );
-                    if (format == null || !buttonContext.mounted) {
-                      return;
-                    }
-                    await _exportArchivedSensorData(
-                      buttonContext,
-                      format: format,
-                      session: session,
-                      readings: rawReadings,
-                    );
-                  },
-                  icon: const Icon(Icons.ios_share_rounded),
-                  label: const Text('Export data'),
+                  onPressed: _exportStage == null
+                      ? () => _chooseAndExport(
+                          buttonContext,
+                          rawReadings: rawReadings,
+                          displayReadingCount: readings.length,
+                        )
+                      : null,
+                  icon: _exportStage == null
+                      ? const Icon(Icons.ios_share_rounded)
+                      : const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                  label: Text(switch (_exportStage) {
+                    ArchivedSensorExportStage.preparing ||
+                    ArchivedSensorExportStage.storing => 'Preparing export…',
+                    ArchivedSensorExportStage.sharing => 'Sharing export…',
+                    ArchivedSensorExportStage.cleanup => 'Finishing export…',
+                    null => 'Export data',
+                  }, key: const ValueKey<String>('archivedSensorExportStatus')),
                 ),
               ),
             ),
@@ -2463,19 +2517,23 @@ Future<void> _exportArchivedSensorData(
   required ArchivedSensorExportFormat format,
   required ArchivedSensorSession session,
   required List<CgmReading> readings,
+  required ValueChanged<ArchivedSensorExportStage> onStageChanged,
 }) async {
-  final share = _ArchivedSensorShareScope.of(context);
-  final renderBox = context.findRenderObject() as RenderBox?;
-  final shareOrigin = renderBox == null
-      ? null
-      : renderBox.localToGlobal(Offset.zero) & renderBox.size;
   String? preparedFilePath;
+  var stage = ArchivedSensorExportStage.preparing;
   try {
+    final share = _ArchivedSensorShareScope.of(context);
+    final renderBox = context.findRenderObject() as RenderBox?;
+    final shareOrigin = renderBox == null
+        ? null
+        : renderBox.localToGlobal(Offset.zero) & renderBox.size;
     final bytes = await compute(_buildArchivedSensorExportInBackground, (
       format: format,
       session: session,
       readings: List<CgmReading>.of(readings, growable: false),
     ));
+    stage = ArchivedSensorExportStage.storing;
+    onStageChanged(stage);
     final filename = archivedSensorExportFilename(format);
     preparedFilePath = await prepareArchivedSensorShareFileBytes(
       filename: filename,
@@ -2484,6 +2542,11 @@ Future<void> _exportArchivedSensorData(
     final exportFile = preparedFilePath == null
         ? XFile.fromData(bytes, mimeType: format.mimeType)
         : XFile(preparedFilePath, mimeType: format.mimeType);
+    if (!context.mounted) {
+      return;
+    }
+    stage = ArchivedSensorExportStage.sharing;
+    onStageChanged(stage);
     await share(
       buildArchivedSensorShareParams(
         file: exportFile,
@@ -2491,17 +2554,40 @@ Future<void> _exportArchivedSensorData(
         sharePositionOrigin: shareOrigin,
       ),
     );
-  } catch (_) {
+  } catch (error) {
+    final supportCode = archivedSensorExportSupportCode(
+      stage: stage,
+      error: error,
+    );
+    debugPrint(supportCode);
     if (!context.mounted) {
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('The archived sensor data could not be exported.'),
+      SnackBar(
+        content: Text(
+          'The archived sensor data could not be exported. '
+          'Support code: $supportCode',
+        ),
+        action: SnackBarAction(
+          label: 'Copy code',
+          onPressed: () =>
+              unawaited(Clipboard.setData(ClipboardData(text: supportCode))),
+        ),
       ),
     );
   } finally {
-    await disposeArchivedSensorShareFile(preparedFilePath);
+    try {
+      onStageChanged(ArchivedSensorExportStage.cleanup);
+      await disposeArchivedSensorShareFile(preparedFilePath);
+    } catch (error) {
+      debugPrint(
+        archivedSensorExportSupportCode(
+          stage: ArchivedSensorExportStage.cleanup,
+          error: error,
+        ),
+      );
+    }
   }
 }
 
