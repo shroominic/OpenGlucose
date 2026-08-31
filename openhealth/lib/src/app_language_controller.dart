@@ -86,12 +86,17 @@ class AppLanguageController extends ChangeNotifier with WidgetsBindingObserver {
 
   Locale get resolvedLocale => resolvedLanguage.locale;
 
-  /// Maps every Chinese device locale to the available Simplified Chinese
-  /// catalog. Unsupported locales use English as the intentional fallback.
+  /// Selects the first supported language in the device's preference order.
+  ///
+  /// Every Chinese locale maps to the available Simplified Chinese catalog.
+  /// Unsupported locales are skipped, and English is the final fallback.
   static AppLanguage resolveDeviceLocales(Iterable<Locale> locales) {
     for (final locale in locales) {
-      if (locale.languageCode.toLowerCase() == 'zh') {
-        return AppLanguage.simplifiedChinese;
+      switch (locale.languageCode.toLowerCase()) {
+        case 'en':
+          return AppLanguage.english;
+        case 'zh':
+          return AppLanguage.simplifiedChinese;
       }
     }
     return AppLanguage.english;
