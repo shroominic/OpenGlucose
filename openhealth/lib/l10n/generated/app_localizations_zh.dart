@@ -671,6 +671,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get xlsxExportDescription => '真正的 Excel 工作簿，葡萄糖数值以数字形式存储。';
 
   @override
+  String get archivedSensorExportPreparing => '正在准备导出…';
+
+  @override
+  String get archivedSensorExportSharing => '正在分享导出文件…';
+
+  @override
+  String get archivedSensorExportFinishing => '正在完成导出…';
+
+  @override
   String get archivedSensorExportFailed => '无法导出已归档传感器数据。';
 
   @override

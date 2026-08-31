@@ -1,13 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cgm_core/cgm_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/ios_export_share.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -151,6 +156,248 @@ void main() {
   });
 
   testWidgets(
+    'large iOS archive invokes the native share bridge once while guarded',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final temporaryDirectory = Directory.systemTemp.createTempSync(
+        'openglucose-large-export-widget-test-',
+      );
+      addTearDown(() {
+        if (temporaryDirectory.existsSync()) {
+          temporaryDirectory.deleteSync(recursive: true);
+        }
+      });
+      const pathProviderChannel = MethodChannel(
+        'plugins.flutter.io/path_provider',
+      );
+      const shareChannel = MethodChannel(IosExportShare.channelName);
+      final shareCompletion = Completer<String>();
+      MethodCall? shareCall;
+      var shareInvocationCount = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            expect(call.method, 'getTemporaryDirectory');
+            return temporaryDirectory.path;
+          });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(shareChannel, (call) {
+            shareInvocationCount += 1;
+            shareCall = call;
+            return shareCompletion.future;
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProviderChannel, null);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(shareChannel, null);
+      });
+
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final fixture = _archivedHistoryFixture(readingCount: 5000);
+      final store = _MemoryHealthStateStore(fixture.values);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _NoSensorDriver(),
+        healthStateStore: store,
+      );
+      await controller.initialize();
+
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            healthStateStore: store,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sensor archive'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(fixture.session.serial));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView), const Offset(0, -500));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Export data'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('confirmArchivedSensorExport')),
+      );
+      await tester.pump();
+
+      expect(find.text('Preparing export…'), findsOneWidget);
+      await _pumpUntil(
+        tester,
+        () => shareInvocationCount == 1,
+        reason: 'the prepared export should reach the native iOS bridge',
+      );
+
+      expect(shareInvocationCount, 1);
+      expect(shareCall?.method, 'shareFile');
+      expect(find.text('Sharing export…'), findsOneWidget);
+      final exportButton = find.byKey(
+        const ValueKey<String>('exportArchivedSensorData'),
+      );
+      expect(tester.widget<OutlinedButton>(exportButton).onPressed, isNull);
+      await tester.tap(exportButton);
+      await tester.pump();
+      expect(shareInvocationCount, 1);
+
+      final shareArguments = Map<String, Object?>.from(
+        shareCall?.arguments as Map<Object?, Object?>,
+      );
+      final filePath = shareArguments['filePath']! as String;
+      final file = File(filePath);
+      expect(file.existsSync(), isTrue);
+      final contents = file.readAsStringSync();
+      expect(contents.split('\r\n'), hasLength(5002));
+
+      shareCompletion.complete('dismissed');
+      await _pumpUntil(
+        tester,
+        () => find.text('Export data').evaluate().isNotEmpty,
+        reason: 'the export guard should clear after the share sheet closes',
+      );
+
+      expect(find.text('Export data'), findsOneWidget);
+      expect(file.existsSync(), isFalse);
+      expect(shareInvocationCount, 1);
+
+      debugDefaultTargetPlatformOverride = null;
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  testWidgets(
+    'failed iOS share clears guarded state and a retry invokes native again',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final temporaryDirectory = Directory.systemTemp.createTempSync(
+        'openglucose-retry-export-widget-test-',
+      );
+      addTearDown(() {
+        if (temporaryDirectory.existsSync()) {
+          temporaryDirectory.deleteSync(recursive: true);
+        }
+      });
+      const pathProviderChannel = MethodChannel(
+        'plugins.flutter.io/path_provider',
+      );
+      const shareChannel = MethodChannel(IosExportShare.channelName);
+      final sharedFilePaths = <String>[];
+      var shareInvocationCount = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+            expect(call.method, 'getTemporaryDirectory');
+            return temporaryDirectory.path;
+          });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(shareChannel, (call) async {
+            shareInvocationCount += 1;
+            final arguments = Map<String, Object?>.from(
+              call.arguments as Map<Object?, Object?>,
+            );
+            sharedFilePaths.add(arguments['filePath']! as String);
+            if (shareInvocationCount == 1) {
+              throw PlatformException(
+                code: 'export_share_failed',
+                message: 'Private path: ${sharedFilePaths.single}',
+              );
+            }
+            return 'dismissed';
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProviderChannel, null);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(shareChannel, null);
+      });
+
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final fixture = _archivedHistoryFixture();
+      final store = _MemoryHealthStateStore(fixture.values);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _NoSensorDriver(),
+        healthStateStore: store,
+      );
+      await controller.initialize();
+
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            healthStateStore: store,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sensor archive'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(fixture.session.serial));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView), const Offset(0, -500));
+      await tester.pumpAndSettle();
+
+      await _confirmCsvArchiveExport(tester);
+      await _pumpUntil(
+        tester,
+        () =>
+            shareInvocationCount == 1 &&
+            find.text('Export data').evaluate().isNotEmpty,
+        reason: 'a native failure should clear the export guard',
+      );
+
+      const supportCode =
+          'OGEXP1 phase=P03 op=export kind=platform '
+          'code=export_share_failed';
+      expect(find.textContaining(supportCode), findsOneWidget);
+      expect(sharedFilePaths, hasLength(1));
+      expect(File(sharedFilePaths.first).existsSync(), isFalse);
+
+      await _confirmCsvArchiveExport(tester);
+      await _pumpUntil(
+        tester,
+        () => shareInvocationCount == 2,
+        reason: 'a retry should reach the native iOS bridge again',
+      );
+      await _pumpUntil(
+        tester,
+        () => find.text('Export data').evaluate().isNotEmpty,
+        reason: 'the successful retry should clear the export guard',
+      );
+
+      expect(shareInvocationCount, 2);
+      expect(sharedFilePaths, hasLength(2));
+      expect(File(sharedFilePaths.last).existsSync(), isFalse);
+
+      debugDefaultTargetPlatformOverride = null;
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
     'sample data is offered after first-run onboarding with no history',
     (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -242,26 +489,61 @@ Finder _compactExpiryText() => find.byWidgetPredicate((widget) {
   ).hasMatch(value);
 });
 
+Future<void> _pumpUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  required String reason,
+}) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 30));
+  while (!condition() && DateTime.now().isBefore(deadline)) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 10)),
+    );
+    await tester.pump(const Duration(milliseconds: 10));
+  }
+  expect(condition(), isTrue, reason: reason);
+}
+
+Future<void> _confirmCsvArchiveExport(WidgetTester tester) async {
+  await tester.tap(find.text('Export data'));
+  await tester.pumpAndSettle();
+  await tester.tap(
+    find.byKey(const ValueKey<String>('confirmArchivedSensorExport')),
+  );
+  await tester.pump();
+}
+
 ({ArchivedSensorSession session, Map<String, String> values})
-_archivedHistoryFixture({bool includePostWarmup = true}) {
+_archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
   final startedAt = DateTime(2026, 7, 1, 8);
   final endedAt = startedAt.add(const Duration(days: 15));
   const historyKey = 'openHealth.history.archive.feedback-session';
-  final readings = <CgmReading>[
-    CgmReading(
-      valueMgdl: 171,
-      source: CgmRecordSource.vendor,
-      sensorMinute: 59,
-      recordedAt: startedAt.add(const Duration(minutes: 59)),
-    ),
-    if (includePostWarmup)
-      CgmReading(
-        valueMgdl: 112,
-        source: CgmRecordSource.vendor,
-        sensorMinute: 60,
-        recordedAt: startedAt.add(const Duration(hours: 1)),
-      ),
-  ];
+  final readings = readingCount == null
+      ? <CgmReading>[
+          CgmReading(
+            valueMgdl: 171,
+            source: CgmRecordSource.vendor,
+            sensorMinute: 59,
+            recordedAt: startedAt.add(const Duration(minutes: 59)),
+          ),
+          if (includePostWarmup)
+            CgmReading(
+              valueMgdl: 112,
+              source: CgmRecordSource.vendor,
+              sensorMinute: 60,
+              recordedAt: startedAt.add(const Duration(hours: 1)),
+            ),
+        ]
+      : List<CgmReading>.generate(
+          readingCount,
+          (index) => CgmReading(
+            valueMgdl: 80 + (index % 60).toDouble(),
+            source: CgmRecordSource.vendor,
+            sensorMinute: index % 60,
+            recordedAt: startedAt.add(Duration(seconds: index)),
+          ),
+          growable: false,
+        );
   final session = ArchivedSensorSession(
     id: 'feedback-session',
     historyKey: historyKey,

@@ -10,6 +10,12 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Archived sensor export now shows its preparation and sharing progress,
+  prevents concurrent export attempts, and reports identifier-free stage codes
+  when the file cannot be prepared or shared.
+
 ## [0.1.5] - 2026-08-31
 
 ### Fixed
