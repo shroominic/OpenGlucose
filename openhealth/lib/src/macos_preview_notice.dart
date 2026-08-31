@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'app_localizations_extension.dart';
+
 bool shouldShowMacosPreviewNotice({
   required TargetPlatform platform,
   required bool isWeb,
@@ -21,9 +23,10 @@ class MacosPreviewNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     return Semantics(
       container: true,
-      label: 'macOS preview limitations',
+      label: l10n.macosPreviewLimitations,
       child: Card(
         key: const ValueKey<String>('macosPreviewNotice'),
         color: const Color(0xFFFFF3D6),
@@ -33,7 +36,7 @@ class MacosPreviewNotice extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                'macOS transport preview',
+                l10n.macosTransportPreview,
                 style: theme.textTheme.titleMedium?.copyWith(
                   color: const Color(0xFF704C00),
                   fontWeight: FontWeight.w800,
@@ -41,10 +44,7 @@ class MacosPreviewNotice extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                'Real AiDEX pairing, reconnect, and live readings are not '
-                'verified on Mac hardware. This build cannot remove a system '
-                'Bluetooth bond or run Move sensor. Use the Move sensor action '
-                'on the current Android phone before a controlled Mac test.',
+                l10n.macosTransportPreviewDescription,
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF704C00),
                   height: 1.35,
@@ -65,21 +65,18 @@ class MacosPreviewUnavailableAiPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: <Widget>[
         Text(
-          'AI unavailable in macOS preview',
+          l10n.aiUnavailableInMacosPreview,
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w900,
           ),
         ),
         const SizedBox(height: 12),
-        const Text(
-          'This ad-hoc-signed preview cannot supply the macOS Keychain '
-          'capability required to store an API key. Cloud AI remains disabled. '
-          'Do not paste a key into this preview.',
-        ),
+        Text(l10n.macosPreviewAiUnavailableDescription),
       ],
     );
   }

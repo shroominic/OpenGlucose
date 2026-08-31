@@ -3,11 +3,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/ai/ai_controller.dart';
 import 'package:openglucose/src/ai/ai_settings.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/ai/ai_settings_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+Widget _localizedApp(Widget child, {Locale locale = const Locale('en')}) {
+  return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: child,
+  );
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -122,8 +132,8 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+        _localizedApp(
+          const Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
         ),
       );
       await tester.pumpAndSettle();
@@ -154,8 +164,8 @@ void main() {
 
     testWidgets('testing first saves the unsaved cloud draft', (tester) async {
       await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+        _localizedApp(
+          const Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
         ),
       );
       await tester.pumpAndSettle();
@@ -246,6 +256,27 @@ void main() {
       );
       expect(result, isNull);
       expect(await repo.queryInsights(), isEmpty);
+    });
+
+    testWidgets('renders cloud AI privacy controls in Simplified Chinese', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _localizedApp(
+          const Scaffold(body: AiSettingsPane(recentReadings: <CgmReading>[])),
+          locale: const Locale('zh'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('AI 洞察'), findsOneWidget);
+      expect(find.text('设备端模型'), findsOneWidget);
+      expect(find.text('自定义云端服务'), findsOneWidget);
+
+      await tester.tap(find.text('自定义云端服务'));
+      await tester.pumpAndSettle();
+      expect(find.text('启用云端 AI'), findsOneWidget);
+      expect(find.text('API 密钥（安全存储）'), findsOneWidget);
     });
   });
 }

@@ -1,10 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/messaging/app_message.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
 import 'package:openglucose/src/messaging/message_context.dart';
 import 'package:openglucose/src/messaging/message_controller.dart';
 import 'package:openglucose/src/messaging/message_host.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+Widget _localizedApp(Widget child, {Locale locale = const Locale('en')}) {
+  return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: child,
+  );
+}
 
 MessageContext _context({bool isWarmingUp = false}) => MessageContext(
   hasSession: true,
@@ -73,5 +84,28 @@ void main() {
       find.byKey(const ValueKey<String>('messageHostEmpty')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('resolves catalog message copy in Simplified Chinese', (
+    tester,
+  ) async {
+    final controller = await _controller();
+    controller.updateContext(_context(isWarmingUp: true));
+
+    await tester.pumpWidget(
+      _localizedApp(
+        Scaffold(
+          body: MessageHost(
+            controller: controller,
+            messageTextResolver: localizedCatalogMessageText,
+          ),
+        ),
+        locale: const Locale('zh'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('预热中'), findsOneWidget);
+    expect(find.text('传感器正在稳定。大约一小时后开始显示读数，无需操作。'), findsOneWidget);
   });
 }

@@ -1,9 +1,8 @@
-import 'dart:io';
-
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'app_localizations_extension.dart';
 import 'app_controller.dart';
 import 'healthkit_export.dart';
 
@@ -28,6 +27,7 @@ class IntegrationsSettingsPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     return AnimatedBuilder(
       animation: healthExport,
       builder: (context, _) {
@@ -35,15 +35,14 @@ class IntegrationsSettingsPane extends StatelessWidget {
           padding: const EdgeInsets.all(20),
           children: <Widget>[
             Text(
-              'Integrations',
+              l10n.integrations,
               style: theme.textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.w900,
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Send your glucose readings to other apps you control. Nothing '
-              'leaves your device unless you turn it on.',
+              l10n.integrationsIntro,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: const Color(0xFF5B6E6A),
               ),
@@ -72,17 +71,21 @@ class _AppleHealthCard extends StatelessWidget {
   final int readingsCount;
   final Future<void> Function() onSyncNow;
 
-  String get _lastSyncedText {
+  String _lastSyncedText(BuildContext context) {
+    final l10n = context.l10n;
     final last = healthExport.lastSyncedAt;
     if (last == null) {
-      return 'Never synced';
+      return l10n.neverSynced;
     }
-    return 'Last synced ${DateFormat('MMM d, HH:mm').format(last.toLocal())}';
+    final locale = Localizations.localeOf(context).languageCode;
+    final formatted = DateFormat.MMMd(locale).add_Hm().format(last.toLocal());
+    return l10n.lastSyncedAt(formatted);
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final supported = healthExport.isSupported;
 
     return Card(
@@ -97,7 +100,7 @@ class _AppleHealthCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Apple Health',
+                    l10n.appleHealth,
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w900,
                     ),
@@ -107,9 +110,7 @@ class _AppleHealthCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'When you opt in and tap Sync now, glucose values and timestamps '
-              'are written to Apple Health as blood glucose samples. An '
-              'interrupted sync may write a duplicate when retried.',
+              l10n.appleHealthExportDescription,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: const Color(0xFF5B6E6A),
               ),
@@ -119,9 +120,7 @@ class _AppleHealthCard extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  Platform.isAndroid
-                      ? 'Apple Health is only available on iOS.'
-                      : 'Apple Health export is only available on iOS.',
+                  l10n.appleHealthOnlyOnIos,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFF8A6D3B),
                   ),
@@ -130,8 +129,7 @@ class _AppleHealthCard extends StatelessWidget {
             else ...<Widget>[
               if (!healthExport.writesAllowed) ...<Widget>[
                 Text(
-                  'Apple Health export is disabled while using simulated or '
-                  'mock sensor data.',
+                  l10n.appleHealthDisabledWithSimulatedData,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFF8A6D3B),
                   ),
@@ -140,8 +138,8 @@ class _AppleHealthCard extends StatelessWidget {
               ],
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('Export to Apple Health'),
-                subtitle: Text(_lastSyncedText),
+                title: Text(l10n.exportToAppleHealth),
+                subtitle: Text(_lastSyncedText(context)),
                 value: healthExport.enabled,
                 onChanged: healthExport.busy || !healthExport.writesAllowed
                     ? null
@@ -164,11 +162,11 @@ class _AppleHealthCard extends StatelessWidget {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.sync_rounded, size: 18),
-                    label: const Text('Sync now'),
+                    label: Text(l10n.syncNow),
                   ),
                   const SizedBox(width: 12),
                   Text(
-                    '$readingsCount reading(s)',
+                    l10n.readingCount(readingsCount),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: const Color(0xFF5B6E6A),
                     ),
@@ -178,7 +176,10 @@ class _AppleHealthCard extends StatelessWidget {
               if (healthExport.statusMessage != null) ...<Widget>[
                 const SizedBox(height: 8),
                 Text(
-                  healthExport.statusMessage!,
+                  _localizedHealthExportStatusMessage(
+                    context,
+                    healthExport.statusMessage!,
+                  ),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFF0B6E69),
                   ),
@@ -190,4 +191,93 @@ class _AppleHealthCard extends StatelessWidget {
       ),
     );
   }
+}
+
+String _localizedHealthExportStatusMessage(
+  BuildContext context,
+  String message,
+) {
+  final l10n = context.l10n;
+  const exactMessages = <String, _LocalizedHealthExportStatus>{
+    'Apple Health export is unavailable in this mode.':
+        _LocalizedHealthExportStatus.unavailableInThisMode,
+    'Apple Health is only available on iOS.':
+        _LocalizedHealthExportStatus.onlyOnIos,
+    'Apple Health access was not granted.':
+        _LocalizedHealthExportStatus.accessNotGranted,
+    'Turn on Apple Health export before syncing.':
+        _LocalizedHealthExportStatus.turnOnBeforeSyncing,
+    'Already up to date.': _LocalizedHealthExportStatus.alreadyUpToDate,
+    'Export failed.': _LocalizedHealthExportStatus.exportFailed,
+    'HealthKit rejected a glucose sample.':
+        _LocalizedHealthExportStatus.sampleRejected,
+    'Apple Health could not save a glucose sample.':
+        _LocalizedHealthExportStatus.couldNotSaveSample,
+    'Apple Health export could not be completed.':
+        _LocalizedHealthExportStatus.couldNotComplete,
+    'Apple Health writes are disabled for this mode.':
+        _LocalizedHealthExportStatus.writesDisabled,
+  };
+  final exact = exactMessages[message];
+  if (exact != null) {
+    return switch (exact) {
+      _LocalizedHealthExportStatus.unavailableInThisMode =>
+        l10n.appleHealthExportUnavailableInThisMode,
+      _LocalizedHealthExportStatus.onlyOnIos => l10n.appleHealthOnlyOnIos,
+      _LocalizedHealthExportStatus.accessNotGranted =>
+        l10n.appleHealthAccessNotGranted,
+      _LocalizedHealthExportStatus.turnOnBeforeSyncing =>
+        l10n.turnOnAppleHealthBeforeSyncing,
+      _LocalizedHealthExportStatus.alreadyUpToDate =>
+        l10n.appleHealthAlreadyUpToDate,
+      _LocalizedHealthExportStatus.exportFailed => l10n.appleHealthExportFailed,
+      _LocalizedHealthExportStatus.sampleRejected =>
+        l10n.appleHealthSampleRejected,
+      _LocalizedHealthExportStatus.couldNotSaveSample =>
+        l10n.appleHealthCouldNotSaveSample,
+      _LocalizedHealthExportStatus.couldNotComplete =>
+        l10n.appleHealthExportCouldNotComplete,
+      _LocalizedHealthExportStatus.writesDisabled =>
+        l10n.appleHealthWritesDisabled,
+    };
+  }
+
+  final completed = RegExp(
+    r'^Synced (\d+) reading\(s\)\.$',
+  ).firstMatch(message);
+  if (completed != null) {
+    return l10n.appleHealthSyncedReadings(int.parse(completed.group(1)!));
+  }
+  final partial = RegExp(
+    r'^Synced (\d+) reading\(s\), then export stopped\.$',
+  ).firstMatch(message);
+  if (partial != null) {
+    return l10n.appleHealthSyncPartial(int.parse(partial.group(1)!));
+  }
+  final partialWithReason = RegExp(
+    r'^Synced (\d+) reading\(s\), then export stopped: (.+)$',
+  ).firstMatch(message);
+  if (partialWithReason != null) {
+    return l10n.appleHealthSyncPartialWithReason(
+      int.parse(partialWithReason.group(1)!),
+      _localizedHealthExportStatusMessage(context, partialWithReason.group(2)!),
+    );
+  }
+  // Do not surface an unexpected implementation message verbatim. It may be
+  // untranslated or include provider details; known controller states above
+  // retain their precise, localized recovery copy.
+  return l10n.appleHealthExportCouldNotComplete;
+}
+
+enum _LocalizedHealthExportStatus {
+  unavailableInThisMode,
+  onlyOnIos,
+  accessNotGranted,
+  turnOnBeforeSyncing,
+  alreadyUpToDate,
+  exportFailed,
+  sampleRejected,
+  couldNotSaveSample,
+  couldNotComplete,
+  writesDisabled,
 }

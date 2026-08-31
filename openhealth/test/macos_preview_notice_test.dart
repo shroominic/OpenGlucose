@@ -1,6 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
+
+Widget _localizedApp(Widget child, {Locale locale = const Locale('en')}) {
+  return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: child,
+  );
+}
 
 void main() {
   test('notice is limited to native macOS', () {
@@ -42,7 +52,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: MacosPreviewNotice())),
+      _localizedApp(const Scaffold(body: MacosPreviewNotice())),
     );
 
     expect(find.text('macOS transport preview'), findsOneWidget);
@@ -58,12 +68,27 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: MacosPreviewUnavailableAiPane())),
+      _localizedApp(const Scaffold(body: MacosPreviewUnavailableAiPane())),
     );
 
     expect(find.text('AI unavailable in macOS preview'), findsOneWidget);
     expect(find.textContaining('Cloud AI remains disabled'), findsOneWidget);
     expect(find.textContaining('Do not paste a key'), findsOneWidget);
     expect(find.byType(TextField), findsNothing);
+  });
+
+  testWidgets('renders macOS safety limits in Simplified Chinese', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        const Scaffold(body: MacosPreviewNotice()),
+        locale: const Locale('zh'),
+      ),
+    );
+
+    expect(find.text('macOS 传输预览'), findsOneWidget);
+    expect(find.textContaining('尚未在 Mac 硬件上验证'), findsOneWidget);
+    expect(find.textContaining('无法移除系统蓝牙绑定'), findsOneWidget);
   });
 }
