@@ -273,14 +273,18 @@ class _ArchivedSensorShareScope extends InheritedWidget {
 Future<void> _shareArchivedSensorFile(ShareParams params) async {
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
     final files = params.files;
+    final subject = params.subject ?? params.title;
     if (files == null || files.length != 1 || files.single.path.isEmpty) {
       throw ArgumentError(
         'iOS archived-sensor export requires one prepared file.',
       );
     }
+    if (subject == null || subject.isEmpty) {
+      throw ArgumentError('iOS archived-sensor export requires a share title.');
+    }
     await const IosExportShare().shareFile(
       filePath: files.single.path,
-      subject: params.subject ?? params.title ?? 'OpenGlucose sensor export',
+      subject: subject,
       sharePositionOrigin: params.sharePositionOrigin,
     );
     return;
@@ -295,10 +299,11 @@ Future<void> _shareArchivedSensorFile(ShareParams params) async {
 ShareParams buildArchivedSensorShareParams({
   required XFile file,
   required String filename,
+  required String localizedTitle,
   Rect? sharePositionOrigin,
 }) => ShareParams(
-  title: 'OpenGlucose sensor export',
-  subject: 'OpenGlucose sensor export',
+  title: localizedTitle,
+  subject: localizedTitle,
   files: <XFile>[file],
   fileNameOverrides: <String>[filename],
   mailToFallbackEnabled: false,
@@ -2488,6 +2493,7 @@ Future<void> _exportArchivedSensorData(
       buildArchivedSensorShareParams(
         file: exportFile,
         filename: filename,
+        localizedTitle: context.l10n.exportArchivedSensorData,
         sharePositionOrigin: shareOrigin,
       ),
     );

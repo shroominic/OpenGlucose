@@ -133,14 +133,18 @@ void main() {
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
     const filename = 'openglucose-glucose-data.xlsx';
+    const localizedTitle = '导出已归档传感器数据';
     const origin = Rect.fromLTWH(10, 20, 30, 40);
 
     final params = buildArchivedSensorShareParams(
       file: file,
       filename: filename,
+      localizedTitle: localizedTitle,
       sharePositionOrigin: origin,
     );
 
+    expect(params.title, localizedTitle);
+    expect(params.subject, localizedTitle);
     expect(params.files, <XFile>[file]);
     expect(params.files, hasLength(1));
     expect(params.fileNameOverrides, <String>[filename]);
