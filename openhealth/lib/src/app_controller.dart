@@ -53,7 +53,6 @@ class CgmAppController extends ChangeNotifier {
   static const _scanTimeout = Duration(seconds: 6);
   static const _historyPersistDebounce = Duration(milliseconds: 900);
   static const _restoredConnectDelay = Duration(milliseconds: 700);
-  static const _liveRefreshThreshold = Duration(minutes: 2);
   static const _historyCatchUpThreshold = Duration(minutes: 5);
   static const _resumeOffsetMetadataKey = 'resumeOffset';
   static const _resumeCountMetadataKey = 'resumeCount';
@@ -1783,25 +1782,8 @@ class CgmAppController extends ChangeNotifier {
     );
   }
 
-  bool _needsLiveRefresh(CgmSessionSnapshot snapshot) {
-    final latest = latestReading;
-    if (latest == null) {
-      return true;
-    }
-    final recordedAt = latest.recordedAt;
-    if (recordedAt != null &&
-        DateTime.now().difference(recordedAt) >= _liveRefreshThreshold) {
-      return true;
-    }
-    final latestMinute = latest.sensorMinute;
-    final elapsedMinutes = snapshot.sessionInfo.elapsedMinutes;
-    if (latestMinute != null &&
-        elapsedMinutes != null &&
-        elapsedMinutes - latestMinute >= 2) {
-      return true;
-    }
-    return recordedAt == null && latestMinute == null;
-  }
+  bool _needsLiveRefresh(CgmSessionSnapshot snapshot) =>
+      needsLiveReadingRefresh(snapshot, latestReading);
 
   bool _needsHistoryCatchUp(CgmSessionSnapshot snapshot) {
     if (!snapshot.capabilities.supportsHistory) {

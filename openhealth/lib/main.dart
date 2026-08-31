@@ -5,6 +5,7 @@ import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/app_theme.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
@@ -26,6 +27,7 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/today_navigation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -298,6 +300,8 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
+    this.clock = DateTime.now,
+    this.foregroundFreshnessInterval = const Duration(seconds: 45),
   });
 
   final CgmAppController controller;
@@ -311,45 +315,19 @@ class OpenGlucoseApp extends StatelessWidget {
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
 
+  /// Presentation clock shared with the home screen.
+  final DateTime Function() clock;
+
+  /// Foreground interval for best-effort device refreshes.
+  final Duration foregroundFreshnessInterval;
+
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFF0B6E69);
-    final colorScheme = ColorScheme.fromSeed(
-      seedColor: seed,
-      brightness: Brightness.light,
-      surface: const Color(0xFFFFF8F1),
-    );
     return MaterialApp(
       title: 'OpenGlucose',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: colorScheme,
-        scaffoldBackgroundColor: const Color(0xFFF6EFE6),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-        ),
-        cardTheme: CardThemeData(
-          color: Colors.white.withValues(alpha: 0.94),
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xFFF4F6F2),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-          ),
-        ),
-      ),
+      restorationScopeId: 'openglucose',
+      theme: OpenGlucoseTokens.lightTheme(),
       // --- TASK-007 onboarding gate ---
       // First-run only: show the skippable onboarding flow, then hand off to
       // the existing scan/connect home. Persisted via OnboardingStore; once
@@ -365,6 +343,8 @@ class OpenGlucoseApp extends StatelessWidget {
             home: CgmHomePage(
               controller: controller,
               messageController: messageController,
+              clock: clock,
+              foregroundFreshnessInterval: foregroundFreshnessInterval,
             ),
           ),
         ),
@@ -424,32 +404,71 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.clock = DateTime.now,
+    this.foregroundFreshnessInterval = const Duration(seconds: 45),
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
 
+  /// Presentation clock used to evaluate data age and sensor lifecycle.
+  final DateTime Function() clock;
+
+  /// Best-effort device refresh interval while the app is foregrounded.
+  final Duration foregroundFreshnessInterval;
+
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
 }
 
-class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
-  static const _foregroundFreshnessInterval = Duration(seconds: 45);
-
+class _CgmHomePageState extends State<CgmHomePage>
+    with WidgetsBindingObserver, RestorationMixin {
   Timer? _freshnessTimer;
+  Timer? _presentationDeadlineTimer;
+  final RestorableInt _destinationIndex = RestorableInt(
+    OpenGlucoseDestination.today.index,
+  );
+
+  @override
+  String? get restorationId => 'cgm-home';
+
+  @override
+  void restoreState(RestorationBucket? oldBucket, bool initialRestore) {
+    registerForRestoration(_destinationIndex, 'selected-destination');
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
-      unawaited(widget.controller.ensureFreshData());
-    });
+    widget.controller.addListener(_onControllerChanged);
+    _startForegroundRefreshTimer();
+    _schedulePresentationReevaluation();
+  }
+
+  @override
+  void didUpdateWidget(covariant CgmHomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onControllerChanged);
+      widget.controller.addListener(_onControllerChanged);
+    }
+    if (oldWidget.foregroundFreshnessInterval !=
+        widget.foregroundFreshnessInterval) {
+      _startForegroundRefreshTimer();
+    }
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.clock != widget.clock) {
+      _schedulePresentationReevaluation();
+    }
   }
 
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _presentationDeadlineTimer?.cancel();
+    widget.controller.removeListener(_onControllerChanged);
+    _destinationIndex.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -459,7 +478,54 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     if (state != AppLifecycleState.resumed) {
       return;
     }
+    setState(() {});
+    _schedulePresentationReevaluation();
     unawaited(widget.controller.ensureFreshData(force: true));
+  }
+
+  void _startForegroundRefreshTimer() {
+    _freshnessTimer?.cancel();
+    _freshnessTimer = Timer.periodic(widget.foregroundFreshnessInterval, (_) {
+      unawaited(widget.controller.ensureFreshData());
+    });
+  }
+
+  void _onControllerChanged() {
+    if (!mounted) {
+      return;
+    }
+    _schedulePresentationReevaluation();
+  }
+
+  /// Rebuild at the next wall-clock freshness or lifecycle boundary.
+  ///
+  /// This is deliberately separate from [CgmAppController.ensureFreshData]. A
+  /// device refresh can take time or never produce a snapshot, but that must
+  /// not leave Timeline or Trends showing values as live after their deadline.
+  void _schedulePresentationReevaluation() {
+    _presentationDeadlineTimer?.cancel();
+    final now = widget.clock();
+    final deadline = nextLivePresentationDeadline(
+      widget.controller.snapshot,
+      widget.controller.displayLatestReading,
+      now: now,
+    );
+    if (deadline == null) {
+      return;
+    }
+    final delay = deadline.difference(now);
+    _presentationDeadlineTimer = Timer(
+      delay.isNegative ? Duration.zero : delay,
+      _onPresentationDeadline,
+    );
+  }
+
+  void _onPresentationDeadline() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+    _schedulePresentationReevaluation();
   }
 
   @override
@@ -468,6 +534,10 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
       animation: widget.controller,
       builder: (context, _) {
         final snapshot = widget.controller.snapshot;
+        final presentationNow = widget.clock();
+        final destination = OpenGlucoseDestination.fromRestoredIndex(
+          _destinationIndex.value,
+        );
         // Contextual-messaging bridge: recompute which messages are relevant
         // from the latest app state on every controller change. Deferred to
         // post-frame so it never triggers a rebuild during this build pass.
@@ -481,25 +551,41 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
         }
         return Scaffold(
           body: DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[
-                  Color(0xFFF7F0E4),
-                  Color(0xFFE9F3EF),
-                  Color(0xFFF7F5EE),
-                ],
-              ),
-            ),
+            decoration: OpenGlucoseTokens.backgroundDecoration,
             child: SafeArea(
-              child: snapshot == null
-                  ? _ScanView(controller: widget.controller)
-                  : _DashboardView(
-                      controller: widget.controller,
-                      snapshot: snapshot,
-                      messageController: widget.messageController,
-                    ),
+              child: OpenGlucoseNavigationShell(
+                destination: destination,
+                onDestinationSelected: (selection) {
+                  setState(() => _destinationIndex.value = selection.index);
+                },
+                today: snapshot == null
+                    ? _ScanView(controller: widget.controller)
+                    : _DashboardView(
+                        controller: widget.controller,
+                        snapshot: snapshot,
+                        messageController: widget.messageController,
+                      ),
+                timeline: GlucoseTimelinePane(
+                  snapshot: snapshot,
+                  displayReading: widget.controller.displayLatestReading,
+                  visibleHistory: widget.controller.visibleHistory,
+                  retainedHistoryCount:
+                      widget.controller.allHistoricalReadings.length,
+                  preferences: widget.controller.displayPreferences,
+                  isSampleData: widget.controller.isMockDriver,
+                  now: presentationNow,
+                ),
+                trends: GlucoseTrendsPane(
+                  snapshot: snapshot,
+                  displayReading: widget.controller.displayLatestReading,
+                  visibleHistory: widget.controller.visibleHistory,
+                  retainedHistoryCount:
+                      widget.controller.allHistoricalReadings.length,
+                  preferences: widget.controller.displayPreferences,
+                  isSampleData: widget.controller.isMockDriver,
+                  now: presentationNow,
+                ),
+              ),
             ),
           ),
         );
@@ -651,7 +737,10 @@ class _ScanView extends StatelessWidget {
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-            child: Row(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 2,
+              alignment: WrapAlignment.spaceBetween,
               children: <Widget>[
                 Text(
                   'Nearby sensors',
@@ -659,7 +748,6 @@ class _ScanView extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const Spacer(),
                 Text(
                   '${controller.sensors.length} found',
                   style: theme.textTheme.bodyMedium?.copyWith(
