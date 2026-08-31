@@ -378,6 +378,31 @@ void main() {
   });
 
   test(
+    'failed payload write removes its private temporary directory',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'openglucose-share-write-failure-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+
+      await expectLater(
+        prepareArchivedSensorShareFileBytes(
+          filename: 'missing/openglucose-glucose-data.csv',
+          bytes: const <int>[1, 2, 3],
+          temporaryDirectoryPath: root.path,
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(
+        await root.list().toList(),
+        isEmpty,
+        reason: 'a failed write must not leave a private export directory',
+      );
+    },
+  );
+
+  test(
     'startup cleanup removes only known payloads and exact legacy CSV files',
     () async {
       final root = await Directory.systemTemp.createTemp(
