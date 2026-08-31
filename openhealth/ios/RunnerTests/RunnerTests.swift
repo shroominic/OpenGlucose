@@ -433,9 +433,11 @@ final class LiveActivityLockScreenRedactionTests: XCTestCase {
     let redacted = LiveActivityLockScreenRedaction.redact([
       "sensorName": "Private sensor name",
       "stageCode": "progress",
-      "stageLabel": "WARMUP",
+      "stageLabel": "预热中",
+      "languageCode": "zh",
+      "isWarmup": true,
       "valueText": "57",
-      "unitText": "min",
+      "unitText": "分钟",
       "lastReadingText": "14:55",
       "lifeText": "15 days left",
       "detailText": "Warming up",
@@ -446,7 +448,9 @@ final class LiveActivityLockScreenRedactionTests: XCTestCase {
 
     XCTAssertEqual(redacted["sensorName"] as? String, "OpenGlucose")
     XCTAssertEqual(redacted["stageCode"] as? String, "progress")
-    XCTAssertEqual(redacted["stageLabel"] as? String, "WARMUP")
+    XCTAssertEqual(redacted["stageLabel"] as? String, "传感器预热中")
+    XCTAssertEqual(redacted["languageCode"] as? String, "zh")
+    XCTAssertEqual(redacted["isWarmup"] as? Bool, true)
     XCTAssertEqual(redacted["valueText"] as? String, "57")
     XCTAssertEqual(redacted["unitText"] as? String, "min")
     XCTAssertEqual(redacted["lastReadingText"] as? String, "--")
@@ -456,25 +460,26 @@ final class LiveActivityLockScreenRedactionTests: XCTestCase {
     XCTAssertEqual(redacted["isStale"] as? Bool, false)
   }
 
-  func testMalformedWarmupPayloadFailsClosed() throws {
+  func testWarmupRequiresTheSemanticFlagAndValidatedMinutes() throws {
     for payload in [
       [
-        "stageCode": "live",
-        "stageLabel": "WARMUP",
+        "stageCode": "progress",
+        "stageLabel": "预热中",
         "valueText": "123",
-        "unitText": "min",
+        "unitText": "分钟",
+        "isWarmup": false,
       ],
       [
         "stageCode": "progress",
-        "stageLabel": "WARMUP",
-        "valueText": "123",
-        "unitText": "mg/dL",
+        "stageLabel": "Warmup",
+        "valueText": "181",
+        "isWarmup": true,
       ],
       [
         "stageCode": "progress",
         "stageLabel": "WARMUP",
         "valueText": "glucose: 123",
-        "unitText": "min",
+        "isWarmup": true,
       ],
     ] {
       let redacted = LiveActivityLockScreenRedaction.redact(payload)
@@ -482,5 +487,74 @@ final class LiveActivityLockScreenRedactionTests: XCTestCase {
       XCTAssertEqual(redacted["valueText"] as? String, "--")
       XCTAssertEqual(redacted["unitText"] as? String, "")
     }
+  }
+
+  func testRedactionUsesPayloadLanguageForGenericAndWarmupCopy() throws {
+    let generic = LiveActivityLockScreenRedaction.redact([
+      "stageCode": "progress",
+      "stageLabel": "Connecting",
+      "languageCode": "zh",
+      "isWarmup": false,
+      "valueText": "112",
+      "unitText": "mg/dL",
+    ])
+    XCTAssertEqual(generic["stageLabel"] as? String, "正在连接")
+    XCTAssertEqual(generic["detailText"] as? String, "打开应用查看你的葡萄糖读数")
+    XCTAssertEqual(generic["valueText"] as? String, "--")
+
+    let warmup = LiveActivityLockScreenRedaction.redact([
+      "stageCode": "progress",
+      "stageLabel": "not a state value",
+      "languageCode": "zh",
+      "isWarmup": true,
+      "valueText": "42",
+      "unitText": "anything",
+    ])
+    XCTAssertEqual(warmup["stageLabel"] as? String, "传感器预热中")
+    XCTAssertEqual(warmup["detailText"] as? String, "传感器预热中")
+    XCTAssertEqual(warmup["valueText"] as? String, "42")
+  }
+
+  func testLiveActivityTextUsesOnlySupportedPayloadLanguages() throws {
+    XCTAssertEqual(LiveActivityLanguage(payloadLanguageCode: "zh"), .simplifiedChinese)
+    XCTAssertEqual(LiveActivityLanguage(payloadLanguageCode: "ZH"), .simplifiedChinese)
+    XCTAssertEqual(LiveActivityLanguage(payloadLanguageCode: "zh-Hant"), .english)
+    XCTAssertEqual(LiveActivityLanguage(payloadLanguageCode: "fr"), .english)
+    XCTAssertEqual(
+      LiveActivityText.updated("14:55", for: .simplifiedChinese),
+      "更新于 14:55"
+    )
+    XCTAssertEqual(
+      LiveActivityText.warmupRemaining(42, for: .simplifiedChinese),
+      "传感器预热中，还剩 42 分钟"
+    )
+  }
+
+  func testLegacyLiveActivityStateDecodesWithSafeLanguageAndWarmupDefaults() throws {
+    guard #available(iOS 16.1, *) else {
+      throw XCTSkip("Live Activities require iOS 16.1 or later.")
+    }
+    let legacyPayload = """
+    {
+      "stageCode": "progress",
+      "stageLabel": "WARMUP",
+      "valueText": "57",
+      "unitText": "min",
+      "lastReadingText": "--",
+      "lifeText": "",
+      "detailText": "Sensor warming up",
+      "trendSymbol": "",
+      "deltaText": "",
+      "isStale": false
+    }
+    """
+
+    let state = try JSONDecoder().decode(
+      GlucoseLiveActivityAttributes.ContentState.self,
+      from: Data(legacyPayload.utf8)
+    )
+
+    XCTAssertEqual(state.languageCode, "en")
+    XCTAssertFalse(state.isWarmup)
   }
 }

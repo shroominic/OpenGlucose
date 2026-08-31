@@ -261,9 +261,12 @@ private func updatedText(
     return nil
   }
   if isStale {
-    return "Stale"
+    return LiveActivityText.stale(for: liveActivityLanguage(for: state))
   }
-  return "Updated \(state.lastReadingText)"
+  return LiveActivityText.updated(
+    state.lastReadingText,
+    for: liveActivityLanguage(for: state)
+  )
 }
 
 private func trendText(
@@ -291,23 +294,49 @@ private func visibleValueText(
   for state: GlucoseLiveActivityAttributes.ContentState,
   isStale: Bool
 ) -> String {
-  hasVisibleGlucoseValue(state, isStale: isStale) ? state.valueText : "--"
+  if let minutes = warmupMinutes(for: state) {
+    return String(minutes)
+  }
+  return hasVisibleGlucoseValue(state, isStale: isStale) ? state.valueText : "--"
 }
 
 private func visibleUnitText(
   for state: GlucoseLiveActivityAttributes.ContentState,
   isStale: Bool
 ) -> String {
-  hasVisibleGlucoseValue(state, isStale: isStale) ? state.unitText : ""
+  if warmupMinutes(for: state) != nil {
+    return LiveActivityText.minuteUnit(for: liveActivityLanguage(for: state))
+  }
+  return hasVisibleGlucoseValue(state, isStale: isStale) ? state.unitText : ""
 }
 
 private func hasGlucoseValue(
   _ state: GlucoseLiveActivityAttributes.ContentState
 ) -> Bool {
+  guard !state.isWarmup else {
+    return false
+  }
   guard state.valueText != "--", state.valueText != "…" else {
     return false
   }
   return state.unitText == "mg/dL" || state.unitText == "mmol/L"
+}
+
+private func warmupMinutes(
+  for state: GlucoseLiveActivityAttributes.ContentState
+) -> Int? {
+  guard state.isWarmup,
+        let minutes = Int(state.valueText),
+        (1...180).contains(minutes) else {
+    return nil
+  }
+  return minutes
+}
+
+private func liveActivityLanguage(
+  for state: GlucoseLiveActivityAttributes.ContentState
+) -> LiveActivityLanguage {
+  LiveActivityLanguage(payloadLanguageCode: state.languageCode)
 }
 
 private func compactLeadingText(
@@ -317,8 +346,8 @@ private func compactLeadingText(
   if hasVisibleGlucoseValue(state, isStale: isStale) {
     return state.valueText
   }
-  if state.stageCode == "progress", state.unitText == "min" {
-    return "\(state.valueText)m"
+  if let minutes = warmupMinutes(for: state) {
+    return "\(minutes)\(LiveActivityText.compactMinuteSuffix(for: liveActivityLanguage(for: state)))"
   }
   return "--"
 }
@@ -327,57 +356,63 @@ private func compactStatusText(
   for state: GlucoseLiveActivityAttributes.ContentState,
   isStale: Bool
 ) -> String {
+  let language = liveActivityLanguage(for: state)
   if isStale, hasGlucoseValue(state) {
-    return "Stale"
+    return LiveActivityText.stale(for: language)
   }
   if state.stageCode == "error" {
-    return "Error"
+    return LiveActivityText.error(for: language)
+  }
+  if state.isWarmup {
+    return LiveActivityText.sensorWarmingUp(for: language)
   }
   if state.stageCode == "progress" {
-    return state.stageLabel.isEmpty ? "Connecting" : state.stageLabel
+    return LiveActivityText.connecting(for: language)
   }
   if let trend = trendText(for: state, isStale: isStale) {
     return trend
   }
-  return state.unitText.isEmpty ? state.stageLabel : state.unitText
+  if !state.unitText.isEmpty {
+    return state.unitText
+  }
+  return LiveActivityText.stageLabel(
+    stageCode: state.stageCode,
+    isWarmup: false,
+    for: language
+  )
 }
 
 private func compactLeadingAccessibilityLabel(
   for state: GlucoseLiveActivityAttributes.ContentState,
   isStale: Bool
 ) -> String {
+  let language = liveActivityLanguage(for: state)
   if isStale, hasGlucoseValue(state) {
-    return "Glucose unavailable, reading stale"
+    return LiveActivityText.staleGlucoseUnavailable(for: language)
   }
   if hasVisibleGlucoseValue(state, isStale: isStale) {
-    return "Glucose \(state.valueText) \(spokenUnit(state.unitText))"
+    return LiveActivityText.glucoseValue(
+      state.valueText,
+      unit: state.unitText,
+      for: language
+    )
   }
-  if state.stageCode == "progress", state.unitText == "min" {
-    return "Sensor warmup, \(state.valueText) minutes remaining"
+  if let minutes = warmupMinutes(for: state) {
+    return LiveActivityText.warmupRemaining(minutes, for: language)
   }
-  return "Glucose unavailable"
+  return LiveActivityText.glucoseUnavailable(for: language)
 }
 
 private func compactTrailingAccessibilityLabel(
   for state: GlucoseLiveActivityAttributes.ContentState,
   isStale: Bool
 ) -> String {
+  let language = liveActivityLanguage(for: state)
   var parts = [compactStatusText(for: state, isStale: isStale)]
   if state.lastReadingText != "--" {
-    parts.append("reading at \(state.lastReadingText)")
+    parts.append(LiveActivityText.readingAt(state.lastReadingText, for: language))
   }
   return parts.joined(separator: ", ")
-}
-
-private func spokenUnit(_ unit: String) -> String {
-  switch unit {
-  case "mg/dL":
-    return "milligrams per deciliter"
-  case "mmol/L":
-    return "millimoles per liter"
-  default:
-    return unit
-  }
 }
 
 private func stageColor(
@@ -385,6 +420,10 @@ private func stageColor(
   isStale: Bool
 ) -> Color {
   if isStale && state.stageCode == "live" {
+    return Color(red: 242 / 255, green: 166 / 255, blue: 90 / 255)
+  }
+
+  if state.isWarmup {
     return Color(red: 242 / 255, green: 166 / 255, blue: 90 / 255)
   }
 
