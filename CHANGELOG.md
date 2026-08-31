@@ -10,6 +10,12 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- The native iOS export bridge now presents only from an attached controller
+  in the foreground-active key window. A refused UIKit presentation resolves
+  immediately with a stage-coded error instead of leaving later exports busy.
+
 ## [0.1.5] - 2026-08-31
 
 ### Fixed
