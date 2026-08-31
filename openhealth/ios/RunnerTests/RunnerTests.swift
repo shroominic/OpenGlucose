@@ -237,6 +237,160 @@ final class RunnerTests: XCTestCase {
   }
 }
 
+final class ExportSharePresentationPolicyTests: XCTestCase {
+  func testIPhoneDoesNotUsePopoverPresentation() {
+    XCTAssertFalse(
+      ExportShareChannel.shouldConfigurePopover(interfaceIdiom: .phone)
+    )
+  }
+
+  func testIPadUsesRequiredPopoverPresentation() {
+    XCTAssertTrue(
+      ExportShareChannel.shouldConfigurePopover(interfaceIdiom: .pad)
+    )
+  }
+
+  func testExportShareAcceptsProductionCachePayload() throws {
+    let cachesDirectory = try XCTUnwrap(
+      FileManager.default.urls(
+        for: .cachesDirectory,
+        in: .userDomainMask
+      ).first
+    )
+    let exportDirectory = cachesDirectory.appendingPathComponent(
+      "openglucose-export-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: exportDirectory,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: exportDirectory) }
+
+    let exportFile = exportDirectory.appendingPathComponent("export.csv")
+    try Data("test export".utf8).write(to: exportFile)
+
+    XCTAssertEqual(
+      try ExportShareChannel.validatedExportFile(exportFile.path),
+      exportFile.standardizedFileURL.resolvingSymlinksInPath()
+    )
+  }
+
+  func testExportShareAcceptsOnlyScopedReadableCacheFiles() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "openglucose-export-share-policy-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let cachesDirectory = root.appendingPathComponent(
+      "Library/Caches",
+      isDirectory: true
+    )
+    let allowedDirectory = cachesDirectory.appendingPathComponent(
+      "openglucose-export-allowed",
+      isDirectory: true
+    )
+    let wrongPrefixDirectory = cachesDirectory.appendingPathComponent(
+      "unscoped-export",
+      isDirectory: true
+    )
+    let outsideDirectory = root.appendingPathComponent(
+      "outside",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: allowedDirectory,
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+      at: outsideDirectory,
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+      at: wrongPrefixDirectory,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let allowedFile = allowedDirectory.appendingPathComponent("export.csv")
+    let outsideFile = outsideDirectory.appendingPathComponent("export.csv")
+    let wrongPrefixFile = wrongPrefixDirectory.appendingPathComponent(
+      "export.csv"
+    )
+    try Data("test export".utf8).write(to: allowedFile)
+    try Data("test export".utf8).write(to: outsideFile)
+    try Data("test export".utf8).write(to: wrongPrefixFile)
+
+    XCTAssertEqual(
+      try ExportShareChannel.validatedExportFile(
+        allowedFile.path,
+        cachesDirectory: cachesDirectory
+      ),
+      allowedFile
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        outsideFile.path,
+        cachesDirectory: cachesDirectory
+      )
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        wrongPrefixFile.path,
+        cachesDirectory: cachesDirectory
+      )
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        allowedDirectory.appendingPathComponent("missing.csv").path,
+        cachesDirectory: cachesDirectory
+      )
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        allowedDirectory.path,
+        cachesDirectory: cachesDirectory
+      )
+    )
+
+    let nestedDirectory = allowedDirectory.appendingPathComponent(
+      "nested",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: nestedDirectory,
+      withIntermediateDirectories: true
+    )
+    let nestedFile = nestedDirectory.appendingPathComponent("export.csv")
+    try Data("test export".utf8).write(to: nestedFile)
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        nestedFile.path,
+        cachesDirectory: cachesDirectory
+      )
+    )
+
+    let traversalPath = "\(allowedDirectory.path)/../unscoped-export/export.csv"
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        traversalPath,
+        cachesDirectory: cachesDirectory
+      )
+    )
+
+    let symbolicLink = allowedDirectory.appendingPathComponent("linked.csv")
+    try FileManager.default.createSymbolicLink(
+      at: symbolicLink,
+      withDestinationURL: outsideFile
+    )
+    XCTAssertThrowsError(
+      try ExportShareChannel.validatedExportFile(
+        symbolicLink.path,
+        cachesDirectory: cachesDirectory
+      )
+    )
+  }
+}
+
 final class LiveActivityLockScreenRedactionTests: XCTestCase {
   func testLiveGlucoseRequiresExplicitSensitiveContentConsent() throws {
     let payload: [String: Any] = [

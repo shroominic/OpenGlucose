@@ -10,6 +10,12 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Archived sensor exports now open a native iOS share sheet reliably on
+  iOS 26. The iPhone path no longer uses popover presentation configuration;
+  iPad keeps its required anchored popover behavior.
+
 ## [0.1.4] - 2026-08-22
 
 ### Added

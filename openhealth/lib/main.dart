@@ -11,6 +11,7 @@ import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
+import 'package:openglucose/src/ios_export_share.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
@@ -270,6 +271,20 @@ class _ArchivedSensorShareScope extends InheritedWidget {
 }
 
 Future<void> _shareArchivedSensorFile(ShareParams params) async {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+    final files = params.files;
+    if (files == null || files.length != 1 || files.single.path.isEmpty) {
+      throw ArgumentError(
+        'iOS archived-sensor export requires one prepared file.',
+      );
+    }
+    await const IosExportShare().shareFile(
+      filePath: files.single.path,
+      subject: params.subject ?? params.title ?? 'OpenGlucose sensor export',
+      sharePositionOrigin: params.sharePositionOrigin,
+    );
+    return;
+  }
   await SharePlus.instance.share(params);
 }
 

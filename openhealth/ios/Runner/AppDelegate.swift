@@ -3,6 +3,7 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+  private var exportShareChannel: ExportShareChannel?
   private var privacyStorageChannel: PrivacyStorageChannel?
 
   override func application(
@@ -36,6 +37,7 @@ import UIKit
     GlucoseLiveActivityController.shared.configure(
       with: messenger
     )
+    exportShareChannel = ExportShareChannel(messenger: messenger)
     privacyStorageChannel = PrivacyStorageChannel(messenger: messenger)
   }
 }
