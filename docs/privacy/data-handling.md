@@ -9,7 +9,7 @@ privacy owner before public distribution.
 
 | Class                  | Examples                                                                              | Required handling                                                                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Restricted health data | glucose values/times, calibrations, health events, derived metrics, AI inputs/outputs | Local by design; no automatic upload; native backup, logging, export, and deletion controls require the verification described below |
+| Restricted health data | glucose values/times, calibrations, health events, derived metrics, imported source application/device identifiers, AI inputs/outputs | Local by design; no automatic upload; native backup, logging, export, and deletion controls require the verification described below |
 | Sensitive device data  | sensor serial/device ID, BLE advertisements, diagnostics, firmware                    | Minimize, keep on device, redact from filenames/logs/lock screen                                                                     |
 | Secret                 | API keys, signing keys, store credentials                                             | Platform secret store or ephemeral release environment; never repository/preferences/logs                                            |
 | Operational            | app version, non-sensitive error class, check result                                  | May be retained only when documented and stripped of health/device identifiers                                                       |
@@ -40,6 +40,13 @@ The dedicated file is JSON and is not encrypted by OpenGlucose itself. It
 relies on the application sandbox and operating-system at-rest protections;
 their device-state behavior and threat-model sufficiency remain verification
 work. Backup exclusion is not encryption.
+
+The local health SQLite store can retain platform-owned import identities,
+source application/package, source name/device, recording method, revision, and
+deletion tombstones for deterministic reconciliation. These are restricted
+health metadata. They are not included in the current archive export, default
+timeline/UI, analytics, or production logs. Native HealthKit/Health Connect
+reading and incremental sync are not implemented by this storage contract.
 
 Display-only preferences may remain in platform preferences. In an actual web
 build, `PreferencesHealthStateStore` delegates to `shared_preferences`, whose

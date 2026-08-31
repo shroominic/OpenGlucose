@@ -109,6 +109,23 @@ metadata rewrite resumes from either old or new names. If both names exist with
 different contents, startup preserves both and fails closed for manual recovery
 instead of guessing which glucose history is authoritative.
 
+The local health SQLite repository schema two adds nullable source-platform and
+external-record identity columns plus a local tombstone table. Schema-one rows
+remain byte-for-byte JSON-compatible and are not retroactively assigned an
+identity. The forward migration is additive and transaction-backed. A
+schema-one binary can read the stored sample JSON after the upgrade, but cannot
+preserve the identity columns when it writes new imports; do not continue
+imports after a downgrade. Roll forward to a schema-two build before importing
+again. A schema-one binary can lower SQLite's `user_version` while leaving the
+additive schema-two columns in place. Schema two probes the table shape before
+each additive migration, so a later schema-two launch restores the version
+marker without duplicate-column failure. That recovery preserves existing rows;
+it does not make schema-one writes source-aware.
+
+The schema-two binary rejects an attempt to open a higher, unknown SQLite
+schema version. It leaves that higher version marker unchanged rather than
+silently relabelling an unrecognized schema as version two.
+
 Downgrading to a schema-two app after filename migration is unsupported: the
 older app cannot locate schema-three blobs even though their bytes remain on
 disk. Roll forward to a schema-three build and preserve the original app

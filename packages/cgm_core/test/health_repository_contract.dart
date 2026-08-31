@@ -185,6 +185,175 @@ void runHealthRepositoryContractTests(HealthRepository Function() factory) {
     });
   });
 
+  group('import identity and tombstones', () {
+    const appleProvenance = HealthSampleProvenance(
+      identity: HealthImportIdentity(
+        platform: HealthSourcePlatform.appleHealth,
+        externalId: 'fixture-activity-1',
+      ),
+      sourceApplicationId: 'com.example.source',
+      sourceName: 'Fixture Source',
+      sourceDevice: 'fixture-device',
+      recordingMethod: HealthRecordingMethod.automatic,
+      sourceRevision: 'revision-1',
+    );
+
+    test(
+      'repeated import replaces by identity rather than appending',
+      () async {
+        await repo.upsertActivitySamples([
+          ActivitySample(
+            start: DateTime.utc(2026, 1, 1, 8),
+            end: DateTime.utc(2026, 1, 1, 8, 15),
+            type: ActivityType.steps,
+            source: DataSource.appleHealth,
+            steps: 100,
+            provenance: appleProvenance,
+          ),
+        ]);
+        await repo.upsertActivitySamples([
+          ActivitySample(
+            start: DateTime.utc(2026, 1, 1, 9),
+            end: DateTime.utc(2026, 1, 1, 9, 15),
+            type: ActivityType.steps,
+            source: DataSource.appleHealth,
+            steps: 250,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'fixture-activity-1',
+              ),
+              sourceRevision: 'revision-2',
+            ),
+          ),
+        ]);
+
+        final samples = await repo.queryActivitySamples();
+        expect(samples, hasLength(1));
+        expect(samples.single.start, DateTime.utc(2026, 1, 1, 9));
+        expect(samples.single.steps, 250);
+        expect(samples.single.provenance!.sourceRevision, 'revision-2');
+      },
+    );
+
+    test(
+      'same external identifier from distinct platforms remains distinct',
+      () async {
+        await repo.upsertHeartRateSamples([
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 60,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'same-id',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 9),
+            bpm: 70,
+            source: DataSource.healthConnect,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.healthConnect,
+                externalId: 'same-id',
+              ),
+            ),
+          ),
+        ]);
+        expect(await repo.queryHeartRateSamples(), hasLength(2));
+      },
+    );
+
+    test('source deletion removes a sample and retains a tombstone', () async {
+      await repo.upsertSleepSamples([
+        SleepSample(
+          start: DateTime.utc(2026, 1, 1, 23),
+          end: DateTime.utc(2026, 1, 2, 7),
+          stage: SleepStage.deep,
+          source: DataSource.healthConnect,
+          provenance: const HealthSampleProvenance(
+            identity: HealthImportIdentity(
+              platform: HealthSourcePlatform.healthConnect,
+              externalId: 'fixture-sleep-1',
+            ),
+          ),
+        ),
+      ]);
+
+      await repo.reconcileImportTombstones([
+        const HealthImportTombstone(
+          kind: HealthSampleKind.sleep,
+          provenance: HealthSampleProvenance(
+            identity: HealthImportIdentity(
+              platform: HealthSourcePlatform.healthConnect,
+              externalId: 'fixture-sleep-1',
+            ),
+            sourceRevision: 'revision-3',
+            isDeleted: true,
+          ),
+        ),
+      ]);
+
+      expect(await repo.querySleepSamples(), isEmpty);
+      final tombstones = await repo.queryImportTombstones();
+      expect(tombstones, hasLength(1));
+      expect(tombstones.single.provenance.sourceRevision, 'revision-3');
+      expect(tombstones.single.provenance.isDeleted, isTrue);
+    });
+
+    test('a later source record clears its matching tombstone', () async {
+      const identity = HealthImportIdentity(
+        platform: HealthSourcePlatform.appleHealth,
+        externalId: 'fixture-heart-rate-1',
+      );
+      await repo.reconcileImportTombstones([
+        const HealthImportTombstone(
+          kind: HealthSampleKind.heartRate,
+          provenance: HealthSampleProvenance(
+            identity: identity,
+            isDeleted: true,
+          ),
+        ),
+      ]);
+      await repo.upsertHeartRateSamples([
+        HeartRateSample(
+          timestamp: DateTime.utc(2026, 1, 1, 12),
+          bpm: 72,
+          source: DataSource.appleHealth,
+          provenance: const HealthSampleProvenance(identity: identity),
+        ),
+      ]);
+
+      expect(await repo.queryHeartRateSamples(), hasLength(1));
+      expect(await repo.queryImportTombstones(), isEmpty);
+    });
+
+    test('rejects duplicate source identities in one import batch', () async {
+      final samples = [
+        for (final bpm in [60.0, 61.0])
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 12),
+            bpm: bpm,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'fixture-duplicate-1',
+              ),
+            ),
+          ),
+      ];
+      await expectLater(
+        repo.upsertHeartRateSamples(samples),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(await repo.queryHeartRateSamples(), isEmpty);
+    });
+  });
+
   group('AI insights', () {
     test('upsert/replace, window+category filter, delete', () async {
       await repo.upsertInsight(

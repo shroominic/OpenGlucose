@@ -32,12 +32,13 @@ class SqfliteHealthRepository implements HealthRepository {
        _databaseFactory = databaseFactory ?? databaseFactorySqflitePlugin;
 
   /// Current schema version. Bump and extend [_migrate] for changes.
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
 
   static const String tableEvents = 'health_events';
   static const String tableActivity = 'activity_samples';
   static const String tableSleep = 'sleep_samples';
   static const String tableHeartRate = 'heart_rate_samples';
+  static const String tableImportTombstones = 'health_import_tombstones';
   static const String tableInsights = 'ai_insights';
 
   final String _path;
@@ -66,6 +67,7 @@ class SqfliteHealthRepository implements HealthRepository {
           await _migrate(db, 0, version);
         },
         onUpgrade: _migrate,
+        onDowngrade: _rejectDowngrade,
       ),
     );
   }
@@ -101,6 +103,8 @@ class SqfliteHealthRepository implements HealthRepository {
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           start_ms INTEGER NOT NULL,
           type TEXT NOT NULL,
+          identity_platform TEXT,
+          external_id TEXT,
           data TEXT NOT NULL
         )
       ''');
@@ -110,26 +114,55 @@ class SqfliteHealthRepository implements HealthRepository {
       await db.execute(
         'CREATE INDEX idx_activity_type ON $tableActivity(type)',
       );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_activity_import_identity ON $tableActivity('
+        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
+        'AND external_id IS NOT NULL',
+      );
 
       await db.execute('''
         CREATE TABLE $tableSleep (
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           start_ms INTEGER NOT NULL,
+          identity_platform TEXT,
+          external_id TEXT,
           data TEXT NOT NULL
         )
       ''');
       await db.execute('CREATE INDEX idx_sleep_start ON $tableSleep(start_ms)');
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_sleep_import_identity ON $tableSleep('
+        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
+        'AND external_id IS NOT NULL',
+      );
 
       await db.execute('''
         CREATE TABLE $tableHeartRate (
           row_id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp_ms INTEGER NOT NULL,
+          identity_platform TEXT,
+          external_id TEXT,
           data TEXT NOT NULL
         )
       ''');
       await db.execute(
         'CREATE INDEX idx_hr_ts ON $tableHeartRate(timestamp_ms)',
       );
+      await db.execute(
+        'CREATE UNIQUE INDEX idx_hr_import_identity ON $tableHeartRate('
+        ' identity_platform, external_id) WHERE identity_platform IS NOT NULL '
+        'AND external_id IS NOT NULL',
+      );
+
+      await db.execute('''
+        CREATE TABLE $tableImportTombstones (
+          sample_kind TEXT NOT NULL,
+          identity_platform TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          data TEXT NOT NULL,
+          PRIMARY KEY (sample_kind, identity_platform, external_id)
+        )
+      ''');
 
       await db.execute('''
         CREATE TABLE $tableInsights (
@@ -146,8 +179,79 @@ class SqfliteHealthRepository implements HealthRepository {
         'CREATE INDEX idx_insights_category ON $tableInsights(category)',
       );
     }
-    // Future migrations: if (from < 2) { ... } // bump [schemaVersion] too.
+    if (from < 2 && to >= 2) {
+      // A schema-v1 binary has no downgrade callback. sqflite therefore lowers
+      // `user_version` when that binary opens a v2 database, while retaining
+      // these additive v2 columns. Probe before every ALTER so a later v2
+      // launch repairs that version marker instead of treating the database as
+      // corrupt and failing on duplicate columns.
+      //
+      // Existing v1 rows remain untouched and nullable so legacy/manual rows
+      // retain their append-only semantics.
+      await _addColumnIfMissing(
+        db,
+        tableActivity,
+        'identity_platform',
+      );
+      await _addColumnIfMissing(db, tableActivity, 'external_id');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_import_identity '
+        'ON $tableActivity(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
+      );
+      await _addColumnIfMissing(db, tableSleep, 'identity_platform');
+      await _addColumnIfMissing(db, tableSleep, 'external_id');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_sleep_import_identity '
+        'ON $tableSleep(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
+      );
+      await _addColumnIfMissing(db, tableHeartRate, 'identity_platform');
+      await _addColumnIfMissing(db, tableHeartRate, 'external_id');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_hr_import_identity '
+        'ON $tableHeartRate(identity_platform, external_id) '
+        'WHERE identity_platform IS NOT NULL AND external_id IS NOT NULL',
+      );
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS $tableImportTombstones (
+          sample_kind TEXT NOT NULL,
+          identity_platform TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          data TEXT NOT NULL,
+          PRIMARY KEY (sample_kind, identity_platform, external_id)
+        )
+      ''');
+    }
   }
+
+  /// Adds one nullable schema-v2 identity column if a downgraded v1 binary
+  /// already reset the SQLite version marker while leaving the v2 table shape.
+  static Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    final exists = columns.any((entry) => entry['name'] == column);
+    if (!exists) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column TEXT');
+    }
+  }
+
+  /// Keeps a future schema from being silently relabelled as this version.
+  ///
+  /// Version one shipped without this guard, so [_migrate] separately repairs
+  /// the historical v2 -> v1 -> v2 marker rollback. Future downgrades fail
+  /// closed instead of risking an unknown schema being written by this binary.
+  static Future<void> _rejectDowngrade(
+    Database _,
+    int from,
+    int to,
+  ) => throw StateError(
+    'Refusing local health database downgrade from schema $from to $to. '
+    'Use a schema-version-$from or newer build.',
+  );
 
   static int _ms(DateTime t) => t.toUtc().millisecondsSinceEpoch;
 
@@ -254,13 +358,22 @@ class SqfliteHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertActivitySamples(Iterable<ActivitySample> samples) async {
+    final values = samples.toList(growable: false);
+    _validateSampleBatch(
+      values,
+      kind: HealthSampleKind.activity,
+      provenanceOf: (sample) => sample.provenance,
+      encode: (sample) => sample.toJson(),
+    );
     final batch = _database.batch();
-    for (final s in samples) {
+    for (final s in values) {
+      _clearTombstoneInBatch(batch, HealthSampleKind.activity, s.provenance);
       batch.insert(tableActivity, {
         'start_ms': _ms(s.start),
         'type': s.type.key,
+        ..._identityColumns(s.provenance),
         'data': jsonEncode(s.toJson()),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
@@ -304,12 +417,21 @@ class SqfliteHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertSleepSamples(Iterable<SleepSample> samples) async {
+    final values = samples.toList(growable: false);
+    _validateSampleBatch(
+      values,
+      kind: HealthSampleKind.sleep,
+      provenanceOf: (sample) => sample.provenance,
+      encode: (sample) => sample.toJson(),
+    );
     final batch = _database.batch();
-    for (final s in samples) {
+    for (final s in values) {
+      _clearTombstoneInBatch(batch, HealthSampleKind.sleep, s.provenance);
       batch.insert(tableSleep, {
         'start_ms': _ms(s.start),
+        ..._identityColumns(s.provenance),
         'data': jsonEncode(s.toJson()),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
@@ -345,12 +467,21 @@ class SqfliteHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertHeartRateSamples(Iterable<HeartRateSample> samples) async {
+    final values = samples.toList(growable: false);
+    _validateSampleBatch(
+      values,
+      kind: HealthSampleKind.heartRate,
+      provenanceOf: (sample) => sample.provenance,
+      encode: (sample) => sample.toJson(),
+    );
     final batch = _database.batch();
-    for (final s in samples) {
+    for (final s in values) {
+      _clearTombstoneInBatch(batch, HealthSampleKind.heartRate, s.provenance);
       batch.insert(tableHeartRate, {
         'timestamp_ms': _ms(s.timestamp),
+        ..._identityColumns(s.provenance),
         'data': jsonEncode(s.toJson()),
-      });
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
   }
@@ -381,6 +512,59 @@ class SqfliteHealthRepository implements HealthRepository {
     );
     return rows
         .map((r) => HeartRateSample.fromJson(_decode(r['data'])))
+        .toList(growable: false);
+  }
+
+  // --- Imported-record tombstones -----------------------------------------
+
+  @override
+  Future<void> reconcileImportTombstones(
+    Iterable<HealthImportTombstone> tombstones,
+  ) async {
+    final values = tombstones.toList(growable: false);
+    _validateTombstoneBatch(values);
+    final batch = _database.batch();
+    for (final tombstone in values) {
+      final identity = tombstone.provenance.identity;
+      batch.delete(
+        _tableFor(tombstone.kind),
+        where: 'identity_platform = ? AND external_id = ?',
+        whereArgs: [identity.platform.key, identity.externalId],
+      );
+      batch.insert(tableImportTombstones, {
+        'sample_kind': tombstone.kind.key,
+        'identity_platform': identity.platform.key,
+        'external_id': identity.externalId,
+        'data': jsonEncode(tombstone.toJson()),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  @override
+  Future<List<HealthImportTombstone>> queryImportTombstones({
+    HealthSampleKind? kind,
+    HealthSourcePlatform? platform,
+  }) async {
+    final clauses = <String>[];
+    final args = <Object?>[];
+    if (kind != null) {
+      clauses.add('sample_kind = ?');
+      args.add(kind.key);
+    }
+    if (platform != null) {
+      clauses.add('identity_platform = ?');
+      args.add(platform.key);
+    }
+    final rows = await _database.query(
+      tableImportTombstones,
+      columns: ['data'],
+      where: clauses.isEmpty ? null : clauses.join(' AND '),
+      whereArgs: args,
+      orderBy: 'sample_kind ASC, identity_platform ASC, external_id ASC',
+    );
+    return rows
+        .map((row) => HealthImportTombstone.fromJson(_decode(row['data'])))
         .toList(growable: false);
   }
 
@@ -432,10 +616,83 @@ class SqfliteHealthRepository implements HealthRepository {
       tableActivity,
       tableSleep,
       tableHeartRate,
+      tableImportTombstones,
       tableInsights,
     ].forEach(batch.delete);
     await batch.commit(noResult: true);
   }
+
+  static Map<String, Object?> _identityColumns(
+    HealthSampleProvenance? provenance,
+  ) => <String, Object?>{
+    'identity_platform': provenance?.identity.platform.key,
+    'external_id': provenance?.identity.externalId,
+  };
+
+  static void _clearTombstoneInBatch(
+    Batch batch,
+    HealthSampleKind kind,
+    HealthSampleProvenance? provenance,
+  ) {
+    if (provenance == null) return;
+    final identity = provenance.identity;
+    batch.delete(
+      tableImportTombstones,
+      where: 'sample_kind = ? AND identity_platform = ? AND external_id = ?',
+      whereArgs: [kind.key, identity.platform.key, identity.externalId],
+    );
+  }
+
+  static void _validateSampleBatch<T>(
+    Iterable<T> samples, {
+    required HealthSampleKind kind,
+    required HealthSampleProvenance? Function(T) provenanceOf,
+    required Map<String, Object?> Function(T) encode,
+  }) {
+    final seen = <String>{};
+    for (final sample in samples) {
+      encode(sample);
+      final provenance = provenanceOf(sample);
+      if (provenance == null) continue;
+      if (provenance.isDeleted) {
+        throw ArgumentError(
+          'Use reconcileImportTombstones for source-reported deletions.',
+        );
+      }
+      if (!seen.add(_identityKey(kind, provenance.identity))) {
+        throw ArgumentError(
+          'A sample batch must not contain a duplicate import identity.',
+        );
+      }
+    }
+  }
+
+  static void _validateTombstoneBatch(
+    Iterable<HealthImportTombstone> tombstones,
+  ) {
+    final seen = <String>{};
+    for (final tombstone in tombstones) {
+      tombstone.toJson();
+      if (!seen.add(
+        _identityKey(tombstone.kind, tombstone.provenance.identity),
+      )) {
+        throw ArgumentError(
+          'A tombstone batch must not contain a duplicate import identity.',
+        );
+      }
+    }
+  }
+
+  static String _identityKey(
+    HealthSampleKind kind,
+    HealthImportIdentity identity,
+  ) => '${kind.key}:${identity.stableKey}';
+
+  static String _tableFor(HealthSampleKind kind) => switch (kind) {
+    HealthSampleKind.activity => tableActivity,
+    HealthSampleKind.sleep => tableSleep,
+    HealthSampleKind.heartRate => tableHeartRate,
+  };
 
   static Map<String, Object?> _decode(Object? data) {
     return jsonDecode(data! as String) as Map<String, Object?>;

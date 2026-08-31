@@ -10,6 +10,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- Local health-context storage now preserves typed platform record identity and
+  provenance for deterministic repeated imports. It retains source deletions as
+  local-only tombstones; HealthKit and Health Connect readers remain separate
+  future work.
+
 ## [0.1.4] - 2026-08-22
 
 ### Added
