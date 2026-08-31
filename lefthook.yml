@@ -4,8 +4,10 @@ pre-commit:
   parallel: true
   commands:
     format:
-      glob: "*.dart"
-      run: dart format --output=none --set-exit-if-changed {staged_files}
+      # Run for every commit. The helper exits quickly when no Dart source is
+      # staged, and rejects a staged Dart file outside a configured project.
+      # A glob here could otherwise hide an unrecognized staged Dart file.
+      run: ./scripts/flutter-workspace.sh format-staged
     analyze:
       glob: "{openhealth,packages}/**/*.{dart,yaml}"
       run: make lint
