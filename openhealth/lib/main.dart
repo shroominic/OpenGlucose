@@ -2832,7 +2832,7 @@ class _AboutPane extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          context.l10n.appVersion('0.1.5 (27)'),
+          context.l10n.appVersion('0.1.6 (28)'),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 20),

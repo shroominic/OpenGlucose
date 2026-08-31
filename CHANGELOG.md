@@ -10,11 +10,23 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-31
+
+### Added
+
+- OpenGlucose now supports English and Simplified Chinese across the app,
+  Android live notifications, and iOS Live Activities. The app follows the
+  device language by default and includes a manual language selector.
+
 ### Fixed
 
-- Archived sensor export now shows its preparation and sharing progress,
-  prevents concurrent export attempts, and reports identifier-free stage codes
-  when the file cannot be prepared or shared.
+- Archived sensor export now opens the native iOS share sheet from the routed
+  sensor-detail screen. The app shows preparation and sharing progress,
+  prevents concurrent export attempts, removes partial files after failures,
+  and reports identifier-free stage codes when export cannot complete.
+- Device-language resolution now honors the configured locale priority. An
+  English-first device no longer selects Chinese because Chinese is listed as
+  a secondary language.
 
 ## [0.1.5] - 2026-08-31
 
@@ -195,7 +207,8 @@ The historical Git tag is named `v0.0.1+10`, while the tagged
 `openhealth/pubspec.yaml` declares `version: 0.0.1+9`. The tag is retained as
 published history; do not infer an app artifact build number of 10 from the tag.
 
-[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/shroominic/OpenGlucose/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/shroominic/OpenGlucose/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/shroominic/OpenGlucose/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/shroominic/OpenGlucose/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/shroominic/OpenGlucose/releases/tag/v0.1.3
