@@ -107,7 +107,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Export archived sensor data'), findsOneWidget);
-    expect(find.text('1 stored glucose readings'), findsOneWidget);
+    expect(find.text('1 stored glucose reading'), findsOneWidget);
     expect(
       find.byKey(const ValueKey<String>('archivedExportWarmupDisclosure')),
       findsOneWidget,

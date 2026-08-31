@@ -1,3 +1,6 @@
+import 'package:flutter/widgets.dart';
+
+import '../app_localizations_extension.dart';
 import 'app_message.dart';
 import 'message_context.dart';
 
@@ -37,6 +40,30 @@ const List<AppMessage> defaultMessageCatalog = <AppMessage>[
     trigger: _whenReadingsAvailable,
   ),
 ];
+
+/// Returns localized presentation copy for messages owned by this catalog.
+///
+/// IDs remain the durable controller and dismissal contract; copy is resolved
+/// only when the host renders the message. This lets a manual language change
+/// immediately update a currently visible card without changing dismissal
+/// state or the generic [AppMessage] model.
+({String title, String body}) localizedCatalogMessageText(
+  BuildContext context,
+  AppMessage message,
+) {
+  final l10n = context.l10n;
+  return switch (message.id) {
+    'info.warmup' => (
+      title: l10n.messageWarmupTitle,
+      body: l10n.messageWarmupBody,
+    ),
+    'tip.tapReading' => (
+      title: l10n.messageTapReadingTitle,
+      body: l10n.messageTapReadingBody,
+    ),
+    _ => (title: message.title, body: message.body),
+  };
+}
 
 bool _whileWarmingUp(MessageContext context) => context.isWarmingUp;
 

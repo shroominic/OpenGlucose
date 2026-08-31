@@ -1,6 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -49,6 +50,8 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
           home: OnboardingFlow(
             store: store,
             unit: GlucoseUnit.mgdl,
@@ -94,6 +97,8 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
           home: OnboardingFlow(store: store, onFinished: () => finished = true),
         ),
       );

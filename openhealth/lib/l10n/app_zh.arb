@@ -1,0 +1,838 @@
+{
+  "@@locale": "zh",
+  "appTitle": "OpenGlucose",
+  "settings": "设置",
+  "cancel": "取消",
+  "save": "保存",
+  "saveSettings": "保存设置",
+  "close": "关闭",
+  "back": "返回",
+  "done": "完成",
+  "continueLabel": "继续",
+  "skip": "跳过",
+  "connect": "连接",
+  "disconnect": "断开连接",
+  "tryAgain": "重试",
+  "scanAgain": "重新扫描",
+  "findMySensor": "查找我的传感器",
+  "scanning": "正在扫描…",
+  "nearbySensors": "附近的传感器",
+  "sensorsFound": "找到 {count} 个",
+  "@sensorsFound": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "noSensorsFound": "尚未找到传感器。请将手机靠近传感器，然后重试。",
+  "exploreSampleData": "查看示例数据",
+  "sampleDataNotSensor": "示例数据——并非来自传感器",
+  "sensor": "传感器",
+  "sensors": "传感器",
+  "currentSensor": "当前传感器",
+  "connectSensor": "连接传感器",
+  "sensorArchive": "传感器归档",
+  "glucoseAndDisplay": "葡萄糖与显示",
+  "appleHealth": "Apple 健康",
+  "privacyAndData": "隐私与数据",
+  "aboutOpenGlucose": "关于 OpenGlucose",
+  "advanced": "高级设置",
+  "language": "语言",
+  "appLanguage": "应用语言",
+  "languageSystem": "跟随设备语言",
+  "languageSystemDescription": "中文设备使用简体中文，其他设备使用英语。",
+  "languageEnglish": "英语",
+  "languageSimplifiedChinese": "简体中文",
+  "languageSimplifiedChineseNative": "简体中文",
+  "languageCurrent": "当前：{language}",
+  "@languageCurrent": {
+    "placeholders": {
+      "language": {
+        "type": "String"
+      }
+    }
+  },
+  "languageChangeDescription": "选择 OpenGlucose 使用的语言。此设置不会更改传感器数据。",
+  "sensorStatusSubtitle": "状态、使用周期、身份和连接",
+  "noSensorActive": "当前没有活动传感器",
+  "sensorArchiveSubtitle": "以往传感器会话和导出",
+  "displaySubtitle": "单位、目标范围和图表样式",
+  "appleHealthSubtitle": "葡萄糖导出和健康数据控制",
+  "privacySubtitle": "本地存储和保留",
+  "aboutSubtitle": "版本、用途和开源项目",
+  "advancedSubtitle": "诊断和开发者工具",
+  "history": "历史读数",
+  "patterns": "趋势",
+  "weeklyRecap": "每周回顾",
+  "viewWeeklyRecap": "查看每周回顾",
+  "latestReadingAt": "最新读数时间：{time}",
+  "@latestReadingAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "supportCodeCopied": "已复制支持代码",
+  "copySupportCode": "复制支持代码",
+  "chooseAnotherSensor": "选择其他传感器",
+  "reviewMove": "检查迁移",
+  "moveNeedsSupport": "迁移需要支持",
+  "moveSensorToAnotherPhone": "将传感器连接迁移至另一部手机",
+  "sensorDetails": "传感器详情",
+  "serial": "序列号",
+  "model": "型号",
+  "firmware": "固件",
+  "sensorStart": "传感器开始时间",
+  "readingCount": "{count} 条读数",
+  "@readingCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "showGlucoseInLiveNotification": "在实时通知中显示葡萄糖",
+  "showGlucoseInLiveNotificationDescription": "允许在 Android 实时通知或 iOS 实时活动中显示葡萄糖读数、趋势和更新时间。任何能查看你锁定屏幕的人都可能看到这些健康数据。",
+  "showSampleDashboard": "打开示例仪表板",
+  "sampleDashboard": "示例仪表板",
+  "openSampleWeeklyRecap": "打开示例每周回顾",
+  "welcomeTitle": "欢迎使用 OpenGlucose",
+  "welcomeBody": "一款开源、本地优先的葡萄糖查看工具。专为健康管理、运动和自我探索而设计，不是医疗器械。",
+  "storedLocallyTitle": "默认存储在本机",
+  "storedLocallyBody": "历史记录保留在此设备上。只有在你启用时，可选的 Apple 健康或 AI 功能才会共享数据。",
+  "openSourceTitle": "开源且可扩展",
+  "openSourceBody": "采用 MIT 许可证。你可以查看、扩展并按自己的方式使用。",
+  "wellnessDisclaimer": "OpenGlucose 仅供健康管理与自我探索参考，不是医疗器械，也不能替代医疗建议。",
+  "howItWorksTitle": "工作方式",
+  "howItWorksBody": "佩戴 Aidex X 传感器，通过蓝牙配对并等待预热完成。之后，读数会直接传输到你的手机。",
+  "applySensorTitle": "佩戴传感器",
+  "applySensorBody": "一款一体式小型传感器，最长可佩戴 15 天。",
+  "warmupTitle": "约 1 小时预热",
+  "warmupBody": "传感器会在首次读数前自行校准。",
+  "readingEveryMinuteTitle": "每分钟一条读数",
+  "readingEveryMinuteBody": "持续更新实时读数和趋势。",
+  "targetRangeTitle": "设置目标范围",
+  "targetRangeBody": "选择你希望保持的范围。你随时可以在设置中更改。",
+  "targetRangeHint": "大多数人从 70–180 mg/dL（约 3.9–10 mmol/L）开始。",
+  "readyTitle": "已准备就绪",
+  "readyBody": "请打开 Aidex X 传感器并放在附近。我们会通过蓝牙扫描并连接，然后将显示实时仪表板。",
+  "turnOnBluetoothTitle": "打开蓝牙",
+  "turnOnBluetoothBody": "配对期间请将手机靠近传感器。",
+  "watchItComeAliveTitle": "查看实时数据",
+  "watchItComeAliveBody": "预热结束后，趋势和读数会立即显示。",
+  "connectMySensor": "连接我的传感器",
+  "lifeRemainingUnavailable": "无法获取剩余使用时间",
+  "sensorExpired": "传感器已到期",
+  "hoursLeft": "还剩 {count} 小时",
+  "@hoursLeft": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "daysLeft": "还剩 {count} 天",
+  "@daysLeft": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "minutesShort": "分钟",
+  "waitingForFirstReading": "正在等待首次读数",
+  "warmingUp": "预热中",
+  "warmupComplete": "预热完成",
+  "warmup": "预热",
+  "waiting": "等待中",
+  "notSyncedYet": "尚未同步",
+  "syncedJustNow": "刚刚同步",
+  "syncedMinutesAgo": "{count} 分钟前已同步",
+  "@syncedMinutesAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncedHoursAgo": "{count} 小时前已同步",
+  "@syncedHoursAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "syncedDaysAgo": "{count} 天前已同步",
+  "@syncedDaysAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "stageError": "出错",
+  "stageDisconnected": "已断开连接",
+  "stageReconnecting": "正在重新连接",
+  "stageSettingUp": "正在设置",
+  "stageConnected": "已连接",
+  "stageConnecting": "正在连接",
+  "stageLive": "实时",
+  "attentionNeeded": "需要注意",
+  "updatedAt": "更新于 {time}",
+  "@updatedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "openAppToViewGlucose": "打开应用查看你的葡萄糖读数",
+  "sensorWarmingUp": "传感器预热中",
+  "waitingForSensor": "正在等待传感器",
+  "waitingForGlucoseUpdate": "正在等待葡萄糖更新",
+  "stale": "数据已过时",
+  "glucoseUnavailable": "暂无葡萄糖读数",
+  "bluetoothPermissionRequired": "OpenGlucose 需要蓝牙访问权限。请在手机设置中允许蓝牙及应用请求的附近设备权限。部分手机还需要允许并开启定位服务才能扫描。然后重试。",
+  "bluetoothOff": "蓝牙已关闭。请在手机快捷设置或设置中打开蓝牙，然后重新扫描。",
+  "bluetoothUnavailable": "此手机当前无法使用蓝牙。请重启蓝牙或手机后再试。",
+  "pairingRejected": "手机未完成配对。请将手机靠近传感器，并接受系统配对提示。若此传感器已与另一部手机绑定或连接，请先停止另一部手机上的连接，再重试。请勿重置正在使用的传感器。",
+  "pairingTimedOut": "配对超时。请将手机靠近传感器，并接受系统配对提示。如果另一部手机正在使用此传感器，请先停止该连接后再试。",
+  "sensorPossiblyInUse": "传感器在设置过程中变得不可用。它可能超出范围，或已与另一部手机绑定或连接。请将手机靠近传感器，如有需要请停止另一部手机上的连接后再试。请勿重置正在使用的传感器。",
+  "sensorDisconnected": "传感器已断开连接。请将手机靠近传感器，然后重试。",
+  "bluetoothSetupTimedOut": "蓝牙设置超时。请将手机靠近传感器，然后重试。",
+  "bluetoothSetupFailed": "无法完成蓝牙设置。请重启蓝牙后再试。",
+  "appPurpose": "OpenGlucose 是健康管理/参考软件，不是医疗器械。请勿将其用于诊断、用药或胰岛素剂量、治疗决策或紧急监测。",
+  "unit": "单位",
+  "chartStyle": "图表样式",
+  "targetLow": "目标下限 (mg/dL)",
+  "targetHigh": "目标上限 (mg/dL)",
+  "targetRangeInvalid": "请输入递增的目标葡萄糖范围。",
+  "line": "折线",
+  "dots": "点",
+  "candles": "蜡烛图",
+  "preferencesSection": "偏好设置",
+  "dataAndIntegrationsSection": "数据与集成",
+  "appSection": "应用",
+  "archivedSensorsCount": "{count} 个以往传感器",
+  "@archivedSensorsCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "aiAndModels": "AI 与模型",
+  "noActiveSensor": "没有活动传感器",
+  "previousDataStaysOnThisPhone": "你以往的数据会保留在此手机上。",
+  "inactiveSensorExpired": "你的上一枚传感器已到期。此前的读数仍保留在这里——连接新的传感器以继续查看实时葡萄糖。",
+  "inactiveSensorReplaced": "你的上一枚传感器已更换。此前的读数仍保留在这里——连接新的传感器以继续查看实时葡萄糖。",
+  "inactiveSensorDisconnected": "当前没有活动传感器。此前的读数仍保留在这里——连接传感器以继续查看实时葡萄糖。",
+  "inactiveSensorWelcome": "由你掌握自己的葡萄糖数据。连接传感器以查看实时读数和趋势。",
+  "bluetoothOffTitle": "蓝牙已关闭",
+  "bluetoothPermissionTitle": "需要蓝牙访问权限",
+  "bluetoothUnavailableTitle": "蓝牙不可用",
+  "scanSensorsFailedTitle": "无法扫描传感器",
+  "scanSensorHelp": "请检查蓝牙，将传感器保持在附近，然后重试。",
+  "scanSensorHelpShort": "请检查蓝牙后重新扫描。",
+  "yourGlucoseHistory": "你的葡萄糖历史读数",
+  "firstReading": "首条读数",
+  "latestReading": "最新读数",
+  "storedSessions": "已存储会话",
+  "historySessionSeparation": "每枚传感器都会在“传感器归档”中保留自己的图表，因此不同会话不会连接成一条线。",
+  "demoDataWarning": "示例数据——并非真实葡萄糖读数",
+  "lastAt": "最新时间：{time}",
+  "@lastAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "failedToStart": "启动失败：{error}",
+  "@failedToStart": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "counter": "计数器 {count}",
+  "@counter": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "demoTransport": "示例传输",
+  "unknownSensorResponse": "传感器响应状态未知。请勿重新连接或在 Android 中取消蓝牙绑定。请联系支持人员，按审核过的恢复步骤操作。",
+  "reviewInterruptedSensorMove": "检查中断的传感器迁移",
+  "interruptedSensorMoveReview": "继续前，请打开 Android 蓝牙设置。确认传感器未列为已配对设备。若已列出，请先选择“取消配对”。此操作只会清除应用的安全标记，不会联系传感器或更改蓝牙绑定。",
+  "interruptedSelectedSensorMoveReview": "请打开 Android 蓝牙设置。确认传感器未列为已配对设备。若已列出，请先选择“取消配对”。继续操作会清除应用的安全标记，并归档此选择。它不会联系传感器或更改蓝牙绑定。",
+  "checkedBluetooth": "我已检查蓝牙",
+  "interruptedSensorMoveCouldNotClear": "无法清除中断的传感器迁移。",
+  "sensorNoLongerActive": "此传感器不再处于活动状态",
+  "inactiveSensorSettingsDescription": "请返回“设置”查看“传感器归档”，或连接另一枚传感器。",
+  "backToSettings": "返回设置",
+  "sensorArchiveEmpty": "传感器到期或更换后，会在此处显示以往的传感器。",
+  "previousSensor": "以往传感器",
+  "archiveSessionSummary": "{reason} · {readings}{date}",
+  "@archiveSessionSummary": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      },
+      "readings": {
+        "type": "String"
+      },
+      "date": {
+        "type": "String"
+      }
+    }
+  },
+  "archiveHistoryOnly": "{reason} · 仅保留历史读数，未连接",
+  "@archiveHistoryOnly": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "readings": "读数",
+  "started": "开始时间",
+  "ended": "结束时间",
+  "recapThisSensor": "查看此传感器的回顾",
+  "exportData": "导出数据",
+  "exportArchivedSensorData": "导出已归档传感器数据",
+  "storedGlucoseReadings": "已存储 {count} 条葡萄糖读数",
+  "@storedGlucoseReadings": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "hiddenWarmupDisclosure": "完整导出包含 {count} 条预热期间的读数。这些读数仍不会显示在图表、回顾和 Apple 健康中。",
+  "@hiddenWarmupDisclosure": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "dateRangeUnavailable": "日期范围不可用",
+  "fileFormat": "文件格式",
+  "includedInFile": "文件包含内容",
+  "exportIncludesGlucose": "• 以 mg/dL 和 mmol/L 表示的葡萄糖数值",
+  "exportIncludesTiming": "• 读数时间、来源和传感器分钟数",
+  "exportIncludesQuality": "• 原始质量字段和暂定状态",
+  "exportIncludesArchive": "• 归档原因和会话时间",
+  "exportExcludesIdentity": "不包含传感器序列号、设备 ID 和存储标识符。",
+  "shareFormat": "分享 {format}",
+  "@shareFormat": {
+    "placeholders": {
+      "format": {
+        "type": "String"
+      }
+    }
+  },
+  "csvExportDescription": "最适合导入大多数电子表格和分析应用。",
+  "txtExportDescription": "制表符分隔的纯文本文件，任何地方都可轻松查看。",
+  "xlsxExportDescription": "真正的 Excel 工作簿，葡萄糖数值以数字形式存储。",
+  "archivedSensorExportFailed": "无法导出已归档传感器数据。",
+  "archiveReasonExpired": "已到期",
+  "archiveReasonReplaced": "已更换",
+  "archiveReasonDisconnected": "已断开连接",
+  "storedInMacAppContainer": "存储在此 Mac 的应用容器中",
+  "storedOnIphone": "存储在此 iPhone 上",
+  "localDataMacDescription": "传感器身份和葡萄糖历史记录仅保留在本机。此预览版尚未验证备份排除设置；请检查此 Mac 的备份策略。",
+  "localDataIphoneDescription": "传感器身份和葡萄糖历史记录仅保留在本机，且不会包含在设备备份中。",
+  "noOpenGlucoseCloud": "没有 OpenGlucose 云端服务",
+  "noOpenGlucoseCloudDescription": "只有在你明确启用集成时，数据才会离开应用。",
+  "appVersion": "版本 {version}",
+  "@appVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "aboutAppDescription": "一款开源、本地优先的健康管理应用，用于查看你自己的葡萄糖数据。OpenGlucose 不是医疗器械，也不提供诊断或治疗建议。",
+  "displaySettings": "显示设置",
+  "targetLowMgdl": "目标下限 (mg/dL)",
+  "targetHighMgdl": "目标上限 (mg/dL)",
+  "reviewSelectedInterruptedMove": "检查中断的迁移",
+  "removeAllSensorPhoneBonds": "移除传感器与所有手机的绑定？",
+  "moveSensorToAnotherPhoneQuestion": "将传感器迁移到另一部手机？",
+  "removeAllSensorPhoneBondsDescription": "该传感器只能移除发射器中保存的全部手机绑定。它会与此手机及其他所有手机断开连接，但不会重置传感器会话。请将传感器保持在附近；如出现错误，请勿重试。",
+  "moveSensorToAnotherPhoneDescription": "此操作会移除传感器与此手机及 Android 的绑定，然后断开连接。不会重置传感器会话。请将传感器保持在附近；如出现错误，请勿重试。",
+  "moveSensor": "迁移传感器",
+  "sensorReadyToPairAnotherPhone": "传感器已准备好与另一部手机配对。",
+  "sensorCannotMoveSafely": "无法安全迁移该传感器。",
+  "sensorTransferStopped": "传感器迁移已停止。请勿自动重试。",
+  "developer": "开发者",
+  "mockScenario": "模拟场景",
+  "simulatedSensorState": "模拟的传感器状态",
+  "engineeringControls": "工程控制",
+  "engineeringControlsDescription": "用于诊断和传感器数据排查的高级校正项。",
+  "calibrationScale": "校准比例",
+  "calibrationOffset": "校准偏移量",
+  "cropFirstSamples": "裁剪前 N 个样本",
+  "engineeringValuesInvalid": "请输入有效的工程校正值。",
+  "engineeringSettingsSaved": "工程设置已保存。",
+  "saveEngineeringSettings": "保存工程设置",
+  "clearActiveSensorCache": "清除活动传感器缓存",
+  "clearActiveSensorCacheDescription": "只清除活动传感器的本地缓存。不会删除传感器归档，传感器上的可用读数可能会再次下载。",
+  "metadata": "元数据",
+  "diagnostics": "诊断信息",
+  "noDiagnosticsLoaded": "尚未加载诊断信息。",
+  "calibrations": "校准记录",
+  "noCalibrationEntries": "尚未加载校准记录。",
+  "logs": "日志",
+  "noLogs": "暂无日志。",
+  "clearActiveSensorCacheQuestion": "清除活动传感器缓存？",
+  "clearActiveSensorCacheReview": "这只会移除活动传感器的本地缓存历史记录。已归档传感器会保留，可用读数可能会再次下载。",
+  "clearCache": "清除缓存",
+  "activeSensorCacheCleared": "活动传感器缓存已清除。",
+  "noActiveSensorCacheCleared": "没有活动传感器缓存可清除。",
+  "timeframeHoursShort": "{hours}小时",
+  "@timeframeHoursShort": {
+    "placeholders": {
+      "hours": {
+        "type": "int"
+      }
+    }
+  },
+  "timeframeDaysShort": "{days}天",
+  "@timeframeDaysShort": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "timeframeAll": "全部",
+  "chartMinute": "第 {minute} 分钟",
+  "@chartMinute": {
+    "placeholders": {
+      "minute": {
+        "type": "int"
+      }
+    }
+  },
+  "chartAxisMinute": "第{minute}分钟",
+  "@chartAxisMinute": {
+    "placeholders": {
+      "minute": {
+        "type": "int"
+      }
+    }
+  },
+  "patternsDescription": "用于自我探索的观察结果，不是医疗指标。",
+  "timeInRange": "范围内时间",
+  "belowAbove": "低于 / 高于",
+  "belowAboveRange": "低于 / 高于范围",
+  "average": "平均值",
+  "variabilityCv": "波动性（CV）",
+  "estimatedGmi": "估算 GMI",
+  "spikes": "高峰次数",
+  "unavailable": "不可用",
+  "timeInRangeExplanation": "读数位于 {low} 至 {high} 之间的比例。",
+  "@timeInRangeExplanation": {
+    "placeholders": {
+      "low": {
+        "type": "String"
+      },
+      "high": {
+        "type": "String"
+      }
+    }
+  },
+  "belowAboveExplanation": "读数低于下限或高于上限的频率。",
+  "averageExplanation": "此时间范围内所有读数的平均值。",
+  "variabilityExplanation": "读数围绕平均值的离散程度（标准差 {standardDeviation}）。数值较低通常更稳定。",
+  "@variabilityExplanation": {
+    "placeholders": {
+      "standardDeviation": {
+        "type": "String"
+      }
+    }
+  },
+  "estimatedGmiExplanation": "根据 14 天平均葡萄糖得出的粗略指标，不是实验室检测结果。",
+  "spikesExplanation": "读数超过 {high} 的次数。",
+  "@spikesExplanation": {
+    "placeholders": {
+      "high": {
+        "type": "String"
+      }
+    }
+  },
+  "patternsInsufficientCoverage": "此 {timeframe} 时间范围内的读数还不够。当前有 {readingCount} 条读数，覆盖 {activeDays} 天；至少需要 {minimumReadings} 条读数且覆盖 {minimumActiveDays} 天后才会显示趋势。",
+  "@patternsInsufficientCoverage": {
+    "placeholders": {
+      "timeframe": {
+        "type": "String"
+      },
+      "readingCount": {
+        "type": "int"
+      },
+      "activeDays": {
+        "type": "int"
+      },
+      "minimumReadings": {
+        "type": "int"
+      },
+      "minimumActiveDays": {
+        "type": "int"
+      }
+    }
+  },
+  "samplePreviewTitle": "查看 OpenGlucose 的工作方式",
+  "samplePreviewDescription": "此私密预览仅在内存中生成。它不能连接传感器、导出数据、发送通知，也不会与真实葡萄糖历史记录混合。",
+  "glucoseHistory": "葡萄糖历史读数",
+  "sampleBadge": "示例",
+  "sampleWeeklyRecap": "示例每周回顾",
+  "sensorLifecycle": "传感器使用周期",
+  "sensorLifecycleUnknownBody": "正在验证传感器会话，暂时无法获取剩余使用时间。",
+  "active": "运行中",
+  "expiringSoon": "即将到期",
+  "expired": "已到期",
+  "lifeUsed": "已用",
+  "warmupTimeLeft": "还剩 {minutes} 分钟",
+  "@warmupTimeLeft": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "sensorAge": "传感器使用时长",
+  "timeRemaining": "剩余时间",
+  "totalLife": "总使用期限",
+  "sensorTotalLife": "{days} 天",
+  "@sensorTotalLife": {
+    "placeholders": {
+      "days": {
+        "type": "int"
+      }
+    }
+  },
+  "lastSync": "上次同步",
+  "notYet": "尚未同步",
+  "justNow": "刚刚",
+  "minutesAgo": "{count} 分钟前",
+  "@minutesAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "hoursAgo": "{count} 小时前",
+  "@hoursAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "daysAgo": "{count} 天前",
+  "@daysAgo": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "sensorWarmupLifecycleBanner": "传感器正在预热——首次读数会在第一小时后趋于稳定。请保持传感器佩戴，并让手机靠近传感器。",
+  "sensorExpiringSoonBanner": "此传感器将在 {remaining} 后到期。请备好替换传感器，以免错过读数。",
+  "@sensorExpiringSoonBanner": {
+    "placeholders": {
+      "remaining": {
+        "type": "String"
+      }
+    }
+  },
+  "sensorExpiredDetails": "此传感器已达到 15 天使用期限。以下读数会保留为最后已知值，供你查阅，但不再是实时数据。",
+  "lastReadingPreservedBelow": "最后一条读数会保留在下方。",
+  "lastReadingAndHistoryPreserved": "最后一条读数：{time}。你的历史记录已保留。",
+  "@lastReadingAndHistoryPreserved": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "nextSteps": "后续步骤",
+  "replaceExpiredSensorStep": "取下并妥善处置已到期的传感器。",
+  "applyReplacementSensorStep": "佩戴新的 Aidex X 传感器，并等待约 1 小时预热。",
+  "startNewSensorSessionStep": "轻点下方按钮以开始新的传感器会话。",
+  "replaceSensor": "更换传感器",
+  "weeklyRecapDescription": "过去 7 天的趋势和观察结果——用于自我探索，不是医疗建议。",
+  "weeklyOverviewTitle": "本周概览",
+  "weeklyOverviewSubtitle": "7 天中有 {activeDays} 天包含读数 · 共 {readingCount} 条读数。",
+  "@weeklyOverviewSubtitle": {
+    "placeholders": {
+      "activeDays": {
+        "type": "int"
+      },
+      "readingCount": {
+        "type": "int"
+      }
+    }
+  },
+  "belowAboveRangeExplanation": "读数低于你的下限和高于你的上限的比例。",
+  "weeklyAverageExplanation": "本周每条读数的平均值。",
+  "lowestHighest": "最低 / 最高",
+  "observedRangeExplanation": "此 7 天时间范围内观察到的范围。",
+  "variabilityExplanationNoSd": "读数围绕平均值的离散程度。数值较低通常更稳定。",
+  "dataCoverage": "数据覆盖情况",
+  "dataCoverageDescription": "此回顾所依据的数据量。",
+  "timestampedReadingsExplanation": "此 7 天时间范围内带时间戳的读数。",
+  "daysRepresented": "涵盖天数",
+  "daysRepresentedExplanation": "至少包含一条读数的日历日。",
+  "observedSpan": "观察时段",
+  "observedSpanExplanation": "第一条和最后一条纳入读数之间的时间。",
+  "durationDays": "{value} 天",
+  "@durationDays": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "durationHours": "{value} 小时",
+  "@durationHours": {
+    "placeholders": {
+      "value": {
+        "type": "int"
+      }
+    }
+  },
+  "daysOfSeven": "共 7 天中的 {activeDays} 天",
+  "@daysOfSeven": {
+    "placeholders": {
+      "activeDays": {
+        "type": "int"
+      }
+    }
+  },
+  "versusLastWeek": "与上周相比",
+  "weekOverWeekChange": "逐周变化。",
+  "previousWeekComparisonDescription": "上周有 {readingCount} 条读数，覆盖 {activeDays} 天。只有两周都有足够的数据覆盖时才会显示比较。",
+  "@previousWeekComparisonDescription": {
+    "placeholders": {
+      "readingCount": {
+        "type": "int"
+      },
+      "activeDays": {
+        "type": "int"
+      }
+    }
+  },
+  "versusLastWeekDescription": "本周与此前 7 天的比较。",
+  "noPriorWeek": "无上周数据",
+  "aboutTheSame": "大致相同",
+  "percentagePoints": "{value} 个百分点",
+  "@percentagePoints": {
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+  "daysByTimeInRange": "按范围内时间排序的日期",
+  "daysByTimeInRangeDescription": "按处于目标范围内的时间排序。",
+  "mostInRange": "范围内时间最多",
+  "leastInRange": "范围内时间最少",
+  "weekdayRangeSummary": "{day} · 范围内 {percent}% · 平均 {average}",
+  "@weekdayRangeSummary": {
+    "placeholders": {
+      "day": {
+        "type": "String"
+      },
+      "percent": {
+        "type": "int"
+      },
+      "average": {
+        "type": "String"
+      }
+    }
+  },
+  "topSpikes": "最大上升波动",
+  "topSpikesDescription": "本周最大的向上波动。",
+  "noSpikesThisWeek": "本周没有读数超过 {high}。",
+  "@noSpikesThisWeek": {
+    "placeholders": {
+      "high": {
+        "type": "String"
+      }
+    }
+  },
+  "spikeRiseExplanation": "从 {baseline} 上升了 {amount}。",
+  "@spikeRiseExplanation": {
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      },
+      "baseline": {
+        "type": "String"
+      }
+    }
+  },
+  "weeklyDailyAveragesTitle": "本周每日平均读数",
+  "weeklyDailyAveragesDescription": "此 7 天时间范围内每天的平均读数。",
+  "notEnoughReadingsYet": "读数还不够",
+  "weeklyInsufficientCoverage": "此 7 天时间范围内当前有 {readingCount} 条读数，覆盖 {activeDays} 天。至少需要 {minimumReadings} 条读数且覆盖 {minimumActiveDays} 天后才会显示趋势，因此稀疏的历史记录不会被呈现为可靠趋势。",
+  "@weeklyInsufficientCoverage": {
+    "placeholders": {
+      "readingCount": {
+        "type": "int"
+      },
+      "activeDays": {
+        "type": "int"
+      },
+      "minimumReadings": {
+        "type": "int"
+      },
+      "minimumActiveDays": {
+        "type": "int"
+      }
+    }
+  },
+  "weeklyRecapDisclaimer": "这些是用于自我探索的健康观察。OpenGlucose 不是医疗器械，本回顾不构成诊断或医疗建议。请向合格的专业人士咨询健康决策。",
+  "aiInsights": "AI 洞察",
+  "onDeviceModel": "设备端模型",
+  "onDeviceModelDescription": "已规划 · 使用已下载模型进行私密本地推理",
+  "comingSoon": "即将推出",
+  "onDeviceModelStatus": "设备端模型状态：{status}",
+  "@onDeviceModelStatus": {
+    "placeholders": {
+      "status": {
+        "type": "String"
+      }
+    }
+  },
+  "aiWellnessPrivacyNotice": "仅供健康管理与自我探索参考，不能用于医疗建议、诊断或剂量决策。除非你明确配置，否则 AI 保持关闭。未来的设备端模型会在本机进行推理；下方的高级云端选项仅发送汇总统计数据，绝不发送原始读数或备注文字。",
+  "customCloudProvider": "自定义云端服务",
+  "advancedSendsAggregatesOffDevice": "高级 · 将汇总数据发送到设备外",
+  "enableCloudAi": "启用云端 AI",
+  "cloudAiDisabledByDefault": "默认关闭。需要你自己的 API 密钥。",
+  "apiBaseUrl": "API 基础 URL",
+  "aiModel": "模型",
+  "authScheme": "认证方式",
+  "authSchemeBearer": "Bearer（兼容 OpenAI）",
+  "authSchemeXApiKey": "x-api-key（Anthropic）",
+  "apiKeyStoredSecurely": "API 密钥（安全存储）",
+  "apiKeySavedMask": "••••••••（已保存）",
+  "pasteApiKey": "粘贴你的密钥",
+  "apiKeySavedHint": "已保存密钥。留空即可保留它。",
+  "apiKeyPlainTextHint": "绝不会以明文方式存储。",
+  "saveProvider": "保存服务设置",
+  "removeKey": "移除密钥",
+  "testWithAggregates": "使用汇总数据测试",
+  "providerSettingsSaved": "已保存服务设置。",
+  "apiKeyRemoved": "已移除 API 密钥。",
+  "savingProviderSettings": "正在保存服务设置…",
+  "enableCloudAiBeforeTesting": "请先启用云端 AI 再测试。",
+  "addApiKeyBeforeTesting": "请先添加 API 密钥再测试。",
+  "generatingAiInsight": "正在生成…",
+  "aiDisabledOrNoKey": "AI 已关闭或未设置密钥。",
+  "generatedAndSaved": "已生成并保存：“{title}”。",
+  "@generatedAndSaved": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "couldNotGenerateAiInsight": "无法生成 AI 洞察。",
+  "integrations": "集成",
+  "integrationsIntro": "将你的葡萄糖读数发送到你控制的其他应用。除非你主动开启，否则数据不会离开此设备。",
+  "appleHealthExportDescription": "当你选择启用并点按“立即同步”后，葡萄糖数值和时间戳会作为血糖样本写入 Apple 健康。若同步中断，重试时可能会写入重复样本。",
+  "appleHealthOnlyOnIos": "Apple 健康仅适用于 iOS。",
+  "appleHealthDisabledWithSimulatedData": "使用模拟或虚拟传感器数据时，Apple 健康导出已禁用。",
+  "exportToAppleHealth": "导出到 Apple 健康",
+  "neverSynced": "从未同步",
+  "lastSyncedAt": "上次同步：{time}",
+  "@lastSyncedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "syncNow": "立即同步",
+  "appleHealthExportUnavailableInThisMode": "此模式下无法使用 Apple 健康导出。",
+  "appleHealthAccessNotGranted": "未获得 Apple 健康访问权限。",
+  "turnOnAppleHealthBeforeSyncing": "请先开启 Apple 健康导出，再同步。",
+  "appleHealthSyncedReadings": "已同步 {count} 条读数。",
+  "@appleHealthSyncedReadings": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "appleHealthSyncPartial": "已同步 {count} 条读数，随后导出已停止。",
+  "@appleHealthSyncPartial": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "appleHealthSyncPartialWithReason": "已同步 {count} 条读数，随后导出已停止：{reason}",
+  "@appleHealthSyncPartialWithReason": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "appleHealthAlreadyUpToDate": "已是最新状态。",
+  "appleHealthExportFailed": "导出失败。",
+  "appleHealthSampleRejected": "HealthKit 拒绝了一个葡萄糖样本。",
+  "appleHealthCouldNotSaveSample": "Apple 健康无法保存一个葡萄糖样本。",
+  "appleHealthExportCouldNotComplete": "无法完成 Apple 健康导出。",
+  "appleHealthWritesDisabled": "此模式下已禁用 Apple 健康写入。",
+  "macosPreviewLimitations": "macOS 预览版限制",
+  "macosTransportPreview": "macOS 传输预览",
+  "macosTransportPreviewDescription": "尚未在 Mac 硬件上验证真实 AiDEX 配对、重新连接和实时读数。本构建无法移除系统蓝牙绑定，也不能运行“迁移传感器”。在受控 Mac 测试之前，请先在当前 Android 手机上使用“迁移传感器”操作。",
+  "aiUnavailableInMacosPreview": "macOS 预览版中无法使用 AI",
+  "macosPreviewAiUnavailableDescription": "此临时签名的预览版不具备存储 API 密钥所需的 macOS 钥匙串能力。云端 AI 仍保持关闭。请勿将密钥粘贴到此预览版中。",
+  "messageWarmupTitle": "预热中",
+  "messageWarmupBody": "传感器正在稳定。大约一小时后开始显示读数，无需操作。",
+  "messageTapReadingTitle": "提示",
+  "messageTapReadingBody": "点按图表中的数据点可查看准确读数和时间。",
+  "scenarioWarmup": "预热",
+  "scenarioActiveNormal": "正常运行",
+  "scenarioActiveHigh": "运行中——高值（提醒）",
+  "scenarioActiveLow": "运行中——低值（提醒）",
+  "scenarioRapidRise": "快速上升",
+  "scenarioRapidFall": "快速下降",
+  "scenarioExpiringSoon": "即将到期",
+  "scenarioExpired": "已到期",
+  "scenarioSignalLoss": "信号丢失",
+  "scenarioDisconnected": "已断开连接",
+  "scenarioMultiSensorHistory": "多传感器历史记录",
+  "scenarioError": "出错",
+  "scenarioWarmupDescription": "处于约 1 小时的预热期间，尚无读数。",
+  "scenarioActiveNormalDescription": "葡萄糖处于健康范围内，轻微波动。",
+  "scenarioActiveHighDescription": "持续高葡萄糖，会触发高值提醒。",
+  "scenarioActiveLowDescription": "持续低葡萄糖，会触发低值提醒。",
+  "scenarioRapidRiseDescription": "葡萄糖快速上升（上升趋势）。",
+  "scenarioRapidFallDescription": "葡萄糖快速下降（下降趋势）。",
+  "scenarioExpiringSoonDescription": "15 天传感器还剩数小时。",
+  "scenarioExpiredDescription": "传感器已到期——结束会话状态。",
+  "scenarioSignalLossDescription": "已连接但信号丢失——读数已过时。",
+  "scenarioDisconnectedDescription": "已断开连接，但保留最后已知数据。",
+  "scenarioMultiSensorHistoryDescription": "当前传感器与此前传感器保留的历史记录。",
+  "scenarioErrorDescription": "严重错误，没有可用数据。"
+}

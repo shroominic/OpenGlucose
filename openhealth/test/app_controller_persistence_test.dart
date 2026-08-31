@@ -70,7 +70,10 @@ void main() {
     expect(nativeWrites, <bool>[true, false]);
     expect(controller.sensitiveLiveActivityContentEnabled, isFalse);
     expect(controller.liveActivityPrivacyUpdateInFlight, isFalse);
-    expect(controller.lastError, contains('Updating lock-screen privacy'));
+    expect(
+      controller.lastError,
+      'Could not update lock-screen privacy. Sensitive values remain hidden.',
+    );
 
     controller.dispose();
   });
@@ -633,7 +636,10 @@ void main() {
           'Disconnected — could not archive sensor',
         );
         expect(store.getString('openHealth.lastSensor'), isNotNull);
-        expect(controller.lastError, contains('Clearing the selected sensor'));
+        expect(
+          controller.lastError,
+          'The selected sensor could not be cleared safely. Try again.',
+        );
 
         store.failSetPrefix = null;
         store.failRemovePrefix = null;
@@ -942,11 +948,17 @@ void main() {
     await controller.refresh();
     await Future<void>.delayed(const Duration(milliseconds: 1100));
 
-    expect(controller.lastError, contains('Saving history failed'));
-    expect(controller.lastError, contains('StateError'));
+    expect(
+      controller.lastError,
+      'Could not save the latest sensor data on this phone. It will be '
+      'retried.',
+    );
+    expect(controller.lastError, isNot(contains('StateError')));
     expect(
       controller.logs.any(
-        (entry) => entry.message.contains('Saving history failed'),
+        (entry) => entry.message.contains(
+          'Could not save the latest sensor data on this phone.',
+        ),
       ),
       isTrue,
     );
@@ -974,7 +986,10 @@ void main() {
 
     expect(cleared, isFalse);
     expect(store.removeAttempts, contains('openHealth.history.demo:07A12'));
-    expect(controller.lastError, contains('Clearing stored history failed'));
+    expect(
+      controller.lastError,
+      'Could not update local sensor history. Try again.',
+    );
 
     await controller.disconnect(clearSelection: false);
     controller.dispose();
@@ -998,12 +1013,18 @@ void main() {
       await controller.connect(controller.sensors.single);
 
       expect(await controller.clearPersistedHistory(), isFalse);
-      expect(controller.lastError, contains('Clearing stored history failed'));
+      expect(
+        controller.lastError,
+        'Could not update local sensor history. Try again.',
+      );
 
       await controller.refresh();
       await Future<void>.delayed(const Duration(milliseconds: 1100));
 
-      expect(controller.lastError, contains('Clearing stored history failed'));
+      expect(
+        controller.lastError,
+        'Could not update local sensor history. Try again.',
+      );
 
       await controller.disconnect(clearSelection: false);
       controller.dispose();
@@ -1033,13 +1054,19 @@ void main() {
       expect(controller.snapshot, isNull);
       expect(
         controller.lastError,
-        contains('Disconnecting sensor session failed'),
+        contains(
+          'The sensor disconnected, but the app could not finish local '
+          'cleanup.',
+        ),
       );
       expect(
         controller.logs.any(
-          (entry) => entry.message.contains(
-            'Disconnecting sensor session failed (StateError)',
-          ),
+          (entry) =>
+              entry.message.contains(
+                'The sensor disconnected, but the app could not finish local '
+                'cleanup.',
+              ) &&
+              !entry.message.contains('StateError'),
         ),
         isTrue,
       );

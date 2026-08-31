@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import 'app_localizations_extension.dart';
 import 'display_preferences.dart';
 
 class CgmDashboardChart extends StatefulWidget {
@@ -26,12 +27,12 @@ class CgmDashboardChart extends StatefulWidget {
 
 class _CgmDashboardChartState extends State<CgmDashboardChart> {
   static const List<_ChartTimeframe> _timeframeOptions = <_ChartTimeframe>[
-    _ChartTimeframe(label: '3h', minutes: 180),
-    _ChartTimeframe(label: '12h', minutes: 720),
-    _ChartTimeframe(label: '1d', minutes: 1440),
-    _ChartTimeframe(label: '3d', minutes: 4320),
-    _ChartTimeframe(label: '7d', minutes: 10080),
-    _ChartTimeframe(label: 'ALL', minutes: 0),
+    _ChartTimeframe(minutes: 180),
+    _ChartTimeframe(minutes: 720),
+    _ChartTimeframe(minutes: 1440),
+    _ChartTimeframe(minutes: 4320),
+    _ChartTimeframe(minutes: 10080),
+    _ChartTimeframe(minutes: 0),
   ];
 
   int _selectedTimeframeMinutes = 720;
@@ -40,6 +41,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final localeName = _dateLocaleName(context);
     final samples = _buildSamples(widget.readings);
     final timeframes = _visibleTimeframes(samples);
     final effectiveTimeframe = _effectiveTimeframeMinutes(timeframes);
@@ -69,6 +71,8 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
                             preferences: widget.preferences,
                             timeframeMinutes: effectiveTimeframe,
                             chartStyle: widget.preferences.chartStyle,
+                            localeName: localeName,
+                            minuteLabel: context.l10n.chartAxisMinute,
                             selectedPointId: _selectedPointId,
                             overlayInsetTop: overlayInsetTop,
                             onSelectPoint: _handleSelection,
@@ -115,7 +119,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
                                         borderRadius: BorderRadius.circular(8),
                                       ),
                                       child: Text(
-                                        timeframe.label,
+                                        _timeframeLabel(context, timeframe),
                                         style: theme.textTheme.labelLarge
                                             ?.copyWith(
                                               color: selected
@@ -288,6 +292,15 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
       _ => math.min(widthDriven, 96),
     };
   }
+
+  String _timeframeLabel(BuildContext context, _ChartTimeframe timeframe) {
+    final l10n = context.l10n;
+    return switch (timeframe.minutes) {
+      0 => l10n.timeframeAll,
+      < 1440 => l10n.timeframeHoursShort(timeframe.minutes ~/ 60),
+      _ => l10n.timeframeDaysShort(timeframe.minutes ~/ 1440),
+    };
+  }
 }
 
 class _InteractiveHistoryChart extends StatelessWidget {
@@ -296,6 +309,8 @@ class _InteractiveHistoryChart extends StatelessWidget {
     required this.preferences,
     required this.timeframeMinutes,
     required this.chartStyle,
+    required this.localeName,
+    required this.minuteLabel,
     required this.selectedPointId,
     required this.overlayInsetTop,
     required this.onSelectPoint,
@@ -306,6 +321,8 @@ class _InteractiveHistoryChart extends StatelessWidget {
   final DisplayPreferences preferences;
   final int timeframeMinutes;
   final ChartStyle chartStyle;
+  final String localeName;
+  final String Function(int minute) minuteLabel;
   final int? selectedPointId;
   final double overlayInsetTop;
   final ValueChanged<_PlottedPoint?> onSelectPoint;
@@ -354,6 +371,8 @@ class _InteractiveHistoryChart extends StatelessWidget {
                   selectedPointId: selectedPointId,
                   chartStyle: chartStyle,
                   overlayInsetTop: overlayInsetTop,
+                  localeName: localeName,
+                  minuteLabel: minuteLabel,
                 ),
                 child: const SizedBox.expand(),
               ),
@@ -454,13 +473,13 @@ class _SelectionTooltip extends StatelessWidget {
       point.recordedAt,
       timeframeMinutes > 1440 || timeframeMinutes == 0,
     )) {
-      (final DateTime recordedAt?, true) => DateFormat(
-        'MMM d, HH:mm',
+      (final DateTime recordedAt?, true) => DateFormat.MMMd(
+        _dateLocaleName(context),
+      ).add_Hm().format(recordedAt.toLocal()),
+      (final DateTime recordedAt?, false) => DateFormat.Hm(
+        _dateLocaleName(context),
       ).format(recordedAt.toLocal()),
-      (final DateTime recordedAt?, false) => DateFormat(
-        'HH:mm',
-      ).format(recordedAt.toLocal()),
-      _ => 'Minute ${point.minute}',
+      _ => context.l10n.chartMinute(point.minute),
     };
 
     return ConstrainedBox(
@@ -530,6 +549,8 @@ class _DashboardChartPainter extends CustomPainter {
     required this.selectedPointId,
     required this.chartStyle,
     required this.overlayInsetTop,
+    required this.localeName,
+    required this.minuteLabel,
   });
 
   final List<_PlottedPoint> points;
@@ -539,6 +560,8 @@ class _DashboardChartPainter extends CustomPainter {
   final int? selectedPointId;
   final ChartStyle chartStyle;
   final double overlayInsetTop;
+  final String localeName;
+  final String Function(int minute) minuteLabel;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -734,7 +757,12 @@ class _DashboardChartPainter extends CustomPainter {
       final sourceIndex = ((points.length - 1) * fraction).round();
       final point = points[sourceIndex];
       final x = _xForMinute(point.minute, plotRect, minMinute, maxMinute);
-      final label = _axisLabel(point, timeframeMinutes);
+      final label = _axisLabel(
+        point,
+        timeframeMinutes,
+        localeName: localeName,
+        minuteLabel: minuteLabel,
+      );
       final textPainter = TextPainter(
         text: TextSpan(text: label, style: labelStyle),
         textDirection: ui.TextDirection.ltr,
@@ -753,19 +781,31 @@ class _DashboardChartPainter extends CustomPainter {
         oldDelegate.selectedPointId != selectedPointId ||
         oldDelegate.timeframeMinutes != timeframeMinutes ||
         oldDelegate.chartStyle != chartStyle ||
-        oldDelegate.overlayInsetTop != overlayInsetTop;
+        oldDelegate.overlayInsetTop != overlayInsetTop ||
+        oldDelegate.localeName != localeName;
   }
 }
 
-String _axisLabel(_PlottedPoint point, int timeframeMinutes) {
+String _axisLabel(
+  _PlottedPoint point,
+  int timeframeMinutes, {
+  required String localeName,
+  required String Function(int minute) minuteLabel,
+}) {
   if (point.recordedAt == null) {
-    return 'm${point.minute}';
+    return minuteLabel(point.minute);
   }
   final recordedAt = point.recordedAt!.toLocal();
   if (timeframeMinutes == 0 || timeframeMinutes > 1440) {
-    return DateFormat('MMM d').format(recordedAt);
+    return DateFormat.MMMd(localeName).format(recordedAt);
   }
-  return DateFormat('HH:mm').format(recordedAt);
+  return DateFormat.Hm(localeName).format(recordedAt);
+}
+
+String _dateLocaleName(BuildContext context) {
+  return Localizations.localeOf(context).languageCode.toLowerCase() == 'zh'
+      ? 'zh'
+      : 'en';
 }
 
 Rect _plotRect(Size size, {double overlayInsetTop = 0}) {
@@ -812,9 +852,8 @@ void _paintText(Canvas canvas, Offset offset, String text, TextStyle style) {
 }
 
 class _ChartTimeframe {
-  const _ChartTimeframe({required this.label, required this.minutes});
+  const _ChartTimeframe({required this.minutes});
 
-  final String label;
   final int minutes;
 }
 

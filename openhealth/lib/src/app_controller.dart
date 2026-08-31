@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'android_live_update_bridge.dart';
+import 'app_language_controller.dart';
 import 'demo_driver.dart';
 import 'display_preferences.dart';
 import 'health_state_store.dart';
@@ -34,12 +35,14 @@ class CgmAppController extends ChangeNotifier {
     required CgmDriver driver,
     HealthStateStore? healthStateStore,
     Duration reconnectDelay = const Duration(seconds: 3),
+    @visibleForTesting AppLanguage initialAppLanguage = AppLanguage.english,
     @visibleForTesting LiveActivityPrivacySetter? liveActivityPrivacySetter,
     @visibleForTesting Future<void> Function()? liveActivityPrivacyRefresh,
   }) : _preferences = preferences,
        _healthStateStore =
            healthStateStore ?? PreferencesHealthStateStore(preferences),
        _reconnectDelay = reconnectDelay,
+       _appLanguage = initialAppLanguage,
        _liveActivityPrivacySetter = liveActivityPrivacySetter,
        _liveActivityPrivacyRefresh = liveActivityPrivacyRefresh,
        _driver = driver;
@@ -81,6 +84,7 @@ class CgmAppController extends ChangeNotifier {
       const <ArchivedSensorSession>[];
   DisplayPreferences _displayPreferences = const DisplayPreferences();
   bool _sensitiveLiveActivityContentEnabled = false;
+  AppLanguage _appLanguage;
   bool _liveActivityPrivacyUpdateInFlight = false;
   bool _scanning = false;
   BleFailure? _scanFailure;
@@ -113,14 +117,20 @@ class CgmAppController extends ChangeNotifier {
   BleFailure? get scanFailure => _scanFailure;
 
   String? get scanFailureMessage => switch (_scanFailure) {
-    final failure? => userMessageForBleFailure(failure),
+    final failure? => userMessageForBleFailure(
+      failure,
+      language: _appLanguage,
+    ),
     null => null,
   };
 
   String? get lastError {
     final persistenceError = _persistenceErrors.values.join('. ');
     if (_lastError != null && persistenceError.isNotEmpty) {
-      return '$_lastError. $persistenceError';
+      final separator = _appLanguage == AppLanguage.simplifiedChinese
+          ? '。'
+          : '. ';
+      return '$_lastError$separator$persistenceError';
     }
     return _lastError ?? (persistenceError.isEmpty ? null : persistenceError);
   }
@@ -129,6 +139,23 @@ class CgmAppController extends ChangeNotifier {
 
   bool get sensitiveLiveActivityContentEnabled =>
       _sensitiveLiveActivityContentEnabled;
+
+  /// Updates the language used by native live surfaces and refreshes an
+  /// already-visible notification/Live Activity. It never changes sensor,
+  /// health, or display-unit preferences.
+  Future<void> updateAppLanguage(AppLanguage language) async {
+    if (_appLanguage == language) {
+      return;
+    }
+    _appLanguage = language;
+    if (_disposed) {
+      return;
+    }
+    _startPlatformTask(
+      _pushLiveActivity(),
+      'Updating private lock-screen state',
+    );
+  }
 
   bool get liveActivityPrivacyUpdateInFlight =>
       _liveActivityPrivacyUpdateInFlight;
@@ -328,7 +355,6 @@ class CgmAppController extends ChangeNotifier {
       restoredSensor.storageKey,
     );
     if (interruptedTransfer != null) {
-      final sensorAccepted = interruptedTransfer == _bondTransferSensorAccepted;
       _snapshot = CgmSessionSnapshot(
         stage: CgmSyncStage.error,
         statusText: 'Sensor transfer needs attention',
@@ -345,16 +371,15 @@ class CgmAppController extends ChangeNotifier {
           cgmBondTransferStateMetadataKey: interruptedTransfer,
           cgmBondTransferDiagnosticMetadataKey: 'cgm.bond-transfer.interrupted',
         },
-        lastError: sensorAccepted
-            ? 'The sensor accepted a move, but app cleanup was interrupted. '
-                  'Do not retry. '
-                  'Check Android Bluetooth settings and forget the old bond '
-                  'if it is still listed. Then review the move in Settings.'
-            : 'The sensor response to a move is unknown. Do not reconnect, '
-                  'forget the Android bond, disconnect, or retry. Contact '
-                  'support for a reviewed recovery.',
+        lastError: interruptedBondTransferText(
+          interruptedTransfer,
+          language: _appLanguage,
+        ),
       );
-      _lastError = _snapshot!.lastError;
+      _lastError = interruptedBondTransferText(
+        interruptedTransfer,
+        language: _appLanguage,
+      );
       notifyListeners();
       return;
     }
@@ -431,12 +456,13 @@ class CgmAppController extends ChangeNotifier {
       }
       if (error is BleFailure) {
         _scanFailure = error;
-        _lastError = userMessageForBleFailure(error);
+        _lastError = userMessageForBleFailure(error, language: _appLanguage);
       } else {
         _scanFailure = null;
-        _lastError =
-            'Sensor scan could not be completed. Check Bluetooth and try '
-            'again.';
+        _lastError = safeOperationFailureText(
+          'Sensor scan',
+          language: _appLanguage,
+        );
       }
     } finally {
       if (_ownsScan(generation)) {
@@ -458,16 +484,18 @@ class CgmAppController extends ChangeNotifier {
     _cancelReconnect();
     try {
       if (sensor.driverId != _driver.driverId) {
-        _lastError =
-            'Sensor driver ${sensor.driverId} does not match '
-            '${_driver.driverId}.';
+        _lastError = safeOperationFailureText(
+          'Connection',
+          language: _appLanguage,
+        );
         notifyListeners();
         return;
       }
       if (!isMockDriver && _bondTransferTombstone(sensor.storageKey) != null) {
-        _lastError =
-            'This sensor has an interrupted move. Do not reconnect or retry. '
-            'Check Android Bluetooth settings first.';
+        _lastError = interruptedBondTransferText(
+          _bondTransferTombstone(sensor.storageKey),
+          language: _appLanguage,
+        );
         notifyListeners();
         return;
       }
@@ -532,8 +560,11 @@ class CgmAppController extends ChangeNotifier {
             nextSnapshot.stage == CgmSyncStage.error;
         if (nextSnapshot.lastError != null && reconnectingStage) {
           _lastError =
-              primaryErrorTextForSnapshot(_snapshot!) ??
-              'Sensor connection reported an error';
+              primaryErrorTextForSnapshot(
+                _snapshot!,
+                language: _appLanguage,
+              ) ??
+              safeOperationFailureText('Connection', language: _appLanguage);
         } else if (!reconnectingStage) {
           _lastError = null;
         }
@@ -590,7 +621,10 @@ class CgmAppController extends ChangeNotifier {
       if (initialErrorSnapshot != null &&
           (initialErrorSnapshot.stage == CgmSyncStage.error ||
               initialErrorSnapshot.stage == CgmSyncStage.disconnected)) {
-        _lastError = primaryErrorTextForSnapshot(initialErrorSnapshot);
+        _lastError = primaryErrorTextForSnapshot(
+          initialErrorSnapshot,
+          language: _appLanguage,
+        );
         if (initialErrorSnapshot.stage == CgmSyncStage.error) {
           _debugAppSessionTrace('error-snapshot-reconciled');
         }
@@ -998,12 +1032,10 @@ class CgmAppController extends ChangeNotifier {
         interruptedTransfer != null &&
         (!acknowledgeInterruptedTransfer ||
             interruptedTransfer != _bondTransferSensorAccepted)) {
-      _lastError = interruptedTransfer == _bondTransferOutcomeUnknown
-          ? 'The sensor response to the move is unknown. Do not reconnect, '
-                'forget the Android bond, disconnect, or retry. Contact '
-                'support for a reviewed recovery.'
-          : 'Review the interrupted sensor move and check Android Bluetooth '
-                'before clearing it from the app.';
+      _lastError = interruptedBondTransferText(
+        interruptedTransfer,
+        language: _appLanguage,
+      );
       notifyListeners();
       return;
     }
@@ -1271,7 +1303,10 @@ class CgmAppController extends ChangeNotifier {
       return;
     }
     _snapshot = session.currentSnapshot;
-    _lastError = _snapshot?.lastError;
+    final snapshot = _snapshot;
+    _lastError = snapshot == null
+        ? null
+        : primaryErrorTextForSnapshot(snapshot, language: _appLanguage);
     unawaited(_pushLiveActivity());
     notifyListeners();
   }
@@ -1609,6 +1644,7 @@ class CgmAppController extends ChangeNotifier {
       snapshot: snapshot,
       latestReading: displayLatestReading,
       preferences: _displayPreferences,
+      language: _appLanguage,
     );
     if (_shouldPublishIosLiveActivity(snapshot)) {
       await IosLiveActivityBridge.upsert(payload);
@@ -1683,9 +1719,14 @@ class CgmAppController extends ChangeNotifier {
   }
 
   String _safeError(String context, Object error) {
-    return (error is CgmBondTransferException ? error.userMessage : null) ??
-        userMessageForBleError(error) ??
-        '$context failed (${error.runtimeType})';
+    if (error is CgmBondTransferException) {
+      return userMessageForBondTransferFailure(
+        error,
+        language: _appLanguage,
+      );
+    }
+    return userMessageForBleError(error, language: _appLanguage) ??
+        safeOperationFailureText(context, language: _appLanguage);
   }
 
   void _startPlatformTask(Future<void> task, String context) {

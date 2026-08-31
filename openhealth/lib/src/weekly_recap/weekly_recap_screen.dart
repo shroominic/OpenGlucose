@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../app_localizations_extension.dart';
 import '../display_preferences.dart';
 
 /// Weekly recap / trends screen.
@@ -48,6 +49,7 @@ class WeeklyRecapScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final recap = WeeklyRecapAnalytics.recap(
       readings,
       now: now,
@@ -55,18 +57,19 @@ class WeeklyRecapScreen extends StatelessWidget {
     );
     final coverage = recap.thisWeekCoverage;
     final previousCoverage = recap.lastWeekCoverage;
+    final dateFormat = DateFormat.MMMd(_dateLocaleName(context));
     final dateRange =
-        '${DateFormat('MMM d').format(recap.weekStart)} – '
-        '${DateFormat('MMM d').format(recap.days.last.date)}';
+        '${dateFormat.format(recap.weekStart)} – '
+        '${dateFormat.format(recap.days.last.date)}';
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(isSampleData ? 'Sample weekly recap' : 'Weekly recap'),
+        title: Text(isSampleData ? l10n.sampleWeeklyRecap : l10n.weeklyRecap),
         centerTitle: false,
       ),
       body: Column(
         children: <Widget>[
-          if (isSampleData) const _SampleDataBanner(),
+          if (isSampleData) _SampleDataBanner(),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
@@ -80,8 +83,7 @@ class WeeklyRecapScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Patterns and observations from your last 7 days — for '
-                  'self-experimentation, not medical advice.',
+                  l10n.weeklyRecapDescription,
                   style: theme.textTheme.bodySmall?.copyWith(color: _muted),
                 ),
                 const SizedBox(height: 16),
@@ -129,7 +131,7 @@ class _SampleDataBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Material(
+    return Material(
       key: ValueKey<String>('sampleWeeklyRecapBanner'),
       color: Color(0xFFFFD166),
       child: SafeArea(
@@ -143,7 +145,7 @@ class _SampleDataBanner extends StatelessWidget {
               SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  'SAMPLE DATA — NOT FROM A SENSOR',
+                  context.l10n.sampleDataNotSensor,
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Color(0xFF4A2B00),
@@ -215,56 +217,53 @@ class _OverviewCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final stats = recap.thisWeek;
     final activeDays = recap.days.where((d) => d.hasData).length;
     return _SectionCard(
-      title: 'This week at a glance',
-      subtitle:
-          '$activeDays of 7 days with readings · '
-          '${stats.readingCount} readings.',
+      title: l10n.weeklyOverviewTitle,
+      subtitle: l10n.weeklyOverviewSubtitle(activeDays, stats.readingCount),
       child: Column(
         children: <Widget>[
           _StatRow(
-            label: 'Time in range',
+            label: l10n.timeInRange,
             value: '${stats.timeInRangePercent.round()}%',
-            explanation:
-                'Share of readings between '
-                '${screen._formatGlucose(stats.bounds.lowMgdl)} and '
-                '${screen._formatGlucose(stats.bounds.highMgdl)}.',
+            explanation: l10n.timeInRangeExplanation(
+              screen._formatGlucose(stats.bounds.lowMgdl),
+              screen._formatGlucose(stats.bounds.highMgdl),
+            ),
           ),
           _StatRow(
-            label: 'Below / above range',
+            label: l10n.belowAboveRange,
             value:
                 '${stats.timeBelowRangePercent.round()}% / '
                 '${stats.timeAboveRangePercent.round()}%',
-            explanation: 'Share below your low mark and above your high mark.',
+            explanation: l10n.belowAboveRangeExplanation,
           ),
           _StatRow(
-            label: 'Average',
+            label: l10n.average,
             value: screen._formatGlucose(stats.averageMgdl!),
-            explanation: 'Mean of every reading this week.',
+            explanation: l10n.weeklyAverageExplanation,
           ),
           _StatRow(
-            label: 'Lowest / highest',
+            label: l10n.lowestHighest,
             value:
                 '${screen._formatGlucose(stats.minMgdl!, withUnit: false)} / '
                 '${screen._formatGlucose(stats.maxMgdl!)}',
-            explanation: 'Observed range inside this seven-day window.',
+            explanation: l10n.observedRangeExplanation,
           ),
           _StatRow(
-            label: 'Variability (CV)',
+            label: l10n.variabilityCv,
             value:
                 '${stats.coefficientOfVariationPercent!.toStringAsFixed(0)}%',
-            explanation:
-                'How spread out readings are around the average. '
-                'Lower looks steadier.',
+            explanation: l10n.variabilityExplanationNoSd,
           ),
           _StatRow(
-            label: 'Spikes',
+            label: l10n.spikes,
             value: '${stats.spikeCount}',
-            explanation:
-                'Times readings rose past '
-                '${screen._formatGlucose(stats.bounds.highMgdl)}.',
+            explanation: l10n.spikesExplanation(
+              screen._formatGlucose(stats.bounds.highMgdl),
+            ),
             isLast: true,
           ),
         ],
@@ -280,29 +279,30 @@ class _CoverageCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final hours = coverage.observedSpan.inHours;
     final spanText = hours >= 24
-        ? '${(hours / 24).toStringAsFixed(1)} days'
-        : '$hours hours';
+        ? l10n.durationDays((hours / 24).toStringAsFixed(1))
+        : l10n.durationHours(hours);
     return _SectionCard(
-      title: 'Data coverage',
-      subtitle: 'How much information this recap is based on.',
+      title: l10n.dataCoverage,
+      subtitle: l10n.dataCoverageDescription,
       child: Column(
         children: <Widget>[
           _StatRow(
-            label: 'Readings',
+            label: l10n.readings,
             value: '${coverage.readingCount}',
-            explanation: 'Timestamped readings inside this seven-day window.',
+            explanation: l10n.timestampedReadingsExplanation,
           ),
           _StatRow(
-            label: 'Days represented',
-            value: '${coverage.activeDays} of 7',
-            explanation: 'Calendar days containing at least one reading.',
+            label: l10n.daysRepresented,
+            value: l10n.daysOfSeven(coverage.activeDays),
+            explanation: l10n.daysRepresentedExplanation,
           ),
           _StatRow(
-            label: 'Observed span',
+            label: l10n.observedSpan,
             value: spanText,
-            explanation: 'Time between the first and last included reading.',
+            explanation: l10n.observedSpanExplanation,
             isLast: true,
           ),
         ],
@@ -326,14 +326,16 @@ class _TrendCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     if (!previousCoverage.isSufficient) {
       return _SectionCard(
-        title: 'Versus last week',
-        subtitle: 'Week-over-week change.',
+        title: l10n.versusLastWeek,
+        subtitle: l10n.weekOverWeekChange,
         child: Text(
-          'The previous week has ${previousCoverage.readingCount} readings '
-          'across ${previousCoverage.activeDays} days. Comparisons appear only '
-          'when both weeks have enough coverage.',
+          l10n.previousWeekComparisonDescription(
+            previousCoverage.readingCount,
+            previousCoverage.activeDays,
+          ),
           style: theme.textTheme.bodyMedium?.copyWith(
             color: WeeklyRecapScreen._muted,
           ),
@@ -341,20 +343,21 @@ class _TrendCard extends StatelessWidget {
       );
     }
     return _SectionCard(
-      title: 'Versus last week',
-      subtitle: 'How this week compares with the seven days before.',
+      title: l10n.versusLastWeek,
+      subtitle: l10n.versusLastWeekDescription,
       child: Column(
         children: <Widget>[
           _DeltaRow(
-            label: 'Time in range',
+            label: l10n.timeInRange,
             delta: recap.timeInRangeDelta,
             format: (v) => '${v.round()}%',
-            formatDelta: (v) => '${v > 0 ? '+' : ''}${v.round()} pts',
+            formatDelta: (v) =>
+                l10n.percentagePoints('${v > 0 ? '+' : ''}${v.round()}'),
             higherIsBetter: true,
             screen: screen,
           ),
           _DeltaRow(
-            label: 'Average',
+            label: l10n.average,
             delta: recap.averageDelta,
             format: screen._formatGlucose,
             formatDelta: screen._formatGlucoseDelta,
@@ -362,11 +365,12 @@ class _TrendCard extends StatelessWidget {
             screen: screen,
           ),
           _DeltaRow(
-            label: 'Variability (CV)',
+            label: l10n.variabilityCv,
             delta: recap.variabilityDelta,
             format: (v) => '${v.toStringAsFixed(0)}%',
-            formatDelta: (v) =>
-                '${v > 0 ? '+' : ''}${v.toStringAsFixed(0)} pts',
+            formatDelta: (v) => l10n.percentagePoints(
+              '${v > 0 ? '+' : ''}${v.toStringAsFixed(0)}',
+            ),
             higherIsBetter: false,
             screen: screen,
             isLast: true,
@@ -388,30 +392,34 @@ class _BestWorstCard extends StatelessWidget {
   final WeeklyRecapScreen screen;
   final ThemeData theme;
 
-  String _dayLine(DailyRecap day) {
-    final name = DateFormat('EEEE').format(day.date);
-    return '$name · ${day.stats.timeInRangePercent.round()}% in range · '
-        'avg ${screen._formatGlucose(day.stats.averageMgdl!)}';
+  String _dayLine(BuildContext context, DailyRecap day) {
+    final name = DateFormat.EEEE(_dateLocaleName(context)).format(day.date);
+    return context.l10n.weekdayRangeSummary(
+      name,
+      day.stats.timeInRangePercent.round(),
+      screen._formatGlucose(day.stats.averageMgdl!),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final best = recap.bestDay;
     final worst = recap.worstDay;
     return _SectionCard(
-      title: 'Days by time in range',
-      subtitle: 'Ranked by time spent in range.',
+      title: l10n.daysByTimeInRange,
+      subtitle: l10n.daysByTimeInRangeDescription,
       child: Column(
         children: <Widget>[
           _StatRow(
-            label: 'Most in range',
+            label: l10n.mostInRange,
             value: '${best!.stats.timeInRangePercent.round()}%',
-            explanation: _dayLine(best),
+            explanation: _dayLine(context, best),
           ),
           _StatRow(
-            label: 'Least in range',
+            label: l10n.leastInRange,
             value: '${worst!.stats.timeInRangePercent.round()}%',
-            explanation: _dayLine(worst),
+            explanation: _dayLine(context, worst),
             isLast: true,
           ),
         ],
@@ -433,13 +441,13 @@ class _SpikesCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     if (recap.topSpikes.isEmpty) {
       return _SectionCard(
-        title: 'Top spikes',
-        subtitle: 'Biggest upward swings this week.',
+        title: l10n.topSpikes,
+        subtitle: l10n.topSpikesDescription,
         child: Text(
-          'No readings rose past '
-          '${screen._formatGlucose(recap.bounds.highMgdl)} this week.',
+          l10n.noSpikesThisWeek(screen._formatGlucose(recap.bounds.highMgdl)),
           style: theme.textTheme.bodyMedium?.copyWith(
             color: WeeklyRecapScreen._muted,
           ),
@@ -447,19 +455,20 @@ class _SpikesCard extends StatelessWidget {
       );
     }
     return _SectionCard(
-      title: 'Top spikes',
-      subtitle: 'Biggest upward swings this week.',
+      title: l10n.topSpikes,
+      subtitle: l10n.topSpikesDescription,
       child: Column(
         children: <Widget>[
           for (var i = 0; i < recap.topSpikes.length; i++)
             _StatRow(
-              label: DateFormat(
-                'EEE, MMM d · HH:mm',
-              ).format(recap.topSpikes[i].at.toLocal()),
+              label: DateFormat.MMMEd(
+                _dateLocaleName(context),
+              ).add_Hm().format(recap.topSpikes[i].at.toLocal()),
               value: screen._formatGlucose(recap.topSpikes[i].peakMgdl),
-              explanation:
-                  'Rose ${screen._formatGlucose(recap.topSpikes[i].amplitudeMgdl)} '
-                  'from ${screen._formatGlucose(recap.topSpikes[i].riseFromMgdl)}.',
+              explanation: l10n.spikeRiseExplanation(
+                screen._formatGlucose(recap.topSpikes[i].amplitudeMgdl),
+                screen._formatGlucose(recap.topSpikes[i].riseFromMgdl),
+              ),
               isLast: i == recap.topSpikes.length - 1,
             ),
         ],
@@ -479,16 +488,6 @@ class _DayPatternCard extends StatelessWidget {
   final WeeklyRecapScreen screen;
   final ThemeData theme;
 
-  static const List<String> _short = <String>[
-    'Mon',
-    'Tue',
-    'Wed',
-    'Thu',
-    'Fri',
-    'Sat',
-    'Sun',
-  ];
-
   @override
   Widget build(BuildContext context) {
     final entries = recap.dayOfWeekAverages;
@@ -501,13 +500,17 @@ class _DayPatternCard extends StatelessWidget {
         .reduce((a, b) => a > b ? a : b);
 
     return _SectionCard(
-      title: "This week's weekdays",
-      subtitle: 'Average reading for each day in this seven-day window.',
+      title: context.l10n.weeklyDailyAveragesTitle,
+      subtitle: context.l10n.weeklyDailyAveragesDescription,
       child: Column(
         children: <Widget>[
           for (var i = 0; i < entries.length; i++)
             _DayBar(
-              label: _short[i],
+              // 2024-01-01 was a Monday. [dayOfWeekAverages] is always
+              // Monday through Sunday, independently of the recap window.
+              label: DateFormat.E(
+                _dateLocaleName(context),
+              ).format(DateTime(2024, 1, entries[i].weekday)),
               averageMgdl: entries[i].averageMgdl,
               maxMgdl: maxAvg,
               valueText: entries[i].averageMgdl == null
@@ -666,14 +669,15 @@ class _DeltaRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final current = delta.current;
     final change = delta.delta;
     final color = change == null
         ? WeeklyRecapScreen._muted
         : screen._deltaColor(change, higherIsBetter: higherIsBetter);
     final changeText = change == null
-        ? 'no prior week'
-        : (delta.isFlat() ? 'about the same' : formatDelta(change));
+        ? l10n.noPriorWeek
+        : (delta.isFlat() ? l10n.aboutTheSame : formatDelta(change));
 
     return Padding(
       padding: EdgeInsets.only(bottom: isLast ? 0 : 14),
@@ -723,6 +727,7 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -736,19 +741,19 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              'Not enough readings yet',
+              l10n.notEnoughReadingsYet,
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.w800,
               ),
             ),
             const SizedBox(height: 6),
             Text(
-              'This seven-day window currently has ${coverage.readingCount} '
-              'readings across ${coverage.activeDays} '
-              '${coverage.activeDays == 1 ? 'day' : 'days'}. Patterns appear '
-              'after at least ${coverage.minimumReadings} readings across '
-              '${coverage.minimumActiveDays} days, so sparse history is not '
-              'presented as a reliable trend.',
+              l10n.weeklyInsufficientCoverage(
+                coverage.readingCount,
+                coverage.activeDays,
+                coverage.minimumReadings,
+                coverage.minimumActiveDays,
+              ),
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: WeeklyRecapScreen._muted,
               ),
@@ -784,10 +789,7 @@ class _DisclaimerCard extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'These are wellness observations for self-experimentation. '
-              'OpenGlucose is not a medical device and this recap is not a '
-              'diagnosis or medical advice. Talk to a professional for health '
-              'decisions.',
+              context.l10n.weeklyRecapDisclaimer,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: WeeklyRecapScreen._muted,
                 height: 1.4,
@@ -798,4 +800,10 @@ class _DisclaimerCard extends StatelessWidget {
       ),
     );
   }
+}
+
+String _dateLocaleName(BuildContext context) {
+  return Localizations.localeOf(context).languageCode.toLowerCase() == 'zh'
+      ? 'zh'
+      : 'en';
 }

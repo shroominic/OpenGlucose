@@ -5,6 +5,12 @@ import 'package:flutter/material.dart';
 import 'app_message.dart';
 import 'message_controller.dart';
 
+typedef MessageTextResolver =
+    ({String title, String body}) Function(
+      BuildContext context,
+      AppMessage message,
+    );
+
 /// Renders the current top contextual message (if any) as a clean, dismissible
 /// banner card. Designed as a thin, self-contained widget that drops into the
 /// dashboard with a single line — it owns all of its own styling and listens to
@@ -17,10 +23,18 @@ class MessageHost extends StatelessWidget {
     super.key,
     required this.controller,
     this.padding = const EdgeInsets.fromLTRB(20, 12, 20, 0),
+    this.messageTextResolver,
   });
 
   final MessageController controller;
   final EdgeInsetsGeometry padding;
+
+  /// Optional localization boundary for catalog-owned messages.
+  ///
+  /// The host deliberately defaults to the [AppMessage] text so it remains a
+  /// reusable presentation component for custom messages. The app passes a
+  /// resolver for its built-in catalog, whose IDs are stable persistence keys.
+  final MessageTextResolver? messageTextResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -48,6 +62,7 @@ class MessageHost extends StatelessWidget {
                   child: _MessageCard(
                     message: message,
                     onDismiss: () => unawaited(controller.dismiss(message)),
+                    messageTextResolver: messageTextResolver,
                   ),
                 ),
         );
@@ -57,15 +72,23 @@ class MessageHost extends StatelessWidget {
 }
 
 class _MessageCard extends StatelessWidget {
-  const _MessageCard({required this.message, required this.onDismiss});
+  const _MessageCard({
+    required this.message,
+    required this.onDismiss,
+    this.messageTextResolver,
+  });
 
   final AppMessage message;
   final VoidCallback onDismiss;
+  final MessageTextResolver? messageTextResolver;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = _paletteFor(message.kind);
+    final text =
+        messageTextResolver?.call(context, message) ??
+        (title: message.title, body: message.body);
 
     return DecoratedBox(
       key: ValueKey<String>('messageCard-${message.id}'),
@@ -88,7 +111,7 @@ class _MessageCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    message.title,
+                    text.title,
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w800,
                       color: palette.foreground,
@@ -96,7 +119,7 @@ class _MessageCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    message.body,
+                    text.body,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: palette.foreground,
                       height: 1.3,
@@ -112,7 +135,7 @@ class _MessageCard extends StatelessWidget {
                 visualDensity: VisualDensity.compact,
                 iconSize: 18,
                 color: palette.accent,
-                tooltip: 'Dismiss',
+                tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
                 icon: const Icon(Icons.close_rounded),
               )
             else

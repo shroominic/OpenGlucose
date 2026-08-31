@@ -3,7 +3,10 @@ import 'dart:ui';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
+import 'package:openglucose/src/app_language_controller.dart';
+import 'package:openglucose/src/app_localizations_extension.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
@@ -62,6 +65,7 @@ Future<_BootstrapResult> _bootstrap() async {
     // Share-cache cleanup is privacy hygiene, never a reason to block launch.
   }
   final preferences = await SharedPreferences.getInstance();
+  final languageController = AppLanguageController(preferences: preferences);
   final healthStateStore = createHealthStateStore(preferences);
   final controller = CgmAppController(
     preferences: preferences,
@@ -87,6 +91,7 @@ Future<_BootstrapResult> _bootstrap() async {
   }
   return (
     controller: controller,
+    languageController: languageController,
     preferences: preferences,
     healthExport: healthExport,
     messages: messages,
@@ -96,6 +101,7 @@ Future<_BootstrapResult> _bootstrap() async {
 typedef _BootstrapResult = ({
   CgmAppController controller,
   HealthExportController healthExport,
+  AppLanguageController languageController,
   MessageController messages,
   SharedPreferences preferences,
 });
@@ -134,17 +140,14 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           return const _SplashApp();
         }
         if (snapshot.hasError) {
-          return _SplashApp(
-            error:
-                'Secure local storage could not be initialized '
-                '(${snapshot.error.runtimeType})',
-          );
+          return _SplashApp(error: snapshot.error);
         }
         final result = snapshot.data!;
         return OpenGlucoseApp(
           controller: result.controller,
           healthExport: result.healthExport,
           preferences: result.preferences,
+          languageController: result.languageController,
           messageController: result.messages,
         );
       },
@@ -160,26 +163,33 @@ class _SplashApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      locale: AppLanguageController.resolveDeviceLocales(
+        WidgetsBinding.instance.platformDispatcher.locales,
+      ).locale,
+      supportedLocales: AppLocalizations.supportedLocales,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
       debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const _SpinningLogo(),
-              if (error != null) ...<Widget>[
-                const SizedBox(height: 24),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 32),
-                  child: Text(
-                    'Failed to start: $error',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Color(0xFFB24A3B)),
+      home: Builder(
+        builder: (context) => Scaffold(
+          backgroundColor: Colors.white,
+          body: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const _SpinningLogo(),
+                if (error != null) ...<Widget>[
+                  const SizedBox(height: 24),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    child: Text(
+                      context.l10n.failedToStart(error.runtimeType.toString()),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Color(0xFFB24A3B)),
+                    ),
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -273,14 +283,18 @@ class _ArchivedSensorShareScope extends InheritedWidget {
 Future<void> _shareArchivedSensorFile(ShareParams params) async {
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
     final files = params.files;
+    final subject = params.subject ?? params.title;
     if (files == null || files.length != 1 || files.single.path.isEmpty) {
       throw ArgumentError(
         'iOS archived-sensor export requires one prepared file.',
       );
     }
+    if (subject == null || subject.isEmpty) {
+      throw ArgumentError('iOS archived-sensor export requires a share title.');
+    }
     await const IosExportShare().shareFile(
       filePath: files.single.path,
-      subject: params.subject ?? params.title ?? 'OpenGlucose sensor export',
+      subject: subject,
       sharePositionOrigin: params.sharePositionOrigin,
     );
     return;
@@ -295,22 +309,24 @@ Future<void> _shareArchivedSensorFile(ShareParams params) async {
 ShareParams buildArchivedSensorShareParams({
   required XFile file,
   required String filename,
+  required String localizedTitle,
   Rect? sharePositionOrigin,
 }) => ShareParams(
-  title: 'OpenGlucose sensor export',
-  subject: 'OpenGlucose sensor export',
+  title: localizedTitle,
+  subject: localizedTitle,
   files: <XFile>[file],
   fileNameOverrides: <String>[filename],
   mailToFallbackEnabled: false,
   sharePositionOrigin: sharePositionOrigin,
 );
 
-class OpenGlucoseApp extends StatelessWidget {
+class OpenGlucoseApp extends StatefulWidget {
   const OpenGlucoseApp({
     super.key,
     required this.controller,
     required this.healthExport,
     required this.preferences,
+    this.languageController,
     this.messageController,
     this.archivedSensorShareAction,
   });
@@ -318,6 +334,7 @@ class OpenGlucoseApp extends StatelessWidget {
   final CgmAppController controller;
   final HealthExportController healthExport;
   final SharedPreferences preferences;
+  final AppLanguageController? languageController;
 
   /// Optional contextual-messaging engine. When null (e.g. in some tests) the
   /// dashboard simply renders no message host.
@@ -327,6 +344,38 @@ class OpenGlucoseApp extends StatelessWidget {
   final ArchivedSensorShareAction? archivedSensorShareAction;
 
   @override
+  State<OpenGlucoseApp> createState() => _OpenGlucoseAppState();
+}
+
+class _OpenGlucoseAppState extends State<OpenGlucoseApp> {
+  late final AppLanguageController _languageController =
+      widget.languageController ??
+      AppLanguageController(preferences: widget.preferences);
+  late final bool _ownsLanguageController = widget.languageController == null;
+
+  @override
+  void initState() {
+    super.initState();
+    _languageController.addListener(_syncLiveSurfaceLanguage);
+    _syncLiveSurfaceLanguage();
+  }
+
+  void _syncLiveSurfaceLanguage() {
+    unawaited(
+      widget.controller.updateAppLanguage(_languageController.resolvedLanguage),
+    );
+  }
+
+  @override
+  void dispose() {
+    _languageController.removeListener(_syncLiveSurfaceLanguage);
+    if (_ownsLanguageController) {
+      _languageController.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF0B6E69);
     final colorScheme = ColorScheme.fromSeed(
@@ -334,52 +383,63 @@ class OpenGlucoseApp extends StatelessWidget {
       brightness: Brightness.light,
       surface: const Color(0xFFFFF8F1),
     );
-    return MaterialApp(
-      title: 'OpenGlucose',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: colorScheme,
-        scaffoldBackgroundColor: const Color(0xFFF6EFE6),
-        useMaterial3: true,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-        ),
-        cardTheme: CardThemeData(
-          color: Colors.white.withValues(alpha: 0.94),
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xFFF4F6F2),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
+    return AnimatedBuilder(
+      animation: _languageController,
+      builder: (context, _) => AppLanguageScope(
+        controller: _languageController,
+        child: MaterialApp(
+          title: 'OpenGlucose',
+          locale: _languageController.resolvedLocale,
+          supportedLocales: AppLocalizations.supportedLocales,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorScheme: colorScheme,
+            scaffoldBackgroundColor: const Color(0xFFF6EFE6),
+            useMaterial3: true,
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              surfaceTintColor: Colors.transparent,
+            ),
+            cardTheme: CardThemeData(
+              color: Colors.white.withValues(alpha: 0.94),
+              surfaceTintColor: Colors.transparent,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            inputDecorationTheme: InputDecorationTheme(
+              filled: true,
+              fillColor: const Color(0xFFF4F6F2),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
+              ),
+            ),
           ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-          ),
-        ),
-      ),
-      // --- TASK-007 onboarding gate ---
-      // First-run only: show the skippable onboarding flow, then hand off to
-      // the existing scan/connect home. Persisted via OnboardingStore; once
-      // completed/skipped the gate falls straight through on later launches.
-      home: _ArchivedSensorShareScope(
-        share: archivedSensorShareAction ?? _shareArchivedSensorFile,
-        child: HealthExportScope(
-          controller: healthExport,
-          child: _OnboardingGate(
-            store: OnboardingStore(preferences),
-            controller: controller,
-            unit: controller.displayPreferences.unit,
-            home: CgmHomePage(
-              controller: controller,
-              messageController: messageController,
+          // --- TASK-007 onboarding gate ---
+          // First-run only: show the skippable onboarding flow, then hand off to
+          // the existing scan/connect home. Persisted via OnboardingStore; once
+          // completed/skipped the gate falls straight through on later launches.
+          home: _ArchivedSensorShareScope(
+            share: widget.archivedSensorShareAction ?? _shareArchivedSensorFile,
+            child: HealthExportScope(
+              controller: widget.healthExport,
+              child: _OnboardingGate(
+                store: OnboardingStore(widget.preferences),
+                controller: widget.controller,
+                unit: widget.controller.displayPreferences.unit,
+                home: CgmHomePage(
+                  controller: widget.controller,
+                  messageController: widget.messageController,
+                ),
+              ),
             ),
           ),
         ),
@@ -531,23 +591,16 @@ class _ScanView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final archivedSensors = controller.archivedSensors;
     final latestArchived = archivedSensors.isEmpty
         ? null
         : archivedSensors.first;
     final inactiveMessage = switch (latestArchived?.reason) {
-      SensorArchiveReason.expired =>
-        'Your last sensor expired. Your previous readings are still here—connect '
-            'a new sensor to resume live glucose.',
-      SensorArchiveReason.replaced =>
-        'Your previous sensor was replaced. Its readings are still here—connect '
-            'your new sensor to resume live glucose.',
-      SensorArchiveReason.disconnected =>
-        'No sensor is active. Your previous readings are still here—connect a '
-            'sensor to resume live glucose.',
-      null =>
-        'Your glucose, on your terms. Connect your sensor to see live readings '
-            'and trends.',
+      SensorArchiveReason.expired => l10n.inactiveSensorExpired,
+      SensorArchiveReason.replaced => l10n.inactiveSensorReplaced,
+      SensorArchiveReason.disconnected => l10n.inactiveSensorDisconnected,
+      null => l10n.inactiveSensorWelcome,
     };
     return CustomScrollView(
       slivers: <Widget>[
@@ -565,7 +618,7 @@ class _ScanView extends StatelessWidget {
                       children: <Widget>[
                         Expanded(
                           child: Text(
-                            'OpenGlucose',
+                            l10n.appTitle,
                             style: theme.textTheme.headlineSmall?.copyWith(
                               color: Colors.white,
                               fontWeight: FontWeight.w800,
@@ -573,7 +626,7 @@ class _ScanView extends StatelessWidget {
                           ),
                         ),
                         IconButton(
-                          tooltip: 'Settings',
+                          tooltip: l10n.settings,
                           onPressed: () => _showSettings(context, controller),
                           color: Colors.white,
                           icon: const Icon(Icons.settings_outlined),
@@ -608,8 +661,8 @@ class _ScanView extends StatelessWidget {
                               : const Icon(Icons.bluetooth_searching_rounded),
                           label: Text(
                             controller.scanning
-                                ? 'Scanning...'
-                                : 'Find my sensor',
+                                ? l10n.scanning
+                                : l10n.findMySensor,
                           ),
                         ),
                         if (controller.allHistoricalReadings.isEmpty)
@@ -625,7 +678,7 @@ class _ScanView extends StatelessWidget {
                               ),
                             ),
                             icon: const Icon(Icons.visibility_outlined),
-                            label: const Text('Explore sample data'),
+                            label: Text(l10n.exploreSampleData),
                             style: OutlinedButton.styleFrom(
                               foregroundColor: Colors.white,
                               side: const BorderSide(color: Color(0xFF9CC9C1)),
@@ -669,14 +722,14 @@ class _ScanView extends StatelessWidget {
             child: Row(
               children: <Widget>[
                 Text(
-                  'Nearby sensors',
+                  l10n.nearbySensors,
                   style: theme.textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w800,
                   ),
                 ),
                 const Spacer(),
                 Text(
-                  '${controller.sensors.length} found',
+                  l10n.sensorsFound(controller.sensors.length),
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: const Color(0xFF5E726D),
                   ),
@@ -697,13 +750,13 @@ class _ScanView extends StatelessWidget {
             child: _ScanFailureState(controller: controller),
           )
         else if (controller.sensors.isEmpty && !controller.scanning)
-          const SliverFillRemaining(
+          SliverFillRemaining(
             hasScrollBody: false,
             child: Center(
               child: Padding(
                 padding: EdgeInsets.all(32),
                 child: Text(
-                  'No sensors found yet.\nHold your phone near your sensor and try again.',
+                  l10n.noSensorsFound,
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -773,8 +826,8 @@ class _ScanView extends StatelessWidget {
                                         : null,
                                     child: Text(
                                       canAcknowledgeInterruptedTransfer
-                                          ? 'Review move'
-                                          : 'Move needs support',
+                                          ? l10n.reviewMove
+                                          : l10n.moveNeedsSupport,
                                     ),
                                   ),
                                 FilledButton(
@@ -788,7 +841,7 @@ class _ScanView extends StatelessWidget {
                                           controller.connect(sensor),
                                         )
                                       : null,
-                                  child: const Text('Connect'),
+                                  child: Text(l10n.connect),
                                 ),
                               ],
                             ),
@@ -807,19 +860,17 @@ class _ScanView extends StatelessWidget {
                               ),
                             if (advertisement?.counter != null)
                               _MetricChip(
-                                label: 'Counter ${advertisement!.counter}',
+                                label: l10n.counter(advertisement!.counter!),
                               ),
                             if (sensor.metadata['mode'] == 'demo')
-                              const _MetricChip(label: 'Demo transport'),
+                              _MetricChip(label: l10n.demoTransport),
                           ],
                         ),
                         if (hasInterruptedTransfer &&
                             !canAcknowledgeInterruptedTransfer) ...<Widget>[
                           const SizedBox(height: 12),
                           Text(
-                            'The sensor response is unknown. Do not reconnect '
-                            'or forget the Android bond. Contact support for a '
-                            'reviewed recovery.',
+                            l10n.unknownSensorResponse,
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: const Color(0xFF9A4D00),
                               height: 1.35,
@@ -856,22 +907,17 @@ Future<void> _confirmInterruptedSensorTransferRecovery(
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text('Review interrupted sensor move'),
-      content: const Text(
-        'Open Android Bluetooth settings before you continue. Confirm that '
-        'the sensor is not listed as paired. If it is listed, choose Forget '
-        'first. This action only clears the app safety marker. It does not '
-        'contact the sensor or change a Bluetooth bond.',
-      ),
+      title: Text(context.l10n.reviewInterruptedSensorMove),
+      content: Text(context.l10n.interruptedSensorMoveReview),
       actions: <Widget>[
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           key: const ValueKey<String>('confirmInterruptedMoveRecovery'),
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('I checked Bluetooth'),
+          child: Text(context.l10n.checkedBluetooth),
         ),
       ],
     ),
@@ -887,7 +933,7 @@ Future<void> _confirmInterruptedSensorTransferRecovery(
         SnackBar(
           content: Text(
             controller.lastError ??
-                'The interrupted sensor move could not be cleared.',
+                context.l10n.interruptedSensorMoveCouldNotClear,
           ),
         ),
       );
@@ -916,7 +962,7 @@ class _ScanFailureState extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             Text(
-              _scanFailureTitle(failure),
+              _scanFailureTitle(context, failure),
               key: const ValueKey<String>('sensorScanFailureTitle'),
               textAlign: TextAlign.center,
               style: Theme.of(
@@ -925,8 +971,7 @@ class _ScanFailureState extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              controller.scanFailureMessage ??
-                  'Check Bluetooth, keep the sensor nearby, and try again.',
+              controller.scanFailureMessage ?? context.l10n.scanSensorHelp,
               key: const ValueKey<String>('sensorScanFailureMessage'),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
@@ -941,7 +986,7 @@ class _ScanFailureState extends StatelessWidget {
                   ? null
                   : () => unawaited(controller.scan()),
               icon: const Icon(Icons.refresh_rounded),
-              label: const Text('Try again'),
+              label: Text(context.l10n.tryAgain),
             ),
           ],
         ),
@@ -977,7 +1022,7 @@ class _ScanFailureBanner extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      _scanFailureTitle(failure),
+                      _scanFailureTitle(context, failure),
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w900,
                       ),
@@ -988,7 +1033,7 @@ class _ScanFailureBanner extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 controller.scanFailureMessage ??
-                    'Check Bluetooth and try scanning again.',
+                    context.l10n.scanSensorHelpShort,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF6B5542),
                   height: 1.35,
@@ -999,7 +1044,7 @@ class _ScanFailureBanner extends StatelessWidget {
                 key: const ValueKey<String>('retryPartialSensorScanButton'),
                 onPressed: () => unawaited(controller.scan()),
                 icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Scan again'),
+                label: Text(context.l10n.scanAgain),
               ),
             ],
           ),
@@ -1009,11 +1054,14 @@ class _ScanFailureBanner extends StatelessWidget {
   }
 }
 
-String _scanFailureTitle(BleFailure failure) => switch (failure.kind) {
-  BleFailureKind.bluetoothOff => 'Bluetooth is off',
-  BleFailureKind.permissionRequired => 'Bluetooth access needed',
-  BleFailureKind.bluetoothUnavailable => 'Bluetooth is unavailable',
-  _ => 'Could not scan for sensors',
+String _scanFailureTitle(
+  BuildContext context,
+  BleFailure failure,
+) => switch (failure.kind) {
+  BleFailureKind.bluetoothOff => context.l10n.bluetoothOffTitle,
+  BleFailureKind.permissionRequired => context.l10n.bluetoothPermissionTitle,
+  BleFailureKind.bluetoothUnavailable => context.l10n.bluetoothUnavailableTitle,
+  _ => context.l10n.scanSensorsFailedTitle,
 };
 
 class _HistoricalOverviewCard extends StatelessWidget {
@@ -1024,6 +1072,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final readings = controller.allHistoricalReadings;
     final timestampedReadings = readings
         .where((reading) => reading.recordedAt != null)
@@ -1049,7 +1098,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Your glucose history',
+                      l10n.yourGlucoseHistory,
                       style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w900,
                       ),
@@ -1059,10 +1108,12 @@ class _HistoricalOverviewCard extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                '${controller.archivedSensors.length} previous '
-                '${controller.archivedSensors.length == 1 ? 'sensor' : 'sensors'} · '
-                '${readings.length} readings'
-                '${latest == null ? '' : ' · last ${DateFormat('MMM d, HH:mm').format(latest.toLocal())}'}',
+                <String>[
+                  l10n.archivedSensorsCount(controller.archivedSensors.length),
+                  l10n.readingCount(readings.length),
+                  if (latest != null)
+                    l10n.lastAt(_localizedShortDateTime(context, latest)),
+                ].join(' · '),
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF5B6E6A),
                 ),
@@ -1079,24 +1130,19 @@ class _HistoricalOverviewCard extends StatelessWidget {
                   child: Column(
                     children: <Widget>[
                       _KeyValueRow(
-                        label: 'First reading',
-                        value: DateFormat(
-                          'MMM d, y · HH:mm',
-                        ).format(first!.toLocal()),
+                        label: l10n.firstReading,
+                        value: _localizedDateTime(context, first!),
                       ),
                       _KeyValueRow(
-                        label: 'Latest reading',
-                        value: DateFormat(
-                          'MMM d, y · HH:mm',
-                        ).format(latest!.toLocal()),
+                        label: l10n.latestReading,
+                        value: _localizedDateTime(context, latest!),
                       ),
                       _KeyValueRow(
-                        label: 'Stored sessions',
+                        label: l10n.storedSessions,
                         value: '${controller.archivedSensors.length}',
                       ),
-                      const Text(
-                        'Each sensor keeps its own chart in Sensor archive, so '
-                        'separate sessions are never joined into one line.',
+                      Text(
+                        l10n.historySessionSeparation,
                         style: TextStyle(color: Color(0xFF5B6E6A)),
                       ),
                     ],
@@ -1116,7 +1162,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
                       ),
                     ),
                     icon: const Icon(Icons.insights_rounded),
-                    label: const Text('View weekly recap'),
+                    label: Text(l10n.viewWeeklyRecap),
                   ),
                 ),
               ],
@@ -1142,6 +1188,7 @@ class _DashboardView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
     final warmup = computeWarmupStatus(
@@ -1149,7 +1196,10 @@ class _DashboardView extends StatelessWidget {
       latestReading: controller.displayLatestReading,
     );
     final isWarmingUp = warmup?.phase == WarmupPhase.warming;
-    final remainingLife = sensorLifeText(snapshot.sessionInfo.sessionStart);
+    final remainingLife = sensorLifeText(
+      snapshot.sessionInfo.sessionStart,
+      language: context.appLanguage,
+    );
 
     return RefreshIndicator(
       onRefresh: controller.sync,
@@ -1160,13 +1210,13 @@ class _DashboardView extends StatelessWidget {
         ),
         slivers: <Widget>[
           if (controller.isMockDriver)
-            const SliverToBoxAdapter(
+            SliverToBoxAdapter(
               child: ColoredBox(
                 color: Color(0xFFFFD166),
                 child: Padding(
                   padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                   child: Text(
-                    'DEMO DATA — NOT REAL GLUCOSE',
+                    l10n.demoDataWarning,
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Color(0xFF4A2B00),
@@ -1227,7 +1277,10 @@ class _DashboardView extends StatelessWidget {
           // current top tip/info/alert as a dismissible card, or nothing.
           if (messageController != null)
             SliverToBoxAdapter(
-              child: MessageHost(controller: messageController!),
+              child: MessageHost(
+                controller: messageController!,
+                messageTextResolver: localizedCatalogMessageText,
+              ),
             ),
           SliverToBoxAdapter(
             child: _DashboardHeroCard(
@@ -1250,14 +1303,14 @@ class _DashboardView extends StatelessWidget {
                           children: <Widget>[
                             Expanded(
                               child: Text(
-                                'History',
+                                l10n.history,
                                 style: theme.textTheme.titleLarge?.copyWith(
                                   fontWeight: FontWeight.w900,
                                 ),
                               ),
                             ),
                             Text(
-                              '${history.length} readings',
+                              l10n.readingCount(history.length),
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: const Color(0xFF5B6E6A),
                               ),
@@ -1307,7 +1360,7 @@ class _DashboardView extends StatelessWidget {
                     ),
                   ),
                   icon: const Icon(Icons.insights_rounded),
-                  label: const Text('Weekly recap'),
+                  label: Text(l10n.weeklyRecap),
                   style: FilledButton.styleFrom(
                     minimumSize: const Size.fromHeight(48),
                   ),
@@ -1368,7 +1421,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     }
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Support code copied')));
+    ).showSnackBar(SnackBar(content: Text(context.l10n.supportCodeCopied)));
   }
 
   @override
@@ -1396,7 +1449,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final snapshot = widget.snapshot;
     final latest = widget.controller.displayLatestReading;
     final warmup = computeWarmupStatus(snapshot, latestReading: latest);
-    final primaryError = primaryErrorTextForSnapshot(snapshot);
+    final primaryError = primaryErrorTextForSnapshot(
+      snapshot,
+      language: context.appLanguage,
+    );
     final privateSupportCode =
         kOgPrivateSupport && shouldOfferPrivateBleSupportCode(snapshot)
         ? privateBleSupportCodeForSnapshot(snapshot)
@@ -1408,9 +1464,9 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final String stageLabel;
     if (warmup != null) {
       bigValue = warmupBigValueText(warmup);
-      unitLabel = warmupUnitText(warmup);
-      subtitle = warmupSubtext(warmup);
-      stageLabel = warmupStageLabel(warmup);
+      unitLabel = warmupUnitText(warmup, language: context.appLanguage);
+      subtitle = warmupSubtext(warmup, language: context.appLanguage);
+      stageLabel = warmupStageLabel(warmup, language: context.appLanguage);
     } else {
       final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
       final displayedValue =
@@ -1424,8 +1480,13 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
               preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
             );
       unitLabel = preferences.unit.label;
-      subtitle = 'Latest reading at ${readingTimeText(latest)}';
-      stageLabel = stageLabelForSnapshot(snapshot);
+      subtitle = context.l10n.latestReadingAt(
+        readingTimeText(latest, language: context.appLanguage),
+      );
+      stageLabel = stageLabelForSnapshot(
+        snapshot,
+        language: context.appLanguage,
+      );
     }
 
     return Padding(
@@ -1474,7 +1535,12 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   const SizedBox(width: 12),
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
-                    child: _StagePill(label: stageLabel),
+                    child: _StagePill(
+                      label: stageLabel,
+                      stageCode: warmup != null
+                          ? 'progress'
+                          : stageCodeForSnapshot(snapshot),
+                    ),
                   ),
                 ],
               ),
@@ -1503,7 +1569,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                         key: const ValueKey<String>('retryBleSetupButton'),
                         onPressed: () =>
                             unawaited(widget.controller.retryConnection()),
-                        child: const Text('Try again'),
+                        child: Text(context.l10n.tryAgain),
                       ),
                       OutlinedButton(
                         key: const ValueKey<String>(
@@ -1515,7 +1581,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                           foregroundColor: Colors.white,
                           side: const BorderSide(color: Color(0xFF9CC9C1)),
                         ),
-                        child: const Text('Choose another sensor'),
+                        child: Text(context.l10n.chooseAnotherSensor),
                       ),
                     ],
                   ),
@@ -1532,7 +1598,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                     side: const BorderSide(color: Color(0xFF9CC9C1)),
                   ),
                   icon: const Icon(Icons.copy_rounded),
-                  label: const Text('Copy support code'),
+                  label: Text(context.l10n.copySupportCode),
                 ),
               ],
             ],
@@ -1544,20 +1610,17 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
 }
 
 class _StagePill extends StatelessWidget {
-  const _StagePill({required this.label});
+  const _StagePill({required this.label, required this.stageCode});
 
   final String label;
+  final String stageCode;
 
   @override
   Widget build(BuildContext context) {
-    final color = switch (label) {
-      'Connected' => const Color(0xFF2AB67D),
-      'Error' => const Color(0xFFF26D5B),
-      'Connecting' ||
-      'Setting up' ||
-      'Reconnecting' ||
-      'Warmup' ||
-      'Waiting' => const Color(0xFFF2A65A),
+    final color = switch (stageCode) {
+      'live' => const Color(0xFF2AB67D),
+      'error' => const Color(0xFFF26D5B),
+      'progress' => const Color(0xFFF2A65A),
       _ => const Color(0xFF78A5A3),
     };
     return DecoratedBox(
@@ -1607,6 +1670,23 @@ class _KeyValueRow extends StatelessWidget {
       ),
     );
   }
+}
+
+String _localizedDateTime(BuildContext context, DateTime value) {
+  final locale = context.appLanguage == AppLanguage.simplifiedChinese
+      ? 'zh'
+      : 'en';
+  return DateFormat.yMMMd(locale).add_Hm().format(value.toLocal());
+}
+
+String _localizedShortDateTime(BuildContext context, DateTime? value) {
+  if (value == null) {
+    return '--';
+  }
+  final locale = context.appLanguage == AppLanguage.simplifiedChinese
+      ? 'zh'
+      : 'en';
+  return DateFormat.MMMd(locale).add_Hm().format(value.toLocal());
 }
 
 Future<void> _showSettings(
@@ -1661,7 +1741,7 @@ Future<void> _showSettings(
             return Scaffold(
               body: CustomScrollView(
                 slivers: <Widget>[
-                  const SliverAppBar.large(title: Text('Settings')),
+                  SliverAppBar.large(title: Text(context.l10n.settings)),
                   SliverToBoxAdapter(
                     child: _SettingsOverview(
                       controller: controller,
@@ -1719,6 +1799,7 @@ class _SettingsOverview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final archivedCount = controller.archivedSensors.length;
     final macosSecureStorageDisabled = shouldDisableMacosSecureStorage(
       platform: defaultTargetPlatform,
@@ -1732,9 +1813,9 @@ class _SettingsOverview extends StatelessWidget {
           child: _SettingsHero(controller: controller),
         ),
         const SizedBox(height: 22),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20),
-          child: _SettingsSectionLabel('SENSOR'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _SettingsSectionLabel(l10n.sensor.toUpperCase()),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -1743,8 +1824,8 @@ class _SettingsOverview extends StatelessWidget {
               if (hasActiveSensor)
                 _SettingsDestination(
                   icon: Icons.sensors_rounded,
-                  title: 'Current sensor',
-                  subtitle: 'Status, life, identity, and connection',
+                  title: l10n.currentSensor,
+                  subtitle: l10n.sensorStatusSubtitle,
                   listenable: controller,
                   builder: (context) {
                     final snapshot = controller.snapshot;
@@ -1761,16 +1842,14 @@ class _SettingsOverview extends StatelessWidget {
               else
                 _SettingsAction(
                   icon: Icons.add_circle_outline_rounded,
-                  title: 'Connect a sensor',
-                  subtitle: 'No sensor is active',
+                  title: l10n.connectSensor,
+                  subtitle: l10n.noSensorActive,
                   onTap: () => Navigator.of(context).pop(),
                 ),
               _SettingsDestination(
                 icon: Icons.archive_outlined,
-                title: 'Sensor archive',
-                subtitle:
-                    '$archivedCount previous '
-                    '${archivedCount == 1 ? 'sensor' : 'sensors'}',
+                title: l10n.sensorArchive,
+                subtitle: l10n.archivedSensorsCount(archivedCount),
                 listenable: controller,
                 builder: (_) => _SensorArchivePane(controller: controller),
               ),
@@ -1778,17 +1857,23 @@ class _SettingsOverview extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 22),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20),
-          child: _SettingsSectionLabel('PREFERENCES'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _SettingsSectionLabel(l10n.preferencesSection.toUpperCase()),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: _SettingsGroup(
             children: <Widget>[
               _SettingsDestination(
+                icon: Icons.language_rounded,
+                title: l10n.language,
+                subtitle: _appLanguageSummary(context),
+                builder: (_) => const _AppLanguagePane(),
+              ),
+              _SettingsDestination(
                 icon: Icons.monitor_heart_outlined,
-                title: 'Glucose & display',
+                title: l10n.glucoseAndDisplay,
                 subtitle:
                     '${controller.displayPreferences.unit.label} · '
                     '${controller.displayPreferences.targetLowMgdl.toStringAsFixed(0)}–'
@@ -1799,9 +1884,11 @@ class _SettingsOverview extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 22),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20),
-          child: _SettingsSectionLabel('DATA & INTEGRATIONS'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _SettingsSectionLabel(
+            l10n.dataAndIntegrationsSection.toUpperCase(),
+          ),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -1809,60 +1896,60 @@ class _SettingsOverview extends StatelessWidget {
             children: <Widget>[
               _SettingsDestination(
                 icon: Icons.favorite_outline_rounded,
-                title: 'Apple Health',
-                subtitle: 'Glucose export and health data controls',
+                title: l10n.appleHealth,
+                subtitle: l10n.appleHealthSubtitle,
                 child: IntegrationsSettingsPane(
                   healthExport: healthExport,
                   controller: controller,
                 ),
               ),
               if (macosSecureStorageDisabled)
-                const _SettingsDestination(
+                _SettingsDestination(
                   icon: Icons.auto_awesome_outlined,
-                  title: 'AI & models',
-                  subtitle: 'Unavailable in this reviewer preview',
+                  title: l10n.aiAndModels,
+                  subtitle: l10n.aiUnavailableInMacosPreview,
                   child: MacosPreviewUnavailableAiPane(),
                 )
               else
                 _SettingsDestination(
                   icon: Icons.auto_awesome_outlined,
-                  title: 'AI & models',
-                  subtitle: 'Experimental · off until you enable it',
+                  title: l10n.aiAndModels,
+                  subtitle: l10n.cloudAiDisabledByDefault,
                   child: AiSettingsPane(
                     recentReadings: controller.allHistoricalReadings,
                     unit: controller.displayPreferences.unit,
                   ),
                 ),
-              const _SettingsDestination(
+              _SettingsDestination(
                 icon: Icons.shield_outlined,
-                title: 'Privacy & data',
-                subtitle: 'Local storage and retention',
+                title: l10n.privacyAndData,
+                subtitle: l10n.privacySubtitle,
                 child: _PrivacyDataPane(),
               ),
             ],
           ),
         ),
         const SizedBox(height: 22),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20),
-          child: _SettingsSectionLabel('APP'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: _SettingsSectionLabel(l10n.appSection.toUpperCase()),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: _SettingsGroup(
             children: <Widget>[
-              const _SettingsDestination(
+              _SettingsDestination(
                 icon: Icons.info_outline_rounded,
-                title: 'About OpenGlucose',
-                subtitle: 'Version, purpose, and open-source project',
-                child: _AboutPane(),
+                title: l10n.aboutOpenGlucose,
+                subtitle: l10n.aboutSubtitle,
+                child: const _AboutPane(),
               ),
               if ((kDebugMode || controller.isMockDriver) &&
                   developerPane != null)
                 _SettingsDestination(
                   icon: Icons.developer_mode_rounded,
-                  title: 'Advanced',
-                  subtitle: 'Diagnostics and developer tools',
+                  title: l10n.advanced,
+                  subtitle: l10n.advancedSubtitle,
                   child: developerPane,
                 ),
             ],
@@ -1907,7 +1994,7 @@ class _SettingsHero extends StatelessWidget {
               children: <Widget>[
                 Text(
                   snapshot == null
-                      ? 'No active sensor'
+                      ? context.l10n.noActiveSensor
                       : snapshot.sensor.displayName,
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: Colors.white,
@@ -1917,13 +2004,99 @@ class _SettingsHero extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   snapshot == null
-                      ? 'Your previous data stays on this iPhone.'
-                      : sensorLifeText(snapshot.sessionInfo.sessionStart),
+                      ? context.l10n.previousDataStaysOnThisPhone
+                      : sensorLifeText(
+                          snapshot.sessionInfo.sessionStart,
+                          language: context.appLanguage,
+                        ),
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: const Color(0xFFD8EEE8),
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _appLanguageName(BuildContext context, AppLanguage language) {
+  return switch (language) {
+    AppLanguage.english => context.l10n.languageEnglish,
+    AppLanguage.simplifiedChinese => context.l10n.languageSimplifiedChinese,
+  };
+}
+
+String _appLanguageSummary(BuildContext context) {
+  final controller = AppLanguageScope.of(context);
+  final current = context.l10n.languageCurrent(
+    _appLanguageName(context, controller.resolvedLanguage),
+  );
+  return controller.preference == AppLanguagePreference.system
+      ? '${context.l10n.languageSystem} · $current'
+      : current;
+}
+
+class _AppLanguagePane extends StatelessWidget {
+  const _AppLanguagePane();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = AppLanguageScope.of(context);
+    final l10n = context.l10n;
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) => ListView(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+        children: <Widget>[
+          Text(
+            l10n.appLanguage,
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            l10n.languageChangeDescription,
+            style: const TextStyle(color: Color(0xFF5B6E6A), height: 1.35),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: RadioGroup<AppLanguagePreference>(
+              groupValue: controller.preference,
+              onChanged: (value) {
+                if (value != null) {
+                  unawaited(controller.setPreference(value));
+                }
+              },
+              child: Column(
+                children: <Widget>[
+                  RadioListTile<AppLanguagePreference>(
+                    key: const ValueKey<String>('appLanguageSystem'),
+                    value: AppLanguagePreference.system,
+                    title: Text(l10n.languageSystem),
+                    subtitle: Text(
+                      '${l10n.languageSystemDescription}\n'
+                      '${l10n.languageCurrent(_appLanguageName(context, controller.resolvedLanguage))}',
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  RadioListTile<AppLanguagePreference>(
+                    key: const ValueKey<String>('appLanguageEnglish'),
+                    value: AppLanguagePreference.english,
+                    title: Text(l10n.languageEnglish),
+                  ),
+                  const Divider(height: 1),
+                  RadioListTile<AppLanguagePreference>(
+                    key: const ValueKey<String>('appLanguageChinese'),
+                    value: AppLanguagePreference.simplifiedChinese,
+                    title: Text(l10n.languageSimplifiedChineseNative),
+                    subtitle: Text(l10n.languageSimplifiedChinese),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -2089,22 +2262,21 @@ class _InactiveSensorSettingsPane extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             Text(
-              'This sensor is no longer active',
+              context.l10n.sensorNoLongerActive,
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
               ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Return to Settings to review Sensor archive or connect another '
-              'sensor.',
+            Text(
+              context.l10n.inactiveSensorSettingsDescription,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 18),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Back to Settings'),
+              child: Text(context.l10n.backToSettings),
             ),
           ],
         ),
@@ -2122,11 +2294,11 @@ class _SensorArchivePane extends StatelessWidget {
   Widget build(BuildContext context) {
     final sessions = controller.archivedSensors;
     if (sessions.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(32),
+          padding: const EdgeInsets.all(32),
           child: Text(
-            'Previous sensors will appear here after they expire or are replaced.',
+            context.l10n.sensorArchiveEmpty,
             textAlign: TextAlign.center,
           ),
         ),
@@ -2150,9 +2322,13 @@ class _SensorArchivePane extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
             subtitle: Text(
-              '${_archiveReasonLabel(session.reason)} · '
-              '$displayReadingCount readings'
-              '${date == null ? '' : ' · ${DateFormat('MMM d, y').format(date)}'}',
+              context.l10n.archiveSessionSummary(
+                _archiveReasonLabel(context, session.reason),
+                context.l10n.readingCount(displayReadingCount),
+                date == null
+                    ? ''
+                    : ' · ${_localizedShortDateTime(context, date)}',
+              ),
             ),
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: () => Navigator.of(context).push(
@@ -2195,7 +2371,7 @@ class _ArchivedSensorDetail extends StatelessWidget {
     }
     recapAnchor ??= session.endedAt;
     return Scaffold(
-      appBar: AppBar(title: const Text('Previous sensor')),
+      appBar: AppBar(title: Text(context.l10n.previousSensor)),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
         children: <Widget>[
@@ -2207,7 +2383,9 @@ class _ArchivedSensorDetail extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            '${_archiveReasonLabel(session.reason)} · history only, not connected',
+            context.l10n.archiveHistoryOnly(
+              _archiveReasonLabel(context, session.reason),
+            ),
             style: theme.textTheme.bodyMedium?.copyWith(
               color: const Color(0xFF5B6E6A),
             ),
@@ -2218,23 +2396,27 @@ class _ArchivedSensorDetail extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: <Widget>[
-                  _KeyValueRow(label: 'Readings', value: '${readings.length}'),
                   _KeyValueRow(
-                    label: 'Started',
+                    label: context.l10n.readings,
+                    value: context.l10n.readingCount(readings.length),
+                  ),
+                  _KeyValueRow(
+                    label: context.l10n.started,
                     value: session.startedAt == null
                         ? '--'
-                        : DateFormat(
-                            'MMM d, y HH:mm',
-                          ).format(session.startedAt!),
+                        : _localizedDateTime(context, session.startedAt!),
                   ),
                   _KeyValueRow(
-                    label: 'Ended',
+                    label: context.l10n.ended,
                     value: session.endedAt == null
                         ? '--'
-                        : DateFormat('MMM d, y HH:mm').format(session.endedAt!),
+                        : _localizedDateTime(context, session.endedAt!),
                   ),
                   if (session.model.isNotEmpty)
-                    _KeyValueRow(label: 'Model', value: session.model),
+                    _KeyValueRow(
+                      label: context.l10n.model,
+                      value: session.model,
+                    ),
                 ],
               ),
             ),
@@ -2266,7 +2448,7 @@ class _ArchivedSensorDetail extends StatelessWidget {
                 ),
               ),
               icon: const Icon(Icons.insights_rounded),
-              label: const Text('Recap this sensor'),
+              label: Text(context.l10n.recapThisSensor),
             ),
           ],
           if (rawReadings.isNotEmpty) ...<Widget>[
@@ -2294,7 +2476,7 @@ class _ArchivedSensorDetail extends StatelessWidget {
                     );
                   },
                   icon: const Icon(Icons.ios_share_rounded),
-                  label: const Text('Export data'),
+                  label: Text(context.l10n.exportData),
                 ),
               ),
             ),
@@ -2328,38 +2510,34 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
   }
   final rangeStart = firstReadingAt ?? session.startedAt;
   final rangeEnd = lastReadingAt ?? session.lastReadingAt ?? session.endedAt;
-  final dateFormat = DateFormat('MMM d, y · HH:mm');
   final dateRange = rangeStart == null || rangeEnd == null
-      ? 'Date range unavailable'
-      : '${dateFormat.format(rangeStart.toLocal())} – '
-            '${dateFormat.format(rangeEnd.toLocal())}';
+      ? context.l10n.dateRangeUnavailable
+      : '${_localizedDateTime(context, rangeStart)} – '
+            '${_localizedDateTime(context, rangeEnd)}';
   var selectedFormat = ArchivedSensorExportFormat.csv;
   return showDialog<ArchivedSensorExportFormat>(
     context: context,
     builder: (dialogContext) => StatefulBuilder(
       builder: (dialogContext, setDialogState) => AlertDialog(
-        title: const Text('Export archived sensor data'),
+        title: Text(context.l10n.exportArchivedSensorData),
         content: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Text('${readings.length} stored glucose readings'),
+              Text(context.l10n.storedGlucoseReadings(readings.length)),
               if (hiddenWarmupCount > 0) ...<Widget>[
                 const SizedBox(height: 4),
                 Text(
-                  '$hiddenWarmupCount warmup '
-                  '${hiddenWarmupCount == 1 ? 'reading is' : 'readings are'} '
-                  'included for a complete export. These remain hidden from '
-                  'charts, recaps, and Apple Health.',
+                  context.l10n.hiddenWarmupDisclosure(hiddenWarmupCount),
                   key: const ValueKey<String>('archivedExportWarmupDisclosure'),
                 ),
               ],
               const SizedBox(height: 4),
               Text(dateRange),
               const SizedBox(height: 18),
-              const Text(
-                'File format',
+              Text(
+                context.l10n.fileFormat,
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
@@ -2400,19 +2578,19 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
                 ),
               ),
               const SizedBox(height: 8),
-              Text(_archivedSensorFormatDescription(selectedFormat)),
+              Text(_archivedSensorFormatDescription(context, selectedFormat)),
               const SizedBox(height: 18),
-              const Text(
-                'Included in the file',
+              Text(
+                context.l10n.includedInFile,
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
-              const Text('• Glucose values in mg/dL and mmol/L'),
-              const Text('• Reading times, source, and sensor minute'),
-              const Text('• Raw quality fields and provisional state'),
-              const Text('• Archive reason and session timing'),
+              Text(context.l10n.exportIncludesGlucose),
+              Text(context.l10n.exportIncludesTiming),
+              Text(context.l10n.exportIncludesQuality),
+              Text(context.l10n.exportIncludesArchive),
               const SizedBox(height: 14),
-              const Row(
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Icon(
@@ -2422,10 +2600,7 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
                   ),
                   SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      'Sensor serials, device IDs, and storage identifiers '
-                      'are not included.',
-                    ),
+                    child: Text(context.l10n.exportExcludesIdentity),
                   ),
                 ],
               ),
@@ -2435,12 +2610,16 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
         actions: <Widget>[
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
+            child: Text(context.l10n.cancel),
           ),
           FilledButton(
             key: const ValueKey<String>('confirmArchivedSensorExport'),
             onPressed: () => Navigator.of(dialogContext).pop(selectedFormat),
-            child: Text('Share ${selectedFormat.extension.toUpperCase()}'),
+            child: Text(
+              context.l10n.shareFormat(
+                selectedFormat.extension.toUpperCase(),
+              ),
+            ),
           ),
         ],
       ),
@@ -2448,15 +2627,14 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
   );
 }
 
-String _archivedSensorFormatDescription(ArchivedSensorExportFormat format) =>
-    switch (format) {
-      ArchivedSensorExportFormat.csv =>
-        'Best for importing into most spreadsheet and analysis apps.',
-      ArchivedSensorExportFormat.txt =>
-        'A tab-separated plain-text file that is easy to inspect anywhere.',
-      ArchivedSensorExportFormat.xlsx =>
-        'A real Excel workbook with glucose measurements stored as numbers.',
-    };
+String _archivedSensorFormatDescription(
+  BuildContext context,
+  ArchivedSensorExportFormat format,
+) => switch (format) {
+  ArchivedSensorExportFormat.csv => context.l10n.csvExportDescription,
+  ArchivedSensorExportFormat.txt => context.l10n.txtExportDescription,
+  ArchivedSensorExportFormat.xlsx => context.l10n.xlsxExportDescription,
+};
 
 Future<void> _exportArchivedSensorData(
   BuildContext context, {
@@ -2465,6 +2643,7 @@ Future<void> _exportArchivedSensorData(
   required List<CgmReading> readings,
 }) async {
   final share = _ArchivedSensorShareScope.of(context);
+  final localizedTitle = context.l10n.exportArchivedSensorData;
   final renderBox = context.findRenderObject() as RenderBox?;
   final shareOrigin = renderBox == null
       ? null
@@ -2488,6 +2667,7 @@ Future<void> _exportArchivedSensorData(
       buildArchivedSensorShareParams(
         file: exportFile,
         filename: filename,
+        localizedTitle: localizedTitle,
         sharePositionOrigin: shareOrigin,
       ),
     );
@@ -2496,8 +2676,8 @@ Future<void> _exportArchivedSensorData(
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('The archived sensor data could not be exported.'),
+      SnackBar(
+        content: Text(context.l10n.archivedSensorExportFailed),
       ),
     );
   } finally {
@@ -2505,11 +2685,13 @@ Future<void> _exportArchivedSensorData(
   }
 }
 
-String _archiveReasonLabel(SensorArchiveReason reason) => switch (reason) {
-  SensorArchiveReason.expired => 'Expired',
-  SensorArchiveReason.replaced => 'Replaced',
-  SensorArchiveReason.disconnected => 'Disconnected',
-};
+String _archiveReasonLabel(BuildContext context, SensorArchiveReason reason) =>
+    switch (reason) {
+      SensorArchiveReason.expired => context.l10n.archiveReasonExpired,
+      SensorArchiveReason.replaced => context.l10n.archiveReasonReplaced,
+      SensorArchiveReason.disconnected =>
+        context.l10n.archiveReasonDisconnected,
+    };
 
 class _PrivacyDataPane extends StatelessWidget {
   const _PrivacyDataPane();
@@ -2519,13 +2701,11 @@ class _PrivacyDataPane extends StatelessWidget {
     final isMacosPreview =
         !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
     final storageTitle = isMacosPreview
-        ? 'Stored in this Mac app container'
-        : 'Stored on this iPhone';
+        ? context.l10n.storedInMacAppContainer
+        : context.l10n.storedOnIphone;
     final storageDescription = isMacosPreview
-        ? 'Sensor identity and glucose history remain local. Backup exclusion '
-              "is not verified for this preview; check this Mac's backup policy."
-        : 'Sensor identity and glucose history remain local and are excluded '
-              'from device backups.';
+        ? context.l10n.localDataMacDescription
+        : context.l10n.localDataIphoneDescription;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: <Widget>[
@@ -2539,12 +2719,12 @@ class _PrivacyDataPane extends StatelessWidget {
           title: Text(storageTitle),
           subtitle: Text(storageDescription),
         ),
-        const ListTile(
+        ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.cloud_off_rounded),
-          title: Text('No OpenGlucose cloud'),
+          leading: const Icon(Icons.cloud_off_rounded),
+          title: Text(context.l10n.noOpenGlucoseCloud),
           subtitle: Text(
-            'Data leaves the app only when you explicitly enable an integration.',
+            context.l10n.noOpenGlucoseCloudDescription,
           ),
         ),
       ],
@@ -2574,12 +2754,13 @@ class _AboutPane extends StatelessWidget {
           ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 6),
-        const Text('Version 0.0.1', textAlign: TextAlign.center),
+        Text(
+          context.l10n.appVersion('0.1.5 (27)'),
+          textAlign: TextAlign.center,
+        ),
         const SizedBox(height: 20),
-        const Text(
-          'A local-first, open-source wellness app for viewing your own glucose '
-          'data. OpenGlucose is not a medical device and does not provide '
-          'diagnosis or treatment advice.',
+        Text(
+          context.l10n.aboutAppDescription,
           textAlign: TextAlign.center,
         ),
       ],
@@ -2600,7 +2781,7 @@ Widget _buildDisplaySettingsPane({
     padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
     children: <Widget>[
       Text(
-        'Display settings',
+        context.l10n.displaySettings,
         style: Theme.of(
           context,
         ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
@@ -2608,12 +2789,12 @@ Widget _buildDisplaySettingsPane({
       const SizedBox(height: 16),
       DropdownButtonFormField<GlucoseUnit>(
         initialValue: working.unit,
-        decoration: const InputDecoration(labelText: 'Unit'),
+        decoration: InputDecoration(labelText: context.l10n.unit),
         items: GlucoseUnit.values
             .map(
               (value) => DropdownMenuItem<GlucoseUnit>(
                 value: value,
-                child: Text(value.label),
+                child: Text(_glucoseUnitLabel(context, value)),
               ),
             )
             .toList(growable: false),
@@ -2623,12 +2804,12 @@ Widget _buildDisplaySettingsPane({
       const SizedBox(height: 12),
       DropdownButtonFormField<ChartStyle>(
         initialValue: working.chartStyle,
-        decoration: const InputDecoration(labelText: 'Chart style'),
+        decoration: InputDecoration(labelText: context.l10n.chartStyle),
         items: ChartStyle.values
             .map(
               (value) => DropdownMenuItem<ChartStyle>(
                 value: value,
-                child: Text(value.name),
+                child: Text(_chartStyleLabel(context, value)),
               ),
             )
             .toList(growable: false),
@@ -2645,8 +2826,8 @@ Widget _buildDisplaySettingsPane({
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: const InputDecoration(
-                labelText: 'Target low (mg/dL)',
+              decoration: InputDecoration(
+                labelText: context.l10n.targetLowMgdl,
               ),
             ),
           ),
@@ -2657,8 +2838,8 @@ Widget _buildDisplaySettingsPane({
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: const InputDecoration(
-                labelText: 'Target high (mg/dL)',
+              decoration: InputDecoration(
+                labelText: context.l10n.targetHighMgdl,
               ),
             ),
           ),
@@ -2680,8 +2861,8 @@ Widget _buildDisplaySettingsPane({
                   targetLow <= 0 ||
                   targetHigh <= targetLow) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Enter an increasing target glucose range.'),
+                  SnackBar(
+                    content: Text(context.l10n.targetRangeInvalid),
                   ),
                 );
                 return;
@@ -2694,13 +2875,22 @@ Widget _buildDisplaySettingsPane({
               );
               Navigator.of(context).pop();
             },
-            child: const Text('Save settings'),
+            child: Text(context.l10n.saveSettings),
           ),
         ],
       ),
     ],
   );
 }
+
+String _glucoseUnitLabel(BuildContext _, GlucoseUnit unit) => unit.label;
+
+String _chartStyleLabel(BuildContext context, ChartStyle style) =>
+    switch (style) {
+      ChartStyle.line => context.l10n.line,
+      ChartStyle.dots => context.l10n.dots,
+      ChartStyle.candles => context.l10n.candles,
+    };
 
 Widget _buildSensorSettingsPane(
   BuildContext context,
@@ -2734,11 +2924,9 @@ Widget _buildSensorSettingsPane(
         Card(
           child: SwitchListTile.adaptive(
             key: const ValueKey<String>('sensitiveLiveActivityContentToggle'),
-            title: const Text('Show glucose in live notification'),
-            subtitle: const Text(
-              'Allows glucose values, trends, and update times to appear in '
-              'the Android live notification or iOS Live Activity. Anyone '
-              'who can view your lock screen may see this health data.',
+            title: Text(context.l10n.showGlucoseInLiveNotification),
+            subtitle: Text(
+              context.l10n.showGlucoseInLiveNotificationDescription,
             ),
             value: controller.sensitiveLiveActivityContentEnabled,
             onChanged: controller.liveActivityPrivacyUpdateInFlight
@@ -2753,24 +2941,33 @@ Widget _buildSensorSettingsPane(
       ],
       const SizedBox(height: 18),
       Text(
-        'Sensor details',
+        context.l10n.sensorDetails,
         style: Theme.of(
           context,
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 8),
-      _KeyValueRow(label: 'Serial', value: snapshot.sessionInfo.serial),
-      _KeyValueRow(label: 'Model', value: snapshot.sessionInfo.model),
-      _KeyValueRow(label: 'Firmware', value: snapshot.sessionInfo.firmware),
       _KeyValueRow(
-        label: 'Sensor start',
-        value: sessionStart == null
-            ? '--'
-            : DateFormat('MMM d, HH:mm').format(sessionStart.toLocal()),
+        label: context.l10n.serial,
+        value: snapshot.sessionInfo.serial,
       ),
       _KeyValueRow(
-        label: 'History',
-        value: '${snapshot.history.length} reading(s)',
+        label: context.l10n.model,
+        value: snapshot.sessionInfo.model,
+      ),
+      _KeyValueRow(
+        label: context.l10n.firmware,
+        value: snapshot.sessionInfo.firmware,
+      ),
+      _KeyValueRow(
+        label: context.l10n.sensorStart,
+        value: sessionStart == null
+            ? '--'
+            : _localizedShortDateTime(context, sessionStart),
+      ),
+      _KeyValueRow(
+        label: context.l10n.history,
+        value: context.l10n.readingCount(snapshot.history.length),
       ),
       const SizedBox(height: 18),
       Wrap(
@@ -2804,9 +3001,9 @@ Widget _buildSensorSettingsPane(
             child: Text(
               hasInterruptedTransfer
                   ? canAcknowledgeInterruptedTransfer
-                        ? 'Review interrupted move'
-                        : 'Move needs support'
-                  : 'Disconnect',
+                        ? context.l10n.reviewSelectedInterruptedMove
+                        : context.l10n.moveNeedsSupport
+                  : context.l10n.disconnect,
             ),
           ),
           if (supportsAndroidSensorTransfer &&
@@ -2820,17 +3017,15 @@ Widget _buildSensorSettingsPane(
                     )
                   : null,
               icon: const Icon(Icons.phonelink_erase_rounded),
-              label: const Text('Move sensor to another phone'),
+              label: Text(context.l10n.moveSensorToAnotherPhone),
             ),
         ],
       ),
       if (hasInterruptedTransfer &&
           !canAcknowledgeInterruptedTransfer) ...<Widget>[
         const SizedBox(height: 12),
-        const Text(
-          'The sensor response is unknown. Do not reconnect, forget the '
-          'Android bond, disconnect, or retry. Contact support for a reviewed '
-          'recovery.',
+        Text(
+          context.l10n.unknownSensorResponse,
           style: TextStyle(color: Color(0xFF9A4D00), height: 1.35),
         ),
       ],
@@ -2845,22 +3040,17 @@ Future<void> _confirmInterruptedSelectedSensorTransferRecovery(
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('Review interrupted sensor move'),
-      content: const Text(
-        'Open Android Bluetooth settings. Confirm that the sensor is not '
-        'listed as paired. If it is listed, choose Forget first. Continuing '
-        'clears the app safety marker and archives this selection. It does '
-        'not contact the sensor or change a Bluetooth bond.',
-      ),
+      title: Text(context.l10n.reviewInterruptedSensorMove),
+      content: Text(context.l10n.interruptedSelectedSensorMoveReview),
       actions: <Widget>[
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           key: const ValueKey<String>('confirmSelectedInterruptedMoveRecovery'),
           onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: const Text('I checked Bluetooth'),
+          child: Text(context.l10n.checkedBluetooth),
         ),
       ],
     ),
@@ -2879,7 +3069,7 @@ Future<void> _confirmInterruptedSelectedSensorTransferRecovery(
         SnackBar(
           content: Text(
             controller.lastError ??
-                'The interrupted sensor move could not be cleared.',
+                context.l10n.interruptedSensorMoveCouldNotClear,
           ),
         ),
       );
@@ -2899,7 +3089,7 @@ Future<void> _confirmAndMoveSensorToAnotherPhone(
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            controller.lastError ?? 'The sensor cannot be moved safely.',
+            controller.lastError ?? context.l10n.sensorCannotMoveSafely,
           ),
         ),
       );
@@ -2916,28 +3106,23 @@ Future<void> _confirmAndMoveSensorToAnotherPhone(
     builder: (dialogContext) => AlertDialog(
       title: Text(
         removesAllBonds
-            ? 'Remove all sensor phone bonds?'
-            : 'Move sensor to another phone?',
+            ? context.l10n.removeAllSensorPhoneBonds
+            : context.l10n.moveSensorToAnotherPhoneQuestion,
       ),
       content: Text(
         removesAllBonds
-            ? 'This sensor only supports removing every phone bond stored by '
-                  'the transmitter. It will disconnect from this phone and '
-                  'all other phones. The sensor session is not reset. Keep '
-                  'the sensor close and do not retry if an error appears.'
-            : "This removes this phone's bond from the sensor and Android, "
-                  'then disconnects. The sensor session is not reset. Keep '
-                  'the sensor close and do not retry if an error appears.',
+            ? context.l10n.removeAllSensorPhoneBondsDescription
+            : context.l10n.moveSensorToAnotherPhoneDescription,
       ),
       actions: <Widget>[
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           key: const ValueKey<String>('confirmMoveSensorButton'),
           onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: const Text('Move sensor'),
+          child: Text(context.l10n.moveSensor),
         ),
       ],
     ),
@@ -2950,8 +3135,8 @@ Future<void> _confirmAndMoveSensorToAnotherPhone(
     await controller.moveSensorToAnotherPhone(plan);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Sensor is ready to pair with another phone.'),
+        SnackBar(
+          content: Text(context.l10n.sensorReadyToPairAnotherPhone),
         ),
       );
     }
@@ -2960,13 +3145,49 @@ Future<void> _confirmAndMoveSensorToAnotherPhone(
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            controller.lastError ??
-                'Sensor transfer stopped. Do not retry automatically.',
+            controller.lastError ?? context.l10n.sensorTransferStopped,
           ),
         ),
       );
     }
   }
+}
+
+String _mockScenarioLabel(BuildContext context, MockScenario scenario) {
+  final l10n = context.l10n;
+  return switch (scenario) {
+    MockScenario.warmup => l10n.scenarioWarmup,
+    MockScenario.activeNormal => l10n.scenarioActiveNormal,
+    MockScenario.activeHigh => l10n.scenarioActiveHigh,
+    MockScenario.activeLow => l10n.scenarioActiveLow,
+    MockScenario.rapidRise => l10n.scenarioRapidRise,
+    MockScenario.rapidFall => l10n.scenarioRapidFall,
+    MockScenario.expiringSoon => l10n.scenarioExpiringSoon,
+    MockScenario.expired => l10n.scenarioExpired,
+    MockScenario.signalLoss => l10n.scenarioSignalLoss,
+    MockScenario.disconnected => l10n.scenarioDisconnected,
+    MockScenario.multiSensorHistory => l10n.scenarioMultiSensorHistory,
+    MockScenario.error => l10n.scenarioError,
+  };
+}
+
+String _mockScenarioDescription(BuildContext context, MockScenario scenario) {
+  final l10n = context.l10n;
+  return switch (scenario) {
+    MockScenario.warmup => l10n.scenarioWarmupDescription,
+    MockScenario.activeNormal => l10n.scenarioActiveNormalDescription,
+    MockScenario.activeHigh => l10n.scenarioActiveHighDescription,
+    MockScenario.activeLow => l10n.scenarioActiveLowDescription,
+    MockScenario.rapidRise => l10n.scenarioRapidRiseDescription,
+    MockScenario.rapidFall => l10n.scenarioRapidFallDescription,
+    MockScenario.expiringSoon => l10n.scenarioExpiringSoonDescription,
+    MockScenario.expired => l10n.scenarioExpiredDescription,
+    MockScenario.signalLoss => l10n.scenarioSignalLossDescription,
+    MockScenario.disconnected => l10n.scenarioDisconnectedDescription,
+    MockScenario.multiSensorHistory =>
+      l10n.scenarioMultiSensorHistoryDescription,
+    MockScenario.error => l10n.scenarioErrorDescription,
+  };
 }
 
 Widget _buildDeveloperSettingsPane({
@@ -2995,7 +3216,7 @@ Widget _buildDeveloperSettingsPane({
     padding: const EdgeInsets.all(20),
     children: <Widget>[
       Text(
-        'Developer',
+        context.l10n.developer,
         style: Theme.of(
           context,
         ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
@@ -3003,7 +3224,7 @@ Widget _buildDeveloperSettingsPane({
       const SizedBox(height: 16),
       if (controller.isMockDriver) ...<Widget>[
         Text(
-          'Mock scenario',
+          context.l10n.mockScenario,
           style: Theme.of(
             context,
           ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
@@ -3013,14 +3234,14 @@ Widget _buildDeveloperSettingsPane({
           key: const ValueKey<String>('mockScenarioPicker'),
           initialValue: controller.mockScenario ?? MockScenario.activeNormal,
           isExpanded: true,
-          decoration: const InputDecoration(
-            labelText: 'Simulated sensor state',
+          decoration: InputDecoration(
+            labelText: context.l10n.simulatedSensorState,
           ),
           items: MockScenario.values
               .map(
                 (scenario) => DropdownMenuItem<MockScenario>(
                   value: scenario,
-                  child: Text(scenario.label),
+                  child: Text(_mockScenarioLabel(context, scenario)),
                 ),
               )
               .toList(growable: false),
@@ -3032,7 +3253,10 @@ Widget _buildDeveloperSettingsPane({
         ),
         const SizedBox(height: 6),
         Text(
-          (controller.mockScenario ?? MockScenario.activeNormal).description,
+          _mockScenarioDescription(
+            context,
+            controller.mockScenario ?? MockScenario.activeNormal,
+          ),
           style: Theme.of(
             context,
           ).textTheme.bodyMedium?.copyWith(color: const Color(0xFF5B6E6A)),
@@ -3040,14 +3264,14 @@ Widget _buildDeveloperSettingsPane({
         const Divider(height: 28),
       ],
       Text(
-        'Engineering controls',
+        context.l10n.engineeringControls,
         style: Theme.of(
           context,
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 6),
-      const Text(
-        'Advanced corrections for diagnostics and sensor-data troubleshooting.',
+      Text(
+        context.l10n.engineeringControlsDescription,
         style: TextStyle(color: Color(0xFF5B6E6A)),
       ),
       const SizedBox(height: 12),
@@ -3055,19 +3279,19 @@ Widget _buildDeveloperSettingsPane({
         key: const ValueKey<String>('advancedCalibrationScale'),
         controller: scaleController,
         keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: const InputDecoration(labelText: 'Calibration scale'),
+        decoration: InputDecoration(labelText: context.l10n.calibrationScale),
       ),
       const SizedBox(height: 12),
       TextField(
         controller: offsetController,
         keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: const InputDecoration(labelText: 'Calibration offset'),
+        decoration: InputDecoration(labelText: context.l10n.calibrationOffset),
       ),
       const SizedBox(height: 12),
       TextField(
         controller: cropController,
         keyboardType: TextInputType.number,
-        decoration: const InputDecoration(labelText: 'Crop first N samples'),
+        decoration: InputDecoration(labelText: context.l10n.cropFirstSamples),
       ),
       const SizedBox(height: 14),
       Wrap(
@@ -3087,8 +3311,8 @@ Widget _buildDeveloperSettingsPane({
                   scale <= 0 ||
                   crop < 0) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Enter valid engineering correction values.'),
+                  SnackBar(
+                    content: Text(context.l10n.engineeringValuesInvalid),
                   ),
                 );
                 return;
@@ -3101,10 +3325,10 @@ Widget _buildDeveloperSettingsPane({
                 ),
               );
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Engineering settings saved.')),
+                SnackBar(content: Text(context.l10n.engineeringSettingsSaved)),
               );
             },
-            child: const Text('Save engineering settings'),
+            child: Text(context.l10n.saveEngineeringSettings),
           ),
           if (!controller.isMockDriver)
             OutlinedButton(
@@ -3112,21 +3336,20 @@ Widget _buildDeveloperSettingsPane({
               onPressed: () => unawaited(
                 _confirmClearActiveSensorCache(context, controller),
               ),
-              child: const Text('Clear active sensor cache'),
+              child: Text(context.l10n.clearActiveSensorCache),
             ),
         ],
       ),
       if (!controller.isMockDriver) ...<Widget>[
         const SizedBox(height: 8),
-        const Text(
-          'Clears only the active sensor’s local cache. Sensor archive is not '
-          'deleted, and available readings may download again from the sensor.',
+        Text(
+          context.l10n.clearActiveSensorCacheDescription,
           style: TextStyle(color: Color(0xFF5B6E6A)),
         ),
       ],
       const Divider(height: 28),
       Text(
-        'Metadata',
+        context.l10n.metadata,
         style: Theme.of(
           context,
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
@@ -3135,14 +3358,14 @@ Widget _buildDeveloperSettingsPane({
       for (final entry in metadataEntries) _MetadataRow(entry: entry),
       const SizedBox(height: 16),
       Text(
-        'Diagnostics',
+        context.l10n.diagnostics,
         style: Theme.of(
           context,
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 8),
       if (diagnostics.isEmpty)
-        const Text('No diagnostics loaded yet.')
+        Text(context.l10n.noDiagnosticsLoaded)
       else
         for (final item in diagnostics) ...<Widget>[
           Text(item.title, style: const TextStyle(fontWeight: FontWeight.w800)),
@@ -3168,14 +3391,14 @@ Widget _buildDeveloperSettingsPane({
           const Divider(height: 28),
         ],
       Text(
-        'Calibrations',
+        context.l10n.calibrations,
         style: Theme.of(
           context,
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 8),
       if (calibrations.isEmpty)
-        const Text('No calibration entries loaded.')
+        Text(context.l10n.noCalibrationEntries)
       else
         for (final entry in calibrations)
           Padding(
@@ -3186,14 +3409,14 @@ Widget _buildDeveloperSettingsPane({
           ),
       const SizedBox(height: 16),
       Text(
-        'Logs',
+        context.l10n.logs,
         style: Theme.of(
           context,
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 8),
       if (logs.isEmpty)
-        const Text('No logs yet.')
+        Text(context.l10n.noLogs)
       else
         for (final entry in logs) ...<Widget>[
           Row(
@@ -3229,19 +3452,16 @@ Future<void> _confirmClearActiveSensorCache(
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text('Clear active sensor cache?'),
-      content: const Text(
-        'This removes only the locally cached history for the active sensor. '
-        'Archived sensors are kept, and available readings may download again.',
-      ),
+      title: Text(context.l10n.clearActiveSensorCacheQuestion),
+      content: Text(context.l10n.clearActiveSensorCacheReview),
       actions: <Widget>[
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
+          child: Text(context.l10n.cancel),
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Clear cache'),
+          child: Text(context.l10n.clearCache),
         ),
       ],
     ),
@@ -3257,8 +3477,8 @@ Future<void> _confirmClearActiveSensorCache(
     SnackBar(
       content: Text(
         cleared
-            ? 'Active sensor cache cleared.'
-            : 'No active sensor cache was cleared.',
+            ? context.l10n.activeSensorCacheCleared
+            : context.l10n.noActiveSensorCacheCleared,
       ),
     ),
   );

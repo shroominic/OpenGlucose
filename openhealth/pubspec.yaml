@@ -12,6 +12,8 @@ dependencies:
   crypto: ^3.0.7
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   cgm_aidex:
     path: ../packages/cgm_aidex
   cgm_ble:
@@ -20,7 +22,8 @@ dependencies:
     path: ../packages/cgm_ble_flutter
   cgm_core:
     path: ../packages/cgm_core
-  intl: ^0.20.3
+  # Kept aligned with the Flutter SDK's flutter_localizations pin.
+  intl: ^0.20.2
   path_provider: ^2.1.5
   share_plus: ^12.0.2
   shared_preferences: ^2.5.3
@@ -51,6 +54,7 @@ dev_dependencies:
   sqlite3: 2.9.4
 
 flutter:
+  generate: true
   uses-material-design: true
   assets:
     - assets/icon/logo.png

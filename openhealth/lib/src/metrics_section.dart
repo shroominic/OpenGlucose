@@ -1,6 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
+import 'app_localizations_extension.dart';
 import 'display_preferences.dart';
 
 /// Explainable, wellness-framed metrics section for the dashboard.
@@ -39,6 +40,7 @@ class _MetricsSectionState extends State<MetricsSection> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     final stats = GlucoseAnalytics.summarize(
       widget.readings,
       timeframe: _timeframe,
@@ -61,7 +63,7 @@ class _MetricsSectionState extends State<MetricsSection> {
               children: <Widget>[
                 Expanded(
                   child: Text(
-                    'Patterns',
+                    l10n.patterns,
                     style: theme.textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.w900,
                     ),
@@ -75,7 +77,7 @@ class _MetricsSectionState extends State<MetricsSection> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Observations for self-experimentation, not medical metrics.',
+              l10n.patternsDescription,
               style: theme.textTheme.bodySmall?.copyWith(color: _muted),
             ),
             const SizedBox(height: 14),
@@ -85,52 +87,49 @@ class _MetricsSectionState extends State<MetricsSection> {
               Column(
                 children: <Widget>[
                   _MetricRow(
-                    label: 'Time in range',
+                    label: l10n.timeInRange,
                     value: '${stats.timeInRangePercent.round()}%',
-                    explanation:
-                        'Share of readings between '
-                        '${_formatGlucose(stats.bounds.lowMgdl)} and '
-                        '${_formatGlucose(stats.bounds.highMgdl)}.',
+                    explanation: l10n.timeInRangeExplanation(
+                      _formatGlucose(stats.bounds.lowMgdl),
+                      _formatGlucose(stats.bounds.highMgdl),
+                    ),
                   ),
                   _MetricRow(
-                    label: 'Below / above',
+                    label: l10n.belowAbove,
                     value:
                         '${stats.timeBelowRangePercent.round()}% / '
                         '${stats.timeAboveRangePercent.round()}%',
-                    explanation:
-                        'How often readings sat under the low or over '
-                        'the high mark.',
+                    explanation: l10n.belowAboveExplanation,
                   ),
                   _MetricRow(
-                    label: 'Average',
+                    label: l10n.average,
                     value: _formatGlucose(stats.averageMgdl!),
-                    explanation: 'Mean of all readings in this window.',
+                    explanation: l10n.averageExplanation,
                   ),
                   _MetricRow(
-                    label: 'Variability (CV)',
+                    label: l10n.variabilityCv,
                     value: stats.coefficientOfVariationPercent == null
-                        ? 'Unavailable'
+                        ? l10n.unavailable
                         : '${stats.coefficientOfVariationPercent!.toStringAsFixed(0)}%',
-                    explanation:
-                        'How spread out readings are around the average '
-                        '(SD ${stats.standardDeviationMgdl == null ? 'unavailable' : _formatGlucose(stats.standardDeviationMgdl!)}). '
-                        'Lower looks steadier.',
+                    explanation: l10n.variabilityExplanation(
+                      stats.standardDeviationMgdl == null
+                          ? l10n.unavailable
+                          : _formatGlucose(stats.standardDeviationMgdl!),
+                    ),
                   ),
                   if (_timeframe == AnalyticsTimeframe.last14d)
                     _MetricRow(
-                      label: 'Estimated GMI',
+                      label: l10n.estimatedGmi,
                       value:
                           '~${stats.estimatedGmiPercent!.toStringAsFixed(1)}%',
-                      explanation:
-                          'A rough indicator derived from 14-day average '
-                          'glucose. Not a lab result.',
+                      explanation: l10n.estimatedGmiExplanation,
                     ),
                   _MetricRow(
-                    label: 'Spikes',
+                    label: l10n.spikes,
                     value: '${stats.spikeCount}',
-                    explanation:
-                        'Times readings rose past '
-                        '${_formatGlucose(stats.bounds.highMgdl)}.',
+                    explanation: l10n.spikesExplanation(
+                      _formatGlucose(stats.bounds.highMgdl),
+                    ),
                     isLast: true,
                   ),
                 ],
@@ -150,6 +149,7 @@ class _InsufficientCoverage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     return Container(
       key: const ValueKey<String>('patternsInsufficientData'),
       padding: const EdgeInsets.all(14),
@@ -168,12 +168,13 @@ class _InsufficientCoverage extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Not enough readings in this ${coverage.timeframe.label} '
-              'window yet. ${coverage.readingCount} readings across '
-              '${coverage.activeDays} ${coverage.activeDays == 1 ? 'day' : 'days'}; '
-              'patterns appear after at least ${coverage.minimumReadings} '
-              'readings across ${coverage.minimumActiveDays} '
-              '${coverage.minimumActiveDays == 1 ? 'day' : 'days'}.',
+              l10n.patternsInsufficientCoverage(
+                _analyticsTimeframeLabel(context, coverage.timeframe),
+                coverage.readingCount,
+                coverage.activeDays,
+                coverage.minimumReadings,
+                coverage.minimumActiveDays,
+              ),
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: _MetricsSectionState._muted,
                 height: 1.35,
@@ -203,7 +204,7 @@ class _TimeframeSelector extends StatelessWidget {
         for (final timeframe in AnalyticsTimeframe.values)
           ButtonSegment<AnalyticsTimeframe>(
             value: timeframe,
-            label: Text(timeframe.label),
+            label: Text(_analyticsTimeframeLabel(context, timeframe)),
           ),
       ],
       selected: <AnalyticsTimeframe>{value},
@@ -211,6 +212,18 @@ class _TimeframeSelector extends StatelessWidget {
       onSelectionChanged: (selection) => onChanged(selection.first),
     );
   }
+}
+
+String _analyticsTimeframeLabel(
+  BuildContext context,
+  AnalyticsTimeframe timeframe,
+) {
+  final l10n = context.l10n;
+  return switch (timeframe) {
+    AnalyticsTimeframe.last24h => l10n.timeframeHoursShort(24),
+    AnalyticsTimeframe.last7d => l10n.timeframeDaysShort(7),
+    AnalyticsTimeframe.last14d => l10n.timeframeDaysShort(14),
+  };
 }
 
 class _MetricRow extends StatelessWidget {

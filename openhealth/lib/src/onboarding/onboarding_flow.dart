@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
+import 'package:openglucose/src/app_localizations_extension.dart';
 
 import 'onboarding_store.dart';
 
@@ -112,14 +113,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   controller: _pageController,
                   onPageChanged: (value) => setState(() => _page = value),
                   children: <Widget>[
-                    const _WelcomeStep(),
-                    const _HowItWorksStep(),
+                    _WelcomeStep(),
+                    _HowItWorksStep(),
                     _TargetRangeStep(
                       unit: widget.unit,
                       rangeMgdl: _rangeMgdl,
                       onChanged: (value) => setState(() => _rangeMgdl = value),
                     ),
-                    const _ConnectStep(),
+                    _ConnectStep(),
                   ],
                 ),
               ),
@@ -159,7 +160,7 @@ class _TopBar extends StatelessWidget {
                     key: const ValueKey<String>('onboardingSkipButton'),
                     onPressed: onSkip,
                     style: TextButton.styleFrom(foregroundColor: _kMuted),
-                    child: const Text('Skip'),
+                    child: Text(context.l10n.skip),
                   ),
           ),
         ],
@@ -217,7 +218,11 @@ class _Footer extends StatelessWidget {
                         color: Colors.white,
                       ),
                     )
-                  : Text(isLast ? 'Connect my sensor' : 'Continue'),
+                  : Text(
+                      isLast
+                          ? context.l10n.connectMySensor
+                          : context.l10n.continueLabel,
+                    ),
             ),
           ),
         ],
@@ -396,30 +401,24 @@ class _WelcomeStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const _StepScaffold(
+    final l10n = context.l10n;
+    return _StepScaffold(
       icon: Icons.favorite_rounded,
-      title: 'Welcome to OpenGlucose',
-      body:
-          'An open-source, local-first way to watch your glucose. Built for '
-          'wellness, sport and self-experimentation — not as a medical '
-          'device.',
+      title: l10n.welcomeTitle,
+      body: l10n.welcomeBody,
       bullets: <_Bullet>[
         _Bullet(
           icon: Icons.lock_outline_rounded,
-          title: 'Stored locally by default',
-          body:
-              'History stays on this device. Optional HealthKit or AI features '
-              'share data only when you enable them.',
+          title: l10n.storedLocallyTitle,
+          body: l10n.storedLocallyBody,
         ),
         _Bullet(
           icon: Icons.code_rounded,
-          title: 'Open source & hackable',
-          body: 'MIT-licensed. Inspect it, extend it, make it yours.',
+          title: l10n.openSourceTitle,
+          body: l10n.openSourceBody,
         ),
       ],
-      footnote:
-          'OpenGlucose is for wellness and self-experimentation. It is not a '
-          'medical device and not a substitute for medical advice.',
+      footnote: l10n.wellnessDisclaimer,
     );
   }
 }
@@ -429,27 +428,26 @@ class _HowItWorksStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const _StepScaffold(
+    final l10n = context.l10n;
+    return _StepScaffold(
       icon: Icons.sensors_rounded,
-      title: 'How it works',
-      body:
-          'Apply your Aidex X sensor, pair it over Bluetooth, and let it warm '
-          'up. After that, readings stream straight to your phone.',
+      title: l10n.howItWorksTitle,
+      body: l10n.howItWorksBody,
       bullets: <_Bullet>[
         _Bullet(
           icon: Icons.touch_app_rounded,
-          title: 'Apply the sensor',
-          body: 'A small all-in-one sensor you wear for up to 15 days.',
+          title: l10n.applySensorTitle,
+          body: l10n.applySensorBody,
         ),
         _Bullet(
           icon: Icons.hourglass_bottom_rounded,
-          title: '~1 hour warm-up',
-          body: 'The sensor calibrates itself before the first reading.',
+          title: l10n.warmupTitle,
+          body: l10n.warmupBody,
         ),
         _Bullet(
           icon: Icons.timelapse_rounded,
-          title: 'A reading every minute',
-          body: 'Live values and trends, refreshed continuously.',
+          title: l10n.readingEveryMinuteTitle,
+          body: l10n.readingEveryMinuteBody,
         ),
       ],
     );
@@ -481,6 +479,7 @@ class _TargetRangeStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final theme = Theme.of(context);
     final divisions = ((_maxMgdl - _minMgdl) / _stepMgdl).round();
     return SingleChildScrollView(
@@ -500,7 +499,7 @@ class _TargetRangeStep extends StatelessWidget {
           ),
           const SizedBox(height: 28),
           Text(
-            'Set your target range',
+            l10n.targetRangeTitle,
             style: theme.textTheme.headlineMedium?.copyWith(
               fontWeight: FontWeight.w900,
               color: _kInk,
@@ -509,8 +508,7 @@ class _TargetRangeStep extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            'Choose the range you want to stay within. You can change this any '
-            'time in settings.',
+            l10n.targetRangeBody,
             style: theme.textTheme.bodyLarge?.copyWith(
               color: _kMuted,
               height: 1.45,
@@ -595,8 +593,7 @@ class _TargetRangeStep extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(
-            'Most people start with 70–180 mg/dL (about 3.9–10 '
-            'mmol/L).',
+            l10n.targetRangeHint,
             style: theme.textTheme.bodySmall?.copyWith(
               color: _kMuted,
               height: 1.4,
@@ -613,22 +610,21 @@ class _ConnectStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const _StepScaffold(
+    final l10n = context.l10n;
+    return _StepScaffold(
       icon: Icons.bluetooth_searching_rounded,
-      title: "You're all set",
-      body:
-          'Have your Aidex X sensor on and nearby. We’ll scan for it over '
-          'Bluetooth and connect — then your live dashboard takes over.',
+      title: l10n.readyTitle,
+      body: l10n.readyBody,
       bullets: <_Bullet>[
         _Bullet(
           icon: Icons.bluetooth_rounded,
-          title: 'Turn on Bluetooth',
-          body: 'Keep your phone close to the sensor while it pairs.',
+          title: l10n.turnOnBluetoothTitle,
+          body: l10n.turnOnBluetoothBody,
         ),
         _Bullet(
           icon: Icons.show_chart_rounded,
-          title: 'Watch it come alive',
-          body: 'Trends and readings appear as soon as warm-up finishes.',
+          title: l10n.watchItComeAliveTitle,
+          body: l10n.watchItComeAliveBody,
         ),
       ],
     );

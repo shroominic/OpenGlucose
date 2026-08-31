@@ -1,5 +1,6 @@
 import 'package:cgm_core/cgm_core.dart';
 
+import 'app_language_controller.dart';
 import 'display_preferences.dart';
 import 'session_presentation.dart';
 
@@ -18,6 +19,8 @@ class LiveActivityPayload {
     required this.trendSymbol,
     required this.deltaText,
     required this.isStale,
+    this.languageCode = 'en',
+    this.isWarmup = false,
     this.recordedAtIso8601,
   });
 
@@ -34,6 +37,13 @@ class LiveActivityPayload {
   final String trendSymbol;
   final String deltaText;
   final bool isStale;
+
+  /// Explicit app-language override for native surfaces (`en` or `zh`).
+  final String languageCode;
+
+  /// Semantic state. Native redaction must never infer this from translated
+  /// labels such as "Warmup".
+  final bool isWarmup;
   final String? recordedAtIso8601;
 
   Map<String, Object> toMap() => <String, Object>{
@@ -48,6 +58,8 @@ class LiveActivityPayload {
     'trendSymbol': trendSymbol,
     'deltaText': deltaText,
     'isStale': isStale,
+    'languageCode': languageCode,
+    'isWarmup': isWarmup,
     'recordedAtIso8601': ?recordedAtIso8601,
   };
 }
@@ -81,6 +93,7 @@ LiveActivityPayload buildLiveActivityPayload({
   required CgmSessionSnapshot snapshot,
   required CgmReading? latestReading,
   required DisplayPreferences preferences,
+  AppLanguage language = AppLanguage.english,
   DateTime? now,
 }) {
   final effectiveNow = now ?? DateTime.now();
@@ -93,18 +106,23 @@ LiveActivityPayload buildLiveActivityPayload({
     return LiveActivityPayload(
       sensorName: liveSurfaceBrandName,
       stageCode: 'progress',
-      stageLabel: warmupStageLabel(warmup).toUpperCase(),
+      stageLabel: warmupStageLabel(warmup, language: language).toUpperCase(),
       valueText: warmupBigValueText(warmup),
-      unitText: warmup.phase == WarmupPhase.warming ? 'min' : '',
+      unitText: warmup.phase == WarmupPhase.warming
+          ? warmupUnitText(warmup, language: language)
+          : '',
       lastReadingText: '--',
       lifeText: sensorLifeText(
         snapshot.sessionInfo.sessionStart,
         now: effectiveNow,
+        language: language,
       ),
-      detailText: warmupSubtext(warmup),
+      detailText: warmupSubtext(warmup, language: language),
       trendSymbol: '',
       deltaText: '',
       isStale: false,
+      languageCode: language.nativePayloadCode,
+      isWarmup: warmup.phase == WarmupPhase.warming,
     );
   }
   final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
@@ -118,7 +136,11 @@ LiveActivityPayload buildLiveActivityPayload({
       : displayedValue.toStringAsFixed(
           preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
         );
-  final readingTime = readingTimeText(latestReading, now: effectiveNow);
+  final readingTime = readingTimeText(
+    latestReading,
+    now: effectiveNow,
+    language: language,
+  );
   final displayRecordedAt = clampedDisplayRecordedAt(
     latestReading?.recordedAt,
     now: effectiveNow,
@@ -128,14 +150,20 @@ LiveActivityPayload buildLiveActivityPayload({
       effectiveNow.difference(displayRecordedAt) > const Duration(minutes: 10);
   final trend = glucoseTrendSummary(snapshot.history, preferences);
   final stageCode = stageCodeForSnapshot(snapshot);
-  final stageLabel = stageLabelForSnapshot(snapshot);
+  final stageLabel = stageLabelForSnapshot(snapshot, language: language);
   final detailText = snapshot.lastError != null
-      ? 'Attention needed'
+      ? (language == AppLanguage.simplifiedChinese
+            ? '需要注意'
+            : 'Attention needed')
       : readingTime == '--'
       ? (snapshot.historySync.inProgress
-            ? 'Waiting for first reading'
-            : snapshot.statusText)
-      : 'Updated $readingTime';
+            ? (language == AppLanguage.simplifiedChinese
+                  ? '正在等待首次读数'
+                  : 'Waiting for first reading')
+            : stageLabel)
+      : (language == AppLanguage.simplifiedChinese
+            ? '更新于 $readingTime'
+            : 'Updated $readingTime');
 
   return LiveActivityPayload(
     sensorName: liveSurfaceBrandName,
@@ -147,11 +175,13 @@ LiveActivityPayload buildLiveActivityPayload({
     lifeText: sensorLifeText(
       snapshot.sessionInfo.sessionStart,
       now: effectiveNow,
+      language: language,
     ),
     detailText: detailText,
     trendSymbol: trend.symbol,
     deltaText: trend.deltaText,
     isStale: isStale,
+    languageCode: language.nativePayloadCode,
     recordedAtIso8601: displayRecordedAt?.toUtc().toIso8601String(),
   );
 }

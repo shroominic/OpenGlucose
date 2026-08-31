@@ -35,16 +35,145 @@ public final class GlucoseLiveUpdateService extends Service {
       "sensitive_lock_screen_opt_in";
 
   private static final String CHANNEL_ID = "glucose_live_updates";
-  private static final String CHANNEL_NAME = "Live glucose";
   static final String PREF_LAST_PAYLOAD = "last_payload";
   private static final String EXTRA_PAYLOAD = "payload";
   static final int NOTIFICATION_ID = 64102;
   private static final int COLOR_TEAL = 0xFF2E7D74;
 
+  /**
+   * The payload carries the app's resolved language so a manual in-app
+   * language override also applies to an Android system notification.
+   */
+  private enum LiveUpdateLanguage {
+    ENGLISH("en"),
+    SIMPLIFIED_CHINESE("zh");
+
+    final String code;
+
+    LiveUpdateLanguage(String code) {
+      this.code = code;
+    }
+
+    static LiveUpdateLanguage fromPayload(Map<String, Object> payload) {
+      final Object rawValue = payload.get("languageCode");
+      if (rawValue != null && "zh".equalsIgnoreCase(rawValue.toString().trim())) {
+        return SIMPLIFIED_CHINESE;
+      }
+      return ENGLISH;
+    }
+  }
+
+  /**
+   * Native fallback copy. Keep this separate from Flutter's display labels:
+   * stageLabel is translated display text, not a protocol state.
+   */
+  private static final class LiveUpdateText {
+    private LiveUpdateText() {}
+
+    static String channelName(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "实时葡萄糖" : "Live glucose";
+    }
+
+    static String channelDescription(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE
+          ? "CGM 会话进行期间显示实时葡萄糖更新。"
+          : "Live glucose updates while the CGM session is active.";
+    }
+
+    static String sensorWarmingUp(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "传感器预热中" : "Sensor warming up";
+    }
+
+    static String waitingForSensor(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "正在等待传感器" : "Waiting for sensor";
+    }
+
+    static String waitingForGlucoseUpdate(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE
+          ? "正在等待葡萄糖更新"
+          : "Waiting for glucose update";
+    }
+
+    static String connecting(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "正在连接" : "Connecting";
+    }
+
+    static String error(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "出错" : "Error";
+    }
+
+    static String stale(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "数据已过时" : "Stale";
+    }
+
+    static String liveGlucose(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "实时葡萄糖" : "Live glucose";
+    }
+
+    static String openAppToViewGlucose(LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE
+          ? "打开应用查看你的葡萄糖读数"
+          : "Open the app to view your glucose";
+    }
+
+    static String updated(String time, LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE ? "更新于 " + time : "Updated " + time;
+    }
+
+    static String warmupTitle(int minutes, LiveUpdateLanguage language) {
+      return language == LiveUpdateLanguage.SIMPLIFIED_CHINESE
+          ? minutes + " 分钟"
+          : minutes + " min";
+    }
+
+    static String stageLabel(
+        String stageCode, boolean isWarmup, LiveUpdateLanguage language) {
+      if (isWarmup) {
+        return sensorWarmingUp(language);
+      }
+      if ("live".equals(stageCode)) {
+        return liveGlucose(language);
+      }
+      if ("error".equals(stageCode)) {
+        return error(language);
+      }
+      if ("progress".equals(stageCode)) {
+        return connecting(language);
+      }
+      return waitingForSensor(language);
+    }
+
+    static String fallbackDetail(
+        String stageCode,
+        boolean isWarmup,
+        String lastReadingText,
+        boolean isStale,
+        LiveUpdateLanguage language) {
+      if (isWarmup) {
+        return sensorWarmingUp(language);
+      }
+      if (isStale) {
+        return stale(language);
+      }
+      if (lastReadingText != null && !"--".equals(lastReadingText) && !lastReadingText.isEmpty()) {
+        return updated(lastReadingText, language);
+      }
+      if ("error".equals(stageCode)) {
+        return error(language);
+      }
+      if ("progress".equals(stageCode)) {
+        return connecting(language);
+      }
+      if ("live".equals(stageCode)) {
+        return waitingForGlucoseUpdate(language);
+      }
+      return waitingForSensor(language);
+    }
+  }
+
   @Override
   public void onCreate() {
     super.onCreate();
-    ensureNotificationChannel();
   }
 
   @Override
@@ -68,6 +197,8 @@ public final class GlucoseLiveUpdateService extends Service {
       stopSelf();
       return START_NOT_STICKY;
     }
+
+    ensureNotificationChannel(LiveUpdateLanguage.fromPayload(payload));
 
     if (!persistPayload(this, payload)) {
       stopForegroundCompat();
@@ -118,13 +249,17 @@ public final class GlucoseLiveUpdateService extends Service {
   }
 
   private Notification buildNotification(Map<String, Object> payload) {
+    final LiveUpdateLanguage language = LiveUpdateLanguage.fromPayload(payload);
     final String valueText = stringValue(payload, "valueText", "--");
     final String unitText = stringValue(payload, "unitText", "mg/dL");
-    final String detailText = stringValue(payload, "detailText", "Waiting for sensor");
-    final String stageLabel = stringValue(payload, "stageLabel", "Live");
+    final String detailText = stringValue(payload, "detailText", "");
+    final String stageCode = stringValue(payload, "stageCode", "pending");
     final String lastReadingText = stringValue(payload, "lastReadingText", "--");
     final String trendSymbol = stringValue(payload, "trendSymbol", "");
     final String deltaText = stringValue(payload, "deltaText", "");
+    final boolean isWarmup = booleanValue(payload, "isWarmup");
+    final boolean isStale = booleanValue(payload, "isStale");
+    final Integer warmupMinutes = validatedWarmupMinutes(payload);
 
     // Fail closed until the reviewed Flutter settings flow records consent.
     final SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
@@ -132,12 +267,21 @@ public final class GlucoseLiveUpdateService extends Service {
       return buildRedactedNotification(payload);
     }
 
-    final boolean hasValue = valueText != null && !"--".equals(valueText) && !valueText.isEmpty();
-    final String title = hasValue ? valueText + " " + unitText : BRAND_NAME;
+    final boolean hasValue =
+        !isWarmup
+            && !isStale
+            && valueText != null
+            && !"--".equals(valueText)
+            && !valueText.isEmpty();
+    final String title =
+        warmupMinutes != null
+            ? LiveUpdateText.warmupTitle(warmupMinutes, language)
+            : hasValue ? valueText + " " + unitText : BRAND_NAME;
     final String text =
-        detailText != null && !detailText.isEmpty()
+        !isStale && detailText != null && !detailText.isEmpty()
             ? detailText
-            : fallbackDetail(stageLabel, lastReadingText);
+            : LiveUpdateText.fallbackDetail(
+                stageCode, isWarmup, lastReadingText, isStale, language);
     final String subText = BRAND_NAME;
     final String bigText = buildBigText(BRAND_NAME, text, trendSymbol, deltaText);
     final Notification publicVersion = buildRedactedNotification(payload);
@@ -179,6 +323,15 @@ public final class GlucoseLiveUpdateService extends Service {
    */
   static Notification buildRedactedNotificationForTest(
       Context context, String channelId, PendingIntent contentIntent, String stageLabel) {
+    return buildGenericRedactedNotification(
+        context, channelId, contentIntent, LiveUpdateLanguage.ENGLISH);
+  }
+
+  private static Notification buildGenericRedactedNotification(
+      Context context,
+      String channelId,
+      PendingIntent contentIntent,
+      LiveUpdateLanguage language) {
     final Notification.Builder builder;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       builder = new Notification.Builder(context, channelId);
@@ -188,7 +341,7 @@ public final class GlucoseLiveUpdateService extends Service {
     return builder
         .setSmallIcon(R.drawable.ic_glucose_notification)
         .setContentTitle(BRAND_NAME)
-        .setContentText("Open the app to view your glucose")
+        .setContentText(LiveUpdateText.openAppToViewGlucose(language))
         .setSubText(BRAND_NAME)
         .setContentIntent(contentIntent)
         .setCategory(Notification.CATEGORY_STATUS)
@@ -201,6 +354,7 @@ public final class GlucoseLiveUpdateService extends Service {
   }
 
   private Notification buildRedactedNotification(Map<String, Object> payload) {
+    final LiveUpdateLanguage language = LiveUpdateLanguage.fromPayload(payload);
     final Integer remainingMinutes = validatedWarmupMinutes(payload);
     if (remainingMinutes != null) {
       final Notification.Builder builder;
@@ -211,8 +365,8 @@ public final class GlucoseLiveUpdateService extends Service {
       }
       return builder
           .setSmallIcon(R.drawable.ic_glucose_notification)
-          .setContentTitle(remainingMinutes + " min")
-          .setContentText("Sensor warming up")
+          .setContentTitle(LiveUpdateText.warmupTitle(remainingMinutes, language))
+          .setContentText(LiveUpdateText.sensorWarmingUp(language))
           .setSubText(BRAND_NAME)
           .setContentIntent(buildLaunchIntent())
           .setCategory(Notification.CATEGORY_STATUS)
@@ -223,17 +377,12 @@ public final class GlucoseLiveUpdateService extends Service {
           .setColor(COLOR_TEAL)
           .build();
     }
-    return buildRedactedNotificationForTest(
-        this,
-        CHANNEL_ID,
-        buildLaunchIntent(),
-        stringValue(payload, "stageLabel", "Sensor active"));
+    return buildGenericRedactedNotification(
+        this, CHANNEL_ID, buildLaunchIntent(), language);
   }
 
   static Integer validatedWarmupMinutes(Map<String, Object> payload) {
-    if (!"progress".equals(stringValue(payload, "stageCode", ""))
-        || !"WARMUP".equalsIgnoreCase(stringValue(payload, "stageLabel", "").trim())
-        || !"min".equals(stringValue(payload, "unitText", ""))) {
+    if (!booleanValue(payload, "isWarmup")) {
       return null;
     }
     final String valueText = stringValue(payload, "valueText", "");
@@ -260,18 +409,28 @@ public final class GlucoseLiveUpdateService extends Service {
     return PendingIntent.getActivity(this, 0, launchIntent, flags);
   }
 
-  private void ensureNotificationChannel() {
+  private void ensureNotificationChannel(LiveUpdateLanguage language) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       return;
     }
     final NotificationManager manager =
         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-    if (manager == null || manager.getNotificationChannel(CHANNEL_ID) != null) {
+    if (manager == null) {
       return;
     }
-    final NotificationChannel channel =
-        new NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
-    channel.setDescription("Live glucose updates while the CGM session is active.");
+    NotificationChannel channel = manager.getNotificationChannel(CHANNEL_ID);
+    if (channel == null) {
+      channel =
+          new NotificationChannel(
+              CHANNEL_ID,
+              LiveUpdateText.channelName(language),
+              NotificationManager.IMPORTANCE_LOW);
+    } else {
+      // Android keeps a channel's delivery behavior under user control, while
+      // its app-provided name and description can follow a language change.
+      channel.setName(LiveUpdateText.channelName(language));
+    }
+    channel.setDescription(LiveUpdateText.channelDescription(language));
     channel.setShowBadge(false);
     manager.createNotificationChannel(channel);
   }
@@ -351,10 +510,15 @@ public final class GlucoseLiveUpdateService extends Service {
     }
     final HashMap<String, Object> payload = new HashMap<>();
     payload.put("sensorName", BRAND_NAME);
+    payload.put("languageCode", LiveUpdateLanguage.ENGLISH.code);
+    payload.put("stageCode", "live");
+    payload.put("isWarmup", false);
     payload.put("valueText", "--");
     payload.put("unitText", "mg/dL");
-    payload.put("stageLabel", "Live");
-    payload.put("detailText", "Waiting for glucose update");
+    payload.put("stageLabel", LiveUpdateText.liveGlucose(LiveUpdateLanguage.ENGLISH));
+    payload.put(
+        "detailText",
+        LiveUpdateText.waitingForGlucoseUpdate(LiveUpdateLanguage.ENGLISH));
     return payload;
   }
 
@@ -406,13 +570,6 @@ public final class GlucoseLiveUpdateService extends Service {
     return builder.toString();
   }
 
-  private String fallbackDetail(String stageLabel, String lastReadingText) {
-    if (lastReadingText != null && !"--".equals(lastReadingText) && !lastReadingText.isEmpty()) {
-      return "Updated " + lastReadingText;
-    }
-    return stageLabel == null || stageLabel.isEmpty() ? "Waiting for glucose update" : stageLabel;
-  }
-
   private static String stringValue(
       Map<String, Object> payload, String key, String fallback) {
     final Object value = payload.get(key);
@@ -421,5 +578,9 @@ public final class GlucoseLiveUpdateService extends Service {
     }
     final String text = value.toString().trim();
     return text.isEmpty() ? fallback : text;
+  }
+
+  private static boolean booleanValue(Map<String, Object> payload, String key) {
+    return Boolean.TRUE.equals(payload.get(key));
   }
 }

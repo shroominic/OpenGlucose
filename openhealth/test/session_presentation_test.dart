@@ -1,6 +1,7 @@
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:openglucose/src/app_language_controller.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -73,6 +74,74 @@ void main() {
     );
 
     expect(shouldShowPrimaryError(snapshot), isTrue);
+  });
+
+  group('safe error presentation', () {
+    test('unclassified snapshot errors use a localized safe fallback', () {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Error',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        lastError: 'native failure StateError: AA:BB:CC:DD:EE:FF',
+      );
+
+      final english = primaryErrorTextForSnapshot(snapshot)!;
+      final chinese = primaryErrorTextForSnapshot(
+        snapshot,
+        language: AppLanguage.simplifiedChinese,
+      )!;
+
+      expect(
+        english,
+        'The sensor could not be connected. Check Bluetooth, keep the phone '
+        'close, and try again.',
+      );
+      expect(chinese, '无法连接传感器。请检查蓝牙，将手机靠近传感器后重试。');
+      for (final message in <String>[english, chinese]) {
+        expect(message, isNot(contains('StateError')));
+        expect(message, isNot(contains('AA:BB')));
+        expect(message, isNot(contains('native failure')));
+      }
+    });
+
+    test(
+      'bond transfer snapshots use the closed diagnostic, not driver text',
+      () {
+        final snapshot = CgmSessionSnapshot(
+          stage: CgmSyncStage.error,
+          statusText: 'Sensor transfer stopped',
+          sensor: sensor,
+          capabilities: sensor.capabilities,
+          metadata: const <String, String>{
+            cgmBondTransferStateMetadataKey: 'unknown',
+            cgmBondTransferDiagnosticMetadataKey:
+                'cgm.bond-transfer.sensor-response-unknown',
+          },
+          lastError: 'driver transfer error PRIVATE-SENSOR-42',
+        );
+
+        final chinese = primaryErrorTextForSnapshot(
+          snapshot,
+          language: AppLanguage.simplifiedChinese,
+        )!;
+
+        expect(chinese, contains('传感器的响应未知'));
+        expect(chinese, contains('请勿重试'));
+        expect(chinese, isNot(contains('PRIVATE-SENSOR-42')));
+        expect(chinese, isNot(contains('driver transfer error')));
+      },
+    );
+
+    test('unknown operation identifiers never appear in a fallback', () {
+      final message = safeOperationFailureText(
+        'native.database[private-token]',
+        language: AppLanguage.simplifiedChinese,
+      );
+
+      expect(message, '应用无法完成此操作。请重试。');
+      expect(message, isNot(contains('private-token')));
+    });
   });
 
   group('BLE setup recovery', () {

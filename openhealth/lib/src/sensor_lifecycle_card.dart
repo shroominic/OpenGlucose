@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'app_localizations_extension.dart';
 import 'session_presentation.dart';
 
 /// Self-contained sensor lifecycle details card for Current sensor settings.
@@ -52,32 +53,30 @@ class SensorLifecycleCard extends StatelessWidget {
     );
 
     if (lifecycle.phase == SensorLifecyclePhase.unknown) {
+      final l10n = context.l10n;
       return Padding(
         padding: outerPadding,
-        child: const Card(
+        child: Card(
           key: ValueKey<String>('sensorLifecycleCard'),
           child: Padding(
             padding: EdgeInsets.all(16),
             child: Row(
               children: <Widget>[
-                Icon(Icons.schedule_rounded, color: Color(0xFF0B6E69)),
-                SizedBox(width: 12),
+                const Icon(Icons.schedule_rounded, color: Color(0xFF0B6E69)),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(
-                        'Sensor lifecycle',
-                        style: TextStyle(
+                        l10n.sensorLifecycle,
+                        style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Life remaining unavailable while the sensor session '
-                        'is being verified.',
-                      ),
+                      const SizedBox(height: 4),
+                      Text(l10n.sensorLifecycleUnknownBody),
                     ],
                   ),
                 ),
@@ -126,6 +125,8 @@ class _ActiveLifecycle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
+    final language = context.appLanguage;
     final warmup = lifecycle.warmup;
     final isWarming = lifecycle.isWarmingUp && warmup != null;
 
@@ -135,8 +136,11 @@ class _ActiveLifecycle extends StatelessWidget {
         ? const Color(0xFFF2A65A)
         : const Color(0xFF0B6E69);
 
-    final remainingText = compactDurationText(lifecycle.remaining);
-    final ageText = compactDurationText(lifecycle.age);
+    final remainingText = compactDurationText(
+      lifecycle.remaining,
+      language: language,
+    );
+    final ageText = compactDurationText(lifecycle.age, language: language);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -144,7 +148,7 @@ class _ActiveLifecycle extends StatelessWidget {
         Row(
           children: <Widget>[
             Text(
-              'Sensor lifecycle',
+              l10n.sensorLifecycle,
               style: theme.textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.w900,
               ),
@@ -152,10 +156,10 @@ class _ActiveLifecycle extends StatelessWidget {
             const Spacer(),
             _LifecyclePill(
               label: isWarming
-                  ? 'Warming up'
+                  ? l10n.warmingUp
                   : lifecycle.isExpiringSoon
-                  ? 'Expiring soon'
-                  : 'Active',
+                  ? l10n.expiringSoon
+                  : l10n.active,
               color: accent,
             ),
           ],
@@ -170,7 +174,7 @@ class _ActiveLifecycle extends StatelessWidget {
               centerTop: isWarming
                   ? '${warmup.remainingMinutes}'
                   : '${lifecycle.lifeUsedPercent}%',
-              centerBottom: isWarming ? 'min' : 'used',
+              centerBottom: isWarming ? l10n.minutesShort : l10n.lifeUsed,
             ),
             const SizedBox(width: 18),
             Expanded(
@@ -179,27 +183,25 @@ class _ActiveLifecycle extends StatelessWidget {
                 children: <Widget>[
                   if (isWarming) ...<Widget>[
                     _LifeStatRow(
-                      label: 'Warmup',
-                      value: '${warmup.remainingMinutes} min left',
+                      label: l10n.warmup,
+                      value: l10n.warmupTimeLeft(warmup.remainingMinutes),
                     ),
-                    _LifeStatRow(label: 'Sensor age', value: ageText),
+                    _LifeStatRow(label: l10n.sensorAge, value: ageText),
                   ] else ...<Widget>[
                     _LifeStatRow(
-                      label: 'Time remaining',
+                      label: l10n.timeRemaining,
                       value: remainingText,
                       emphasize: lifecycle.isExpiringSoon,
                     ),
-                    _LifeStatRow(label: 'Sensor age', value: ageText),
+                    _LifeStatRow(label: l10n.sensorAge, value: ageText),
                   ],
                   _LifeStatRow(
-                    label: 'Total life',
-                    value: '${lifecycle.totalLife.inDays} days',
+                    label: l10n.totalLife,
+                    value: l10n.sensorTotalLife(lifecycle.totalLife.inDays),
                   ),
                   _LifeStatRow(
-                    label: 'Last sync',
-                    value: lastSyncText(lastSyncAt, now: now)
-                        .replaceFirst('Synced ', '')
-                        .replaceFirst('Not synced yet', 'Not yet'),
+                    label: l10n.lastSync,
+                    value: _lastSyncValue(context, lastSyncAt, now: now),
                   ),
                 ],
               ),
@@ -211,18 +213,14 @@ class _ActiveLifecycle extends StatelessWidget {
           _InfoBanner(
             color: const Color(0xFFF2A65A),
             icon: Icons.hourglass_top_rounded,
-            text:
-                'Warming up — readings stabilise after the first hour. Keep '
-                'the sensor on and your phone nearby.',
+            text: l10n.sensorWarmupLifecycleBanner,
           ),
         ] else if (lifecycle.isExpiringSoon) ...<Widget>[
           const SizedBox(height: 14),
           _InfoBanner(
             color: const Color(0xFFF2A65A),
             icon: Icons.notifications_active_rounded,
-            text:
-                'This sensor expires in ${compactDurationText(lifecycle.remaining)}. '
-                "Have a replacement ready so you don't miss readings.",
+            text: l10n.sensorExpiringSoonBanner(remainingText),
           ),
         ],
       ],
@@ -246,6 +244,7 @@ class _ExpiredOffboarding extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     const expiredColor = Color(0xFFC25A3B);
 
     return Column(
@@ -257,21 +256,19 @@ class _ExpiredOffboarding extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Sensor expired',
+                l10n.sensorExpired,
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w900,
                   color: expiredColor,
                 ),
               ),
             ),
-            const _LifecyclePill(label: 'Expired', color: expiredColor),
+            _LifecyclePill(label: l10n.expired, color: expiredColor),
           ],
         ),
         const SizedBox(height: 12),
         Text(
-          'This sensor reached the end of its 15-day life. The readings below '
-          'are frozen at the last known values — they are kept for your '
-          'records but are no longer live.',
+          l10n.sensorExpiredDetails,
           style: theme.textTheme.bodyMedium?.copyWith(
             color: const Color(0xFF5B6E6A),
             height: 1.4,
@@ -282,29 +279,22 @@ class _ExpiredOffboarding extends StatelessWidget {
           color: expiredColor,
           icon: Icons.history_toggle_off_rounded,
           text: lastReadingAt == null
-              ? 'Last reading is preserved below.'
-              : 'Last reading ${lastSyncText(lastReadingAt, now: now).replaceFirst('Synced ', '')}. Your history is preserved.',
+              ? l10n.lastReadingPreservedBelow
+              : l10n.lastReadingAndHistoryPreserved(
+                  _lastSyncValue(context, lastReadingAt, now: now),
+                ),
         ),
         const SizedBox(height: 16),
         Text(
-          'Next steps',
+          l10n.nextSteps,
           style: theme.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.w800,
           ),
         ),
         const SizedBox(height: 8),
-        const _OffboardingStep(
-          index: 1,
-          text: 'Peel off and dispose of the expired sensor.',
-        ),
-        const _OffboardingStep(
-          index: 2,
-          text: 'Apply a fresh Aidex X sensor and wait for the ~1h warmup.',
-        ),
-        const _OffboardingStep(
-          index: 3,
-          text: 'Tap below to start a new sensor session.',
-        ),
+        _OffboardingStep(index: 1, text: l10n.replaceExpiredSensorStep),
+        _OffboardingStep(index: 2, text: l10n.applyReplacementSensorStep),
+        _OffboardingStep(index: 3, text: l10n.startNewSensorSessionStep),
         if (onReplaceSensor != null) ...<Widget>[
           const SizedBox(height: 16),
           SizedBox(
@@ -314,7 +304,7 @@ class _ExpiredOffboarding extends StatelessWidget {
               onPressed: onReplaceSensor,
               style: FilledButton.styleFrom(backgroundColor: expiredColor),
               icon: const Icon(Icons.add_circle_outline_rounded),
-              label: const Text('Replace sensor'),
+              label: Text(l10n.replaceSensor),
             ),
           ),
         ],
@@ -531,9 +521,35 @@ class _InfoBanner extends StatelessWidget {
 
 /// Exposed for completeness so callers can format the sensor start timestamp
 /// identically to the rest of the dashboard if needed.
-String sensorStartLabel(DateTime? sessionStart) {
+String sensorStartLabel(
+  DateTime? sessionStart, {
+  Locale locale = const Locale('en'),
+}) {
   if (sessionStart == null) {
     return '--';
   }
-  return DateFormat('MMM d, HH:mm').format(sessionStart.toLocal());
+  final localeName = locale.languageCode.toLowerCase() == 'zh' ? 'zh' : 'en';
+  return DateFormat.MMMd(localeName).add_Hm().format(sessionStart.toLocal());
+}
+
+String _lastSyncValue(
+  BuildContext context,
+  DateTime? lastSyncAt, {
+  required DateTime now,
+}) {
+  final l10n = context.l10n;
+  if (lastSyncAt == null) {
+    return l10n.notYet;
+  }
+  final elapsed = now.difference(lastSyncAt.toLocal());
+  if (elapsed.isNegative || elapsed < const Duration(seconds: 45)) {
+    return l10n.justNow;
+  }
+  if (elapsed < const Duration(hours: 1)) {
+    return l10n.minutesAgo(elapsed.inMinutes);
+  }
+  if (elapsed < const Duration(days: 1)) {
+    return l10n.hoursAgo(elapsed.inHours);
+  }
+  return l10n.daysAgo(elapsed.inDays);
 }

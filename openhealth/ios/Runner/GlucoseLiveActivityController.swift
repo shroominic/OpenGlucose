@@ -14,13 +14,6 @@ final class GlucoseLiveActivityController {
   private let iso8601 = ISO8601DateFormatter()
   private let defaults = UserDefaults.standard
   private let restrictedState = NativeRestrictedStateStore.shared
-  private let timeFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .none
-    formatter.timeStyle = .short
-    formatter.locale = .current
-    return formatter
-  }()
   private var channel: FlutterMethodChannel?
   // All Activity<…> operations (lookup, request, update, end) are funneled
   // through this chain so concurrent upsert calls can't each observe an empty
@@ -261,16 +254,21 @@ final class GlucoseLiveActivityController {
       } catch {
         return
       }
+      let language = LiveActivityLanguage(
+        payloadLanguageCode: payload["languageCode"] as? String
+      )
       payload["sensorName"] = "OpenGlucose"
       payload["stageCode"] = "live"
-      payload["stageLabel"] = "LIVE"
+      payload["stageLabel"] = LiveActivityText.liveGlucose(for: language)
+      payload["languageCode"] = language.rawValue
+      payload["isWarmup"] = false
       payload["valueText"] = String(valueMgdl)
       let unitText = (payload["unitText"] as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       payload["unitText"] = (unitText?.isEmpty == false) ? unitText : "mg/dL"
-      let updatedText = self.timeFormatter.string(from: observedAt)
+      let updatedText = self.localizedTimeText(observedAt, language: language)
       payload["lastReadingText"] = updatedText
-      payload["detailText"] = "Updated \(updatedText)"
+      payload["detailText"] = LiveActivityText.updated(updatedText, for: language)
       payload["trendSymbol"] = ""
       payload["deltaText"] = ""
       payload["isStale"] = false
@@ -326,14 +324,35 @@ final class GlucoseLiveActivityController {
 
   @available(iOS 16.1, *)
   private func contentState(from payload: [String: Any]) -> GlucoseLiveActivityAttributes.ContentState {
-    GlucoseLiveActivityAttributes.ContentState(
-      stageCode: payload["stageCode"] as? String ?? "pending",
-      stageLabel: payload["stageLabel"] as? String ?? "CONNECTING",
+    let language = LiveActivityLanguage(
+      payloadLanguageCode: payload["languageCode"] as? String
+    )
+    let stageCode = payload["stageCode"] as? String ?? "pending"
+    let isWarmup = payload["isWarmup"] as? Bool ?? false
+    let lastReadingText = payload["lastReadingText"] as? String ?? "--"
+    let stageLabel = nonEmptyString(payload["stageLabel"])
+      ?? LiveActivityText.stageLabel(
+        stageCode: stageCode,
+        isWarmup: isWarmup,
+        for: language
+      )
+    let detailText = nonEmptyString(payload["detailText"])
+      ?? LiveActivityText.fallbackDetail(
+        stageCode: stageCode,
+        isWarmup: isWarmup,
+        lastReadingText: lastReadingText,
+        for: language
+      )
+    return GlucoseLiveActivityAttributes.ContentState(
+      stageCode: stageCode,
+      stageLabel: stageLabel,
+      languageCode: language.rawValue,
+      isWarmup: isWarmup,
       valueText: payload["valueText"] as? String ?? "--",
       unitText: payload["unitText"] as? String ?? "mg/dL",
-      lastReadingText: payload["lastReadingText"] as? String ?? "--",
+      lastReadingText: lastReadingText,
       lifeText: payload["lifeText"] as? String ?? "",
-      detailText: payload["detailText"] as? String ?? "",
+      detailText: detailText,
       trendSymbol: payload["trendSymbol"] as? String ?? "",
       deltaText: payload["deltaText"] as? String ?? "",
       isStale: payload["isStale"] as? Bool ?? false,
@@ -450,6 +469,25 @@ final class GlucoseLiveActivityController {
     }
     return iso8601.date(from: iso8601String)
   }
+
+  private func localizedTimeText(
+    _ date: Date,
+    language: LiveActivityLanguage
+  ) -> String {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .none
+    formatter.timeStyle = .short
+    formatter.locale = language.dateFormatterLocale
+    return formatter.string(from: date)
+  }
+
+  private func nonEmptyString(_ value: Any?) -> String? {
+    guard let text = value as? String else {
+      return nil
+    }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
 }
 
 /// Removes health and sensor identifiers before content reaches ActivityKit.
@@ -466,23 +504,31 @@ enum LiveActivityLockScreenRedaction {
     }
     var brandedPayload = payload
     brandedPayload["sensorName"] = "OpenGlucose"
+    brandedPayload["languageCode"] = LiveActivityLanguage(
+      payloadLanguageCode: payload["languageCode"] as? String
+    ).rawValue
+    brandedPayload["isWarmup"] = payload["isWarmup"] as? Bool ?? false
     return brandedPayload
   }
 
   static func redact(_ payload: [String: Any]) -> [String: Any] {
     let stageCode = payload["stageCode"] as? String ?? "pending"
-    let stageLabel = payload["stageLabel"] as? String ?? "SENSOR ACTIVE"
+    let language = LiveActivityLanguage(
+      payloadLanguageCode: payload["languageCode"] as? String
+    )
 
     if let remainingMinutes = validatedWarmupMinutes(in: payload) {
       return [
         "sensorName": "OpenGlucose",
         "stageCode": "progress",
-        "stageLabel": "WARMUP",
+        "stageLabel": LiveActivityText.sensorWarmingUp(for: language),
+        "languageCode": language.rawValue,
+        "isWarmup": true,
         "valueText": String(remainingMinutes),
         "unitText": "min",
         "lastReadingText": "--",
         "lifeText": "",
-        "detailText": "Sensor warming up",
+        "detailText": LiveActivityText.sensorWarmingUp(for: language),
         "trendSymbol": "",
         "deltaText": "",
         "isStale": false,
@@ -492,12 +538,18 @@ enum LiveActivityLockScreenRedaction {
     return [
       "sensorName": "OpenGlucose",
       "stageCode": stageCode,
-      "stageLabel": stageLabel,
+      "stageLabel": LiveActivityText.stageLabel(
+        stageCode: stageCode,
+        isWarmup: false,
+        for: language
+      ),
+      "languageCode": language.rawValue,
+      "isWarmup": false,
       "valueText": "--",
       "unitText": "",
       "lastReadingText": "--",
       "lifeText": "",
-      "detailText": "Open the app to view your glucose",
+      "detailText": LiveActivityText.openAppToViewGlucose(for: language),
       "trendSymbol": "",
       "deltaText": "",
       "isStale": payload["isStale"] as? Bool ?? false,
@@ -505,11 +557,7 @@ enum LiveActivityLockScreenRedaction {
   }
 
   private static func validatedWarmupMinutes(in payload: [String: Any]) -> Int? {
-    guard payload["stageCode"] as? String == "progress",
-          (payload["stageLabel"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .uppercased() == "WARMUP",
-          payload["unitText"] as? String == "min",
+    guard payload["isWarmup"] as? Bool == true,
           let valueText = payload["valueText"] as? String,
           let remainingMinutes = Int(valueText),
           (1...180).contains(remainingMinutes) else {

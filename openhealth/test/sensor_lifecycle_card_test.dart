@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
 
@@ -13,10 +14,12 @@ void main() {
     WidgetTester tester,
     MockScenario scenario, {
     VoidCallback? onReplace,
+    Locale locale = const Locale('en'),
   }) async {
     final snapshot = catalog.buildSnapshot(scenario);
     await tester.pumpWidget(
-      MaterialApp(
+      _localizedApp(
+        locale: locale,
         home: Scaffold(
           body: SingleChildScrollView(
             child: SensorLifecycleCard(
@@ -58,7 +61,7 @@ void main() {
       sessionInfo: const CgmSessionInfo(),
     );
     await tester.pumpWidget(
-      MaterialApp(
+      _localizedApp(
         home: Scaffold(
           body: SensorLifecycleCard(snapshot: snapshot, clock: () => now),
         ),
@@ -67,7 +70,12 @@ void main() {
 
     expect(find.byKey(const ValueKey('sensorLifecycleCard')), findsOneWidget);
     expect(find.text('Sensor lifecycle'), findsOneWidget);
-    expect(find.textContaining('Life remaining unavailable'), findsOneWidget);
+    expect(
+      find.text(
+        'Life remaining is unavailable while the sensor session is being verified.',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('warmup scenario shows the warmup countdown', (tester) async {
@@ -76,6 +84,21 @@ void main() {
     expect(find.text('Warming up'), findsWidgets);
     expect(find.text('min'), findsOneWidget);
     expect(find.textContaining('min left'), findsOneWidget);
+  });
+
+  testWidgets('uses Chinese lifecycle copy on a Chinese device', (
+    tester,
+  ) async {
+    await pumpCard(
+      tester,
+      MockScenario.activeNormal,
+      locale: const Locale('zh'),
+    );
+
+    expect(find.text('传感器使用周期'), findsOneWidget);
+    expect(find.text('运行中'), findsOneWidget);
+    expect(find.text('剩余时间'), findsOneWidget);
+    expect(find.text('15 天'), findsOneWidget);
   });
 
   testWidgets('expiringSoon scenario shows the heads-up banner', (
@@ -125,4 +148,16 @@ void main() {
     // Card renders without throwing and shows the offboarding state.
     expect(find.byKey(const ValueKey('sensorLifecycleCard')), findsOneWidget);
   });
+}
+
+Widget _localizedApp({
+  required Widget home,
+  Locale locale = const Locale('en'),
+}) {
+  return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: home,
+  );
 }

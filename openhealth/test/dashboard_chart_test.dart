@@ -1,4 +1,5 @@
 import 'package:cgm_core/cgm_core.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:flutter/material.dart';
@@ -24,6 +25,28 @@ void main() {
     expect(find.text('3d'), findsOneWidget);
     expect(find.text('7d'), findsOneWidget);
     expect(find.text('ALL'), findsOneWidget);
+  });
+
+  testWidgets('uses Chinese timeframe labels on a Chinese device', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _chartHarness(
+        locale: const Locale('zh'),
+        readings: _buildHistory(totalMinutes: 7 * 24 * 60),
+        historySync: const CgmHistorySyncState(
+          storedCount: 2017,
+          totalAvailable: 2017,
+        ),
+      ),
+    );
+
+    expect(find.text('3小时'), findsOneWidget);
+    expect(find.text('12小时'), findsOneWidget);
+    expect(find.text('1天'), findsOneWidget);
+    expect(find.text('3天'), findsOneWidget);
+    expect(find.text('7天'), findsOneWidget);
+    expect(find.text('全部'), findsOneWidget);
   });
 
   testWidgets('keeps reading-count footer out of the chart area', (
@@ -113,8 +136,12 @@ void main() {
 Widget _chartHarness({
   required List<CgmReading> readings,
   required CgmHistorySyncState historySync,
+  Locale locale = const Locale('en'),
 }) {
   return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
     home: Scaffold(
       body: Center(
         child: SizedBox(

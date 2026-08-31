@@ -4,6 +4,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../app_localizations_extension.dart';
 import '../persistence/health_store.dart';
 import 'ai_controller.dart';
 import 'ai_settings.dart';
@@ -38,7 +39,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
   bool _hasKey = false;
   bool _loading = true;
   bool _busy = false;
-  String? _status;
+  _AiStatus? _status;
 
   final _baseUrlController = TextEditingController();
   final _modelController = TextEditingController();
@@ -99,7 +100,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     setState(() => _busy = true);
     try {
       if (await _persistDraft() && mounted) {
-        setState(() => _status = 'Saved.');
+        setState(() => _status = const _AiStatus(_AiStatusKind.saved));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -113,7 +114,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     if (!mounted) return;
     setState(() {
       _hasKey = false;
-      _status = 'API key removed.';
+      _status = const _AiStatus(_AiStatusKind.apiKeyRemoved);
     });
   }
 
@@ -122,7 +123,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
     if (store == null) return;
     setState(() {
       _busy = true;
-      _status = 'Saving provider settings…';
+      _status = const _AiStatus(_AiStatusKind.savingProviderSettings);
     });
     HealthRepository? repo;
     try {
@@ -130,14 +131,20 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
         return;
       }
       if (!_settings.enabled) {
-        setState(() => _status = 'Enable cloud AI before testing.');
+        setState(
+          () => _status = const _AiStatus(
+            _AiStatusKind.enableCloudAiBeforeTesting,
+          ),
+        );
         return;
       }
       if (!_hasKey) {
-        setState(() => _status = 'Add an API key before testing.');
+        setState(
+          () => _status = const _AiStatus(_AiStatusKind.addApiKeyBeforeTesting),
+        );
         return;
       }
-      setState(() => _status = 'Generating…');
+      setState(() => _status = const _AiStatus(_AiStatusKind.generating));
       repo = await openHealthRepository();
       final controller = AiController(store: store, repository: repo);
       final insight = await controller.generateRecentInsight(
@@ -147,15 +154,21 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       if (!mounted) return;
       setState(() {
         _status = insight == null
-            ? 'AI is disabled or no key set.'
-            : 'Generated & saved: "${insight.title}".';
+            ? const _AiStatus(_AiStatusKind.aiDisabledOrNoKey)
+            : _AiStatus(_AiStatusKind.generatedAndSaved, detail: insight.title);
       });
-    } on AiGenerationException catch (error) {
+    } on AiGenerationException {
       if (!mounted) return;
-      setState(() => _status = 'Could not generate: ${error.message}');
+      setState(
+        () =>
+            _status = const _AiStatus(_AiStatusKind.couldNotGenerateAiInsight),
+      );
     } catch (_) {
       if (!mounted) return;
-      setState(() => _status = 'Could not generate the AI insight.');
+      setState(
+        () =>
+            _status = const _AiStatus(_AiStatusKind.couldNotGenerateAiInsight),
+      );
     } finally {
       await repo?.close();
       if (mounted) setState(() => _busy = false);
@@ -165,6 +178,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -172,7 +186,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       children: <Widget>[
         Text(
-          'AI insights',
+          l10n.aiInsights,
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w900,
           ),
@@ -183,13 +197,11 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
           child: ListTile(
             minTileHeight: 76,
             leading: const Icon(Icons.phone_iphone_rounded),
-            title: const Text(
-              'On-device model',
+            title: Text(
+              l10n.onDeviceModel,
               style: TextStyle(fontWeight: FontWeight.w800),
             ),
-            subtitle: const Text(
-              'Planned · private local inference with a downloaded model',
-            ),
+            subtitle: Text(l10n.onDeviceModelDescription),
             trailing: const _ComingSoonBadge(),
           ),
         ),
@@ -201,11 +213,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
             borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
-            'Wellness and self-experimentation only—not medical advice, '
-            'diagnosis, or dosing. AI remains off unless you explicitly '
-            'configure it. A future on-device model will keep inference '
-            'local; the advanced cloud option below sends only aggregate '
-            'statistics, never raw readings or note text.',
+            l10n.aiWellnessPrivacyNotice,
             style: theme.textTheme.bodySmall,
           ),
         ),
@@ -215,19 +223,17 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
           child: ExpansionTile(
             key: const ValueKey<String>('advancedCloudAiProvider'),
             leading: const Icon(Icons.cloud_outlined),
-            title: const Text(
-              'Custom cloud provider',
+            title: Text(
+              l10n.customCloudProvider,
               style: TextStyle(fontWeight: FontWeight.w800),
             ),
-            subtitle: const Text('Advanced · sends aggregates off-device'),
+            subtitle: Text(l10n.advancedSendsAggregatesOffDevice),
             childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
             children: <Widget>[
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('Enable cloud AI'),
-                subtitle: const Text(
-                  'Off by default. Requires your own API key.',
-                ),
+                title: Text(l10n.enableCloudAi),
+                subtitle: Text(l10n.cloudAiDisabledByDefault),
                 value: _settings.enabled,
                 onChanged: _busy
                     ? null
@@ -238,8 +244,8 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
               TextField(
                 controller: _baseUrlController,
                 enabled: !_busy,
-                decoration: const InputDecoration(
-                  labelText: 'API base URL',
+                decoration: InputDecoration(
+                  labelText: l10n.apiBaseUrl,
                   hintText: 'https://api.openai.com/v1',
                 ),
               ),
@@ -247,23 +253,23 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
               TextField(
                 controller: _modelController,
                 enabled: !_busy,
-                decoration: const InputDecoration(
-                  labelText: 'Model',
+                decoration: InputDecoration(
+                  labelText: l10n.aiModel,
                   hintText: 'gpt-4o-mini',
                 ),
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<AiAuthScheme>(
                 initialValue: _settings.authScheme,
-                decoration: const InputDecoration(labelText: 'Auth scheme'),
-                items: const <DropdownMenuItem<AiAuthScheme>>[
+                decoration: InputDecoration(labelText: l10n.authScheme),
+                items: <DropdownMenuItem<AiAuthScheme>>[
                   DropdownMenuItem(
                     value: AiAuthScheme.bearer,
-                    child: Text('Bearer (OpenAI-compatible)'),
+                    child: Text(l10n.authSchemeBearer),
                   ),
                   DropdownMenuItem(
                     value: AiAuthScheme.xApiKey,
-                    child: Text('x-api-key (Anthropic)'),
+                    child: Text(l10n.authSchemeXApiKey),
                   ),
                 ],
                 onChanged: _busy
@@ -280,11 +286,11 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                 autocorrect: false,
                 enableSuggestions: false,
                 decoration: InputDecoration(
-                  labelText: 'API key (stored securely)',
-                  hintText: _hasKey ? '•••••••• (saved)' : 'Paste your key',
+                  labelText: l10n.apiKeyStoredSecurely,
+                  hintText: _hasKey ? l10n.apiKeySavedMask : l10n.pasteApiKey,
                   helperText: _hasKey
-                      ? 'A key is saved. Leave blank to keep it.'
-                      : 'Never stored in plain text.',
+                      ? l10n.apiKeySavedHint
+                      : l10n.apiKeyPlainTextHint,
                 ),
               ),
               const SizedBox(height: 16),
@@ -296,19 +302,19 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
                   children: <Widget>[
                     FilledButton(
                       onPressed: _busy ? null : _save,
-                      child: const Text('Save provider'),
+                      child: Text(l10n.saveProvider),
                     ),
                     if (_hasKey)
                       OutlinedButton(
                         onPressed: _busy ? null : _clearKey,
-                        child: const Text('Remove key'),
+                        child: Text(l10n.removeKey),
                       ),
                     OutlinedButton.icon(
                       onPressed: (_busy || !_settings.enabled)
                           ? null
                           : _generateNow,
                       icon: const Icon(Icons.science_outlined),
-                      label: const Text('Test with aggregates'),
+                      label: Text(l10n.testWithAggregates),
                     ),
                   ],
                 ),
@@ -319,7 +325,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
         if (_status != null) ...<Widget>[
           const SizedBox(height: 16),
           Text(
-            _status!,
+            _status!.text(context),
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.primary,
             ),
@@ -337,19 +343,54 @@ class _ComingSoonBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       key: const ValueKey<String>('comingSoonStatus'),
-      label: 'On-device model status: coming soon',
+      label: context.l10n.onDeviceModelStatus(context.l10n.comingSoon),
       child: ExcludeSemantics(
         child: DecoratedBox(
           decoration: BoxDecoration(
             border: Border.all(color: Theme.of(context).colorScheme.outline),
             borderRadius: BorderRadius.circular(9),
           ),
-          child: const Padding(
+          child: Padding(
             padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Text('COMING'),
+            child: Text(context.l10n.comingSoon),
           ),
         ),
       ),
     );
+  }
+}
+
+enum _AiStatusKind {
+  saved,
+  apiKeyRemoved,
+  savingProviderSettings,
+  enableCloudAiBeforeTesting,
+  addApiKeyBeforeTesting,
+  generating,
+  aiDisabledOrNoKey,
+  generatedAndSaved,
+  couldNotGenerateAiInsight,
+}
+
+class _AiStatus {
+  const _AiStatus(this.kind, {this.detail});
+
+  final _AiStatusKind kind;
+  final String? detail;
+
+  String text(BuildContext context) {
+    final l10n = context.l10n;
+    return switch (kind) {
+      _AiStatusKind.saved => l10n.providerSettingsSaved,
+      _AiStatusKind.apiKeyRemoved => l10n.apiKeyRemoved,
+      _AiStatusKind.savingProviderSettings => l10n.savingProviderSettings,
+      _AiStatusKind.enableCloudAiBeforeTesting =>
+        l10n.enableCloudAiBeforeTesting,
+      _AiStatusKind.addApiKeyBeforeTesting => l10n.addApiKeyBeforeTesting,
+      _AiStatusKind.generating => l10n.generatingAiInsight,
+      _AiStatusKind.aiDisabledOrNoKey => l10n.aiDisabledOrNoKey,
+      _AiStatusKind.generatedAndSaved => l10n.generatedAndSaved(detail ?? ''),
+      _AiStatusKind.couldNotGenerateAiInsight => l10n.couldNotGenerateAiInsight,
+    };
   }
 }

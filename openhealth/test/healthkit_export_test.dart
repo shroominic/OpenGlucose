@@ -4,6 +4,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:health/health.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/healthkit_export.dart';
@@ -14,6 +15,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const _lastSyncedKey = 'openHealth.healthExport.lastSyncedMs';
 const _watermarkKey = 'openHealth.healthExport.watermarkMs';
+
+Widget _localizedApp(Widget child, {Locale locale = const Locale('en')}) {
+  return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: child,
+  );
+}
 
 /// In-memory exporter so the opt-in / sync-state logic can be exercised on the
 /// test host (HealthKit itself is iOS-only).
@@ -455,8 +465,8 @@ void main() {
       driver: DemoCgmDriver(),
     );
     await tester.pumpWidget(
-      MaterialApp(
-        home: IntegrationsSettingsPane(
+      _localizedApp(
+        IntegrationsSettingsPane(
           healthExport: healthExport,
           controller: appController,
         ),
@@ -494,8 +504,8 @@ void main() {
       driver: DemoCgmDriver(),
     );
     await tester.pumpWidget(
-      MaterialApp(
-        home: IntegrationsSettingsPane(
+      _localizedApp(
+        IntegrationsSettingsPane(
           healthExport: healthExport,
           controller: appController,
         ),
@@ -540,8 +550,8 @@ void main() {
     expect(appController.visibleHistory, hasLength(60));
 
     await tester.pumpWidget(
-      MaterialApp(
-        home: IntegrationsSettingsPane(
+      _localizedApp(
+        IntegrationsSettingsPane(
           healthExport: healthExport,
           controller: appController,
         ),
@@ -549,7 +559,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('60 reading(s)'), findsOneWidget);
+    expect(find.text('60 readings'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Sync now'));
     await tester.pumpAndSettle();
 
@@ -561,5 +571,72 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     appController.dispose();
+  });
+
+  testWidgets('renders Apple Health consent controls in Simplified Chinese', (
+    tester,
+  ) async {
+    final preferences = await prefs();
+    final healthExport = HealthExportController(
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
+      service: _FakeExporter(),
+    )..initialize();
+    final appController = CgmAppController(
+      preferences: preferences,
+      driver: DemoCgmDriver(),
+    );
+    await tester.pumpWidget(
+      _localizedApp(
+        IntegrationsSettingsPane(
+          healthExport: healthExport,
+          controller: appController,
+        ),
+        locale: const Locale('zh'),
+      ),
+    );
+
+    expect(find.text('集成'), findsOneWidget);
+    expect(find.text('导出到 Apple 健康'), findsOneWidget);
+    expect(find.text('从未同步'), findsOneWidget);
+    expect(find.text('立即同步'), findsOneWidget);
+  });
+
+  testWidgets('does not expose unexpected export detail in Chinese UI', (
+    tester,
+  ) async {
+    final preferences = await prefs();
+    final exporter = _FakeExporter()
+      ..scriptedResults.add(
+        const HealthExportResult(
+          status: HealthExportStatus.failed,
+          message: 'internal exporter detail',
+        ),
+      );
+    final healthExport = HealthExportController(
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
+      service: exporter,
+    )..initialize();
+    await healthExport.setEnabled(enabled: true);
+    final appController = CgmAppController(
+      preferences: preferences,
+      driver: DemoCgmDriver(),
+    );
+    await tester.pumpWidget(
+      _localizedApp(
+        IntegrationsSettingsPane(
+          healthExport: healthExport,
+          controller: appController,
+        ),
+        locale: const Locale('zh'),
+      ),
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, '立即同步'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('无法完成 Apple 健康导出。'), findsOneWidget);
+    expect(find.text('internal exporter detail'), findsNothing);
   });
 }

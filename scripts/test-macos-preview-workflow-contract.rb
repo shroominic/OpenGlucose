@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+require "json"
+
 root = File.expand_path("..", __dir__)
 workflow = File.read(File.join(root, ".github/workflows/macos-preview.yml"))
 packager = File.read(File.join(root, "scripts/package-macos-preview.sh"))
@@ -12,6 +14,9 @@ release_config = File.read(
 )
 preview_notice = File.read(
   File.join(root, "openhealth/lib/src/macos_preview_notice.dart")
+)
+english_catalog = JSON.parse(
+  File.read(File.join(root, "openhealth/lib/l10n/app_en.arb"))
 )
 
 def assert(condition, message)
@@ -144,15 +149,29 @@ assert(
   "release target must remain Apple-silicon-only"
 )
 assert(
-  preview_notice.include?("verified on Mac hardware"),
+  preview_notice.include?("l10n.macosTransportPreviewDescription"),
+  "the app must render the localized physical-device evidence notice"
+)
+assert(
+  english_catalog.fetch("macosTransportPreviewDescription").include?(
+    "verified on Mac hardware"
+  ),
   "the app must disclose the physical-device evidence gap"
 )
 assert(
-  preview_notice.include?("cannot remove a system"),
+  english_catalog.fetch("macosTransportPreviewDescription").include?(
+    "cannot remove a system"
+  ),
   "the app must disclose the bond-removal gap"
 )
 assert(
-  preview_notice.include?("Cloud AI remains disabled"),
+  preview_notice.include?("l10n.macosPreviewAiUnavailableDescription"),
+  "the app must render the localized secure-storage notice"
+)
+assert(
+  english_catalog.fetch("macosPreviewAiUnavailableDescription").include?(
+    "Cloud AI remains disabled"
+  ),
   "the app must fail closed when secure API-key storage is unavailable"
 )
 

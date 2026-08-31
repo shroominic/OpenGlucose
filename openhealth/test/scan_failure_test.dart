@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/app_language_controller.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -60,6 +61,29 @@ void main() {
     );
     expect(controller.lastError, isNot(contains('StateError')));
     expect(controller.lastError, isNot(contains('private details')));
+
+    controller.dispose();
+  });
+
+  test('unstructured scan failures use the Chinese safe fallback', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _FailingScanDriver(
+        StateError('native adapter failure PRIVATE-DEVICE-42'),
+      ),
+      healthStateStore: PreferencesHealthStateStore(preferences),
+      initialAppLanguage: AppLanguage.simplifiedChinese,
+    );
+
+    await controller.initialize();
+    await controller.scan();
+
+    expect(controller.scanFailure, isNull);
+    expect(controller.lastError, '无法完成传感器扫描。请检查蓝牙后重试。');
+    expect(controller.lastError, isNot(contains('StateError')));
+    expect(controller.lastError, isNot(contains('PRIVATE-DEVICE-42')));
 
     controller.dispose();
   });
