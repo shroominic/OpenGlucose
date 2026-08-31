@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 
+import 'app_localizations_extension.dart';
 import 'dashboard_chart.dart';
 import 'display_preferences.dart';
 import 'metrics_section.dart';
@@ -24,11 +25,12 @@ class SampleDashboardScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = context.l10n;
     return Scaffold(
-      appBar: AppBar(title: const Text('Sample dashboard')),
+      appBar: AppBar(title: Text(l10n.sampleDashboard)),
       body: Column(
         children: <Widget>[
-          const Material(
+          Material(
             color: Color(0xFFFFD166),
             child: SafeArea(
               top: false,
@@ -41,7 +43,7 @@ class SampleDashboardScreen extends StatelessWidget {
                     SizedBox(width: 8),
                     Flexible(
                       child: Text(
-                        'SAMPLE DATA — NOT FROM A SENSOR',
+                        l10n.sampleDataNotSensor,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Color(0xFF4A2B00),
@@ -70,7 +72,7 @@ class SampleDashboardScreen extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: <Widget>[
                             Text(
-                              'See how OpenGlucose works',
+                              l10n.samplePreviewTitle,
                               style: theme.textTheme.headlineSmall?.copyWith(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w900,
@@ -78,9 +80,7 @@ class SampleDashboardScreen extends StatelessWidget {
                             ),
                             const SizedBox(height: 7),
                             Text(
-                              'This private preview is generated in memory. '
-                              'It cannot connect, export, notify, or be mixed '
-                              'with your real glucose history.',
+                              l10n.samplePreviewDescription,
                               style: theme.textTheme.bodyLarge?.copyWith(
                                 color: const Color(0xFFD8EEE8),
                                 height: 1.35,
@@ -105,13 +105,13 @@ class SampleDashboardScreen extends StatelessWidget {
                               children: <Widget>[
                                 Expanded(
                                   child: Text(
-                                    'Glucose history',
+                                    l10n.glucoseHistory,
                                     style: theme.textTheme.titleLarge?.copyWith(
                                       fontWeight: FontWeight.w900,
                                     ),
                                   ),
                                 ),
-                                const DecoratedBox(
+                                DecoratedBox(
                                   decoration: BoxDecoration(
                                     color: Color(0xFFFFE8A3),
                                     borderRadius: BorderRadius.all(
@@ -124,7 +124,7 @@ class SampleDashboardScreen extends StatelessWidget {
                                       vertical: 6,
                                     ),
                                     child: Text(
-                                      'SAMPLE',
+                                      l10n.sampleBadge,
                                       style: TextStyle(
                                         color: Color(0xFF6B4300),
                                         fontWeight: FontWeight.w900,
@@ -174,7 +174,7 @@ class SampleDashboardScreen extends StatelessWidget {
                         ),
                       ),
                       icon: const Icon(Icons.insights_rounded),
-                      label: const Text('Open sample weekly recap'),
+                      label: Text(l10n.openSampleWeeklyRecap),
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(48),
                       ),

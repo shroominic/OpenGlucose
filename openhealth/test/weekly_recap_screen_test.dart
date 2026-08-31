@@ -1,6 +1,7 @@
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 
@@ -44,7 +45,7 @@ List<CgmReading> _twoWeeks() {
 void main() {
   testWidgets('renders recap cards with data', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(
+      _localizedApp(
         home: WeeklyRecapScreen(
           readings: _twoWeeks(),
           preferences: const DisplayPreferences(),
@@ -79,16 +80,16 @@ void main() {
     );
     expect(find.text('Top spikes'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text("This week's weekdays"),
+      find.text("This week's daily averages"),
       300,
       scrollable: scrollable,
     );
-    expect(find.text("This week's weekdays"), findsOneWidget);
+    expect(find.text("This week's daily averages"), findsOneWidget);
   });
 
   testWidgets('shows empty state when no readings', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(
+      _localizedApp(
         home: WeeklyRecapScreen(
           readings: const <CgmReading>[],
           preferences: const DisplayPreferences(),
@@ -117,7 +118,7 @@ void main() {
       ];
 
       await tester.pumpWidget(
-        MaterialApp(
+        _localizedApp(
           home: WeeklyRecapScreen(
             readings: readings,
             preferences: const DisplayPreferences(),
@@ -135,7 +136,7 @@ void main() {
 
   testWidgets('renders mmol/L when preference is set', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(
+      _localizedApp(
         home: WeeklyRecapScreen(
           readings: _twoWeeks(),
           preferences: const DisplayPreferences(unit: GlucoseUnit.mmolL),
@@ -148,4 +149,34 @@ void main() {
     expect(find.textContaining('mmol/L'), findsWidgets);
     expect(find.textContaining('mg/dL'), findsNothing);
   });
+
+  testWidgets('uses Chinese recap copy on a Chinese device', (tester) async {
+    await tester.pumpWidget(
+      _localizedApp(
+        locale: const Locale('zh'),
+        home: WeeklyRecapScreen(
+          readings: _twoWeeks(),
+          preferences: const DisplayPreferences(),
+          now: _now,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('每周回顾'), findsOneWidget);
+    expect(find.text('本周概览'), findsOneWidget);
+    expect(find.textContaining('自我探索'), findsWidgets);
+  });
+}
+
+Widget _localizedApp({
+  required Widget home,
+  Locale locale = const Locale('en'),
+}) {
+  return MaterialApp(
+    locale: locale,
+    localizationsDelegates: AppLocalizations.localizationsDelegates,
+    supportedLocales: AppLocalizations.supportedLocales,
+    home: home,
+  );
 }
