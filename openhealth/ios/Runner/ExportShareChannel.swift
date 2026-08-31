@@ -1,16 +1,87 @@
 import Flutter
 import UIKit
 
-private enum ExportShareError: LocalizedError {
+enum ExportShareStage: String {
+  case channel
+  case state
+  case input
+  case file
+  case presenter
+  case presentation
+  case activity
+}
+
+enum ExportShareError: LocalizedError {
+  case channelUnavailable
   case busy
   case invalidArguments
   case invalidFile
   case invalidLocation
   case unavailablePresenter
-  case presentationFailed
+  case presentationRefused
+  case presentationInterrupted
+  case activityFailed
+  case unexpected
+
+  var stage: ExportShareStage {
+    switch self {
+    case .channelUnavailable, .unexpected:
+      return .channel
+    case .busy:
+      return .state
+    case .invalidArguments:
+      return .input
+    case .invalidFile, .invalidLocation:
+      return .file
+    case .unavailablePresenter:
+      return .presenter
+    case .presentationRefused, .presentationInterrupted:
+      return .presentation
+    case .activityFailed:
+      return .activity
+    }
+  }
+
+  var reason: String {
+    switch self {
+    case .channelUnavailable:
+      return "unavailable"
+    case .busy:
+      return "busy"
+    case .invalidArguments:
+      return "invalid_arguments"
+    case .invalidFile:
+      return "invalid_file"
+    case .invalidLocation:
+      return "invalid_location"
+    case .unavailablePresenter:
+      return "unavailable"
+    case .presentationRefused:
+      return "refused"
+    case .presentationInterrupted:
+      return "interrupted"
+    case .activityFailed:
+      return "failed"
+    case .unexpected:
+      return "unexpected"
+    }
+  }
+
+  var flutterError: FlutterError {
+    FlutterError(
+      code: "export_share_\(stage.rawValue)_\(reason)",
+      message: errorDescription,
+      details: [
+        "stage": stage.rawValue,
+        "reason": reason,
+      ]
+    )
+  }
 
   var errorDescription: String? {
     switch self {
+    case .channelUnavailable:
+      return "The export share channel is unavailable."
     case .busy:
       return "An export share sheet is already open."
     case .invalidArguments:
@@ -21,8 +92,188 @@ private enum ExportShareError: LocalizedError {
       return "The prepared export file must be in the export cache."
     case .unavailablePresenter:
       return "The export share sheet has no active presentation window."
-    case .presentationFailed:
+    case .presentationRefused:
       return "The export share sheet could not be presented."
+    case .presentationInterrupted:
+      return "The export share presentation was interrupted."
+    case .activityFailed:
+      return "The export share activity failed."
+    case .unexpected:
+      return "The export share request failed unexpectedly."
+    }
+  }
+}
+
+struct ExportShareWindowCandidate {
+  let window: UIWindow
+  let activationState: UIScene.ActivationState
+  let isKeyWindow: Bool
+  let isHidden: Bool
+}
+
+/// Owns one in-flight activity controller and always resolves its Flutter
+/// result before accepting another request.
+final class ExportSharePresentationSession:
+  NSObject,
+  UIAdaptivePresentationControllerDelegate
+{
+  typealias PerformPresentation = (
+    UIViewController,
+    UIActivityViewController,
+    @escaping (Bool) -> Void
+  ) -> Bool
+
+  private var pendingActivity: UIActivityViewController?
+  private var pendingResult: FlutterResult?
+  private var presentationIsVisible = false
+  private var backgroundObserver: NSObjectProtocol?
+
+  override init() {
+    super.init()
+    backgroundObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.didEnterBackgroundNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.applicationDidEnterBackground()
+    }
+  }
+
+  deinit {
+    if let backgroundObserver {
+      NotificationCenter.default.removeObserver(backgroundObserver)
+    }
+  }
+
+  var isBusy: Bool {
+    dispatchPrecondition(condition: .onQueue(.main))
+    return pendingActivity != nil || pendingResult != nil
+  }
+
+  func present(
+    _ activity: UIActivityViewController,
+    from presenter: UIViewController,
+    result: @escaping FlutterResult,
+    performPresentation: PerformPresentation
+  ) throws {
+    dispatchPrecondition(condition: .onQueue(.main))
+    try prepareForNewRequest()
+
+    pendingActivity = activity
+    pendingResult = result
+    presentationIsVisible = false
+    activity.presentationController?.delegate = self
+    activity.completionWithItemsHandler = {
+      [weak self, weak activity] _, completed, _, error in
+      DispatchQueue.main.async {
+        guard let self, self.pendingActivity === activity else {
+          return
+        }
+        if error != nil {
+          self.finish(
+            error: ExportShareError.activityFailed.flutterError
+          )
+        } else {
+          self.finish(value: completed ? "completed" : "dismissed")
+        }
+      }
+    }
+
+    let accepted = performPresentation(presenter, activity) {
+      [weak self, weak activity] isVisible in
+      guard let self else {
+        return
+      }
+      let complete = {
+        self.presentationDidComplete(activity, isVisible: isVisible)
+      }
+      if Thread.isMainThread {
+        complete()
+      } else {
+        DispatchQueue.main.async(execute: complete)
+      }
+    }
+    guard pendingActivity === activity else {
+      return
+    }
+    guard accepted else {
+      finish(error: ExportShareError.presentationRefused.flutterError)
+      return
+    }
+  }
+
+  func prepareForNewRequest() throws {
+    dispatchPrecondition(condition: .onQueue(.main))
+    recoverStrandedPresentationIfNeeded()
+    guard !isBusy else {
+      throw ExportShareError.busy
+    }
+  }
+
+  func applicationDidEnterBackground() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard
+      !presentationIsVisible,
+      let activity = pendingActivity,
+      activity.viewIfLoaded?.window == nil
+    else {
+      return
+    }
+    activity.dismiss(animated: false)
+    finish(error: ExportShareError.presentationInterrupted.flutterError)
+  }
+
+  private func presentationDidComplete(
+    _ activity: UIActivityViewController?,
+    isVisible: Bool
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard let activity, pendingActivity === activity else {
+      return
+    }
+    guard isVisible else {
+      activity.dismiss(animated: false)
+      finish(error: ExportShareError.presentationRefused.flutterError)
+      return
+    }
+    presentationIsVisible = true
+  }
+
+  private func recoverStrandedPresentationIfNeeded() {
+    guard
+      !presentationIsVisible,
+      let activity = pendingActivity,
+      !activity.isBeingPresented,
+      activity.viewIfLoaded?.window == nil
+    else {
+      return
+    }
+    activity.dismiss(animated: false)
+    finish(error: ExportShareError.presentationRefused.flutterError)
+  }
+
+  func presentationControllerDidDismiss(
+    _ presentationController: UIPresentationController
+  ) {
+    guard
+      pendingActivity?.presentationController === presentationController
+    else {
+      return
+    }
+    finish(value: "dismissed")
+  }
+
+  private func finish(value: String? = nil, error: FlutterError? = nil) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    let result = pendingResult
+    pendingActivity?.completionWithItemsHandler = nil
+    pendingActivity = nil
+    pendingResult = nil
+    presentationIsVisible = false
+    if let error {
+      result?(error)
+    } else {
+      result?(value)
     }
   }
 }
@@ -34,12 +285,11 @@ private enum ExportShareError: LocalizedError {
 /// and block later share sheets. This bridge passes the file URL directly to
 /// UIKit and configures a popover only when iPad requires one. It accepts only
 /// a regular file in an app-cache child named `openglucose-export-*`.
-final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelegate {
+final class ExportShareChannel: NSObject {
   private static let exportDirectoryPrefix = "openglucose-export-"
 
   private let channel: FlutterMethodChannel
-  private var pendingActivity: UIActivityViewController?
-  private var pendingResult: FlutterResult?
+  private let presentationSession = ExportSharePresentationSession()
 
   init(messenger: FlutterBinaryMessenger) {
     channel = FlutterMethodChannel(
@@ -49,13 +299,7 @@ final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelega
     super.init()
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self else {
-        result(
-          FlutterError(
-            code: "export_share_failed",
-            message: ExportShareError.unavailablePresenter.localizedDescription,
-            details: nil
-          )
-        )
+        result(ExportShareError.channelUnavailable.flutterError)
         return
       }
       DispatchQueue.main.async {
@@ -74,12 +318,10 @@ final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelega
     }
 
     do {
-      guard pendingActivity == nil, pendingResult == nil else {
-        throw ExportShareError.busy
-      }
+      try presentationSession.prepareForNewRequest()
       let arguments = try Self.arguments(call.arguments)
       let fileURL = try Self.validatedExportFile(arguments["filePath"])
-      guard let presenter = Self.activePresenter() else {
+      guard let presenter = Self.currentActivePresenter() else {
         throw ExportShareError.unavailablePresenter
       }
 
@@ -96,78 +338,56 @@ final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelega
         arguments: arguments,
         interfaceIdiom: UIDevice.current.userInterfaceIdiom
       )
-      activity.presentationController?.delegate = self
-
-      pendingActivity = activity
-      pendingResult = result
-      activity.completionWithItemsHandler = {
-        [weak self, weak activity] _, completed, _, error in
-        DispatchQueue.main.async {
-          guard let self, self.pendingActivity === activity else {
-            return
-          }
-          if let error {
-            self.finish(
-              error: FlutterError(
-                code: "export_share_failed",
-                message: error.localizedDescription,
-                details: nil
-              )
-            )
-          } else {
-            self.finish(value: completed ? "completed" : "dismissed")
-          }
-        }
-      }
-
-      presenter.present(activity, animated: true) { [weak self, weak activity] in
-        guard
-          let self,
-          self.pendingActivity === activity,
-          activity?.presentingViewController == nil
-        else {
-          return
-        }
-        self.finish(
-          error: FlutterError(
-            code: "export_share_failed",
-            message: ExportShareError.presentationFailed.localizedDescription,
-            details: nil
-          )
-        )
-      }
+      try presentationSession.present(
+        activity,
+        from: presenter,
+        result: result,
+        performPresentation: Self.presentActivity
+      )
+    } catch let error as ExportShareError {
+      result(error.flutterError)
     } catch {
-      result(
-        FlutterError(
-          code: "export_share_failed",
-          message: error.localizedDescription,
-          details: nil
-        )
+      result(ExportShareError.unexpected.flutterError)
+    }
+  }
+
+  static func presentActivity(
+    presenter: UIViewController,
+    activity: UIActivityViewController,
+    completion: @escaping (Bool) -> Void
+  ) -> Bool {
+    presenter.present(activity, animated: true)
+    let accepted = activity.presentingViewController != nil ||
+      presenter.presentedViewController === activity
+    guard accepted else {
+      return false
+    }
+    if activity.viewIfLoaded?.window != nil {
+      completion(true)
+      return true
+    }
+    guard
+      let coordinator = activity.transitionCoordinator ??
+        presenter.transitionCoordinator
+    else {
+      DispatchQueue.main.async {
+        completion(activity.viewIfLoaded?.window != nil)
+      }
+      return true
+    }
+    let registered = coordinator.animate(
+      alongsideTransition: nil
+    ) { context in
+      completion(
+        !context.isCancelled && activity.viewIfLoaded?.window != nil
       )
     }
-  }
-
-  private func finish(value: String? = nil, error: FlutterError? = nil) {
-    let result = pendingResult
-    pendingActivity?.completionWithItemsHandler = nil
-    pendingActivity = nil
-    pendingResult = nil
-    if let error {
-      result?(error)
-    } else {
-      result?(value)
+    if !registered {
+      DispatchQueue.main.async {
+        completion(activity.viewIfLoaded?.window != nil)
+      }
     }
-  }
-
-  func presentationControllerDidDismiss(
-    _ presentationController: UIPresentationController
-  ) {
-    guard
-      pendingActivity?.presentationController === presentationController
-    else {
-      return
-    }
-    finish(value: "dismissed")
+    return true
   }
 
   private static func arguments(_ value: Any?) throws -> [String: Any] {
@@ -283,38 +503,55 @@ final class ExportShareChannel: NSObject, UIAdaptivePresentationControllerDelega
     )
   }
 
-  private static func activePresenter() -> UIViewController? {
-    let scenes = UIApplication.shared.connectedScenes
+  private static func currentActivePresenter() -> UIViewController? {
+    let candidates = UIApplication.shared.connectedScenes
       .compactMap { $0 as? UIWindowScene }
-      .sorted { lhs, rhs in
-        Self.scenePriority(lhs.activationState) >
-          Self.scenePriority(rhs.activationState)
+      .flatMap { scene in
+        scene.windows.map { window in
+          ExportShareWindowCandidate(
+            window: window,
+            activationState: scene.activationState,
+            isKeyWindow: window.isKeyWindow,
+            isHidden: window.isHidden
+          )
+        }
       }
-    for scene in scenes {
-      let window = scene.windows.first(where: \.isKeyWindow)
-        ?? scene.windows.first(where: { !$0.isHidden })
-      if let root = window?.rootViewController {
-        return topViewController(root)
-      }
-    }
-    return nil
+    return activePresenter(candidates: candidates)
   }
 
-  private static func scenePriority(
-    _ activationState: UIScene.ActivationState
-  ) -> Int {
-    switch activationState {
-    case .foregroundActive:
-      return 3
-    case .foregroundInactive:
-      return 2
-    case .background:
-      return 1
-    case .unattached:
-      return 0
-    @unknown default:
-      return 0
+  static func activePresenter(
+    candidates: [ExportShareWindowCandidate]
+  ) -> UIViewController? {
+    guard
+      let window = foregroundActiveKeyWindow(candidates: candidates),
+      let root = window.rootViewController
+    else {
+      return nil
     }
+    let presenter = topViewController(root)
+    guard isPresenterAttached(presenter, to: window) else {
+      return nil
+    }
+    return presenter
+  }
+
+  static func foregroundActiveKeyWindow(
+    candidates: [ExportShareWindowCandidate]
+  ) -> UIWindow? {
+    candidates.first(where: {
+      $0.activationState == .foregroundActive &&
+        $0.isKeyWindow &&
+        !$0.isHidden
+    })?.window
+  }
+
+  static func isPresenterAttached(
+    _ presenter: UIViewController,
+    to window: UIWindow
+  ) -> Bool {
+    presenter.isViewLoaded &&
+      presenter.viewIfLoaded?.window === window &&
+      !presenter.isBeingDismissed
   }
 
   private static func topViewController(

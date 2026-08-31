@@ -238,6 +238,377 @@ final class RunnerTests: XCTestCase {
 }
 
 final class ExportSharePresentationPolicyTests: XCTestCase {
+  func testExportShareErrorsIncludeStableStageCodes() {
+    let cases: [(ExportShareError, String, String, String)] = [
+      (
+        .channelUnavailable,
+        "export_share_channel_unavailable",
+        "channel",
+        "unavailable"
+      ),
+      (.busy, "export_share_state_busy", "state", "busy"),
+      (
+        .invalidArguments,
+        "export_share_input_invalid_arguments",
+        "input",
+        "invalid_arguments"
+      ),
+      (
+        .invalidFile,
+        "export_share_file_invalid_file",
+        "file",
+        "invalid_file"
+      ),
+      (
+        .invalidLocation,
+        "export_share_file_invalid_location",
+        "file",
+        "invalid_location"
+      ),
+      (
+        .unavailablePresenter,
+        "export_share_presenter_unavailable",
+        "presenter",
+        "unavailable"
+      ),
+      (
+        .presentationRefused,
+        "export_share_presentation_refused",
+        "presentation",
+        "refused"
+      ),
+      (
+        .presentationInterrupted,
+        "export_share_presentation_interrupted",
+        "presentation",
+        "interrupted"
+      ),
+      (
+        .activityFailed,
+        "export_share_activity_failed",
+        "activity",
+        "failed"
+      ),
+    ]
+
+    for (failure, code, stage, reason) in cases {
+      let flutterError = failure.flutterError
+      XCTAssertEqual(flutterError.code, code)
+      let details = flutterError.details as? [String: String]
+      XCTAssertEqual(details?["stage"], stage)
+      XCTAssertEqual(details?["reason"], reason)
+    }
+  }
+
+  func testWindowSelectionUsesOnlyVisibleForegroundActiveKeyWindow() {
+    let backgroundWindow = attachedWindow()
+    let inactiveWindow = attachedWindow()
+    let nonKeyWindow = attachedWindow()
+    let hiddenWindow = attachedWindow()
+    let expectedWindow = attachedWindow()
+    let candidates = [
+      ExportShareWindowCandidate(
+        window: backgroundWindow,
+        activationState: .background,
+        isKeyWindow: true,
+        isHidden: false
+      ),
+      ExportShareWindowCandidate(
+        window: inactiveWindow,
+        activationState: .foregroundInactive,
+        isKeyWindow: true,
+        isHidden: false
+      ),
+      ExportShareWindowCandidate(
+        window: nonKeyWindow,
+        activationState: .foregroundActive,
+        isKeyWindow: false,
+        isHidden: false
+      ),
+      ExportShareWindowCandidate(
+        window: hiddenWindow,
+        activationState: .foregroundActive,
+        isKeyWindow: true,
+        isHidden: true
+      ),
+      ExportShareWindowCandidate(
+        window: expectedWindow,
+        activationState: .foregroundActive,
+        isKeyWindow: true,
+        isHidden: false
+      ),
+    ]
+
+    XCTAssertTrue(
+      ExportShareChannel.foregroundActiveKeyWindow(candidates: candidates) ===
+        expectedWindow
+    )
+  }
+
+  func testWindowSelectionDoesNotFallBackToInactiveOrNonKeyWindow() {
+    let inactiveWindow = attachedWindow()
+    let nonKeyWindow = attachedWindow()
+
+    XCTAssertNil(
+      ExportShareChannel.foregroundActiveKeyWindow(candidates: [
+        ExportShareWindowCandidate(
+          window: inactiveWindow,
+          activationState: .foregroundInactive,
+          isKeyWindow: true,
+          isHidden: false
+        ),
+        ExportShareWindowCandidate(
+          window: nonKeyWindow,
+          activationState: .foregroundActive,
+          isKeyWindow: false,
+          isHidden: false
+        ),
+      ])
+    )
+  }
+
+  func testPresenterMustHaveAViewAttachedToTheSelectedWindow() throws {
+    let window = try currentTestWindow()
+    let presenter = try XCTUnwrap(window.rootViewController)
+    let detachedPresenter = UIViewController()
+    detachedPresenter.loadViewIfNeeded()
+
+    XCTAssertFalse(
+      ExportShareChannel.isPresenterAttached(detachedPresenter, to: window)
+    )
+    XCTAssertTrue(
+      ExportShareChannel.isPresenterAttached(presenter, to: window)
+    )
+    XCTAssertNotNil(
+      ExportShareChannel.activePresenter(candidates: [
+        ExportShareWindowCandidate(
+          window: window,
+          activationState: .foregroundActive,
+          isKeyWindow: true,
+          isHidden: false
+        ),
+      ])
+    )
+  }
+
+  func testRejectedPresentationResolvesAndAllowsImmediateRetry() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    var results: [Any?] = []
+
+    for _ in 0..<2 {
+      try session.present(
+        activityController(),
+        from: presenter,
+        result: { results.append($0) },
+        performPresentation: { _, _, _ in false }
+      )
+      XCTAssertFalse(session.isBusy)
+    }
+
+    XCTAssertEqual(results.count, 2)
+    for result in results {
+      let error = result as? FlutterError
+      XCTAssertEqual(error?.code, "export_share_presentation_refused")
+      let details = error?.details as? [String: String]
+      XCTAssertEqual(details?["stage"], "presentation")
+      XCTAssertEqual(details?["reason"], "refused")
+    }
+  }
+
+  func testLostTransitionSignalStillRecoversOnNextRequest() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    var firstResult: Any?
+    var secondResult: Any?
+
+    try session.present(
+      activityController(),
+      from: presenter,
+      result: { firstResult = $0 },
+      performPresentation: { _, _, _ in true }
+    )
+    XCTAssertTrue(session.isBusy)
+
+    try session.present(
+      activityController(),
+      from: presenter,
+      result: { secondResult = $0 },
+      performPresentation: { _, _, _ in false }
+    )
+
+    XCTAssertEqual(
+      (firstResult as? FlutterError)?.code,
+      "export_share_presentation_refused"
+    )
+    XCTAssertEqual(
+      (secondResult as? FlutterError)?.code,
+      "export_share_presentation_refused"
+    )
+    XCTAssertFalse(session.isBusy)
+  }
+
+  func testCompletedButInvisiblePresentationFailsImmediately() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    var receivedResult: Any?
+
+    try session.present(
+      activityController(),
+      from: presenter,
+      result: { receivedResult = $0 },
+      performPresentation: { _, _, completion in
+        completion(false)
+        return true
+      }
+    )
+
+    XCTAssertEqual(
+      (receivedResult as? FlutterError)?.code,
+      "export_share_presentation_refused"
+    )
+    XCTAssertFalse(session.isBusy)
+  }
+
+  func testBackgroundRecoversAcceptedButInvisiblePresentation() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    var receivedResult: Any?
+
+    try session.present(
+      activityController(),
+      from: presenter,
+      result: { receivedResult = $0 },
+      performPresentation: { _, _, _ in true }
+    )
+    XCTAssertTrue(session.isBusy)
+
+    session.applicationDidEnterBackground()
+
+    XCTAssertEqual(
+      (receivedResult as? FlutterError)?.code,
+      "export_share_presentation_interrupted"
+    )
+    XCTAssertFalse(session.isBusy)
+  }
+
+  func testLatePresentationCallbackCannotResolveResultTwice() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    let activity = activityController()
+    let completion = expectation(description: "activity result")
+    var presentationCompletion: ((Bool) -> Void)?
+    var results: [Any?] = []
+
+    try session.present(
+      activity,
+      from: presenter,
+      result: {
+        results.append($0)
+        completion.fulfill()
+      },
+      performPresentation: { _, _, callback in
+        presentationCompletion = callback
+        return true
+      }
+    )
+    presentationCompletion?(true)
+    activity.completionWithItemsHandler?(nil, false, nil, nil)
+    wait(for: [completion], timeout: 1)
+    presentationCompletion?(false)
+
+    XCTAssertEqual(results.count, 1)
+    XCTAssertEqual(results.first as? String, "dismissed")
+    XCTAssertFalse(session.isBusy)
+  }
+
+  func testAcceptedPresentationStaysBusyUntilNormalCompletion() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    let firstActivity = activityController()
+    let completion = expectation(description: "activity result")
+    var firstResult: Any?
+
+    try session.present(
+      firstActivity,
+      from: presenter,
+      result: {
+        firstResult = $0
+        completion.fulfill()
+      },
+      performPresentation: { _, _, completion in
+        completion(true)
+        return true
+      }
+    )
+    XCTAssertTrue(session.isBusy)
+
+    XCTAssertThrowsError(
+      try session.present(
+        activityController(),
+        from: presenter,
+        result: { _ in },
+        performPresentation: { _, _, completion in
+          completion(true)
+          return true
+        }
+      )
+    ) { error in
+      XCTAssertEqual(
+        (error as? ExportShareError)?.flutterError.code,
+        "export_share_state_busy"
+      )
+    }
+
+    firstActivity.completionWithItemsHandler?(nil, true, nil, nil)
+    wait(for: [completion], timeout: 1)
+
+    XCTAssertEqual(firstResult as? String, "completed")
+    XCTAssertFalse(session.isBusy)
+    try session.present(
+      activityController(),
+      from: presenter,
+      result: { _ in },
+      performPresentation: { _, _, _ in false }
+    )
+    XCTAssertFalse(session.isBusy)
+  }
+
+  func testActivityErrorUsesActivityStageAndClearsPendingState() throws {
+    let session = ExportSharePresentationSession()
+    let presenter = UIViewController()
+    let activity = activityController()
+    let completion = expectation(description: "activity error")
+    var receivedResult: Any?
+
+    try session.present(
+      activity,
+      from: presenter,
+      result: {
+        receivedResult = $0
+        completion.fulfill()
+      },
+      performPresentation: { _, _, completion in
+        completion(true)
+        return true
+      }
+    )
+    activity.completionWithItemsHandler?(
+      nil,
+      false,
+      nil,
+      NSError(domain: "ExportShareTests", code: 1)
+    )
+    wait(for: [completion], timeout: 1)
+
+    let error = receivedResult as? FlutterError
+    XCTAssertEqual(error?.code, "export_share_activity_failed")
+    let details = error?.details as? [String: String]
+    XCTAssertEqual(details?["stage"], "activity")
+    XCTAssertEqual(details?["reason"], "failed")
+    XCTAssertFalse(session.isBusy)
+  }
+
   func testIPhoneDoesNotUsePopoverPresentation() {
     XCTAssertFalse(
       ExportShareChannel.shouldConfigurePopover(interfaceIdiom: .phone)
@@ -387,6 +758,27 @@ final class ExportSharePresentationPolicyTests: XCTestCase {
         symbolicLink.path,
         cachesDirectory: cachesDirectory
       )
+    )
+  }
+
+  private func attachedWindow() -> UIWindow {
+    UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 640))
+  }
+
+  private func currentTestWindow() throws -> UIWindow {
+    try XCTUnwrap(
+      UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .filter { $0.activationState == .foregroundActive }
+        .flatMap(\.windows)
+        .first(where: \.isKeyWindow)
+    )
+  }
+
+  private func activityController() -> UIActivityViewController {
+    UIActivityViewController(
+      activityItems: ["Synthetic export"],
+      applicationActivities: nil
     )
   }
 }
