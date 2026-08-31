@@ -751,6 +751,15 @@ class AppLocalizationsEn extends AppLocalizations {
       'A real Excel workbook with glucose measurements stored as numbers.';
 
   @override
+  String get archivedSensorExportPreparing => 'Preparing export…';
+
+  @override
+  String get archivedSensorExportSharing => 'Sharing export…';
+
+  @override
+  String get archivedSensorExportFinishing => 'Finishing export…';
+
+  @override
   String get archivedSensorExportFailed =>
       'The archived sensor data could not be exported.';
 

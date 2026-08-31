@@ -1316,6 +1316,24 @@ abstract class AppLocalizations {
   /// **'A real Excel workbook with glucose measurements stored as numbers.'**
   String get xlsxExportDescription;
 
+  /// No description provided for @archivedSensorExportPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing export…'**
+  String get archivedSensorExportPreparing;
+
+  /// No description provided for @archivedSensorExportSharing.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharing export…'**
+  String get archivedSensorExportSharing;
+
+  /// No description provided for @archivedSensorExportFinishing.
+  ///
+  /// In en, this message translates to:
+  /// **'Finishing export…'**
+  String get archivedSensorExportFinishing;
+
   /// No description provided for @archivedSensorExportFailed.
   ///
   /// In en, this message translates to:

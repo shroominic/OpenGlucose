@@ -38,9 +38,19 @@ Future<String?> prepareArchivedSensorShareFileBytes({
   final exportDirectory = await temporaryDirectory.createTemp(
     'openglucose-export-',
   );
-  final file = File(path.join(exportDirectory.path, filename));
-  await file.writeAsBytes(bytes, flush: true);
-  return file.path;
+  try {
+    final file = File(path.join(exportDirectory.path, filename));
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  } on Object {
+    try {
+      await exportDirectory.delete(recursive: true);
+    } on FileSystemException {
+      // Preserve the original write error. Startup cleanup retries this
+      // tightly scoped directory if the platform still has it open.
+    }
+    rethrow;
+  }
 }
 
 /// Best-effort cleanup of the scoped directory created for one share action.

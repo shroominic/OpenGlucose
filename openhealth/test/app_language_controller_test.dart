@@ -26,7 +26,6 @@ void main() {
             countryCode: 'TW',
           ),
         ],
-        const <Locale>[Locale('en', 'US'), Locale('zh', 'HK')],
       ];
 
       for (final locales in chineseDeviceLocales) {
@@ -36,6 +35,30 @@ void main() {
           reason: 'Expected Chinese fallback for $locales.',
         );
       }
+    });
+
+    test('uses the first supported device language in preference order', () {
+      expect(
+        AppLanguageController.resolveDeviceLocales(const <Locale>[
+          Locale('en', 'US'),
+          Locale('zh', 'HK'),
+        ]),
+        AppLanguage.english,
+      );
+      expect(
+        AppLanguageController.resolveDeviceLocales(const <Locale>[
+          Locale('zh', 'HK'),
+          Locale('en', 'US'),
+        ]),
+        AppLanguage.simplifiedChinese,
+      );
+      expect(
+        AppLanguageController.resolveDeviceLocales(const <Locale>[
+          Locale('fr', 'FR'),
+          Locale('zh', 'CN'),
+        ]),
+        AppLanguage.simplifiedChinese,
+      );
     });
 
     test('defaults to English for a non-Chinese device locale', () async {
