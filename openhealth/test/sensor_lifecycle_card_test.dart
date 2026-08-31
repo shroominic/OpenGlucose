@@ -70,7 +70,12 @@ void main() {
 
     expect(find.byKey(const ValueKey('sensorLifecycleCard')), findsOneWidget);
     expect(find.text('Sensor lifecycle'), findsOneWidget);
-    expect(find.textContaining('Life remaining unavailable'), findsOneWidget);
+    expect(
+      find.text(
+        'Life remaining is unavailable while the sensor session is being verified.',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('warmup scenario shows the warmup countdown', (tester) async {

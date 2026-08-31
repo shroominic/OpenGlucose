@@ -97,7 +97,10 @@ void main() {
       expect(android, contains('.putBoolean('));
       expect(android, contains('.commit()'));
       expect(android, contains('validatedWarmupMinutes(payload)'));
-      expect(android, contains('.setContentText("Sensor warming up")'));
+      expect(
+        android,
+        contains('.setContentText(LiveUpdateText.sensorWarmingUp(language))'),
+      );
       expect(android, contains('remainingMinutes >= 1'));
       expect(android, contains('remainingMinutes <= 180'));
       final androidBridge = _read('lib/src/android_live_update_bridge.dart');
@@ -114,9 +117,11 @@ void main() {
         ),
       );
       final app = _read('lib/main.dart');
-      expect(app, contains('Show glucose in live notification'));
-      expect(app, contains('Anyone '));
-      expect(app, contains('who can view your lock screen'));
+      expect(app, contains('context.l10n.showGlucoseInLiveNotification'));
+      expect(
+        app,
+        contains('context.l10n.showGlucoseInLiveNotificationDescription'),
+      );
       expect(ios, contains('func enforceLaunchPrivacy()'));
       expect(
         ios,
@@ -141,7 +146,7 @@ void main() {
       );
       expect(
         iosWidget,
-        contains('return "Glucose unavailable, reading stale"'),
+        contains('return LiveActivityText.staleGlucoseUnavailable(for: language)'),
       );
       expect(ios, contains('addingTimeInterval(10 * 60)'));
       expect(ios, isNot(contains('addingTimeInterval(15 * 60)')));

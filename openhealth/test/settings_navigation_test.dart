@@ -101,7 +101,7 @@ void main() {
     await tester.ensureVisible(find.text('AI & models'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Unavailable in this reviewer preview'), findsOneWidget);
+    expect(find.text('AI unavailable in macOS preview'), findsOneWidget);
     await tester.tap(find.text('AI & models'));
     await tester.pumpAndSettle();
 

@@ -26,7 +26,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('趋势'), findsOneWidget);
-    expect(find.textContaining('24小时'), findsOneWidget);
+    expect(find.text('24小时'), findsOneWidget);
     expect(find.textContaining('读数还不够'), findsOneWidget);
   });
 }

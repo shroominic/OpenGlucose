@@ -147,7 +147,7 @@ void main() {
               find.byKey(const ValueKey<String>('comingSoonStatus')),
             )
             .label,
-        contains('On-device model status: coming soon'),
+        contains('On-device model status: Coming soon'),
       );
       semantics.dispose();
       expect(find.text('API base URL'), findsNothing);
