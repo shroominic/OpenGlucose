@@ -99,7 +99,9 @@ void main() {
         await driver.close();
       });
       await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
+      // Keep the first connect in-flight so the gated selection write can pause
+      // mid-promotion; awaiting it here would deadlock on store.release.
+      final connect = controller.connect(sensor, allowSessionActivation: false);
       await store.started.future.timeout(const Duration(seconds: 1));
       expect(store.getString('openHealth.lastSensor'), isNull);
       var disconnectCompleted = false;
@@ -117,6 +119,7 @@ void main() {
       // the awaited boundary rather than claiming native background evidence.
       store.release.complete();
       await disconnect.timeout(const Duration(seconds: 1));
+      await connect.timeout(const Duration(seconds: 1));
       expect(disconnectCompleted, isTrue);
       expect(controller.snapshot?.stage, CgmSyncStage.error);
       expect(controller.snapshot?.lastError, 'libre2.cleanupUnconfirmed');
@@ -3047,7 +3050,7 @@ class _ControlledSession implements CgmSession {
        _snapshotOnRefreshLiveData = snapshotOnRefreshLiveData;
 
   CgmSessionSnapshot _current;
-  final Object? disconnectError;
+  final Exception? disconnectError;
   CgmSessionSnapshot? _snapshotOnSnapshotsAccess;
   CgmSessionSnapshot? _snapshotOnRefreshLiveData;
   int refreshLiveDataCalls = 0;
@@ -3089,9 +3092,7 @@ class _ControlledSession implements CgmSession {
   @override
   Future<void> disconnect() async {
     final error = disconnectError;
-    if (error != null) {
-      Error.throwWithStackTrace(error, StackTrace.current);
-    }
+    if (error != null) throw error;
   }
 
   @override
