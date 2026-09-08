@@ -42,6 +42,16 @@ void main() {
       await tester.pump();
 
       expect(controller.snapshot, isNull);
+      expect(find.text('Explore sample data'), findsNothing);
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Explore sample data'),
+        250,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.ensureVisible(find.text('Explore sample data'));
+      await tester.pumpAndSettle();
       expect(find.text('Explore sample data'), findsOneWidget);
       await tester.tap(find.text('Explore sample data'));
       await tester.pumpAndSettle();

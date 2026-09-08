@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/libre2_nfc_setup.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
@@ -20,10 +20,11 @@ import 'package:openglucose/src/messaging/message_host.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
-import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
+import 'package:openglucose/src/sensor_connection_screen.dart';
+import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
@@ -71,7 +72,8 @@ Future<_BootstrapResult> _bootstrap() async {
   final healthExport = HealthExportController(
     preferences: preferences,
     healthStateStore: healthStateStore,
-    writesAllowed: !controller.isMockDriver,
+    writesAllowed:
+        !controller.isMockDriver && !isPlatformProtocolCaptureEnabled,
   )..initialize();
   final messages = MessageController(
     preferences: preferences,
@@ -437,14 +439,30 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   static const _foregroundFreshnessInterval = Duration(seconds: 45);
 
   Timer? _freshnessTimer;
+  bool _connectionRequested = false;
+  bool _lastLibreActivationVerified = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (isPlatformProtocolCaptureEnabled) {
+      unawaited(_restoreLibreActivationResult());
+    }
     _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
       unawaited(widget.controller.ensureFreshData());
     });
+  }
+
+  Future<void> _restoreLibreActivationResult() async {
+    final verified = await readLastLibre2ActivationVerified();
+    if (mounted && verified) {
+      setState(() => _lastLibreActivationVerified = true);
+    }
+  }
+
+  void _startSensorConnection() {
+    if (mounted) setState(() => _connectionRequested = true);
   }
 
   @override
@@ -493,8 +511,15 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
               ),
             ),
             child: SafeArea(
-              child: snapshot == null
-                  ? _ScanView(controller: widget.controller)
+              child: snapshot == null || _connectionRequested
+                  ? _NoSensorHome(
+                      controller: widget.controller,
+                      connectionRequested: _connectionRequested,
+                      lastLibreActivationVerified: _lastLibreActivationVerified,
+                      onConnect: _startSensorConnection,
+                      onCloseSetup: () =>
+                          setState(() => _connectionRequested = false),
+                    )
                   : _DashboardView(
                       controller: widget.controller,
                       snapshot: snapshot,
@@ -508,10 +533,20 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   }
 }
 
-class _ScanView extends StatelessWidget {
-  const _ScanView({required this.controller});
+class _NoSensorHome extends StatelessWidget {
+  const _NoSensorHome({
+    required this.controller,
+    required this.connectionRequested,
+    required this.onConnect,
+    required this.onCloseSetup,
+    required this.lastLibreActivationVerified,
+  });
 
   final CgmAppController controller;
+  final bool connectionRequested;
+  final bool lastLibreActivationVerified;
+  final VoidCallback onConnect;
+  final VoidCallback onCloseSetup;
 
   @override
   Widget build(BuildContext context) {
@@ -531,9 +566,10 @@ class _ScanView extends StatelessWidget {
         'No sensor is active. Your previous readings are still here—connect a '
             'sensor to resume live glucose.',
       null =>
-        'Your glucose, on your terms. Connect your sensor to see live readings '
+        'Your glucose, on your terms. Connect a sensor to see live readings '
             'and trends.',
     };
+
     return CustomScrollView(
       slivers: <Widget>[
         SliverToBoxAdapter(
@@ -565,67 +601,23 @@ class _ScanView extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 10),
-                    Text(
-                      inactiveMessage,
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: const Color(0xFFD8EEE8),
-                        height: 1.35,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: <Widget>[
-                        FilledButton.icon(
-                          key: const ValueKey<String>('scanSensorsButton'),
-                          onPressed: controller.scanning
-                              ? null
-                              : () => unawaited(controller.scan()),
-                          icon: controller.scanning
-                              ? const SizedBox.square(
-                                  dimension: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.bluetooth_searching_rounded),
-                          label: Text(
-                            controller.scanning
-                                ? 'Scanning...'
-                                : 'Find my sensor',
-                          ),
-                        ),
-                        if (controller.allHistoricalReadings.isEmpty)
-                          OutlinedButton.icon(
-                            key: const ValueKey<String>(
-                              'sampleDashboardButton',
-                            ),
-                            onPressed: () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => SampleDashboardScreen(
-                                  preferences: controller.displayPreferences,
-                                ),
-                              ),
-                            ),
-                            icon: const Icon(Icons.visibility_outlined),
-                            label: const Text('Explore sample data'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.white,
-                              side: const BorderSide(color: Color(0xFF9CC9C1)),
-                            ),
-                          ),
-                      ],
-                    ),
-                    if (controller.lastError != null &&
-                        controller.scanFailure == null) ...<Widget>[
-                      const SizedBox(height: 16),
+                    if (!connectionRequested) ...<Widget>[
+                      const SizedBox(height: 10),
                       Text(
-                        controller.lastError!,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: const Color(0xFFFFC4AA),
+                        lastLibreActivationVerified
+                            ? 'Last Libre 2 activation completed. Connect a sensor to continue.'
+                            : inactiveMessage,
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          color: const Color(0xFFD8EEE8),
+                          height: 1.35,
                         ),
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        key: const ValueKey<String>('connectSensorButton'),
+                        onPressed: onConnect,
+                        icon: const Icon(Icons.add_circle_outline_rounded),
+                        label: const Text('Connect a sensor'),
                       ),
                     ],
                   ],
@@ -634,6 +626,18 @@ class _ScanView extends StatelessWidget {
             ),
           ),
         ),
+        if (connectionRequested)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: SensorConnectionScreen(
+                controller: controller,
+                inline: true,
+                onClose: onCloseSetup,
+                onConnected: onCloseSetup,
+              ),
+            ),
+          ),
         if (shouldShowMacosPreviewNotice(
           platform: defaultTargetPlatform,
           isWeb: kIsWeb,
@@ -644,362 +648,15 @@ class _ScanView extends StatelessWidget {
               child: MacosPreviewNotice(),
             ),
           ),
-        if (controller.archivedSensors.isNotEmpty)
+        if (archivedSensors.isNotEmpty)
           SliverToBoxAdapter(
             child: _HistoricalOverviewCard(controller: controller),
           ),
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-            child: Row(
-              children: <Widget>[
-                Text(
-                  'Nearby sensors',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '${controller.sensors.length} found',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFF5E726D),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (controller.sensors.isNotEmpty &&
-            !controller.scanning &&
-            controller.scanFailure != null)
-          SliverToBoxAdapter(child: _ScanFailureBanner(controller: controller)),
-        if (controller.sensors.isEmpty &&
-            !controller.scanning &&
-            controller.scanFailure != null)
-          SliverFillRemaining(
-            hasScrollBody: false,
-            child: _ScanFailureState(controller: controller),
-          )
-        else if (controller.sensors.isEmpty && !controller.scanning)
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(
-              child: Padding(
-                padding: EdgeInsets.all(32),
-                child: Text(
-                  'No sensors found yet.\nHold your phone near your sensor and try again.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-            sliver: SliverList.separated(
-              itemCount: controller.sensors.length,
-              itemBuilder: (context, index) {
-                final sensor = controller.sensors[index];
-                final advertisement = sensor.advertisement;
-                final serial = sensor.metadata['serial'];
-                final hasValue = advertisement?.displayValueMgdl != null;
-                final hasInterruptedTransfer = controller
-                    .sensorHasInterruptedTransfer(sensor);
-                final canAcknowledgeInterruptedTransfer = controller
-                    .canAcknowledgeInterruptedSensorTransfer(sensor);
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: <Widget>[
-                                  Text(
-                                    sensor.displayName,
-                                    style: theme.textTheme.titleMedium
-                                        ?.copyWith(fontWeight: FontWeight.w800),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    serial?.isNotEmpty == true
-                                        ? serial!
-                                        : sensor.deviceId,
-                                    style: theme.textTheme.bodyMedium?.copyWith(
-                                      color: const Color(0xFF5E726D),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: <Widget>[
-                                if (hasInterruptedTransfer)
-                                  OutlinedButton(
-                                    key: ValueKey<String>(
-                                      'resolveInterruptedMove-'
-                                      '${sensor.deviceId}',
-                                    ),
-                                    onPressed: canAcknowledgeInterruptedTransfer
-                                        ? () => unawaited(
-                                            _confirmInterruptedSensorTransferRecovery(
-                                              context,
-                                              controller,
-                                              sensor,
-                                            ),
-                                          )
-                                        : null,
-                                    child: Text(
-                                      canAcknowledgeInterruptedTransfer
-                                          ? 'Review move'
-                                          : 'Move needs support',
-                                    ),
-                                  ),
-                                FilledButton(
-                                  key: ValueKey<String>(
-                                    'connectButton-${sensor.deviceId}',
-                                  ),
-                                  onPressed:
-                                      sensor.capabilities.supportsDirectBle &&
-                                          !hasInterruptedTransfer
-                                      ? () => unawaited(
-                                          controller.connect(sensor),
-                                        )
-                                      : null,
-                                  child: const Text('Connect'),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 14),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: <Widget>[
-                            _MetricChip(label: 'RSSI ${sensor.rssi} dBm'),
-                            if (hasValue)
-                              _MetricChip(
-                                label:
-                                    '${advertisement!.displayValueMgdl!.toStringAsFixed(0)} mg/dL',
-                              ),
-                            if (advertisement?.counter != null)
-                              _MetricChip(
-                                label: 'Counter ${advertisement!.counter}',
-                              ),
-                            if (sensor.metadata['mode'] == 'demo')
-                              const _MetricChip(label: 'Demo transport'),
-                          ],
-                        ),
-                        if (hasInterruptedTransfer &&
-                            !canAcknowledgeInterruptedTransfer) ...<Widget>[
-                          const SizedBox(height: 12),
-                          Text(
-                            'The sensor response is unknown. Do not reconnect '
-                            'or forget the Android bond. Contact support for a '
-                            'reviewed recovery.',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: const Color(0xFF9A4D00),
-                              height: 1.35,
-                            ),
-                          ),
-                        ],
-                        if (sensor.notes?.isNotEmpty == true) ...<Widget>[
-                          const SizedBox(height: 12),
-                          Text(
-                            sensor.notes!,
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              height: 1.35,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                );
-              },
-              separatorBuilder: (_, _) => const SizedBox(height: 12),
-            ),
-          ),
+        const SliverToBoxAdapter(child: SizedBox(height: 24)),
       ],
     );
   }
 }
-
-Future<void> _confirmInterruptedSensorTransferRecovery(
-  BuildContext context,
-  CgmAppController controller,
-  DiscoveredSensor sensor,
-) async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Review interrupted sensor move'),
-      content: const Text(
-        'Open Android Bluetooth settings before you continue. Confirm that '
-        'the sensor is not listed as paired. If it is listed, choose Forget '
-        'first. This action only clears the app safety marker. It does not '
-        'contact the sensor or change a Bluetooth bond.',
-      ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          key: const ValueKey<String>('confirmInterruptedMoveRecovery'),
-          onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('I checked Bluetooth'),
-        ),
-      ],
-    ),
-  );
-  if (confirmed != true || !context.mounted) {
-    return;
-  }
-  try {
-    await controller.acknowledgeInterruptedSensorTransfer(sensor);
-  } catch (_) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            controller.lastError ??
-                'The interrupted sensor move could not be cleared.',
-          ),
-        ),
-      );
-    }
-  }
-}
-
-class _ScanFailureState extends StatelessWidget {
-  const _ScanFailureState({required this.controller});
-
-  final CgmAppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final failure = controller.scanFailure!;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(28, 16, 28, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            const Icon(
-              Icons.bluetooth_disabled_rounded,
-              size: 48,
-              color: Color(0xFF0B6E69),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              _scanFailureTitle(failure),
-              key: const ValueKey<String>('sensorScanFailureTitle'),
-              textAlign: TextAlign.center,
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              controller.scanFailureMessage ??
-                  'Check Bluetooth, keep the sensor nearby, and try again.',
-              key: const ValueKey<String>('sensorScanFailureMessage'),
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: const Color(0xFF5B6E6A),
-                height: 1.35,
-              ),
-            ),
-            const SizedBox(height: 18),
-            FilledButton.icon(
-              key: const ValueKey<String>('retrySensorScanButton'),
-              onPressed: controller.scanning
-                  ? null
-                  : () => unawaited(controller.scan()),
-              icon: const Icon(Icons.refresh_rounded),
-              label: const Text('Try again'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ScanFailureBanner extends StatelessWidget {
-  const _ScanFailureBanner({required this.controller});
-
-  final CgmAppController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final failure = controller.scanFailure!;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-      child: Card(
-        key: const ValueKey<String>('sensorScanInlineFailure'),
-        color: const Color(0xFFFFF3E8),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Row(
-                children: <Widget>[
-                  const Icon(
-                    Icons.bluetooth_disabled_rounded,
-                    color: Color(0xFF9A4D00),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _scanFailureTitle(failure),
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                controller.scanFailureMessage ??
-                    'Check Bluetooth and try scanning again.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF6B5542),
-                  height: 1.35,
-                ),
-              ),
-              const SizedBox(height: 10),
-              FilledButton.tonalIcon(
-                key: const ValueKey<String>('retryPartialSensorScanButton'),
-                onPressed: () => unawaited(controller.scan()),
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Scan again'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-String _scanFailureTitle(BleFailure failure) => switch (failure.kind) {
-  BleFailureKind.bluetoothOff => 'Bluetooth is off',
-  BleFailureKind.permissionRequired => 'Bluetooth access needed',
-  BleFailureKind.bluetoothUnavailable => 'Bluetooth is unavailable',
-  _ => 'Could not scan for sensors',
-};
 
 class _HistoricalOverviewCard extends StatelessWidget {
   const _HistoricalOverviewCard({required this.controller});
@@ -1129,12 +786,19 @@ class _DashboardView extends StatelessWidget {
     final theme = Theme.of(context);
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
+    final wellnessHistory = readingsForWellness(history);
+    final showWellness = history.isEmpty || wellnessHistory.isNotEmpty;
     final warmup = computeWarmupStatus(
       snapshot,
       latestReading: controller.displayLatestReading,
     );
     final isWarmingUp = warmup?.phase == WarmupPhase.warming;
-    final remainingLife = sensorLifeText(snapshot.sessionInfo.sessionStart);
+    final remainingLife = sensorLifeText(
+      snapshot.sessionInfo.sessionStart,
+      totalLife: Duration(
+        minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+      ),
+    );
 
     return RefreshIndicator(
       onRefresh: controller.sync,
@@ -1250,6 +914,23 @@ class _DashboardView extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 12),
+                        if (history.any(
+                          (reading) => reading.isDisplayProvisional,
+                        )) ...<Widget>[
+                          const Text(
+                            'Includes provisional readings. Not validated for body glucose.',
+                            key: ValueKey<String>('historyQualityNotice'),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        if (!snapshot.capabilities.supportsHistory &&
+                            !controller.isMockDriver) ...<Widget>[
+                          Text(
+                            'Readings received by this phone',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         SizedBox(
                           height: 336,
                           child: CgmDashboardChart(
@@ -1266,18 +947,18 @@ class _DashboardView extends StatelessWidget {
             ),
           // History-derived UI stays hidden until the sensor finishes warmup;
           // early equilibration values are excluded from its shared input.
-          if (!isWarmingUp)
+          if (!isWarmingUp && showWellness)
             SliverToBoxAdapter(
               key: const ValueKey<String>('dashboardPatternsSection'),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                 child: MetricsSection(
-                  readings: history,
+                  readings: wellnessHistory,
                   preferences: preferences,
                 ),
               ),
             ),
-          if (!isWarmingUp)
+          if (!isWarmingUp && showWellness)
             SliverToBoxAdapter(
               key: const ValueKey<String>('dashboardWeeklyRecapSection'),
               child: Padding(
@@ -1286,7 +967,7 @@ class _DashboardView extends StatelessWidget {
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => WeeklyRecapScreen(
-                        readings: history,
+                        readings: wellnessHistory,
                         preferences: preferences,
                       ),
                     ),
@@ -1302,32 +983,6 @@ class _DashboardView extends StatelessWidget {
           // --- end TASK-028 weekly recap entry point ---
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
-      ),
-    );
-  }
-}
-
-class _MetricChip extends StatelessWidget {
-  const _MetricChip({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFE6EFEA),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: const Color(0xFF24443F),
-            fontWeight: FontWeight.w700,
-          ),
-        ),
       ),
     );
   }
@@ -1379,7 +1034,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final theme = Theme.of(context);
     final preferences = widget.controller.displayPreferences;
     final snapshot = widget.snapshot;
-    final latest = widget.controller.displayLatestReading;
+    final latest = currentReadingForSnapshot(
+      snapshot,
+      widget.controller.displayLatestReading,
+    );
     final warmup = computeWarmupStatus(snapshot, latestReading: latest);
     final primaryError = primaryErrorTextForSnapshot(snapshot);
     final privateSupportCode =
@@ -1397,7 +1055,9 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
       subtitle = warmupSubtext(warmup);
       stageLabel = warmupStageLabel(warmup);
     } else {
-      final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
+      final fallbackValue = isLibreGen1Snapshot(snapshot)
+          ? null
+          : snapshot.lastAdvertisement?.displayValueMgdl;
       final displayedValue =
           latest?.displayValue(preferences) ??
           (fallbackValue == null
@@ -1409,7 +1069,12 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
               preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
             );
       unitLabel = preferences.unit.label;
-      subtitle = 'Latest reading at ${readingTimeText(latest)}';
+      subtitle = primaryError == null
+          ? (latest?.isDisplayProvisional == true
+                    ? null
+                    : libreConnectionDetailForSnapshot(snapshot)) ??
+                'Latest reading at ${readingTimeText(latest)}'
+          : 'Latest reading at ${readingTimeText(latest)}';
       stageLabel = stageLabelForSnapshot(snapshot);
     }
 
@@ -1470,6 +1135,17 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   color: const Color(0xFFD6ECE7),
                 ),
               ),
+              if (latest?.isDisplayProvisional == true) ...<Widget>[
+                const SizedBox(height: 6),
+                Text(
+                  libreConnectionDetailForSnapshot(snapshot) ??
+                      'Provisional reading. Not yet verified.',
+                  key: const ValueKey<String>('provisionalReadingNotice'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFC7E4DD),
+                  ),
+                ),
+              ],
               if (primaryError != null) ...<Widget>[
                 const SizedBox(height: 12),
                 Text(
@@ -1478,7 +1154,20 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                     color: const Color(0xFFFFC4AA),
                   ),
                 ),
-                if (widget.controller.connectionRequiresUserAction) ...<Widget>[
+                if (widget
+                    .controller
+                    .sensorConnectionCleanupUnconfirmed) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Close and reopen OpenGlucose before connecting again. '
+                    'Do not reset the sensor.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFFFFC4AA),
+                    ),
+                  ),
+                ] else if (widget
+                    .controller
+                    .connectionRequiresUserAction) ...<Widget>[
                   const SizedBox(height: 12),
                   Wrap(
                     spacing: 10,
@@ -1537,8 +1226,9 @@ class _StagePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = switch (label) {
       'Connected' => const Color(0xFF2AB67D),
-      'Error' => const Color(0xFFF26D5B),
+      'Error' || 'Connection lost' => const Color(0xFFF26D5B),
       'Connecting' ||
+      'Searching' ||
       'Setting up' ||
       'Reconnecting' ||
       'Warmup' ||
@@ -1598,6 +1288,7 @@ Future<void> _showSettings(
   BuildContext context,
   CgmAppController controller,
 ) async {
+  final homeState = context.findAncestorStateOfType<_CgmHomePageState>();
   if (controller.snapshot != null) {
     unawaited(controller.refreshDiagnostics());
     unawaited(controller.loadCalibrations());
@@ -1646,13 +1337,21 @@ Future<void> _showSettings(
             return Scaffold(
               body: CustomScrollView(
                 slivers: <Widget>[
-                  const SliverAppBar.large(title: Text('Settings')),
+                  const SliverAppBar.large(
+                    title: Text('Settings'),
+                    backgroundColor: Color(0xFFF6EFE6),
+                    surfaceTintColor: Colors.transparent,
+                  ),
                   SliverToBoxAdapter(
                     child: _SettingsOverview(
                       controller: controller,
                       healthExport: healthExport,
                       displayPane: displayPane,
                       hasActiveSensor: snapshot != null,
+                      onConnectSensor: () {
+                        Navigator.of(context).pop<void>();
+                        homeState?._startSensorConnection();
+                      },
                       developerPane: snapshot == null
                           ? null
                           : _buildDeveloperSettingsPane(
@@ -1693,6 +1392,7 @@ class _SettingsOverview extends StatelessWidget {
     required this.healthExport,
     required this.displayPane,
     required this.hasActiveSensor,
+    required this.onConnectSensor,
     this.developerPane,
   });
 
@@ -1700,6 +1400,7 @@ class _SettingsOverview extends StatelessWidget {
   final HealthExportController healthExport;
   final Widget displayPane;
   final bool hasActiveSensor;
+  final VoidCallback onConnectSensor;
   final Widget? developerPane;
 
   @override
@@ -1748,7 +1449,7 @@ class _SettingsOverview extends StatelessWidget {
                   icon: Icons.add_circle_outline_rounded,
                   title: 'Connect a sensor',
                   subtitle: 'No sensor is active',
-                  onTap: () => Navigator.of(context).pop(),
+                  onTap: onConnectSensor,
                 ),
               _SettingsDestination(
                 icon: Icons.archive_outlined,
@@ -1836,6 +1537,18 @@ class _SettingsOverview extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: _SettingsGroup(
             children: <Widget>[
+              _SettingsAction(
+                icon: Icons.visibility_outlined,
+                title: 'Explore sample data',
+                subtitle: 'Preview OpenGlucose without connecting a sensor',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => SampleDashboardScreen(
+                      preferences: controller.displayPreferences,
+                    ),
+                  ),
+                ),
+              ),
               const _SettingsDestination(
                 icon: Icons.info_outline_rounded,
                 title: 'About OpenGlucose',
@@ -1902,8 +1615,14 @@ class _SettingsHero extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   snapshot == null
-                      ? 'Your previous data stays on this iPhone.'
-                      : sensorLifeText(snapshot.sessionInfo.sessionStart),
+                      ? 'Your previous data stays on this device.'
+                      : sensorLifeText(
+                          snapshot.sessionInfo.sessionStart,
+                          totalLife: Duration(
+                            minutes:
+                                snapshot.sessionInfo.expectedLifetimeMinutes,
+                          ),
+                        ),
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: const Color(0xFFD8EEE8),
                   ),
@@ -2169,6 +1888,7 @@ class _ArchivedSensorDetail extends StatelessWidget {
   Widget build(BuildContext context) {
     final rawReadings = controller.readingsForArchivedSensor(session);
     final readings = controller.displayReadingsForArchivedSensor(session);
+    final wellnessReadings = readingsForWellness(readings);
     final theme = Theme.of(context);
     var recapAnchor = session.lastReadingAt;
     for (final reading in readings) {
@@ -2226,6 +1946,15 @@ class _ArchivedSensorDetail extends StatelessWidget {
           ),
           if (readings.isNotEmpty) ...<Widget>[
             const SizedBox(height: 16),
+            if (readings.any(
+              (reading) => reading.isDisplayProvisional,
+            )) ...<Widget>[
+              const Text(
+                'Includes provisional readings. Not validated for body glucose.',
+                key: ValueKey<String>('historyQualityNotice'),
+              ),
+              const SizedBox(height: 8),
+            ],
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -2239,12 +1968,14 @@ class _ArchivedSensorDetail extends StatelessWidget {
                 ),
               ),
             ),
+          ],
+          if (wellnessReadings.isNotEmpty) ...<Widget>[
             const SizedBox(height: 12),
             FilledButton.tonalIcon(
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
                   builder: (_) => WeeklyRecapScreen(
-                    readings: readings,
+                    readings: wellnessReadings,
                     preferences: controller.displayPreferences,
                     now: recapAnchor,
                   ),

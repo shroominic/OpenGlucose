@@ -10,5 +10,13 @@ const String kOgScenario = String.fromEnvironment('OG_SCENARIO');
 
 Future<void> configurePlatformPrivacyDefaults() async {}
 
+Future<void> stopPlatformProtocolCapture() async {}
+
+bool get platformProtocolCaptureEnabled => false;
+
+bool get platformLibreGen1StreamingEnabled => false;
+
+Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() async => null;
+
 CgmDriver buildPlatformDriver() =>
     DemoCgmDriver(initialScenario: MockScenario.fromId(kOgScenario));

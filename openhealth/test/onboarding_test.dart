@@ -62,6 +62,16 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('onboardingPrimaryButton')));
       await tester.pumpAndSettle();
       expect(find.text('How it works'), findsOneWidget);
+      expect(find.text('Choose your model'), findsOneWidget);
+      expect(
+        find.textContaining(
+          RegExp(
+            'aidex|libre|bluetooth|15 days|every minute',
+            caseSensitive: false,
+          ),
+        ),
+        findsNothing,
+      );
 
       await tester.tap(find.byKey(const ValueKey('onboardingPrimaryButton')));
       await tester.pumpAndSettle();
@@ -74,6 +84,23 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('onboardingPrimaryButton')));
       await tester.pumpAndSettle();
       expect(find.text("You're all set"), findsOneWidget);
+      expect(find.text('Check model support'), findsOneWidget);
+      expect(find.text('Finish setup'), findsOneWidget);
+      expect(find.textContaining('select Connect a sensor'), findsOneWidget);
+      expect(
+        find.textContaining(
+          RegExp('aidex|libre|bluetooth', caseSensitive: false),
+        ),
+        findsNothing,
+      );
+      expect(
+        tester
+            .getSemantics(
+              find.byKey(const ValueKey('onboardingPrimaryButton')),
+            )
+            .label,
+        'Finish setup',
+      );
 
       // Final step persists completion and hands off. The button shows an
       // (infinite) spinner while finishing, so pump a fixed amount rather than

@@ -12,9 +12,9 @@ const Color _kMuted = Color(0xFF5B6E6A);
 /// Light, skippable first-run onboarding.
 ///
 /// A short sequence of intro screens: welcome, how it works, a target-range
-/// picker, and a "connect your sensor" handoff. On completion (or skip) it
+/// picker, and a sensor-model chooser handoff. On completion (or skip) it
 /// persists state via [OnboardingStore] and invokes [onFinished], which the
-/// launch gate uses to hand off to the existing scan/connect flow.
+/// launch gate uses to show the no-sensor home.
 class OnboardingFlow extends StatefulWidget {
   const OnboardingFlow({
     super.key,
@@ -217,7 +217,7 @@ class _Footer extends StatelessWidget {
                         color: Colors.white,
                       ),
                     )
-                  : Text(isLast ? 'Connect my sensor' : 'Continue'),
+                  : Text(isLast ? 'Finish setup' : 'Continue'),
             ),
           ),
         ],
@@ -433,23 +433,24 @@ class _HowItWorksStep extends StatelessWidget {
       icon: Icons.sensors_rounded,
       title: 'How it works',
       body:
-          'Apply your Aidex X sensor, pair it over Bluetooth, and let it warm '
-          'up. After that, readings stream straight to your phone.',
+          'Choose a sensor model, check its support status, and follow the '
+          'setup steps available in this build. Connected supported sensors '
+          'use the same OpenGlucose dashboard.',
       bullets: <_Bullet>[
         _Bullet(
-          icon: Icons.touch_app_rounded,
-          title: 'Apply the sensor',
-          body: 'A small all-in-one sensor you wear for up to 15 days.',
+          icon: Icons.fact_check_outlined,
+          title: 'Choose your model',
+          body: 'See which sensor models this build can connect.',
         ),
         _Bullet(
-          icon: Icons.hourglass_bottom_rounded,
-          title: '~1 hour warm-up',
-          body: 'The sensor calibrates itself before the first reading.',
+          icon: Icons.device_hub_rounded,
+          title: 'Follow its setup',
+          body: 'Connection and warm-up steps depend on the sensor model.',
         ),
         _Bullet(
-          icon: Icons.timelapse_rounded,
-          title: 'A reading every minute',
-          body: 'Live values and trends, refreshed continuously.',
+          icon: Icons.show_chart_rounded,
+          title: 'See your trends',
+          body: 'Supported sensors use the same OpenGlucose dashboard.',
         ),
       ],
     );
@@ -614,21 +615,22 @@ class _ConnectStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const _StepScaffold(
-      icon: Icons.bluetooth_searching_rounded,
+      icon: Icons.sensors_rounded,
       title: "You're all set",
       body:
-          'Have your Aidex X sensor on and nearby. We’ll scan for it over '
-          'Bluetooth and connect — then your live dashboard takes over.',
+          'Next, select Connect a sensor to choose a model. OpenGlucose will '
+          'show its support status and the setup method available in this '
+          'build.',
       bullets: <_Bullet>[
         _Bullet(
-          icon: Icons.bluetooth_rounded,
-          title: 'Turn on Bluetooth',
-          body: 'Keep your phone close to the sensor while it pairs.',
+          icon: Icons.verified_outlined,
+          title: 'Check model support',
+          body: 'Availability is shown before any connection starts.',
         ),
         _Bullet(
-          icon: Icons.show_chart_rounded,
-          title: 'Watch it come alive',
-          body: 'Trends and readings appear as soon as warm-up finishes.',
+          icon: Icons.route_outlined,
+          title: 'Use the guided steps',
+          body: 'Requirements can differ between sensor models.',
         ),
       ],
     );

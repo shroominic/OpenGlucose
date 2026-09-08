@@ -10,6 +10,9 @@ packages/cgm_core
 packages/cgm_ble
 packages/cgm_ble_flutter
 packages/cgm_aidex
+packages/cgm_libre2
+packages/cgm_libre2_glucose
+packages/cgm_yuwell_anytime
 openhealth
 "
 
@@ -145,6 +148,13 @@ run_project_tests() {
   )
 }
 
+run_android_jvm_tests() {
+  require_tool javac
+  require_tool java
+  "$repo_root/scripts/test-yuwell-secure-store-java.sh"
+  "$repo_root/scripts/test-libre-nfc-java.sh"
+}
+
 run_integration_tests() {
   found=false
 
@@ -255,6 +265,9 @@ case "$command_name" in
   pub-get|format|format-check|analyze|test-unit)
     verify_runtime
     for_project "$command_name"
+    if [ "$command_name" = test-unit ]; then
+      run_android_jvm_tests
+    fi
     ;;
   outdated)
     outdated_dependencies

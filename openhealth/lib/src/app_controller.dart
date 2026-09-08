@@ -3,10 +3,12 @@ import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'android_live_update_bridge.dart';
+import 'cgm_driver_registry.dart';
 import 'demo_driver.dart';
 import 'display_preferences.dart';
 import 'health_state_store.dart';
@@ -48,6 +50,9 @@ class CgmAppController extends ChangeNotifier {
   static const _lastSensorKey = 'openHealth.lastSensor';
   static const _sensorArchiveKey = 'openHealth.sensorArchive';
   static const _bondTransferTombstonePrefix = 'openHealth.bondTransfer.';
+  static const _qualifiedHistoryPrefix = 'openHealth.history.v2.';
+  static const _qualifiedBondTransferTombstonePrefix =
+      'openHealth.bondTransfer.v2.';
   static const _bondTransferOutcomeUnknown = 'outcome-unknown';
   static const _bondTransferSensorAccepted = 'sensor-accepted';
   static const _scanTimeout = Duration(seconds: 6);
@@ -70,6 +75,12 @@ class CgmAppController extends ChangeNotifier {
   final List<CgmLogEntry> _logs = <CgmLogEntry>[];
 
   CgmSession? _session;
+  bool _sensorConnectionCleanupUnconfirmed = false;
+
+  /// Native ownership was not released. A new connection in this process is
+  /// unsafe; preserve receiver/history and require an actual app restart.
+  bool get sensorConnectionCleanupUnconfirmed =>
+      _sensorConnectionCleanupUnconfirmed;
   StreamSubscription<CgmSessionSnapshot>? _snapshotSubscription;
   StreamSubscription<CgmLogEntry>? _logSubscription;
   Timer? _historyPersistTimer;
@@ -85,20 +96,23 @@ class CgmAppController extends ChangeNotifier {
   bool _scanning = false;
   BleFailure? _scanFailure;
   int _scanGeneration = 0;
+  StreamIterator<DiscoveredSensor>? _scanIterator;
   bool _disposed = false;
   bool _connectInProgress = false;
   bool _freshnessInFlight = false;
   bool _bondTransferInFlight = false;
   bool _finalizingBondTransfer = false;
   CgmBondTransferSession? _inspectedBondTransferSession;
-  String? _inspectedBondTransferStorageKey;
+  String? _inspectedBondTransferIdentity;
   CgmBondTransferPlan? _inspectedBondTransferPlan;
   bool _retiringExpiredSensor = false;
   bool _clearingActivationRequiredSensor = false;
+  DiscoveredSensor? _activationRequiredSensor;
   bool _allowSessionActivation = false;
   bool _selectionPersisted = false;
   Future<void>? _selectionPromotion;
-  String? _backgroundSensorStorageKey;
+  DiscoveredSensor? _selectionPromotionSource;
+  String? _backgroundSensorIdentity;
   String? _lastError;
   final Map<String, String> _persistenceErrors = <String, String>{};
 
@@ -114,8 +128,19 @@ class CgmAppController extends ChangeNotifier {
 
   String? get scanFailureMessage => switch (_scanFailure) {
     final failure? => userMessageForBleFailure(failure),
-    null => null,
+    null => _lastError,
   };
+
+  /// Whether the active build can route a connection to [candidateDriverId].
+  bool supportsDriver(String candidateDriverId) =>
+      _driverSupports(candidateDriverId);
+
+  /// The sensor that needs an explicit, user-authorized activation attempt.
+  ///
+  /// The failed read-only probe clears the provisional selection, but this
+  /// transient notice remains available to the connection UI. A later
+  /// connection attempt or an explicit selection clear dismisses it.
+  DiscoveredSensor? get activationRequiredSensor => _activationRequiredSensor;
 
   String? get lastError {
     final persistenceError = _persistenceErrors.values.join('. ');
@@ -140,14 +165,14 @@ class CgmAppController extends ChangeNotifier {
       _snapshot?.stage == CgmSyncStage.ready &&
       _session is CgmBondTransferSession &&
       (_selectedSensor == null ||
-          _bondTransferTombstone(_selectedSensor!.storageKey) == null);
+          _bondTransferTombstone(_selectedSensor!) == null);
 
   bool sensorHasInterruptedTransfer(DiscoveredSensor sensor) =>
-      !isMockDriver && _bondTransferTombstone(sensor.storageKey) != null;
+      !isMockDriver && _bondTransferTombstone(sensor) != null;
 
   bool canAcknowledgeInterruptedSensorTransfer(DiscoveredSensor sensor) =>
       !isMockDriver &&
-      _bondTransferTombstone(sensor.storageKey) == _bondTransferSensorAccepted;
+      _bondTransferTombstone(sensor) == _bondTransferSensorAccepted;
 
   List<ArchivedSensorSession> get archivedSensors {
     final sessions = List<ArchivedSensorSession>.of(_archivedSensors);
@@ -180,13 +205,14 @@ class CgmAppController extends ChangeNotifier {
     );
   }
 
-  /// All retained readings across previous sensors plus the active sensor.
+  /// Wellness-eligible readings across previous sensors plus the active sensor.
   /// Duplicate records are collapsed so an archive hand-off cannot inflate
-  /// long-range summaries.
+  /// long-range summaries. Provisional/raw records remain in local charts and
+  /// explicit exports, but never enter this analytics/messaging input.
   List<CgmReading> get allHistoricalReadings {
     final byIdentity = <String, CgmReading>{};
     void addAll(Iterable<CgmReading> readings) {
-      for (final reading in readings) {
+      for (final reading in readingsForWellness(readings)) {
         final recordedAt = reading.recordedAt?.toUtc().toIso8601String() ?? '';
         final key =
             '$recordedAt|${reading.sensorMinute ?? ''}|'
@@ -317,16 +343,14 @@ class CgmAppController extends ChangeNotifier {
     _archivedSensors = _loadSensorArchive();
 
     final restoredSensor = _loadPersistedSensor();
-    if (restoredSensor == null || restoredSensor.driverId != _driver.driverId) {
+    if (restoredSensor == null || !_driverSupports(restoredSensor.driverId)) {
       return;
     }
 
     _selectedSensor = restoredSensor;
     _selectionPersisted = true;
-    _persistedHistory = _loadPersistedHistory(restoredSensor.storageKey);
-    final interruptedTransfer = _bondTransferTombstone(
-      restoredSensor.storageKey,
-    );
+    _persistedHistory = _loadPersistedHistory(restoredSensor);
+    final interruptedTransfer = _bondTransferTombstone(restoredSensor);
     if (interruptedTransfer != null) {
       final sensorAccepted = interruptedTransfer == _bondTransferSensorAccepted;
       _snapshot = CgmSessionSnapshot(
@@ -360,6 +384,7 @@ class CgmAppController extends ChangeNotifier {
     }
     final inferredStart = inferSensorStart(_persistedHistory);
     if (_persistedSensorHasExpired(
+      sensor: restoredSensor,
       history: _persistedHistory,
       inferredStart: inferredStart,
     )) {
@@ -370,7 +395,7 @@ class CgmAppController extends ChangeNotifier {
         startedAt: inferredStart,
       );
       await _healthStateStore.remove(_lastSensorKey);
-      await _healthStateStore.remove(_historyKey(restoredSensor.storageKey));
+      await _healthStateStore.remove(_historyKey(restoredSensor));
       _selectionPersisted = false;
       _selectedSensor = null;
       _persistedHistory = const <CgmReading>[];
@@ -398,8 +423,9 @@ class CgmAppController extends ChangeNotifier {
     );
     notifyListeners();
     Timer(_restoredConnectDelay, () {
-      if (_session != null ||
-          _selectedSensor?.deviceId != restoredSensor.deviceId) {
+      if (_disposed ||
+          _session != null ||
+          !_sameSensor(_selectedSensor, restoredSensor)) {
         return;
       }
       unawaited(connect(restoredSensor, allowSessionActivation: false));
@@ -407,7 +433,19 @@ class CgmAppController extends ChangeNotifier {
   }
 
   Future<void> scan() async {
-    if (_disposed) {
+    late final int invalidationGeneration;
+    try {
+      invalidationGeneration = await _invalidateScan();
+    } catch (error) {
+      if (_disposed) {
+        return;
+      }
+      _recordScanFailure(error);
+      _scanning = false;
+      notifyListeners();
+      return;
+    }
+    if (_disposed || invalidationGeneration != _scanGeneration) {
       return;
     }
     final generation = ++_scanGeneration;
@@ -417,28 +455,28 @@ class CgmAppController extends ChangeNotifier {
     _sensorsById.clear();
     notifyListeners();
 
+    final iterator = StreamIterator<DiscoveredSensor>(
+      _driver.scan(timeout: _scanTimeout),
+    );
+    _scanIterator = iterator;
     try {
-      await for (final sensor in _driver.scan(timeout: _scanTimeout)) {
+      while (await iterator.moveNext()) {
         if (!_ownsScan(generation)) {
           break;
         }
-        _sensorsById[sensor.deviceId] = sensor;
+        final sensor = iterator.current;
+        _sensorsById[_sensorIdentity(sensor)] = sensor;
         notifyListeners();
       }
     } catch (error) {
       if (!_ownsScan(generation)) {
         return;
       }
-      if (error is BleFailure) {
-        _scanFailure = error;
-        _lastError = userMessageForBleFailure(error);
-      } else {
-        _scanFailure = null;
-        _lastError =
-            'Sensor scan could not be completed. Check Bluetooth and try '
-            'again.';
-      }
+      _recordScanFailure(error);
     } finally {
+      if (identical(_scanIterator, iterator)) {
+        _scanIterator = null;
+      }
       if (_ownsScan(generation)) {
         _scanning = false;
         notifyListeners();
@@ -446,25 +484,55 @@ class CgmAppController extends ChangeNotifier {
     }
   }
 
+  /// Stops the current physical scan without changing sensor selection.
+  ///
+  /// Cleanup errors are retained as privacy-safe scan failures and never
+  /// escape route disposal. A newer scan owns its generation and cannot be
+  /// overwritten when an older cancellation finishes late.
+  Future<void> cancelScan() async {
+    final cancellationGeneration = _scanGeneration + 1;
+    try {
+      await _invalidateScan();
+    } catch (error) {
+      if (_disposed || cancellationGeneration != _scanGeneration) {
+        return;
+      }
+      _recordScanFailure(error);
+      notifyListeners();
+      return;
+    }
+    if (_disposed || cancellationGeneration != _scanGeneration) {
+      return;
+    }
+    notifyListeners();
+  }
+
   Future<void> connect(
     DiscoveredSensor sensor, {
     bool allowSessionActivation = true,
   }) async {
-    _invalidateScan();
+    if (_sensorConnectionCleanupUnconfirmed) {
+      _lastError =
+          'Connection cleanup could not be confirmed. Close and reopen '
+          'OpenGlucose before connecting again. Do not reset the sensor.';
+      notifyListeners();
+      return;
+    }
     if (_connectInProgress) {
       return;
     }
     _connectInProgress = true;
+    _activationRequiredSensor = null;
     _cancelReconnect();
     try {
-      if (sensor.driverId != _driver.driverId) {
+      await _invalidateScan();
+      if (!_driverSupports(sensor.driverId)) {
         _lastError =
-            'Sensor driver ${sensor.driverId} does not match '
-            '${_driver.driverId}.';
+            'This sensor protocol is not available in the current build.';
         notifyListeners();
         return;
       }
-      if (!isMockDriver && _bondTransferTombstone(sensor.storageKey) != null) {
+      if (!isMockDriver && _bondTransferTombstone(sensor) != null) {
         _lastError =
             'This sensor has an interrupted move. Do not reconnect or retry. '
             'Check Android Bluetooth settings first.';
@@ -473,15 +541,34 @@ class CgmAppController extends ChangeNotifier {
       }
       _clearInspectedBondTransfer();
       final resumeVerifiedSelection =
-          _selectionPersisted &&
-          _selectedSensor?.storageKey == sensor.storageKey;
+          _selectionPersisted && _sameStoredSensor(_selectedSensor, sensor);
+      final promotionSource = _selectionPromotionSource;
+      final resumesPendingPromotion =
+          promotionSource != null && _sameSensor(promotionSource, sensor);
+      final inProcessHistory = resumesPendingPromotion
+          ? List<CgmReading>.of(_persistedHistory, growable: false)
+          : const <CgmReading>[];
       await disconnect(clearSelection: false);
+      if (_sensorConnectionCleanupUnconfirmed) return;
       _allowSessionActivation = allowSessionActivation;
       _selectedSensor = sensor;
       _selectionPersisted = resumeVerifiedSelection;
-      _persistedHistory = isMockDriver || !resumeVerifiedSelection
-          ? const <CgmReading>[]
-          : _loadPersistedHistory(sensor.storageKey);
+      if (!resumesPendingPromotion) {
+        _selectionPromotionSource = null;
+      }
+      _persistedHistory = switch ((
+        isMockDriver,
+        resumeVerifiedSelection,
+        resumesPendingPromotion,
+      )) {
+        (true, _, _) => const <CgmReading>[],
+        (false, true, _) => _loadPersistedHistory(sensor),
+        (false, false, true) => _mergeHistory(
+          _loadPersistedHistory(promotionSource!),
+          _mergeHistory(_loadPersistedHistory(sensor), inProcessHistory),
+        ),
+        (false, false, false) => const <CgmReading>[],
+      };
       _snapshot = CgmSessionSnapshot(
         stage: CgmSyncStage.connecting,
         statusText: 'Connecting',
@@ -541,16 +628,20 @@ class CgmAppController extends ChangeNotifier {
             _selectedSensor != null &&
             nextHistory.isNotEmpty) {
           _persistedHistory = nextHistory;
-          if (!nextSnapshot.historySync.inProgress) {
-            _schedulePersistHistory(_selectedSensor!.storageKey, nextHistory);
-          }
         }
         if (!isMockDriver && _snapshotHasExpired(nextSnapshot)) {
+          if (nextHistory.isNotEmpty && !nextSnapshot.historySync.inProgress) {
+            _schedulePersistHistory(_selectedSensor!, nextHistory);
+          }
           unawaited(_retireExpiredSensor());
           return;
         }
         if (!isMockDriver &&
             nextSnapshot.metadata['activationRequired'] == 'true') {
+          _activationRequiredSensor = _selectedSensor ?? nextSnapshot.sensor;
+          if (nextHistory.isNotEmpty && !nextSnapshot.historySync.inProgress) {
+            _schedulePersistHistory(_selectedSensor!, nextHistory);
+          }
           unawaited(_clearActivationRequiredSelection());
           return;
         }
@@ -564,7 +655,16 @@ class CgmAppController extends ChangeNotifier {
           // Once the sensor has proven that an active session exists, future
           // background reconnects must never be allowed to start a new one.
           _allowSessionActivation = false;
-          _promoteVerifiedSelection(sensor);
+          _promoteVerifiedSelection(
+            nextSnapshot.sensor,
+            history: nextHistory,
+          );
+        }
+        if (!isMockDriver &&
+            _selectedSensor != null &&
+            nextHistory.isNotEmpty &&
+            !nextSnapshot.historySync.inProgress) {
+          _schedulePersistHistory(_selectedSensor!, nextHistory);
         }
         if (reconnectingStage &&
             !isMockDriver &&
@@ -585,7 +685,19 @@ class CgmAppController extends ChangeNotifier {
       // Attach to the non-replaying stream before reading currentSnapshot.
       // This closes the gap in which setup can publish a terminal state after
       // the first read but before the listener exists.
-      _snapshot = session.currentSnapshot;
+      final currentSnapshot = session.currentSnapshot;
+      final initialHistory = isMockDriver
+          ? currentSnapshot.history
+          : _mergeHistory(_persistedHistory, currentSnapshot.history);
+      _snapshot = currentSnapshot.copyWith(
+        history: initialHistory,
+        latestReading:
+            currentSnapshot.latestReading ??
+            (initialHistory.isEmpty ? null : initialHistory.last),
+      );
+      if (!isMockDriver && initialHistory.isNotEmpty) {
+        _persistedHistory = initialHistory;
+      }
       final initialErrorSnapshot = _snapshot;
       if (initialErrorSnapshot != null &&
           (initialErrorSnapshot.stage == CgmSyncStage.error ||
@@ -596,7 +708,19 @@ class CgmAppController extends ChangeNotifier {
         }
       }
       if (_snapshot?.stage == CgmSyncStage.ready) {
-        _promoteVerifiedSelection(sensor);
+        // The initial snapshot can already be ready before the non-replaying
+        // stream listener is attached. Treat it like a later ready event so a
+        // reconnect can never repeat sensor activation.
+        _allowSessionActivation = false;
+        _promoteVerifiedSelection(
+          _snapshot!.sensor,
+          history: initialHistory,
+        );
+        if (!isMockDriver &&
+            initialHistory.isNotEmpty &&
+            !_snapshot!.historySync.inProgress) {
+          _schedulePersistHistory(_selectedSensor!, initialHistory);
+        }
       }
       _startPlatformTask(
         _pushLiveActivity(),
@@ -615,10 +739,16 @@ class CgmAppController extends ChangeNotifier {
           _allowSessionActivation = false;
         }
         if (initialSnapshot.metadata['activationRequired'] == 'true') {
+          _activationRequiredSensor = _selectedSensor ?? initialSnapshot.sensor;
           unawaited(_clearActivationRequiredSelection());
         } else if (_snapshotHasExpired(initialSnapshot)) {
           unawaited(_retireExpiredSensor());
         }
+      }
+      final initialSelectionPromotion = _selectionPromotion;
+      if (initialSelectionPromotion != null &&
+          initialSnapshot?.stage == CgmSyncStage.ready) {
+        await initialSelectionPromotion;
       }
       notifyListeners();
     } catch (error) {
@@ -666,7 +796,9 @@ class CgmAppController extends ChangeNotifier {
     }
 
     final needsLiveRefresh = force || _needsLiveRefresh(currentSnapshot);
-    final needsHistoryCatchUp = force || _needsHistoryCatchUp(currentSnapshot);
+    final needsHistoryCatchUp =
+        currentSnapshot.capabilities.supportsHistory &&
+        (force || _needsHistoryCatchUp(currentSnapshot));
     if (!needsLiveRefresh && !needsHistoryCatchUp) {
       return;
     }
@@ -680,6 +812,7 @@ class CgmAppController extends ChangeNotifier {
       final refreshedSnapshot = snapshot;
       if (refreshedSnapshot != null &&
           refreshedSnapshot.stage == CgmSyncStage.ready &&
+          refreshedSnapshot.capabilities.supportsHistory &&
           !refreshedSnapshot.historySync.inProgress &&
           (force || _needsHistoryCatchUp(refreshedSnapshot))) {
         await session.syncHistory(
@@ -724,7 +857,7 @@ class CgmAppController extends ChangeNotifier {
         sensor == null ||
         _snapshot?.stage != CgmSyncStage.ready ||
         _bondTransferInFlight ||
-        _bondTransferTombstone(sensor.storageKey) != null) {
+        _bondTransferTombstone(sensor) != null) {
       throw const CgmBondTransferException(
         CgmBondTransferFailureKind.sessionNotReady,
         outcome: CgmBondTransferOutcome.notStarted,
@@ -743,14 +876,14 @@ class CgmAppController extends ChangeNotifier {
     try {
       final plan = await transferSession.inspectBondTransfer();
       if (!identical(_session, session) ||
-          _selectedSensor?.storageKey != sensor.storageKey) {
+          !_sameStoredSensor(_selectedSensor, sensor)) {
         throw const CgmBondTransferException(
           CgmBondTransferFailureKind.sessionNotReady,
           outcome: CgmBondTransferOutcome.notStarted,
         );
       }
       _inspectedBondTransferSession = transferSession;
-      _inspectedBondTransferStorageKey = sensor.storageKey;
+      _inspectedBondTransferIdentity = _storedSensorIdentity(sensor);
       _inspectedBondTransferPlan = plan;
       return plan;
     } catch (error) {
@@ -770,9 +903,9 @@ class CgmAppController extends ChangeNotifier {
         _snapshot?.stage != CgmSyncStage.ready ||
         _bondTransferInFlight ||
         !identical(_inspectedBondTransferSession, session) ||
-        _inspectedBondTransferStorageKey != sensor.storageKey ||
+        _inspectedBondTransferIdentity != _storedSensorIdentity(sensor) ||
         _inspectedBondTransferPlan != plan ||
-        _bondTransferTombstone(sensor.storageKey) != null) {
+        _bondTransferTombstone(sensor) != null) {
       throw const CgmBondTransferException(
         CgmBondTransferFailureKind.sessionNotReady,
         outcome: CgmBondTransferOutcome.notStarted,
@@ -794,7 +927,7 @@ class CgmAppController extends ChangeNotifier {
     try {
       try {
         await _healthStateStore.setString(
-          _bondTransferTombstoneKey(sensor.storageKey),
+          _bondTransferTombstoneKey(sensor),
           _bondTransferOutcomeUnknown,
         );
         tombstoneWritten = true;
@@ -808,7 +941,7 @@ class CgmAppController extends ChangeNotifier {
       await transferSession.executeBondTransfer(
         plan,
         onSensorAccepted: () => _healthStateStore.setString(
-          _bondTransferTombstoneKey(sensor.storageKey),
+          _bondTransferTombstoneKey(sensor),
           _bondTransferSensorAccepted,
         ),
       );
@@ -824,8 +957,7 @@ class CgmAppController extends ChangeNotifier {
       } finally {
         _finalizingBondTransfer = false;
       }
-      if (_selectedSensor != null ||
-          _bondTransferTombstone(sensor.storageKey) != null) {
+      if (_selectedSensor != null || _bondTransferTombstone(sensor) != null) {
         throw const CgmBondTransferException(
           CgmBondTransferFailureKind.statePersistenceFailed,
           outcome: CgmBondTransferOutcome.sensorAccepted,
@@ -838,7 +970,7 @@ class CgmAppController extends ChangeNotifier {
           error.outcome == CgmBondTransferOutcome.notStarted) {
         try {
           await _healthStateStore.remove(
-            _bondTransferTombstoneKey(sensor.storageKey),
+            _bondTransferTombstoneKey(sensor),
           );
         } catch (_) {
           // Retaining the fail-closed tombstone is safer than allowing a
@@ -856,7 +988,7 @@ class CgmAppController extends ChangeNotifier {
   Future<void> acknowledgeInterruptedSensorTransfer(
     DiscoveredSensor sensor,
   ) async {
-    final transferState = _bondTransferTombstone(sensor.storageKey);
+    final transferState = _bondTransferTombstone(sensor);
     if (transferState == _bondTransferOutcomeUnknown) {
       throw const CgmBondTransferException(
         CgmBondTransferFailureKind.sensorResponseUnknown,
@@ -868,7 +1000,7 @@ class CgmAppController extends ChangeNotifier {
         transferState != _bondTransferSensorAccepted) {
       return;
     }
-    if (_session != null || _selectedSensor?.storageKey == sensor.storageKey) {
+    if (_session != null || _sameStoredSensor(_selectedSensor, sensor)) {
       throw const CgmBondTransferException(
         CgmBondTransferFailureKind.sessionNotReady,
         outcome: CgmBondTransferOutcome.notStarted,
@@ -876,7 +1008,7 @@ class CgmAppController extends ChangeNotifier {
     }
     try {
       await _healthStateStore.remove(
-        _bondTransferTombstoneKey(sensor.storageKey),
+        _bondTransferTombstoneKey(sensor),
       );
       _clearPersistenceFailure('Clearing sensor transfer state');
       _lastError = null;
@@ -893,7 +1025,7 @@ class CgmAppController extends ChangeNotifier {
     if (sensor == null || _bondTransferInFlight) {
       return;
     }
-    final transferState = _bondTransferTombstone(sensor.storageKey);
+    final transferState = _bondTransferTombstone(sensor);
     if (transferState == _bondTransferOutcomeUnknown) {
       throw const CgmBondTransferException(
         CgmBondTransferFailureKind.sensorResponseUnknown,
@@ -929,7 +1061,9 @@ class CgmAppController extends ChangeNotifier {
       notifyListeners();
       await session.refreshLiveData();
       final refreshedSnapshot = snapshot;
-      if (refreshedSnapshot == null || _isCurrentEnough(refreshedSnapshot)) {
+      if (refreshedSnapshot == null ||
+          !refreshedSnapshot.capabilities.supportsHistory ||
+          _isCurrentEnough(refreshedSnapshot)) {
         return;
       }
       await session.syncHistory(
@@ -943,7 +1077,7 @@ class CgmAppController extends ChangeNotifier {
 
   Future<void> refreshHistory() async {
     final session = _session;
-    if (session == null) {
+    if (session == null || snapshot?.capabilities.supportsHistory != true) {
       return;
     }
     try {
@@ -956,7 +1090,7 @@ class CgmAppController extends ChangeNotifier {
 
   Future<void> refreshDiagnostics() async {
     final session = _session;
-    if (session == null) {
+    if (session == null || snapshot?.capabilities.supportsDiagnostics != true) {
       return;
     }
     try {
@@ -969,7 +1103,7 @@ class CgmAppController extends ChangeNotifier {
 
   Future<void> loadCalibrations() async {
     final session = _session;
-    if (session == null) {
+    if (session == null || snapshot?.capabilities.supportsCalibration != true) {
       return;
     }
     try {
@@ -989,10 +1123,13 @@ class CgmAppController extends ChangeNotifier {
     if (_bondTransferInFlight && !_finalizingBondTransfer) {
       return;
     }
+    if (clearSelection && !_clearingActivationRequiredSensor) {
+      _activationRequiredSensor = null;
+    }
     final selectedSensor = _selectedSensor;
     final interruptedTransfer = selectedSensor == null
         ? null
-        : _bondTransferTombstone(selectedSensor.storageKey);
+        : _bondTransferTombstone(selectedSensor);
     if (clearSelection &&
         !_finalizingBondTransfer &&
         interruptedTransfer != null &&
@@ -1008,7 +1145,7 @@ class CgmAppController extends ChangeNotifier {
       return;
     }
     _clearInspectedBondTransfer();
-    _invalidateScan();
+    await _invalidateScan();
     _cancelReconnect();
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
@@ -1028,6 +1165,7 @@ class CgmAppController extends ChangeNotifier {
     _session = null;
 
     Object? teardownError;
+    var libreCleanupUnconfirmed = false;
     for (final operation in <Future<void> Function()>[
       if (snapshotSubscription != null) snapshotSubscription.cancel,
       if (logSubscription != null) logSubscription.cancel,
@@ -1037,12 +1175,53 @@ class CgmAppController extends ChangeNotifier {
         await operation();
       } catch (error) {
         teardownError ??= error;
+        if (error is LibreGen1LiveException &&
+            error.kind == LibreGen1LiveFailure.cleanupUnconfirmed) {
+          libreCleanupUnconfirmed = true;
+        }
       }
     }
     if (teardownError != null) {
       _recordPersistenceFailure('Disconnecting sensor session', teardownError);
     } else {
       _clearPersistenceFailure('Disconnecting sensor session');
+    }
+
+    if (libreCleanupUnconfirmed || _sensorConnectionCleanupUnconfirmed) {
+      _sensorConnectionCleanupUnconfirmed = true;
+      // A ready-state promotion can still be awaiting storage or a platform
+      // call. Finish it before the final privacy clear so it cannot republish
+      // background sensor state after the uncertain disconnect.
+      final promotion = _selectionPromotion;
+      if (promotion != null) await promotion;
+      _session = session;
+      final failed = session?.currentSnapshot ?? _snapshot;
+      if (failed != null) {
+        _persistedHistory = _mergeHistory(_persistedHistory, failed.history);
+        _snapshot = failed.copyWith(
+          stage: CgmSyncStage.error,
+          statusText: 'Connection cleanup needs an app restart',
+          lastError: 'libre2.cleanupUnconfirmed',
+          history: _persistedHistory,
+          metadata: {
+            ...failed.metadata,
+            'cgm.libre2.phase': 'failed',
+            cgmAutomaticReconnectAllowedMetadataKey: 'false',
+          },
+        );
+      }
+      final sensor = _selectedSensor;
+      if (sensor != null && !isMockDriver) {
+        try {
+          await _persistHistory(sensor, _persistedHistory);
+        } catch (error) {
+          _recordPersistenceFailure('Saving history', error);
+        }
+      }
+      await _clearPlatformBackgroundState();
+      _backgroundSensorIdentity = null;
+      notifyListeners();
+      return;
     }
 
     if (clearSelection) {
@@ -1055,10 +1234,7 @@ class CgmAppController extends ChangeNotifier {
         try {
           if (sensorToArchive != null && archiveWhenClearing) {
             if (historyToArchive.isNotEmpty) {
-              await _persistHistory(
-                sensorToArchive.storageKey,
-                historyToArchive,
-              );
+              await _persistHistory(sensorToArchive, historyToArchive);
             }
             await _archiveSensor(
               sensor: sensorToArchive,
@@ -1070,9 +1246,7 @@ class CgmAppController extends ChangeNotifier {
           await _healthStateStore.remove(_lastSensorKey);
           if (sensorToArchive != null) {
             try {
-              await _healthStateStore.remove(
-                _historyKey(sensorToArchive.storageKey),
-              );
+              await _healthStateStore.remove(_historyKey(sensorToArchive));
             } catch (error) {
               // The durable active pointer is already gone, so retaining an
               // orphaned mutable cache is safer than making the completed
@@ -1090,7 +1264,8 @@ class CgmAppController extends ChangeNotifier {
         _persistedHistory = const <CgmReading>[];
         _allowSessionActivation = false;
         _selectionPersisted = false;
-        _backgroundSensorStorageKey = null;
+        _selectionPromotionSource = null;
+        _backgroundSensorIdentity = null;
       } else {
         _snapshot = _snapshot?.copyWith(
           stage: CgmSyncStage.disconnected,
@@ -1111,10 +1286,10 @@ class CgmAppController extends ChangeNotifier {
         }
         if (_selectedSensor == null &&
             sensorToArchive != null &&
-            _bondTransferTombstone(sensorToArchive.storageKey) != null) {
+            _bondTransferTombstone(sensorToArchive) != null) {
           try {
             await _healthStateStore.remove(
-              _bondTransferTombstoneKey(sensorToArchive.storageKey),
+              _bondTransferTombstoneKey(sensorToArchive),
             );
             _clearPersistenceFailure('Clearing sensor transfer state');
           } catch (error) {
@@ -1138,7 +1313,12 @@ class CgmAppController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    _invalidateScan();
+    unawaited(
+      _invalidateScan().then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      ),
+    );
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     _cancelReconnect();
@@ -1149,10 +1329,25 @@ class CgmAppController extends ChangeNotifier {
 
   bool _ownsScan(int generation) => !_disposed && generation == _scanGeneration;
 
-  void _invalidateScan() {
-    _scanGeneration += 1;
+  void _recordScanFailure(Object error) {
+    if (error is BleFailure) {
+      _scanFailure = error;
+      _lastError = userMessageForBleFailure(error);
+      return;
+    }
+    _scanFailure = null;
+    _lastError =
+        'Sensor scan could not be completed. Check Bluetooth and try again.';
+  }
+
+  Future<int> _invalidateScan() async {
+    final invalidationGeneration = ++_scanGeneration;
     _scanning = false;
     _scanFailure = null;
+    final iterator = _scanIterator;
+    _scanIterator = null;
+    await iterator?.cancel();
+    return invalidationGeneration;
   }
 
   void updateDisplayPreferences(DisplayPreferences preferences) {
@@ -1287,7 +1482,7 @@ class CgmAppController extends ChangeNotifier {
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     try {
-      await _healthStateStore.remove(_historyKey(sensor.storageKey));
+      await _healthStateStore.remove(_historyKey(sensor));
     } catch (error) {
       _recordPersistenceFailure('Clearing stored history', error);
       notifyListeners();
@@ -1311,17 +1506,28 @@ class CgmAppController extends ChangeNotifier {
     return disconnect(archiveReason: reason);
   }
 
-  String _historyKey(String storageKey) => 'openHealth.history.$storageKey';
+  String _historyKey(DiscoveredSensor sensor) => sensor.driverId == 'aidex'
+      ? 'openHealth.history.${sensor.storageKey}'
+      : '$_qualifiedHistoryPrefix${_encodedStorageIdentity(sensor)}';
 
-  String _bondTransferTombstoneKey(String storageKey) =>
-      '$_bondTransferTombstonePrefix$storageKey';
+  String _bondTransferTombstoneKey(DiscoveredSensor sensor) =>
+      sensor.driverId == 'aidex'
+      ? '$_bondTransferTombstonePrefix${sensor.storageKey}'
+      : '$_qualifiedBondTransferTombstonePrefix'
+            '${_encodedStorageIdentity(sensor)}';
 
-  String? _bondTransferTombstone(String storageKey) {
+  String _encodedStorageIdentity(DiscoveredSensor sensor) => base64Url
+      .encode(
+        utf8.encode(jsonEncode(<String>[sensor.driverId, sensor.storageKey])),
+      )
+      .replaceAll('=', '');
+
+  String? _bondTransferTombstone(DiscoveredSensor sensor) {
     if (isMockDriver) {
       return null;
     }
     final value = _healthStateStore.getString(
-      _bondTransferTombstoneKey(storageKey),
+      _bondTransferTombstoneKey(sensor),
     );
     if (value == null || value.isEmpty) {
       return null;
@@ -1333,7 +1539,7 @@ class CgmAppController extends ChangeNotifier {
 
   void _clearInspectedBondTransfer() {
     _inspectedBondTransferSession = null;
-    _inspectedBondTransferStorageKey = null;
+    _inspectedBondTransferIdentity = null;
     _inspectedBondTransferPlan = null;
   }
 
@@ -1384,7 +1590,9 @@ class CgmAppController extends ChangeNotifier {
         sessionInfo?.sessionStart ?? startedAt ?? inferSensorStart(history);
     final incomingLastReadingAt = latestReadingTime(history);
     final now = DateTime.now();
-    final naturalEnd = start?.add(kSensorLifeDuration);
+    final naturalEnd = start?.add(
+      _expectedSensorLifetime(sensor, sessionInfo: sessionInfo),
+    );
     final endedAt =
         reason == SensorArchiveReason.expired &&
             naturalEnd != null &&
@@ -1462,18 +1670,35 @@ class CgmAppController extends ChangeNotifier {
   }
 
   bool _persistedSensorHasExpired({
+    required DiscoveredSensor sensor,
     required List<CgmReading> history,
     required DateTime? inferredStart,
     DateTime? now,
   }) {
     final reference = now ?? DateTime.now();
+    final expectedLife = _expectedSensorLifetime(sensor);
     if (inferredStart != null &&
-        !inferredStart.add(kSensorLifeDuration).isAfter(reference)) {
+        !inferredStart.add(expectedLife).isAfter(reference)) {
       return true;
     }
     final lastReadingAt = latestReadingTime(history);
     return lastReadingAt != null &&
-        !lastReadingAt.add(kSensorLifeDuration).isAfter(reference);
+        !lastReadingAt.add(expectedLife).isAfter(reference);
+  }
+
+  Duration _expectedSensorLifetime(
+    DiscoveredSensor sensor, {
+    CgmSessionInfo? sessionInfo,
+  }) {
+    final reportedMinutes = sessionInfo?.expectedLifetimeMinutes;
+    final discoveredMinutes = int.tryParse(
+      sensor.metadata[cgmExpectedLifetimeMinutesMetadataKey] ?? '',
+    );
+    final minutes = reportedMinutes ?? discoveredMinutes;
+    if (minutes == null || minutes <= 0) {
+      return kSensorLifeDuration;
+    }
+    return Duration(minutes: minutes);
   }
 
   bool _snapshotHasExpired(CgmSessionSnapshot value) {
@@ -1497,23 +1722,85 @@ class CgmAppController extends ChangeNotifier {
     }
   }
 
-  void _promoteVerifiedSelection(DiscoveredSensor sensor) {
+  void _promoteVerifiedSelection(
+    DiscoveredSensor sensor, {
+    required List<CgmReading> history,
+  }) {
+    final selectedSensor = _selectedSensor;
+    final sensorIdentity = _storedSensorIdentity(sensor);
     if (isMockDriver ||
         _selectionPromotion != null ||
-        _selectedSensor?.deviceId != sensor.deviceId ||
-        (_selectionPersisted &&
-            _backgroundSensorStorageKey == sensor.storageKey)) {
+        selectedSensor == null ||
+        !_sameSensor(selectedSensor, sensor)) {
       return;
+    }
+    final pendingPromotionSource = _selectionPromotionSource;
+    final promotionSource =
+        pendingPromotionSource != null &&
+            _sameSensor(pendingPromotionSource, sensor)
+        ? pendingPromotionSource
+        : selectedSensor;
+    final storageIdentityChanged = !_sameStoredSensor(selectedSensor, sensor);
+    final promotionStorageIdentityChanged = !_sameStoredSensor(
+      promotionSource,
+      sensor,
+    );
+    if (_selectionPersisted &&
+        !storageIdentityChanged &&
+        !promotionStorageIdentityChanged &&
+        _backgroundSensorIdentity == sensorIdentity) {
+      return;
+    }
+    final selectionWasPersisted = _selectionPersisted;
+    final needsSelectionWrite =
+        !selectionWasPersisted || storageIdentityChanged;
+    final provisionalHistoryKey = _historyKey(promotionSource);
+    final verifiedHistoryKey = _historyKey(sensor);
+    final currentHistory = List<CgmReading>.of(history, growable: false);
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    _selectedSensor = sensor;
+    if (storageIdentityChanged) {
+      _selectionPersisted = false;
+      _selectionPromotionSource = promotionSource;
     }
     _selectionPromotion = () async {
       try {
-        if (!_selectionPersisted) {
+        final mergedHistory = _mergeHistory(
+          _loadPersistedHistory(promotionSource),
+          _mergeHistory(_loadPersistedHistory(sensor), currentHistory),
+        );
+        _persistedHistory = mergedHistory;
+        if (mergedHistory.isNotEmpty) {
+          // Write verified history before the durable pointer can name the
+          // verified identity. A crash can retain an orphaned new cache, but
+          // it cannot restore a stable identity with missing history.
+          await _persistHistory(sensor, mergedHistory);
+        }
+        if (needsSelectionWrite) {
           await _persistSelectedSensor(sensor);
           _selectionPersisted = true;
         }
-        if (_backgroundSensorStorageKey != sensor.storageKey) {
+        if (_selectionPersisted &&
+            provisionalHistoryKey != verifiedHistoryKey) {
+          _selectionPromotionSource = null;
+        }
+        if (promotionStorageIdentityChanged &&
+            provisionalHistoryKey != verifiedHistoryKey) {
+          try {
+            await _healthStateStore.remove(provisionalHistoryKey);
+            _clearPersistenceFailure('Cleaning provisional sensor history');
+          } catch (error) {
+            _recordPersistenceFailure(
+              'Cleaning provisional sensor history',
+              error,
+            );
+          }
+        }
+        if (!_sensorConnectionCleanupUnconfirmed &&
+            _backgroundSensorIdentity != sensorIdentity) {
           await _setBackgroundSensorBridges(sensor);
-          _backgroundSensorStorageKey = sensor.storageKey;
+          _backgroundSensorIdentity = sensorIdentity;
         }
         _clearPersistenceFailure('Saving verified sensor selection');
       } catch (error) {
@@ -1546,8 +1833,32 @@ class CgmAppController extends ChangeNotifier {
     return '';
   }
 
-  List<CgmReading> _loadPersistedHistory(String storageKey) {
-    return _loadHistoryAtKey(_historyKey(storageKey));
+  bool _driverSupports(String candidateDriverId) {
+    final driver = _driver;
+    if (driver is CgmDriverRegistry) {
+      return driver.containsDriver(candidateDriverId);
+    }
+    return driver.driverId == candidateDriverId;
+  }
+
+  String _sensorIdentity(DiscoveredSensor sensor) =>
+      '${sensor.driverId}\u0000${sensor.deviceId}';
+
+  bool _sameSensor(DiscoveredSensor? left, DiscoveredSensor right) =>
+      left != null &&
+      left.driverId == right.driverId &&
+      left.deviceId == right.deviceId;
+
+  bool _sameStoredSensor(DiscoveredSensor? left, DiscoveredSensor right) =>
+      left != null &&
+      left.driverId == right.driverId &&
+      left.storageKey == right.storageKey;
+
+  String _storedSensorIdentity(DiscoveredSensor sensor) =>
+      '${sensor.driverId}\u0000${sensor.storageKey}';
+
+  List<CgmReading> _loadPersistedHistory(DiscoveredSensor sensor) {
+    return _loadHistoryAtKey(_historyKey(sensor));
   }
 
   List<CgmReading> _loadHistoryAtKey(String key) {
@@ -1569,10 +1880,10 @@ class CgmAppController extends ChangeNotifier {
   }
 
   Future<void> _persistHistory(
-    String storageKey,
+    DiscoveredSensor sensor,
     List<CgmReading> history,
   ) async {
-    return _persistHistoryAtKey(_historyKey(storageKey), history);
+    return _persistHistoryAtKey(_historyKey(sensor), history);
   }
 
   Future<void> _persistHistoryAtKey(
@@ -1640,7 +1951,10 @@ class CgmAppController extends ChangeNotifier {
     );
   }
 
-  void _schedulePersistHistory(String storageKey, List<CgmReading> history) {
+  void _schedulePersistHistory(
+    DiscoveredSensor sensor,
+    List<CgmReading> history,
+  ) {
     if (isMockDriver) {
       return;
     }
@@ -1648,7 +1962,7 @@ class CgmAppController extends ChangeNotifier {
     _historyPersistTimer?.cancel();
     _historyPersistTimer = Timer(_historyPersistDebounce, () {
       unawaited(
-        _persistHistory(storageKey, snapshot)
+        _persistHistory(sensor, snapshot)
             .then((_) {
               if (_persistenceErrors.containsKey('Saving history')) {
                 _clearPersistenceFailure('Saving history');
@@ -1729,6 +2043,9 @@ class CgmAppController extends ChangeNotifier {
   }
 
   List<CgmReading> _historyForPersistence(List<CgmReading> history) {
+    // Preserve source, receipt time, and provisional quality in restricted
+    // local storage. Wellness/HealthKit consumers apply their own stricter
+    // policy; persistence must not silently upgrade an experimental reading.
     return List<CgmReading>.from(history, growable: false);
   }
 

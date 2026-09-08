@@ -77,6 +77,27 @@ packages:
       relative: true
     source: path
     version: "1.0.0"
+  cgm_libre2:
+    dependency: "direct main"
+    description:
+      path: "../packages/cgm_libre2"
+      relative: true
+    source: path
+    version: "0.1.0"
+  cgm_libre2_glucose:
+    dependency: "direct main"
+    description:
+      path: "../packages/cgm_libre2_glucose"
+      relative: true
+    source: path
+    version: "0.0.1"
+  cgm_yuwell_anytime:
+    dependency: "direct main"
+    description:
+      path: "../packages/cgm_yuwell_anytime"
+      relative: true
+    source: path
+    version: "0.1.0"
   characters:
     dependency: transitive
     description:

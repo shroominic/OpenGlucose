@@ -20,6 +20,14 @@ dependencies:
     path: ../packages/cgm_ble_flutter
   cgm_core:
     path: ../packages/cgm_core
+  cgm_libre2:
+    path: ../packages/cgm_libre2
+  # Optional GPL converter: imported only by libre_glucose_debug_main.dart.
+  # Combined distribution needs the review recorded in ADR 0004.
+  cgm_libre2_glucose:
+    path: ../packages/cgm_libre2_glucose
+  cgm_yuwell_anytime:
+    path: ../packages/cgm_yuwell_anytime
   intl: ^0.20.3
   path_provider: ^2.1.5
   share_plus: ^12.0.2

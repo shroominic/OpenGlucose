@@ -90,3 +90,24 @@ package's popularity.
 See [NOTICE.md](../NOTICE.md) for distribution guidance and
 [docs/compatibility.md](compatibility.md) for dependency-related support-floor
 changes.
+
+## Private Libre Gen1 receiver integration
+
+The application depends on the in-repository `cgm_libre2` package; that
+package uses the existing `cgm_ble` and `cgm_core` workspace contracts, as
+specified by ADR 0001. These internal path dependencies introduce no external
+package version, native plugin, permission, network destination, telemetry,
+or background service. Native receiver storage uses the existing Android
+Keystore and backup-excluded app directory. Normal builds leave the receiver
+unregistered. Removing the debug registration disables new connections;
+preserve the receiver journal and counter rather than rolling them back after
+a sensor operation.
+
+The optional `cgm_libre2_glucose` workspace package is separately GPL-licensed.
+The maintainer approved this route for private Android bench work after a
+bounded permissive-source search. It adds pure Dart factory conversion, not a
+new native plugin, permission, service, telemetry, or network destination.
+The normal app entry point does not import its adapter. Package separation is
+not a GPL exception for a combined binary. Follow [ADR 0004](architecture/adr/0004-private-libre-glucose-decoder.md)
+and its exact-source notices before any external distribution. No general
+MIT-only license claim is made for the decoder-enabled debug executable.

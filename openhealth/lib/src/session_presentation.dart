@@ -26,6 +26,19 @@ String readingTimeText(CgmReading? reading, {DateTime? now}) {
   return DateFormat('HH:mm').format(recordedAt);
 }
 
+/// Local charts and explicit raw exports may retain provisional samples, with
+/// their quality flag. They are not inputs to wellness summaries or messaging.
+List<CgmReading> readingsForWellness(Iterable<CgmReading> readings) =>
+    List<CgmReading>.unmodifiable(
+      readings.where(
+        (reading) =>
+            !reading.isDisplayProvisional &&
+            reading.source != CgmRecordSource.raw &&
+            reading.valueMgdl.isFinite &&
+            reading.valueMgdl > 0,
+      ),
+    );
+
 enum WarmupPhase { warming, waiting }
 
 class WarmupStatus {
@@ -161,12 +174,16 @@ const Duration kSensorLifeDuration = Duration(days: 15);
 /// the lifecycle card shows a heads-up to have a replacement ready.
 const Duration kSensorExpiringSoonThreshold = Duration(hours: 12);
 
-String sensorLifeText(DateTime? sessionStart, {DateTime? now}) {
+String sensorLifeText(
+  DateTime? sessionStart, {
+  DateTime? now,
+  Duration totalLife = kSensorLifeDuration,
+}) {
   if (sessionStart == null) {
     return 'Life remaining unavailable';
   }
   final effectiveNow = now ?? DateTime.now();
-  final remaining = kSensorLifeDuration - effectiveNow.difference(sessionStart);
+  final remaining = totalLife - effectiveNow.difference(sessionStart);
   if (remaining <= Duration.zero) {
     return 'Sensor expired';
   }
@@ -246,7 +263,12 @@ SensorLifecycle computeSensorLifecycle(
 }) {
   final effectiveNow = now ?? DateTime.now();
   final sessionStart = snapshot.sessionInfo.sessionStart;
-  const totalLife = kSensorLifeDuration;
+  final configuredLife = Duration(
+    minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+  );
+  final totalLife = configuredLife > Duration.zero
+      ? configuredLife
+      : kSensorLifeDuration;
 
   // A stopped session or an explicit expired health flag means the sensor is
   // done regardless of the exact clock math (covers the mock `expired`
@@ -350,6 +372,27 @@ int? historySyncPercent(CgmHistorySyncState historySync) {
 }
 
 String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isLibreGen1Snapshot(snapshot)) {
+    if (libreConnectionWasLost(snapshot)) return 'Connection lost';
+    if (snapshot.stage == CgmSyncStage.error) return 'Error';
+    if (snapshot.stage == CgmSyncStage.disconnected) return 'Disconnected';
+    if (snapshot.stage == CgmSyncStage.ready) {
+      return currentReadingForSnapshot(snapshot, snapshot.latestReading) == null
+          ? 'Waiting'
+          : 'Connected';
+    }
+    if (snapshot.stage == CgmSyncStage.connecting &&
+        snapshot.metadata['cgm.libre2.phase'] == 'awaitingAdvertisement') {
+      return 'Searching';
+    }
+    if (snapshot.stage == CgmSyncStage.syncing &&
+        const {'awaitingPacket', 'validatedPacket'}.contains(
+          snapshot.metadata['cgm.libre2.phase'],
+        )) {
+      return 'Waiting';
+    }
+    return 'Connecting';
+  }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
   if (snapshot.stage == CgmSyncStage.error) {
@@ -375,6 +418,13 @@ String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
 }
 
 String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isLibreGen1Snapshot(snapshot)) {
+    return switch (stageLabelForSnapshot(snapshot)) {
+      'Error' || 'Disconnected' || 'Connection lost' => 'error',
+      'Connected' => 'live',
+      _ => 'progress',
+    };
+  }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
   if (snapshot.stage == CgmSyncStage.error) {
@@ -406,11 +456,149 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
   if (!shouldShowPrimaryError(snapshot)) {
     return null;
   }
+  if (isLibreGen1Snapshot(snapshot)) {
+    return libreConnectionWasLost(snapshot)
+        ? userMessageForLibreConnectionLoss(snapshot.lastError)
+        : userMessageForLibreConnectionFailure(snapshot.lastError);
+  }
   final bleFailure = BleFailure.fromMetadata(snapshot.metadata);
   return bleFailure == null
       ? snapshot.lastError
       : userMessageForBleFailure(bleFailure);
 }
+
+bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
+    snapshot.sensor.driverId == 'libre2-gen1';
+
+/// The live driver rebuilds this diagnostic from its in-memory packet counter
+/// on each snapshot. Retained glucose history or a saved NFC state is not proof
+/// that the current Bluetooth session received verified packets.
+bool libreConnectionWasLost(CgmSessionSnapshot? snapshot) {
+  if (snapshot == null ||
+      !isLibreGen1Snapshot(snapshot) ||
+      (snapshot.stage != CgmSyncStage.error &&
+          snapshot.stage != CgmSyncStage.disconnected) ||
+      snapshot.lastError == null ||
+      snapshot.lastError!.isEmpty ||
+      snapshot.lastError == 'libre2.cancelled') {
+    return false;
+  }
+  final phase = snapshot.stage == CgmSyncStage.error
+      ? 'failed'
+      : 'disconnected';
+  if (snapshot.metadata['cgm.libre2.phase'] != phase) return false;
+  final diagnostics = snapshot.diagnostics.where(
+    (item) => item.key == 'libre2.gen1.transport',
+  );
+  if (diagnostics.length != 1) return false;
+  final fields = diagnostics.single.fields;
+  return fields['phase'] == phase &&
+      RegExp(r'^[1-9][0-9]{0,8}$').hasMatch(fields['validatedPackets'] ?? '');
+}
+
+String userMessageForLibreConnectionLoss(String? code) => switch (code) {
+  'libre2.cleanupUnconfirmed' || 'libre2.loginOutcomeUnknown' =>
+    'The sensor connection stopped, but its final state could not be confirmed. '
+        'Stop setup and check the connection before trying again.',
+  'libre2.invalidPacket' =>
+    'The sensor data could not be verified, so the connection was stopped. '
+        'No glucose reading is available.',
+  _ =>
+    'The sensor was sending data, then the connection stopped. '
+        'Keep it close and try again.',
+};
+
+/// Cached records remain history during Libre transport setup. Raw protocol
+/// samples and advertisements are not calibrated current glucose readings.
+CgmReading? currentReadingForSnapshot(
+  CgmSessionSnapshot snapshot,
+  CgmReading? reading,
+) {
+  if (isLibreGen1Snapshot(snapshot) &&
+      (snapshot.stage != CgmSyncStage.ready ||
+          reading?.source == CgmRecordSource.raw)) {
+    return null;
+  }
+  return reading;
+}
+
+/// Only closed, stage-consistent Libre progress reaches public surfaces.
+/// A saved phase must not turn a disconnected session into a connected claim.
+String? libreConnectionDetailForSnapshot(CgmSessionSnapshot snapshot) {
+  if (!isLibreGen1Snapshot(snapshot)) return null;
+  if (libreConnectionWasLost(snapshot)) {
+    return userMessageForLibreConnectionLoss(snapshot.lastError);
+  }
+  if (snapshot.stage == CgmSyncStage.error) {
+    return userMessageForLibreConnectionFailure(snapshot.lastError);
+  }
+  if (snapshot.stage == CgmSyncStage.disconnected) {
+    return 'Sensor disconnected. Connect again to receive data.';
+  }
+  if (snapshot.stage == CgmSyncStage.ready) {
+    final reading = currentReadingForSnapshot(snapshot, snapshot.latestReading);
+    if (reading == null) return 'Waiting for a verified glucose reading.';
+    return reading.isDisplayProvisional
+        ? 'Bench estimate. Not validated for body glucose.'
+        : null;
+  }
+  final phase = snapshot.metadata['cgm.libre2.phase'];
+  if (snapshot.stage == CgmSyncStage.syncing) {
+    return switch (phase) {
+      'awaitingPacket' => 'Connected. Waiting for sensor data.',
+      'validatedPacket' => libreGlucoseWaitingDetail(
+        snapshot.metadata['cgm.libre2.decoder'],
+      ),
+      _ => 'Waiting for verified sensor data.',
+    };
+  }
+  if (snapshot.stage != CgmSyncStage.connecting) {
+    return 'Preparing the sensor connection.';
+  }
+  return switch (phase) {
+    'reconnecting' => 'Connection lost. Reconnecting once to your sensor.',
+    'awaitingAdvertisement' => 'Looking for your Libre 2 sensor',
+    'discovering' => 'Checking the sensor connection',
+    'reservingLogin' || 'loggingIn' => 'Signing in to the sensor',
+    'subscribing' => 'Starting sensor updates',
+    _ => 'Connecting to FreeStyle Libre 2',
+  };
+}
+
+/// Closed decoder outcomes only; native exceptions and coefficients stay private.
+String libreGlucoseWaitingDetail(String? outcome) => switch (outcome) {
+  'warmingUp' => 'Sensor warming up. Waiting for glucose readings.',
+  'invalidData' => 'Receiving sensor data. No usable glucose reading yet.',
+  _ => 'Receiving sensor data. Glucose decoding is not ready.',
+};
+
+String userMessageForLibreConnectionFailure(String? code) => switch (code) {
+  'libre2.advertisementUnavailable' =>
+    'Your Libre 2 sensor was not found. Keep it close and try again.',
+  'libre2.invalidBootstrap' ||
+  'libre2.bootstrapUnavailable' ||
+  'libre2.targetMismatch' =>
+    'The sensor setup could not be verified. Choose your sensor again.',
+  'libre2.sessionInUse' =>
+    'A sensor connection is already in progress. Wait for it to finish.',
+  'libre2.oneShotUnavailable' || 'libre2.topologyRejected' =>
+    'This sensor connection is not supported by this build.',
+  'libre2.counterUnavailable' =>
+    'The sensor connection could not be prepared. Choose your sensor again.',
+  'libre2.connectionFailed' =>
+    'Could not connect to your Libre 2 sensor. Keep it close and try again.',
+  'libre2.loginOutcomeUnknown' || 'libre2.cleanupUnconfirmed' =>
+    'The connection result could not be confirmed. '
+        'Stop setup and check the connection before trying again.',
+  'libre2.subscriptionFailed' =>
+    'Could not start sensor updates. Keep the sensor close and try again.',
+  'libre2.invalidPacket' =>
+    'The sensor data could not be verified. No glucose reading is available.',
+  'libre2.disconnected' =>
+    'The sensor disconnected. Keep it close and try again.',
+  'libre2.cancelled' => 'Sensor connection cancelled.',
+  _ => 'OpenGlucose could not connect to your Libre 2 sensor.',
+};
 
 /// Compile-time gate for privacy-safe support codes in explicitly marked
 /// private test builds. Normal release builds compile this to false.
@@ -520,6 +708,9 @@ bool snapshotHasBleFailure(CgmSessionSnapshot snapshot) {
 
 bool snapshotAllowsAutomaticReconnect(CgmSessionSnapshot snapshot) {
   if (snapshot.metadata.containsKey(cgmBondTransferStateMetadataKey)) {
+    return false;
+  }
+  if (snapshot.metadata[cgmAutomaticReconnectAllowedMetadataKey] == 'false') {
     return false;
   }
   return BleFailure.fromMetadata(snapshot.metadata)?.allowsAutomaticRetry ??

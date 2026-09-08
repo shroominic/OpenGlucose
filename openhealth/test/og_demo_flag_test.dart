@@ -1,5 +1,5 @@
-import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/src/cgm_driver_registry.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/driver_factory_io.dart';
 
@@ -16,7 +16,11 @@ void main() {
         if (kOgDemo) {
           expect(driver, isA<DemoCgmDriver>());
         } else {
-          expect(driver, isA<AidexSensorDriver>());
+          expect(driver, isA<CgmDriverRegistry>());
+          expect(
+            (driver as CgmDriverRegistry).registeredDriverIds,
+            const <String>{'aidex'},
+          );
           expect(driver, isNot(isA<DemoCgmDriver>()));
         }
       },

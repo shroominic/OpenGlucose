@@ -57,10 +57,15 @@ bool shouldPublishLiveActivity({
   required CgmReading? latestReading,
   DateTime? now,
 }) {
+  final reading = currentReadingForSnapshot(snapshot, latestReading);
+  if (reading?.isDisplayProvisional == true ||
+      reading?.source == CgmRecordSource.raw) {
+    return false;
+  }
   final effectiveNow = now ?? DateTime.now();
   final warmup = computeWarmupStatus(
     snapshot,
-    latestReading: latestReading,
+    latestReading: reading,
     now: effectiveNow,
   );
   if (warmup?.phase == WarmupPhase.warming) {
@@ -69,7 +74,7 @@ bool shouldPublishLiveActivity({
   if (snapshot.stage != CgmSyncStage.ready) {
     return false;
   }
-  final recordedAt = latestReading?.recordedAt;
+  final recordedAt = reading?.recordedAt;
   if (recordedAt == null) {
     return false;
   }
@@ -83,10 +88,27 @@ LiveActivityPayload buildLiveActivityPayload({
   required DisplayPreferences preferences,
   DateTime? now,
 }) {
+  final reading = currentReadingForSnapshot(snapshot, latestReading);
   final effectiveNow = now ?? DateTime.now();
+  if (reading?.isDisplayProvisional == true ||
+      reading?.source == CgmRecordSource.raw) {
+    return const LiveActivityPayload(
+      sensorName: liveSurfaceBrandName,
+      stageCode: 'progress',
+      stageLabel: 'VERIFYING',
+      valueText: '--',
+      unitText: '',
+      lastReadingText: '--',
+      lifeText: '',
+      detailText: 'Experimental readings are available in the app only.',
+      trendSymbol: '',
+      deltaText: '',
+      isStale: true,
+    );
+  }
   final warmup = computeWarmupStatus(
     snapshot,
-    latestReading: latestReading,
+    latestReading: reading,
     now: effectiveNow,
   );
   if (warmup != null) {
@@ -100,6 +122,9 @@ LiveActivityPayload buildLiveActivityPayload({
       lifeText: sensorLifeText(
         snapshot.sessionInfo.sessionStart,
         now: effectiveNow,
+        totalLife: Duration(
+          minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+        ),
       ),
       detailText: warmupSubtext(warmup),
       trendSymbol: '',
@@ -107,9 +132,11 @@ LiveActivityPayload buildLiveActivityPayload({
       isStale: false,
     );
   }
-  final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
+  final fallbackValue = isLibreGen1Snapshot(snapshot)
+      ? null
+      : snapshot.lastAdvertisement?.displayValueMgdl;
   final displayedValue =
-      latestReading?.displayValue(preferences) ??
+      reading?.displayValue(preferences) ??
       (fallbackValue == null
           ? null
           : preferences.unit.convertFromMgdl(fallbackValue));
@@ -118,24 +145,31 @@ LiveActivityPayload buildLiveActivityPayload({
       : displayedValue.toStringAsFixed(
           preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
         );
-  final readingTime = readingTimeText(latestReading, now: effectiveNow);
+  final readingTime = readingTimeText(reading, now: effectiveNow);
   final displayRecordedAt = clampedDisplayRecordedAt(
-    latestReading?.recordedAt,
+    reading?.recordedAt,
     now: effectiveNow,
   );
   final isStale =
       displayRecordedAt == null ||
       effectiveNow.difference(displayRecordedAt) > const Duration(minutes: 10);
-  final trend = glucoseTrendSummary(snapshot.history, preferences);
+  final trend = glucoseTrendSummary(
+    isLibreGen1Snapshot(snapshot) && reading == null
+        ? const <CgmReading>[]
+        : readingsForWellness(snapshot.history),
+    preferences,
+  );
   final stageCode = stageCodeForSnapshot(snapshot);
   final stageLabel = stageLabelForSnapshot(snapshot);
-  final detailText = snapshot.lastError != null
-      ? 'Attention needed'
-      : readingTime == '--'
-      ? (snapshot.historySync.inProgress
-            ? 'Waiting for first reading'
-            : snapshot.statusText)
-      : 'Updated $readingTime';
+  final detailText =
+      libreConnectionDetailForSnapshot(snapshot) ??
+      (snapshot.lastError != null
+          ? 'Attention needed'
+          : readingTime == '--'
+          ? (snapshot.historySync.inProgress
+                ? 'Waiting for first reading'
+                : snapshot.statusText)
+          : 'Updated $readingTime');
 
   return LiveActivityPayload(
     sensorName: liveSurfaceBrandName,
@@ -147,6 +181,9 @@ LiveActivityPayload buildLiveActivityPayload({
     lifeText: sensorLifeText(
       snapshot.sessionInfo.sessionStart,
       now: effectiveNow,
+      totalLife: Duration(
+        minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+      ),
     ),
     detailText: detailText,
     trendSymbol: trend.symbol,

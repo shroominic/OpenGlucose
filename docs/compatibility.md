@@ -47,6 +47,9 @@ The public API of a package is the surface exported from its top-level library:
 - `package:cgm_core/cgm_core.dart`
 - `package:cgm_ble/cgm_ble.dart`
 - `package:cgm_aidex/cgm_aidex.dart`
+- `package:cgm_libre2/cgm_libre2.dart`
+- `package:cgm_libre2_glucose/cgm_libre2_glucose.dart` (separate GPL bench decoder)
+- `package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart`
 - `package:cgm_ble_flutter/cgm_ble_flutter.dart`
 
 Declarations below `lib/src/`, unexported helpers, test fixtures, and diagnostic
@@ -100,6 +103,41 @@ combination, redacted physical-device evidence, expected capability gaps, and a
 last-verified release/date. A shared name, service UUID, or demo-driver result
 alone is not compatibility evidence. Protocol changes should remain tolerant
 of unknown data while failing safely on malformed or unauthenticated input.
+
+`cgm_libre2` includes a target-unverified, explicitly bootstrapped Gen1 BLE
+receiver. Android private debug builds can use a journaled NFC streaming
+operation and encrypted receiver state to select the exact target, reserve
+login counters, and verify incoming packet CRCs. Normal builds do not register
+this driver. Receiving a valid packet does not establish calibrated glucose
+support. A separate GPL reference converter can now be injected by the explicit
+private Android `libre_glucose_debug_main.dart` entry point. It requires matching
+protected calibration evidence and publishes only provisional current samples
+after CRC, age, lifetime, quality, finite-math, and duplicate checks. Normal
+`lib/main.dart` has no GPL adapter import. Gen2 and Libre 3 remain absent; no
+new production sensor compatibility is claimed. See ADR 0004 before combined
+distribution.
+
+The private Libre calibration cache uses authenticated plaintext format v2 to
+separate `receiverInitialPatchInfo` (the frozen Bluetooth credential) from
+`calibrationPatchInfo` (the NFC patch read with the stored FRAM). Only the latter
+decrypts calibration FRAM. Exact bootstrap/UID/receiver-patch binding, matching
+model/security/region bytes 0–3, and all three current-patch FRAM CRCs remain
+required. The encrypted envelope, Keystore key, and backup-excluded filename
+are unchanged. Strict v1 records remain readable, with their single patch
+mapped to both roles; reads do not rewrite storage. A later successful explicit
+read writes v2 atomically. Older builds reject v2 without deleting it; roll
+forward instead of clearing app data or changing the sensor's receiver journal.
+
+`cgm_yuwell_anytime` is a target-unverified protocol and live-session contract.
+An explicit private Android debug build can scan, authenticate, initialize,
+acknowledge notifications, and synchronize records through a secure,
+journaled state machine. It is absent from normal builds. The explicit debug
+composition can show only the exact V1150 packed field as provisional
+engineering data; the default driver policy publishes no glucose. Its
+candidate names, CT5 UUIDs, frame arithmetic, transforms, and record parsers do
+not establish Anytime 5P compatibility or reproduce the vendor-native glucose
+algorithm. See the physical-evidence and V1150 production-publication gates
+before changing that boundary.
 
 Restricted health-state schema three changes history-blob filenames from a
 reversible base64 storage key to `history-<sha256>.blob`. Schema-zero/one
