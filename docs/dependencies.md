@@ -91,6 +91,19 @@ See [NOTICE.md](../NOTICE.md) for distribution guidance and
 [docs/compatibility.md](compatibility.md) for dependency-related support-floor
 changes.
 
+## Offline Cbio GS1 scaffold
+
+`cgm_cbio` uses only the existing in-repository `cgm_core` and `cgm_ble`
+contracts, plus the existing `lints` and `test` development tools. The package
+is MIT, unpublished, and has no native components, permissions, network
+destinations, telemetry, build scripts, credentials, or persistent data.
+It imports no vendor library or algorithm. Offline resolution uses the local
+Pub cache; no new external package is introduced. The app manifest and lockfile
+are unchanged. Library lockfiles stay uncommitted. Remove the scaffold and its
+workspace enumeration to roll back; no sensor or storage migration is needed.
+Exact-model protocol and licensing review are still required before adding
+any vendor-derived implementation.
+
 ## Private Libre Gen1 receiver integration
 
 The application depends on the in-repository `cgm_libre2` package; that

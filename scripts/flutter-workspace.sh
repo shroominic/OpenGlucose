@@ -10,6 +10,7 @@ packages/cgm_core
 packages/cgm_ble
 packages/cgm_ble_flutter
 packages/cgm_aidex
+packages/cgm_cbio
 packages/cgm_libre2
 packages/cgm_libre2_glucose
 packages/cgm_yuwell_anytime

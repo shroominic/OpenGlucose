@@ -12,6 +12,11 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Added
 
+- Add a `cgm_cbio` GS1 scaffold, pure `FF30` discovery mapping, synthetic
+  contract/frame tests, offline plaintext inspection, and SiSensing UUID/protocol
+  evidence. The package has no
+  transport, app registration, authentication, or glucose support. Record a
+  separately authorized Mac bench probe in the evidence document.
 - Add a private Android Gen1 Libre 2 receiver path with an explicitly initiated
   NFC streaming exchange, encrypted receiver state, durable login counters,
   exact-target Bluetooth connection, and CRC-validated packet diagnostics.
