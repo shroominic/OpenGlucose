@@ -4,10 +4,15 @@ Pure Dart clean-room protocol primitives and a safety-gated BLE session driver
 for the Yuwell Anytime CT5 family.
 
 > [!CAUTION]
-> These primitives are **reference-verified and target-unverified**. A matching
-> name, UUID, frame, or decoded value does not establish Anytime 5P hardware
-> compatibility. OpenGlucose is wellness/reference software. Do not use this
-> package for diagnosis, dosing, treatment, or emergency monitoring.
+> These primitives are **reference-verified**, and discovery/GATT
+> topology/version handshake are additionally **target-confirmed on one
+> physical Anytime 5P** (macOS BLE, 2026-09-09 — see
+> [the evidence boundary](doc/evidence-boundary.md)). A matching name, UUID,
+> frame, or version handshake does not establish full Anytime 5P hardware
+> compatibility or a working glucose value: that unit's firmware branch was
+> not `V1150`, so the session stopped at the version check by design.
+> OpenGlucose is wellness/reference software. Do not use this package for
+> diagnosis, dosing, treatment, or emergency monitoring.
 
 ## Implemented boundary
 
