@@ -33,29 +33,21 @@ final class YuwellMacosDebugOutcome {
 /// shared Bluetooth coordination contract for this contest debug harness.
 /// [showValue] controls whether the provisional mg/dL number itself is
 /// logged; it defaults to false so an interactive run does not echo it
-/// unless the operator explicitly opts in.
+/// unless the operator explicitly opts in. [scanCancelBound] bounds how
+/// long this attempt waits for the scan subscription to cancel cleanly —
+/// see the cancel block below.
 Future<YuwellMacosDebugOutcome> runYuwellMacosDebugAttempt({
   required CgmDriver driver,
   required void Function(String) log,
   Duration scanTimeout = const Duration(seconds: 25),
   Duration observeWindow = const Duration(seconds: 100),
+  Duration scanCancelBound = const Duration(seconds: 5),
   bool showValue = false,
 }) async {
   log('BLE GRAB @Claude — Anytime 5P');
   try {
-    // Observed on this Mac: letting the transport's own `timeout` elapse
-    // (or cancelling this subscription ourselves) drives it into a native
-    // `stopScan` call that wedges the merged UI/platform thread — nothing
-    // Dart-side runs again afterward, not even an independent Dart Timer,
-    // because the whole isolate's event loop is what's stuck. So: no
-    // `timeout:` here, and no `.cancel()` below. We only ever walk away
-    // from a "not found" scan; we never ask it to stop. That leaves the
-    // physical scan running for the remaining life of this process, which
-    // is acceptable because this single-attempt debug process is always
-    // torn down externally right after this function returns. See the
-    // "M3" entry in CLAUDE_STATUS.md for the full finding.
     final firstCandidate = Completer<DiscoveredSensor?>();
-    driver
+    final scanSubscription = driver
         .scan(allowDuplicates: false)
         .listen(
           (candidate) {
@@ -78,6 +70,31 @@ Future<YuwellMacosDebugOutcome> runYuwellMacosDebugAttempt({
       scanTimeout,
       onTimeout: () => null,
     );
+    // M3 (CLAUDE_STATUS.md) found that on this Mac, stopping the shared
+    // transport's scan — a plain consumer `.cancel()` included — could
+    // wedge the merged UI/platform thread forever: the plugin's own
+    // internal stop timer and this wrapper's stop both raced for one
+    // mutex, and the loser never returned. M5 root-caused and fixed that
+    // at the transport (`SingleFlightTeardown` in
+    // `flutter_blue_plus_transport.dart`), but that fix is source-grounded,
+    // not yet hardware-confirmed. So: cancel for real now — it stops the
+    // radio scan instead of leaking it for the rest of the process, and
+    // this log line is the live confirmation evidence M5 is still waiting
+    // on — but stay bounded. If cancel does not resolve in time this still
+    // degrades to the old, hardware-proven-safe behavior of walking away
+    // rather than hanging.
+    try {
+      await scanSubscription.cancel().timeout(scanCancelBound);
+      log('scan cancel completed cleanly.');
+    } on TimeoutException {
+      log(
+        'scan cancel did not complete within '
+        '${scanCancelBound.inSeconds}s; leaving the platform scan running '
+        "for this process's remaining lifetime, as in the M3 finding.",
+      );
+    } catch (error) {
+      log('scan cancel failed: $error');
+    }
     if (found == null) {
       log(
         'No Anytime-family advertisement observed within '

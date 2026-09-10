@@ -135,6 +135,60 @@ void main() {
     expect(log.last, 'BLE RELEASE @Claude');
   });
 
+  test(
+    'a scan cancel that completes cleanly is logged and does not delay '
+    'the attempt',
+    () async {
+      final log = <String>[];
+      final driver = _FakeDriver(
+        scanStream: () => _openEndedScan(onCancel: () async {}),
+      );
+
+      final stopwatch = Stopwatch()..start();
+      final outcome = await runYuwellMacosDebugAttempt(
+        driver: driver,
+        log: log.add,
+        scanTimeout: const Duration(milliseconds: 20),
+      );
+      stopwatch.stop();
+
+      expect(outcome.sensorFound, isFalse);
+      expect(log, contains('scan cancel completed cleanly.'));
+      expect(log.last, 'BLE RELEASE @Claude');
+      expect(
+        stopwatch.elapsed,
+        lessThan(const Duration(seconds: 1)),
+        reason: 'a clean cancel must not wait out the default cancel bound',
+      );
+    },
+  );
+
+  test(
+    'a scan cancel that never completes still releases within the '
+    'cancel bound, not by hanging',
+    () async {
+      final log = <String>[];
+      final driver = _FakeDriver(
+        scanStream: () =>
+            _openEndedScan(onCancel: () => Completer<void>().future),
+      );
+
+      final outcome = await runYuwellMacosDebugAttempt(
+        driver: driver,
+        log: log.add,
+        scanTimeout: const Duration(milliseconds: 20),
+        scanCancelBound: const Duration(milliseconds: 30),
+      );
+
+      expect(outcome.sensorFound, isFalse);
+      expect(
+        log.any((line) => line.contains('did not complete within')),
+        isTrue,
+      );
+      expect(log.last, 'BLE RELEASE @Claude');
+    },
+  );
+
   test('showValue defaults to false and never echoes the number', () async {
     final log = <String>[];
     final sensor = _sensor();
@@ -231,12 +285,35 @@ class _FakeSession implements CgmSession {
       const <CgmDiagnosticItem>[];
 }
 
+/// A scan stream that stays open — like a real BLE scan — until its
+/// subscription is cancelled, at which point [onCancel] decides whether
+/// (and when) that cancel resolves. Exercises the bounded-cancel fallback
+/// in [runYuwellMacosDebugAttempt] without a radio.
+Stream<DiscoveredSensor> _openEndedScan({
+  required Future<void> Function() onCancel,
+  DiscoveredSensor? emit,
+}) {
+  late final StreamController<DiscoveredSensor> controller;
+  controller = StreamController<DiscoveredSensor>(
+    onListen: () {
+      final candidate = emit;
+      if (candidate != null) {
+        Timer.run(() => controller.add(candidate));
+      }
+    },
+    onCancel: onCancel,
+  );
+  return controller.stream;
+}
+
 class _FakeDriver implements CgmDriver {
   _FakeDriver({
     this.scanResults = const <DiscoveredSensor>[],
     this.connectError,
     _FakeSession? session,
-  }) : _session = session;
+    Stream<DiscoveredSensor> Function()? scanStream,
+  }) : _session = session,
+       _scanStream = scanStream;
 
   @override
   final String driverId = 'fake';
@@ -244,12 +321,14 @@ class _FakeDriver implements CgmDriver {
   final List<DiscoveredSensor> scanResults;
   final Error? connectError;
   final _FakeSession? _session;
+  final Stream<DiscoveredSensor> Function()? _scanStream;
 
   @override
   Stream<DiscoveredSensor> scan({
     Duration? timeout,
     bool allowDuplicates = true,
-  }) => Stream<DiscoveredSensor>.fromIterable(scanResults);
+  }) =>
+      _scanStream?.call() ?? Stream<DiscoveredSensor>.fromIterable(scanResults);
 
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async {
