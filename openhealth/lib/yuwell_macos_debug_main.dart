@@ -100,6 +100,8 @@ final class _YuwellMacosDebugAppState extends State<_YuwellMacosDebugApp> {
   /// unlike the store itself it does not need to suppress the error detail.
   Future<bool> _selfTestKeychain() async {
     const storage = FlutterSecureStorage();
+    // A Keychain lookup key name, not a secret — see .gitleaksignore for
+    // the reviewed gitleaks generic-api-key false positive this trips.
     const testKey = 'ct5.macos.selftest.v1';
     try {
       await storage.write(
