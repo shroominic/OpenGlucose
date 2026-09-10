@@ -582,6 +582,114 @@ void main() {
       },
     );
 
+    test('non-V1150 version response fails closed and records the exact '
+        'firmware as evidence', () async {
+      // Synthetic digits only — not a captured value from any real unit.
+      // See the evidence-boundary doc: "Unit tests use synthetic values
+      // only and prove deterministic local behavior, not compatibility
+      // with a retail device or firmware version."
+      final fixture = _Fixture(
+        versionResponse: const <int>[
+          1,
+          20,
+          26,
+          9,
+          2,
+          0,
+          2,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+        ],
+      );
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(
+          _failure(YuwellSessionFailureKind.unsupportedFirmware)
+              .having((error) => error.firmware, 'firmware', 'V2003')
+              .having((error) => error.bound, 'bound', isFalse),
+        ),
+      );
+
+      // Exactly the version query and the one best-effort binding-status
+      // evidence read — the same query _beginFreshActivation sends first,
+      // unconditionally, before any state-changing write. Nothing that
+      // could touch activation, calibration, or a state-changing write ran
+      // for this firmware branch.
+      expect(fixture.connection.writes.map((write) => write.value.first), <int>[
+        0x01,
+        0x11,
+      ]);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.unsupportedFirmware.name,
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellFirmwareMetadataKey],
+        'V2003',
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellBindingStateMetadataKey],
+        'unbound',
+      );
+    });
+
+    test(
+      'non-V1150 evidence read failing does not mask the firmware diagnosis',
+      () async {
+        // The best-effort binding-status query itself gets no response here
+        // (dropResponseOpcode) — the primary unsupportedFirmware diagnostic
+        // must still surface, just without binding-state evidence attached.
+        final fixture = _Fixture(
+          versionResponse: const <int>[
+            1,
+            20,
+            26,
+            9,
+            2,
+            0,
+            2,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+          ],
+          dropResponseOpcode: 0x11,
+        );
+        final session = await fixture.connect();
+
+        await expectLater(
+          session.initialize(),
+          throwsA(
+            _failure(YuwellSessionFailureKind.unsupportedFirmware)
+                .having((error) => error.firmware, 'firmware', 'V2003')
+                .having((error) => error.bound, 'bound', isNull),
+          ),
+        );
+
+        expect(
+          session.currentSnapshot.metadata[yuwellFirmwareMetadataKey],
+          'V2003',
+        );
+        expect(
+          session.currentSnapshot.metadata.containsKey(
+            yuwellBindingStateMetadataKey,
+          ),
+          isFalse,
+        );
+      },
+    );
+
     test(
       'blocks accepted interrupted set-ID when the cipher was not observed',
       () async {
@@ -1364,7 +1472,7 @@ void main() {
   });
 }
 
-Matcher _failure(YuwellSessionFailureKind kind) =>
+TypeMatcher<YuwellSessionException> _failure(YuwellSessionFailureKind kind) =>
     isA<YuwellSessionException>().having((error) => error.kind, 'kind', kind);
 
 void _expectBefore(List<String> events, String first, String second) {
@@ -1485,6 +1593,7 @@ final class _Fixture {
     Duration lowPowerResponseDelay = Duration.zero,
     List<int> historyRecordBytes = _recordBytes,
     List<List<int>>? historySlots,
+    List<int>? versionResponse,
     this.glucoseOutputPolicy = YuwellV1150GlucoseOutputPolicy.disabled,
   }) : events = sharedEvents ?? <String>[],
        credentials = _MemoryCredentialStore(
@@ -1507,6 +1616,7 @@ final class _Fixture {
          lowPowerResponseDelay: lowPowerResponseDelay,
          historyRecordBytes: historyRecordBytes,
          historySlots: historySlots,
+         versionResponse: versionResponse,
          events: sharedEvents ?? <String>[],
        ) {
     // When no shared list was supplied, put every fake on this fixture's list.
@@ -1765,6 +1875,7 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     required this.lowPowerResponseDelay,
     required this.historyRecordBytes,
     required this.historySlots,
+    this.versionResponse,
     required this.events,
   }) : _historyRecordCount = historyRecordCount,
        _bound = bindingStatus;
@@ -1783,6 +1894,7 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   final Duration lowPowerResponseDelay;
   final List<int> historyRecordBytes;
   final List<List<int>>? historySlots;
+  final List<int>? versionResponse;
   int get historyRecordCount => historySlots?.length ?? _historyRecordCount;
   List<String> events;
   final writes = <_Write>[];
@@ -1907,7 +2019,9 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   }
 
   List<int>? _response(List<int> request) => switch (request.first) {
-    0x01 => const <int>[1, 20, 26, 9, 2, 0, 1, 1, 5, 0, 0, 0, 0, 0],
+    0x01 =>
+      versionResponse ??
+          const <int>[1, 20, 26, 9, 2, 0, 1, 1, 5, 0, 0, 0, 0, 0],
     0x03 => appendYuwellSum8(const <int>[0x03, 0]),
     0x11 => appendYuwellSum8(<int>[
       0x11,
