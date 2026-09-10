@@ -176,6 +176,19 @@ or ownership-changing writes to an OpenGlucose session until their target
 effects, retry semantics, and recovery behavior are separately approved and
 verified.
 
+The history (`0x37`/`0x47`) and query-code (`0x3F`) *requests* above encode
+with no apparent session dependency, but their *responses* are not so
+simple: both are decrypted with the session cipher `driver.dart` derives via
+`deriveCipherFromSetIdResponse` from the `0x30` set-ID write's response, per
+**OFFICIAL-APP-STATIC** analysis of the CT5 driver. Sending either cold —
+before that state-changing write completes — cannot produce a response
+OpenGlucose can meaningfully decode, independent of whether transmitting it
+is otherwise safe. This is a stronger reason than "no precedent," and it is
+why only `0x11` (binding-state check) is both a simple unauthenticated
+request and a response OpenGlucose can read cold: it is the one operation in
+this table that is plaintext on the wire, not merely simply-encoded on
+request.
+
 ## Communication identity and payload transform
 
 The official application derives a 12-digit communication identity and splits
@@ -456,6 +469,44 @@ layout, status, gap, checksum, transform, or session state must produce no
 `CgmReading`. The non-V1150 branch remains blocked because it has no validated
 local final-value provider.
 
+### OTA firmware-update path
+
+**OFFICIAL-APP-STATIC.** The application bundles two Gecko Bootloader
+(`.gbl`) firmware images as assets and can update a connected transmitter
+through `OTAViewModel`/`OTAUtils`. Static analysis of that path, and of the
+two image files themselves, closes it off as a shortcut to `V1150`:
+
+- `OTAViewModel` selects the update asset by the device's *current* reported
+  version: `update.gbl` for a device on `V1200`; the other bundled image,
+  `CT3A_V1400_241213A.gbl`, for a device on `V1300` or `V1400`. The full
+  ladder the application implements is `V1200 -> V1300 -> V1400`. `V1150`
+  is not a node in it, at either end or in between.
+- Each `.gbl` image's own embedded application-version string confirms its
+  target: `update.gbl` contains the plaintext string `V1300`;
+  `CT3A_V1400_241213A.gbl` contains `V1400`, matching its filename exactly.
+  Extracted at a fixed structural offset inside the GBL container; the two
+  files agree on format up to that point and only diverge from there,
+  which corroborates a real embedded target-version field rather than a
+  coincidental byte match.
+- `TransmitterRepository.FIRMWARE_VERSION_V1150 = "V1150"` is the only
+  version literal the application trusts for a transmitter-computed value;
+  `V1200`/`V1300`/`V1400` have no sibling constant anywhere in that class.
+  Completing this OTA ladder would not make a unit's packed value
+  trustworthy even if it reached `V1400`.
+- `OTAUtils`/`OTAViewModel`'s own gating functions (`isNewCT3Sensor`,
+  `isCT4Sensor`) and the complete absence of any `CT5` reference in either
+  file read as CT3/CT4-product logic, not CT5/Anytime-5P. This update
+  mechanism may not target the Anytime 5P transmitter at all. Lower
+  confidence than the two points above — not traced to a live
+  device-model call site.
+
+Net: an official-app OTA update cannot promote a unit to `V1150` through
+this mechanism, independent of whether it is offered to a CT5 unit in the
+first place. This resolves a previously open question (whether an OTA path
+reaches `V1150`) with a documented negative finding instead of leaving it
+unverified; it does not relax any rule in "OpenGlucose therefore must not"
+above.
+
 ## Confidence table
 
 | Finding | Confidence | Basis |
@@ -469,6 +520,8 @@ local final-value provider.
 | CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
+| official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
+| history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
 
 ## Required physical evidence
 
