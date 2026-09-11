@@ -127,6 +127,20 @@ applies its own name/sensor-code checks. The first OpenGlucose capture must
 therefore use an explicit debug-only unfiltered profile. It must not broaden
 production scanning.
 
+The application's own `ist.com.sdk.ProtocolTools.verify(byte[])` (delegating
+to `ProtocolToolsHolder.verifyHolder`) is the exact call site that turns one
+scan-advertisement payload into `type`/`category`/`name`/`isBound` fields.
+This is **OFFICIAL-APP-STATIC** source grounding for the 27-byte
+manufacturer-data claim below, not a new claim of its own. `CT5InitViewModel`'s
+scan callback calls it on every scan result, matches the decoded `name`
+against the expected candidate, and branches on `isBound` alone: a bound
+match enters the application's own recovery flow (`enterRecoveryMode()`); an
+unbound match proceeds to a fresh connect. Both branches still require a full
+GATT connect and the version handshake below before any further step —
+`isBound` read from the advertisement is a UI-routing hint the application
+uses for itself, not a substitute for the authenticated binding-status check
+(`0x11`) OpenGlucose's own driver already uses for the same purpose over GATT.
+
 ## Frame integrity and command map
 
 Most CT5 command frames are:
@@ -254,6 +268,35 @@ a secure credential store and a durable write journal. It does not implement
 unbind, reset, OTA, calibration, or ownership transfer. Unknown write outcomes
 fail closed unless the reference application proves that an operation is
 normally replayed, as it does for `0x0F`.
+
+## Application-side version gate
+
+**OFFICIAL-APP-STATIC.** `CT5InitViewModel`'s data-receive handler filters
+incoming notifications to exactly two opcodes at this stage of its own
+flow — `0x05` (self-check) and `0x01` (version) — and its version handler
+enforces a hard-coded allowlist before it will call `setDate` at all:
+`V1100` only at the exact date `2024-10-24`; `V1110` only at the exact date
+`2025-03-24`; and unconditionally `V1120`, `V1130`, `V1140`, `V1150`,
+`V1200`, `V1210`. Any other reported version — or a date-gated version
+outside its one exact accepted date — makes the application report an
+init failure and call `close()` on the connection. It never reaches
+`setDate` or anything after it on that path.
+
+This is a *broader* gate than the transmitter-computed trust check the
+"Live, history, and advertisement records" section below already describes:
+`TransmitterRepository.FIRMWARE_VERSION_V1150` is still the only version the
+application trusts for a transmitter-computed value, with no sibling
+constant. The application's own code therefore treats "firmware new enough
+to initialize" (`V1120`-`V1210`) and "firmware whose transmitter value it
+will trust" (`V1150` only) as two different questions.
+
+This does not change any `HARD UNKNOWN` above and does not license widening
+OpenGlucose's own `unsupportedFirmware` gate: the native algorithm that the
+`V1120`-`V1210` range would still need for any non-transmitter-computed
+value remains unimplemented. It is cited here as version-gate evidence, not
+as grounds to admit those versions any further than the one read-only
+binding-status query OpenGlucose's driver already sends for evidence on any
+non-`V1150` unit (see the package's evidence-boundary doc).
 
 ## Live, history, and advertisement records
 
@@ -519,6 +562,7 @@ above.
 | exact CT5 glucose mathematics | incomplete | multiple unresolved stateful stages |
 | CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
+| application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
