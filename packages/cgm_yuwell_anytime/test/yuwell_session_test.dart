@@ -982,6 +982,32 @@ void main() {
       );
     });
 
+    test('a broken credential store fails closed before any transport '
+        'connect', () async {
+      // credentialStore.read() is the very first call _initialize() makes
+      // -- before _transport.connect() -- so a synthetic read failure here
+      // must never reach the transport at all. Unlike the topology/
+      // unsupportedFirmware fail-closed tests, this one must NOT assert
+      // connection.disconnected: _connection is only assigned after a
+      // successful transport connect, so cleanup's `_connection?.disconnect()`
+      // is a no-op here, not a call that happened and completed.
+      final fixture = _Fixture();
+      fixture.credentials.readError = StateError('synthetic store failure');
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.credentialStore)),
+      );
+
+      expect(fixture.connection.writes, isEmpty);
+      expect(fixture.connection.disconnected, isFalse);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.credentialStore.name,
+      );
+    });
+
     test(
       'keeps rejected set-ID tombstone when retry is not authorized',
       () async {
@@ -1901,6 +1927,11 @@ final class _MemoryCredentialStore implements YuwellCredentialStore {
 
   YuwellSessionCredentials? value;
   List<String> events;
+
+  /// When set, [read] throws this instead of returning [value]. Lets a test
+  /// exercise the driver's credentialStore-failure fail-closed path without
+  /// a real storage backend.
+  Object? readError;
   YuwellCredentialPhase? _gatedPhase;
   Completer<void>? _gatedWriteStarted;
   Future<void>? _gatedWriteRelease;
@@ -1922,7 +1953,11 @@ final class _MemoryCredentialStore implements YuwellCredentialStore {
   }
 
   @override
-  Future<YuwellSessionCredentials?> read(String storageKey) async => value;
+  Future<YuwellSessionCredentials?> read(String storageKey) async {
+    final error = readError;
+    if (error != null) throw error;
+    return value;
+  }
 
   @override
   Future<void> write(
