@@ -932,6 +932,36 @@ void main() {
       await replacement.disconnect();
     });
 
+    test('connect() rejects a sensor descriptor from a different driver '
+        'before any transport use', () async {
+      // Synthetic descriptor only. The three-part identity check
+      // (driverId/deviceId/storageKey prefix) runs synchronously at the top
+      // of connect(), before scan or connect ever reaches the transport, so
+      // this uses a transport that throws if it is ever called at all
+      // instead of one that could silently succeed.
+      final driver = YuwellAnytimeDriver(
+        const _UnreachableTransport(),
+        credentialStore: _MemoryCredentialStore(
+          value: null,
+          events: <String>[],
+        ),
+        writeIntentStore: _MemoryIntentStore(),
+      );
+      const sensor = DiscoveredSensor(
+        driverId: 'not-yuwell-anytime',
+        deviceId: 'synthetic-device',
+        displayName: 'Anytime0123456789',
+        storageKey: 'yuwell:synthetic-device',
+        rssi: -40,
+        capabilities: YuwellAnytimeDriver.capabilities,
+      );
+
+      await expectLater(
+        driver.connect(sensor),
+        throwsA(_failure(YuwellSessionFailureKind.invalidSensor)),
+      );
+    });
+
     test(
       'keeps rejected set-ID tombstone when retry is not authorized',
       () async {
@@ -2011,6 +2041,27 @@ final class _MemoryIntentStore implements YuwellWriteIntentStore {
     }
     return value;
   }
+}
+
+/// A transport that must never be called. [YuwellAnytimeDriver.connect]
+/// validates the [DiscoveredSensor] descriptor before touching the
+/// transport at all, so a test for that guard should prove the transport
+/// stays untouched, not merely unconfigured.
+final class _UnreachableTransport implements BleTransport {
+  const _UnreachableTransport();
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw StateError('invalidSensor must reject before transport use');
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) => throw StateError('invalidSensor must reject before transport use');
 }
 
 final class _ScriptedTransport implements BleTransport {
