@@ -487,9 +487,25 @@ further. Past that gate, `connectWay` selects one of at least three
 `TransformHosToOutViewModel` entry methods: `prepareTreatmentOut` (the
 path that reaches `sureClose`'s backend-sourced write, documented under
 "Reference session branches"), `finishAntTreatmentOut`, and
-`prepareMultiWear`. The latter two are named here as a pointer for
-whoever picks this thread up next; this document does not trace them
-further.
+`prepareMultiWear` — closing the pointer this document left open for
+these last two:
+
+- `prepareMultiWear` shares its guard with `prepareTreatmentOut`, not
+  just its shape: both independently re-check `TransmitterRepository
+  .getCurrentDevice()` before sending their respective backend request
+  (built from the QR's `treatmentUid`/`phoneNumber`/`manufacturerId`),
+  and both refuse with the same message on a record already existing.
+  This is defense in depth with `CommonScan`'s own check above, not a
+  single point of enforcement — a genuine second, independent gate,
+  not a duplicate description of the first.
+- `finishAntTreatmentOut` is shaped differently: it matches the *local*
+  device's own identity against the QR's `anytimeTreatmentUid`, reads
+  whether a local record exists and, if so, its index, then completes a
+  backend call carrying that index. This is a transfer-teardown/
+  sync-completion step, not a new-admission gate.
+
+None of these three reads, publishes, or invents a decoded value — only
+identity fields and a record index.
 
 ## CT5Init activity: view-layer session lifecycle
 
@@ -966,6 +982,7 @@ above.
 | **Correction of a prior entry:** the scan callback's post-`verify()` branch is three-way, not a bound-vs-unbound binary — a bound match additionally needs a passing can-recover check (same logged-in user, matching BSN, a locally recorded sensor) before it enters recovery; failing that check stops the scan without ever connecting, the only one of the three outcomes that does not reach GATT | high (source-level) | full-body trace of `CT5InitViewModel`'s scan callback and its `canRecover` method — see "Discovery and GATT topology" |
 | `CommonScan`'s per-account `TransmitterRepository.getCurrentDevice()` check blocks all new-sensor admission (CT2/CT3/CT5 alike) whenever the current login already has an active sensor on record — a broader, earlier gate than anything CT5-specific; `BeforeUseCT5` between it and the CT5 entry points is instructional UI only, no added validation | high (source-level) | static analysis of `CommonScan`, `BeforeUseCT5`, `TransmitterRepository.getCurrentDevice` — see "Multi-product-line admission gate" |
 | The CT2/CT3/CT5 product-line regex matching `CommonScan` uses is its fallback path only; its primary path parses the scan as a `TransformHosToOutQrCode` (a hospital-transfer credential) and, before dispatching on `connectWay`, rejects it outright unless the code's own `phoneNumber` field equals the current logged-in account's phone number | high (source-level) | static analysis of `CommonScan.m37138H`/`m37137G` and `TransformHosToOutQrCode` — see "Multi-product-line admission gate" |
+| `prepareTreatmentOut`/`prepareMultiWear` (the two `connectWay` branches this document previously left as an open pointer) both independently re-check `getCurrentDevice()` before their backend call — a second, genuinely independent already-active-device gate, not a restatement of `CommonScan`'s own check; `finishAntTreatmentOut` is a differently-shaped transfer-teardown step (matches local device identity, reads a local record index) rather than another admission gate | high (source-level) | static analysis of all three `TransformHosToOutViewModel` entry methods — see "Multi-product-line admission gate" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
