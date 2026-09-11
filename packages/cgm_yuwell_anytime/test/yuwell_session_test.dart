@@ -916,6 +916,34 @@ void main() {
       );
     });
 
+    test('an unparseable live notification fails closed as '
+        'malformedResponse and disconnects', () async {
+      // _activeCredentials is transmitterComputed, so resuming locks this
+      // session to V1150's alternate live opcode (0x45) -- sending on it
+      // with a payload too short for any known live record layout reaches
+      // the frame-parse try/catch specifically (driver.dart), not the
+      // separate opcode-mismatch check that also maps to malformedResponse.
+      final fixture = _Fixture(credentials: _activeCredentials());
+      final session = await fixture.connect();
+      await session.initialize();
+      await _waitUntil(
+        () => session.currentSnapshot.historySync.lastSyncAt != null,
+      );
+
+      fixture.connection.emitNotification(<int>[
+        YuwellCt5Commands.alternateLiveCommand,
+        1,
+        2,
+      ]);
+      await _waitUntil(
+        () =>
+            session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey] ==
+            YuwellSessionFailureKind.malformedResponse.name,
+      );
+
+      expect(fixture.connection.disconnected, isTrue);
+    });
+
     test('leases one sensor across concurrent driver instances', () async {
       final fixture = _Fixture(credentials: _activeCredentials());
       final first = await fixture.connect();
@@ -1005,6 +1033,92 @@ void main() {
       expect(
         session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
         YuwellSessionFailureKind.credentialStore.name,
+      );
+    });
+
+    test('a saved communication ID the transmitter rejects fails closed '
+        'after a diagnostic binding-status read', () async {
+      // checkIdAccepted: false is an existing fixture knob -- the 0x31
+      // response reports rejection, matching a transmitter that no longer
+      // recognizes this app's saved identity (a different phone bound
+      // since, a factory reset, etc). credentials.phase must not be
+      // identityPrepared for this exact branch: that phase is handled by
+      // its own, separate check earlier in _resume.
+      final fixture = _Fixture(
+        credentials: _activeCredentials(),
+        checkIdAccepted: false,
+      );
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.authenticationRejected)),
+      );
+
+      // The check-ID write, then one best-effort binding-status diagnostic
+      // read -- nothing that could rebind, reconfigure, or start activation.
+      expect(fixture.connection.writes.map((write) => write.value.first), <int>[
+        0x31,
+        0x11,
+      ]);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.authenticationRejected.name,
+      );
+    });
+
+    test('a sensor-code response the clean-room decoder rejects fails '
+        'closed', () async {
+      // Same 21-character length as the working _calibrationCode fixture
+      // (so the outer frame/checksum read this document's frame-integrity
+      // section describes still passes), but with the K/R digit positions
+      // the 21-character layout defines replaced by non-digits. This
+      // targets the clean-room decoder's own rejection specifically
+      // (calibration_code_test.dart covers that decoder in isolation) --
+      // not the earlier frame-decrypt step, which is already
+      // malformedResponse and covered by a sibling test.
+      final fixture = _Fixture(
+        credentials: _authenticatedCredentials(),
+        calibrationCodeOverride: 'M4Z6123456789XXXXXABC',
+      );
+      final session = await fixture.connect(authorized: true);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.calibrationCode)),
+      );
+
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.calibrationCode.name,
+      );
+    });
+
+    test('exhausting the per-session batch budget before the sensor reports '
+        'done fails closed as historyIncomplete', () async {
+      // Every batch here is well-formed and parses cleanly (default
+      // historyRecordBytes/layout) -- this is not a malformed-frame case,
+      // it is the driver's own bounded-effort guard: _syncHistoryOnce loops
+      // at most timingProfile.maxHistoryBatches times before giving up.
+      // historyRecordCount is set far larger than what one batch can
+      // consume, so with the budget capped at 1, the loop exhausts it
+      // without the sensor ever reporting termination or an empty page --
+      // the exact "not completed" case driver.dart's own explicit
+      // `if (!completed) throw historyIncomplete;` exists for.
+      final fixture = _Fixture(
+        credentials: _activeCredentials(),
+        historyRecordCount: 5000,
+      );
+      final session = await fixture.connect(maxHistoryBatches: 1);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.historyIncomplete)),
+      );
+
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.historyIncomplete.name,
       );
     });
 
@@ -1841,6 +1955,7 @@ final class _Fixture {
     List<List<int>>? historySlots,
     List<int>? versionResponse,
     List<BleService>? serviceOverride,
+    String? calibrationCodeOverride,
     this.glucoseOutputPolicy = YuwellV1150GlucoseOutputPolicy.disabled,
   }) : events = sharedEvents ?? <String>[],
        credentials = _MemoryCredentialStore(
@@ -1865,6 +1980,7 @@ final class _Fixture {
          historySlots: historySlots,
          versionResponse: versionResponse,
          serviceOverride: serviceOverride,
+         calibrationCodeOverride: calibrationCodeOverride,
          events: sharedEvents ?? <String>[],
        ) {
     // When no shared list was supplied, put every fake on this fixture's list.
@@ -1882,17 +1998,20 @@ final class _Fixture {
   final YuwellV1150GlucoseOutputPolicy glucoseOutputPolicy;
   final YuwellSessionLeaseRegistry leaseRegistry = YuwellSessionLeaseRegistry();
 
-  Future<YuwellAnytimeSession> connect({bool authorized = false}) async {
+  Future<YuwellAnytimeSession> connect({
+    bool authorized = false,
+    int maxHistoryBatches = 8000,
+  }) async {
     final transport = _ScriptedTransport(connection);
     final driver = YuwellAnytimeDriver(
       transport,
       credentialStore: credentials,
       writeIntentStore: journal,
       identityGenerator: YuwellSecureIdentityGenerator(random: _ZeroRandom()),
-      timingProfile: const YuwellTimingProfile(
-        connectTimeout: Duration(milliseconds: 100),
-        responseTimeout: Duration(milliseconds: 40),
-        maxHistoryBatches: 8000,
+      timingProfile: YuwellTimingProfile(
+        connectTimeout: const Duration(milliseconds: 100),
+        responseTimeout: const Duration(milliseconds: 40),
+        maxHistoryBatches: maxHistoryBatches,
       ),
       sessionLeaseRegistry: leaseRegistry,
       glucoseOutputPolicy: glucoseOutputPolicy,
@@ -2155,6 +2274,7 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     required this.historySlots,
     this.versionResponse,
     this.serviceOverride,
+    this.calibrationCodeOverride,
     required this.events,
   }) : _historyRecordCount = historyRecordCount,
        _bound = bindingStatus;
@@ -2175,6 +2295,7 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   final List<List<int>>? historySlots;
   final List<int>? versionResponse;
   final List<BleService>? serviceOverride;
+  final String? calibrationCodeOverride;
   int get historyRecordCount => historySlots?.length ?? _historyRecordCount;
   List<String> events;
   final writes = <_Write>[];
@@ -2315,7 +2436,10 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     0x31 => appendYuwellSum8(<int>[0x31, 0, 0, 0, 0, checkIdAccepted ? 1 : 0]),
     0x3f => <int>[
       0x3f,
-      ...YuwellCt5ByteTransform.encode(_calibrationCode.codeUnits, key: 0),
+      ...YuwellCt5ByteTransform.encode(
+        (calibrationCodeOverride ?? _calibrationCode).codeUnits,
+        key: 0,
+      ),
     ],
     0x38 => appendYuwellSum8(<int>[
       0x38,
