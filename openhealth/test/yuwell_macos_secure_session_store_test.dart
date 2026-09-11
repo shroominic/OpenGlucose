@@ -261,14 +261,120 @@ void main() {
       expect(token, isNot(contains('sensor-key')));
     },
   );
+
+  test(
+    'a read failure fails closed without leaking the underlying error',
+    () async {
+      // A warmup write on a different key establishes the device secret first,
+      // so the injected failure below lands on the credential-alias read
+      // itself, not the earlier device-secret bootstrap read (a different
+      // catch block, exercised separately below).
+      await store.write('warmup', credentials());
+      fakeStore.failNextRead = Exception('simulated Keychain read failure');
+
+      await expectLater(
+        store.read('sensor-key'),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'Yuwell macOS secure storage failed closed.',
+          ),
+        ),
+      );
+    },
+  );
+
+  test(
+    'a read failure that is already a protocol exception is not masked '
+    'by the generic fail-closed message',
+    () async {
+      await store.write('warmup', credentials());
+      fakeStore.failNextRead = const YuwellProtocolFormatException(
+        'synthetic pre-existing diagnosis',
+      );
+
+      await expectLater(
+        store.read('sensor-key'),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
+    },
+  );
+
+  test('a delete failure fails closed', () async {
+    await store.write('sensor-key', credentials());
+    fakeStore.failNextDelete = Exception('simulated Keychain delete failure');
+
+    await expectLater(store.delete('sensor-key'), throwsStateError);
+  });
+
+  test(
+    'a device-secret read failure fails closed on the very first operation',
+    () async {
+      // No warmup here: this is the bootstrap read itself, a separate catch
+      // block (on Object, no type preserved) from the per-alias reads above.
+      fakeStore.failNextRead = Exception('simulated Keychain read failure');
+
+      await expectLater(store.read('sensor-key'), throwsStateError);
+    },
+  );
+
+  test(
+    'a corrupted stored record fails closed as a protocol exception, not '
+    'a crash',
+    () async {
+      await store.write('warmup', credentials());
+      final before = fakeStore.data.keys.toSet();
+      await store.write('sensor-key', credentials());
+      final added = fakeStore.data.keys.toSet().difference(before);
+      expect(added, hasLength(1));
+
+      fakeStore.data[added.single] = 'not valid json';
+      await expectLater(
+        store.read('sensor-key'),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
+
+      fakeStore.data[added.single] = '42'; // valid JSON, but not a Map
+      await expectLater(
+        store.read('sensor-key'),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
+    },
+  );
+
+  test(
+    'a fresh store instance reads what an earlier one wrote, proving the '
+    'device secret persists rather than regenerating',
+    () async {
+      await store.write('sensor-key', credentials());
+
+      final reopened = YuwellMacosKeychainSessionStore(
+        keyValueStore: fakeStore,
+      );
+      final restored = await reopened.read('sensor-key');
+
+      expect(restored, isNotNull);
+      expect(restored!.cipher, 0x42);
+    },
+  );
 }
 
 class _FakeKeyValueStore implements YuwellMacosKeyValueStore {
   final Map<String, String> data = {};
   bool failNextWrite = false;
+  Exception? failNextRead;
+  Exception? failNextDelete;
 
   @override
-  Future<String?> read(String key) async => data[key];
+  Future<String?> read(String key) async {
+    final error = failNextRead;
+    if (error != null) {
+      failNextRead = null;
+      throw error;
+    }
+    return data[key];
+  }
 
   @override
   Future<void> write(String key, String value) async {
@@ -281,6 +387,11 @@ class _FakeKeyValueStore implements YuwellMacosKeyValueStore {
 
   @override
   Future<void> delete(String key) async {
+    final error = failNextDelete;
+    if (error != null) {
+      failNextDelete = null;
+      throw error;
+    }
     data.remove(key);
   }
 }
