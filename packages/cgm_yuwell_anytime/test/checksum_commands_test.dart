@@ -79,6 +79,33 @@ void main() {
   });
 
   group('CT5 response validators', () {
+    test('accepts the exact self-check response shape and rejects any '
+        'other length', () {
+      // The driver does not currently send 0x05 -- this validator has no
+      // call site in driver.dart today -- but it is public, clean-room
+      // API surface with no test of its own. Covering its shape contract
+      // on its own terms, not as a claim that the live session exercises
+      // it.
+      final valid = appendYuwellSum8(<int>[
+        YuwellCt5Commands.selfCheckCommand,
+        ...List<int>.filled(18, 0),
+      ]);
+      expect(
+        () => YuwellCt5Responses.selfCheckAccepted(valid),
+        returnsNormally,
+      );
+
+      final wrongLength = appendYuwellSum8(<int>[
+        YuwellCt5Commands.selfCheckCommand,
+        0,
+        0,
+      ]);
+      expect(
+        () => YuwellCt5Responses.selfCheckAccepted(wrongLength),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
+    });
+
     test('rejects an invalid reset-reason value as activation evidence', () {
       final malformed = appendYuwellSum8(<int>[
         0x11,
@@ -106,6 +133,40 @@ void main() {
         ),
         isFalse,
       );
+    });
+  });
+
+  group('CT5 history frame layout inference', () {
+    // YuwellHistoryFrame.parse infers a base-opcode payload's record layout
+    // from length divisibility alone when no expectedLayout is supplied.
+    // Neither case below needs real per-record content: the ambiguous-length
+    // rejection happens before any record is read, and an all-0xFC slot is
+    // the documented end sentinel, so the frame terminates on the first slot
+    // without calling into the per-record parser at all.
+    List<int> historyFrame(List<int> clear) => appendYuwellSum8(<int>[
+      YuwellCt5Commands.historyCommand,
+      0,
+      0,
+      ...YuwellCt5ByteTransform.encode(clear, key: 0),
+    ]);
+
+    test('rejects a payload length divisible by both known record sizes', () {
+      final ambiguous = historyFrame(List<int>.filled(11 * 15, 0));
+
+      expect(
+        () => YuwellHistoryFrame.parse(ambiguous, cipher: 0),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
+    });
+
+    test('infers compact11 for a length only compact11 divides', () {
+      final clear = List<int>.filled(22, 0xfc);
+      final parsed = YuwellHistoryFrame.parse(historyFrame(clear), cipher: 0);
+
+      expect(parsed.layout, YuwellHistoryRecordLayout.compact11);
+      expect(parsed.terminated, isTrue);
+      expect(parsed.consumedSlots, 0);
+      expect(parsed.indexedRecords, isEmpty);
     });
   });
 }
