@@ -351,6 +351,18 @@ session-lifecycle layer above the ViewModel logic already recorded here:
   `ScanSettings` with `SCAN_MODE_LOW_LATENCY` and hardware batching
   explicitly disabled, and is reentrancy-guarded by the same flag
   `stopBleScan` checks.
+- The first scan is reached only past a four-part prerequisite gate in the
+  permission-success callback (`onPermissionRequestSuccess`, traced through
+  its AspectJ wrapper): the app's runtime-permission set, an
+  Android-12-plus BLE-specific permission re-check, location services
+  (GPS) enabled, then the Bluetooth adapter enabled — each unmet condition
+  routes to its own prompt instead of proceeding. Only once all four hold
+  does the Activity clear the version-gate-failure latch and schedule
+  `startInit(new Date())` on the next handler tick. That `Date` is the
+  reference timestamp the resume window below measures from: a resumed
+  retry inside that window reuses this same original `Date` rather than
+  minting a new one, so the 30 seconds is a fixed budget from the first
+  attempt, not a sliding window renewed by each retry.
 
 `onTransmitterStateReceived(TransmitterState)` is this Activity's single
 dispatch point for session state, keyed on `TransmitterState.newState`
@@ -358,16 +370,22 @@ against the constants that class defines
 (`com.yuwell.cgm.data.model.local.TransmitterState`; source-grounded, not
 inferred). It splits into two groups:
 
-- Terminal states that return immediately: `INIT_SUCCESS` (finishes the
-  guide), `UNBINDING` (clears the saved reference timestamp), `ERROR_BOUND`,
+- Terminal states that return immediately: `INIT_SUCCESS` (calls the
+  ViewModel's `finishGuide()`, whose async completion later drives the
+  Activity's own `getGuideFinish()` observer to broadcast
+  `TransmitterState.FINISH_GUIDE` through the app's `MessageSender` and
+  then close the Activity — two steps through two components, not one),
+  `UNBINDING` (clears the saved reference timestamp), `ERROR_BOUND`,
   `ERROR_SENSOR_INFO` (shows the app's QR-error string), and
   `CHECK_TRANSMITTER_VERSION_FAIL` — which stores the failure detail, logs
   the app's own `"checkTransmitterVersion fail:"` line, and shows
-  `WearVersionTipDialog`. This is the UI-layer surface of the version-handler
-  allowlist this document already establishes under "Application-side
-  version gate"; it is an independent, corroborating code path (the
-  Activity's own state-code dispatch and log string), not a new claim about
-  the gate's condition.
+  `WearVersionTipDialog`, whose own callback closes the Activity regardless
+  of which option the dialog reports: this path has no retry inside
+  `CT5Init`. `CHECK_TRANSMITTER_VERSION_FAIL` is the UI-layer surface of the
+  version-handler allowlist this document already establishes under
+  "Application-side version gate"; it is an independent, corroborating code
+  path (the Activity's own state-code dispatch and log string), not a new
+  claim about the gate's condition.
 - `DISCONNECTED` and `CHECK_FAIL` share one fall-through tail instead of a
   dedicated branch: it returns immediately if a version-gate failure was
   already recorded or there is no saved reference timestamp; otherwise,
@@ -377,6 +395,17 @@ inferred). It splits into two groups:
   recovery path a failed connection attempt uses. This is a UI resume/retry
   window, not a protocol timeout, and it never fires once a version-gate
   failure has latched.
+
+Two more LiveData observers converge on already-seen recovery helpers, but
+not identically: `getScanOverTime()` calls the exact same helper pair
+`onRequestFailed` calls, while `getBound()`'s `true` case shares only one of
+the two — the Activity treats an already-bound sensor as a distinct recovery
+path from a generic scan timeout or connect failure, not an identical one.
+`getBound()`'s `true` case is the Activity-side reaction to the same
+advertisement `isBound` flag already discussed under "Discovery and GATT
+topology"; this document's conclusion there — `isBound` is a UI-routing
+hint, not an authenticated check — is unchanged, this only adds where that
+hint's `true` case lands once wired to this Activity.
 
 This adds a previously undocumented layer above `CT5InitViewModel` without
 changing any conclusion already recorded for it: everything here is
@@ -727,7 +756,7 @@ above.
 | CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
 | application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
-| `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, with a 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL` and `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
+| `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, gated behind a four-part permission/GPS/Bluetooth prerequisite check whose completion timestamp is the origin of the 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL`, with `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated, non-retrying UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
