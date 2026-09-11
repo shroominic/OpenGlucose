@@ -155,9 +155,12 @@ it consumes only that first 4-byte prefix and explicitly discards the
 remaining 22 bytes unparsed. Those 22 bytes are where the six-record and
 checksum content the paragraph above describes would live —
 `verifyHolder` is confirmed *not* to be the method that reads them. A
-`ProtocolToolsHolder_CT5$BroadData` class exists as an unopened, unread
-pointer for whoever picks that thread up next; going there is a new dig,
-not part of this finding. Any AD type/length combination outside the ones
+`ProtocolToolsHolder_CT5$BroadData` class exists as a pointer for whoever
+picks that thread up next; that dig is done — see "Advertisement decoder:
+`ProtocolToolsHolder_CT5.verify()`" under "Live, history, and advertisement
+records" below. It is a separate class from `ProtocolToolsHolder` above,
+with its own result type, and it consumes this same 27-byte structure
+differently. Any AD type/length combination outside the ones
 above leaves this reference parser's buffer position unresolved for that
 one structure — a fragility of the reference implementation, not a
 wire-format fact. A future OpenGlucose parser should walk every AD
@@ -354,6 +357,54 @@ and contiguous history before it publishes the normal glucose record. The
 alternate value is also stored separately for comparison. A separate
 advertisement-display path accepts a transmitter value without the native
 algorithm. This does not prove that the two values are equivalent.
+
+### Advertisement decoder: `ProtocolToolsHolder_CT5.verify()`
+
+**OFFICIAL-APP-STATIC**, cross-checked against smali. `com.yuwell.cgm.utils.
+ProtocolToolsHolder_CT5` is a separate class from `ist.com.sdk.ProtocolTools`/
+`ProtocolToolsHolder` above, with its own result type (`Verify_CT5`, not
+`ProtocolTools.Verify`). Its `verify(byte[])` has exactly one call site in
+the inspected DEX — `CGMService`'s field `j0` — and `CT5InitViewModel`'s scan
+callback never calls it; that callback only ever reaches `ist.com.sdk.
+ProtocolTools.verify`/`verifyHolder`. The two decoders do not call each
+other.
+
+A private helper (`ProtocolToolsHolder_CT5.a([B)Z` in smali) gates
+`verify()`: for the same type-`0xFF`, 27-byte AD structure, it skips a
+4-byte prefix, sums the next 21 bytes, and requires the low 8 bits of that
+sum to equal the following byte. `verify()` returns `null` for a checksum or
+shape mismatch here, and for any other exception, including a
+nibble-encoded count that reads past the end of the payload described below.
+
+Where `verifyHolder` discards the remaining 22 bytes of that structure
+unparsed (see above), `ProtocolToolsHolder_CT5.verify()` is the method that
+reads them: after 3 bytes (category) and 1 byte (bound flag, `== 1`), it
+reads one byte split into a count (low nibble) and a type selector (high
+nibble), a little-endian 2-byte starting index, then 18 bytes it runs
+through the same `ConvertTools.encode(bytes, kCipher)` transform the GATT
+session path uses — `kCipher` here is set immediately before each call from
+`Transmitter.sureClose`, a per-transmitter persisted int field, which this
+static read does not yet prove is the same session value `driver.dart`
+derives for the GATT path. It then reads that decoded payload as `count`
+fixed 3-byte big-endian records — nothing in this method caps `count`
+against the 18-byte payload itself; an over-long count throws and is caught
+by the same shape-error handling above — branching only on the type nibble:
+
+- type `1`: `dValue = (raw >> 10) * 0.01`, `dTrmpture = (raw & 0x3FF) * 0.1 -
+  40.0`;
+- type `2`: `trend = raw & 0x1F`, `errorCode = (raw >> 5) & 0xFF`,
+  `glucoseValue = (raw >> 13) & 0x7FF`.
+
+`verify()`'s only caller, `CGMService`'s `lambda$algorithmGlucose$10`,
+requires `isBound()` true and a category match before reading any record,
+then hands every type-`2` record straight to
+`CGMCallbackCT5.onBroadcastNewGlucoseRead()` as a `CurrentGlucose` — with no
+native-algorithm call anywhere in that method. This is the exact source
+grounding for "a separate advertisement-display path accepts a transmitter
+value without the native algorithm" above. jadx flags this method's
+surrounding index/gap-continuity logic as unreliably decompiled; this
+finding is limited to what the smali and the plain accessor calls agree on,
+and does not characterize that continuity check.
 
 The alternate branch selector is exact: the application enables it only when
 the persisted firmware-version string starts with `V1150`. It then sends an
@@ -587,6 +638,7 @@ above.
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
 | application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
+| `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
