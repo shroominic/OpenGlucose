@@ -801,6 +801,43 @@ void main() {
       );
     });
 
+    test('an unresolved non-setDate intent with no saved credentials at all '
+        'fails closed before any radio traffic', () async {
+      // A different hole than the test above: there credentials existed
+      // but were not transmitter-computed, so _resume's bare guard fired.
+      // Here there are no saved credentials at all, so _initialize's own
+      // fresh-admission branch does not run either (it requires
+      // _unresolvedIntent == null) — control falls into the
+      // credentials-based else-branch, whose `credentials?.transmitterComputed
+      // == false ? 'unsupported' : 'V1150'` cannot tell "never admitted"
+      // apart from "unsupported" once credentials is null, and defaults
+      // to 'V1150'. That default is never observed only because
+      // _recoverUnresolved's bare credentials-null guard fires first for
+      // every operation except the separately reviewed setDate recovery.
+      // This locks that guard in place as a regression test rather than
+      // leaving it as an unexercised side effect of the setDate tests.
+      final journal = _MemoryIntentStore(
+        initial: const YuwellUnresolvedWriteIntent(
+          token: 'opaque-no-credentials',
+          operation: YuwellActivationWrite.initialize,
+          state: YuwellWriteIntentState.unknown,
+        ),
+      );
+      final fixture = _Fixture(journal: journal);
+      final session = await fixture.connect(authorized: true);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.unresolvedWrite)),
+      );
+
+      // No version query, no evidence read, no activation write — the
+      // guard is the first statement _recoverUnresolved runs for any
+      // operation but setDate.
+      expect(fixture.connection.writes, isEmpty);
+      expect(journal.current, isNotNull);
+    });
+
     test(
       'blocks accepted interrupted set-ID when the cipher was not observed',
       () async {
