@@ -962,6 +962,26 @@ void main() {
       );
     });
 
+    test('calibration capability is unconditionally unsupported', () async {
+      // No connect/initialize needed: fetchCalibrations/submitCalibration
+      // reject before touching any session or transport state, per the
+      // evidence-boundary doc's "does not implement ... calibration" rule.
+      // The value below is never read -- it exists only to satisfy the
+      // method signature -- so it is an arbitrary placeholder, not a
+      // synthetic-but-plausible reading.
+      final fixture = _Fixture();
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.fetchCalibrations(),
+        throwsA(_failure(YuwellSessionFailureKind.unsupportedCapability)),
+      );
+      await expectLater(
+        session.submitCalibration(glucoseMgdl: 0),
+        throwsA(_failure(YuwellSessionFailureKind.unsupportedCapability)),
+      );
+    });
+
     test(
       'keeps rejected set-ID tombstone when retry is not authorized',
       () async {
