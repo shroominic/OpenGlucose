@@ -310,10 +310,12 @@ before either sequence above starts: it looks up a locally persisted
   path. This is the saved-session branch above, and `sureClose` is the same
   field `ProtocolToolsHolder_CT5.setKCipher` reads for the advertisement
   path (see "Advertisement decoder"): `TransmitterRepository
-  .saveTransmitterFirstInit` writes it once, during first-time pairing, in
-  the same call that persists the communication ID, `K`, and `R`. For a
-  transmitter this app has already bound locally, the advertisement decoder
-  and the connected-GATT session read the identical stored value.
+  .saveTransmitterFirstInit` writes it during first-time on-device
+  pairing, in the same call that persists the communication ID, `K`, and
+  `R` — one of (at least) two independent write paths this field has; see
+  below for the other. For a transmitter this app has already bound
+  locally, the advertisement decoder and the connected-GATT session read
+  the identical stored value regardless of which path wrote it.
 - No record found, and the application is not in `enterRecoveryMode()`:
   proceeds to `getVersion()` — the first-use branch above.
 - No record found, and the application *is* in `enterRecoveryMode()`: reads
@@ -328,6 +330,21 @@ before either sequence above starts: it looks up a locally persisted
   trace. This third path is a narrower variant of the saved-session branch,
   not a distinct opcode sequence — it changes only where the cipher comes
   from, not what is sent.
+
+A second, independent write path for this same field exists for CT5-series
+transmitters specifically: `TransformHosToOutViewModel` — a
+hospital-to-outpatient transfer flow — constructs a fresh `Transmitter`
+record from a backend server response (`PrepareTreatmentOutResp`'s
+`ct5SecretKey` payload, not any on-device BLE exchange) and persists it
+through the same `saveOrUpdate` call `saveTransmitterFirstInit` itself
+uses. For a CT5 transmitter, that server payload supplies `sureClose`,
+`K`, `R`, and the communication-ID components directly — this path's
+session-cipher provenance is a backend API response, not a locally
+derived `0x30` set-ID round-trip. Everything downstream (the
+saved-session branch above, the advertisement decoder's `setKCipher`)
+reads the same `sureClose` field regardless of which of these two paths
+wrote it; this document's account of where the value comes from now
+covers both, not the on-device path alone.
 
 The application also sends `0x0F` after initialization and after every
 completed history cycle. This repeated reference behavior supports treating
@@ -933,7 +950,7 @@ above.
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
-| `Transmitter.sureClose` is one persisted field written once by `TransmitterRepository.saveTransmitterFirstInit` and read by both the advertisement decoder (`ProtocolToolsHolder_CT5.setKCipher`) and the connected-GATT session (`CGMCallbackHandlerCT5`'s `AuthInfo.setCipher`) for an already-bound transmitter, resolving this document's own prior "does not yet prove" note; a third, narrower session-start path (`enterRecoveryMode()` with no local record) reads a different, SharedPreferences-backed cipher instead | high (source-level) | static analysis of `CGMCallbackHandlerCT5.lambda$onDevicePrepared$0`, `TransmitterRepository.saveTransmitterFirstInit`, and `Transmitter.sureClose`'s full read/write site list — see "Reference session branches" |
+| `Transmitter.sureClose` is one persisted field, read identically by both the advertisement decoder (`ProtocolToolsHolder_CT5.setKCipher`) and the connected-GATT session (`CGMCallbackHandlerCT5`'s `AuthInfo.setCipher`) for an already-bound transmitter, resolving this document's own prior "does not yet prove" note; a third, narrower session-start path (`enterRecoveryMode()` with no local record) reads a different, SharedPreferences-backed cipher instead. **Updated:** it has two independent write paths, not one — `TransmitterRepository.saveTransmitterFirstInit` (on-device pairing) and, for CT5 specifically, `TransformHosToOutViewModel` (a backend-server response, no on-device exchange) | high (source-level) | static analysis of `CGMCallbackHandlerCT5.lambda$onDevicePrepared$0`, `TransmitterRepository.saveTransmitterFirstInit`, `TransformHosToOutViewModel`, and `Transmitter.sureClose`'s full read/write site list — see "Reference session branches" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
