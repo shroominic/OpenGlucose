@@ -751,6 +751,56 @@ void main() {
       );
     });
 
+    test('a resumed session whose saved credentials are not '
+        'transmitter-computed fails closed before any radio traffic', () async {
+      // Synthetic credentials only — this phase/cipher/coefficient
+      // combination is not a captured value from any real unit.
+      //
+      // This is a distinct branch from the three non-V1150 tests above:
+      // those all go through _initialize's fresh version query, so their
+      // exception carries the queried firmware string and the one
+      // best-effort binding-status evidence read. A resumed session with
+      // saved credentials skips that version query entirely (per
+      // _initialize's `credentials == null` branch) and instead reaches
+      // _resume, whose own bare `unsupportedFirmware` guard fires first —
+      // before check-id, before any evidence read, before the activation
+      // gate. Nothing was queried this attempt, so firmware/bound must
+      // both stay null rather than repeat a stale or synthesized value.
+      final fixture = _Fixture(
+        credentials: _activeCredentials().copyWith(transmitterComputed: false),
+      );
+      final session = await fixture.connect(authorized: true);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(
+          _failure(YuwellSessionFailureKind.unsupportedFirmware)
+              .having((error) => error.firmware, 'firmware', isNull)
+              .having((error) => error.bound, 'bound', isNull),
+        ),
+      );
+
+      // No version query, no evidence read, no write of any kind — the
+      // guard is the first statement _resume runs.
+      expect(fixture.connection.writes, isEmpty);
+      expect(fixture.journal.current, isNull);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.unsupportedFirmware.name,
+      );
+      expect(
+        session.currentSnapshot.metadata.containsKey(yuwellFirmwareMetadataKey),
+        isFalse,
+      );
+      expect(
+        session.currentSnapshot.metadata.containsKey(
+          yuwellBindingStateMetadataKey,
+        ),
+        isFalse,
+      );
+    });
+
     test(
       'blocks accepted interrupted set-ID when the cipher was not observed',
       () async {
