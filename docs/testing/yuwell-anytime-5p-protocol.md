@@ -431,6 +431,31 @@ live, history, or advertisement content — it rejects a malformed or
 unrecognized sensor-code string using only the string itself, before any
 radio activity.
 
+## Multi-product-line admission gate: CommonScan
+
+**OFFICIAL-APP-STATIC.** A separate, shared entry point,
+`com.yuwell.cgm.view.normal.home.mine.CommonScan`, feeds a scanned or
+typed code through three product-line format checks at once — a CT2
+regex, a CT3 regex plus an exact 21-character length, and the same CT5
+shape-regex-plus-`CT5BSNUtils.match()` gate documented above — then
+routes to a product-specific "before use" screen (`BeforeUseCT2`/
+`BeforeUseCT3`/`BeforeUseCT5`) for whichever one matched.
+`BeforeUseCT5` is instructional UI only (an onboarding video, an NFC
+capability check); it adds no validation of its own before handing off
+to `CT5QrScan` or `NFCReadActivity` — the same two entry points already
+documented above, unchanged.
+
+One gate applies before any of that product-line routing, regardless of
+which format matched: `TransmitterRepository.getCurrentDevice()` —
+scoped to the current logged-in user (`PreferenceSource.getLoginId()`),
+the same per-account scoping the CT5Init scan callback's can-recover
+check above uses — and if it returns a record at all, the application
+refuses to proceed with any new-sensor flow, CT5 included, and shows a
+message to that effect instead. This is a broader, earlier gate than
+anything `CT5Init` itself implements: it can block entry to the whole
+CT5 admission chain before a single CT5-specific check ever runs,
+whenever this account already has an active sensor on record.
+
 ## CT5Init activity: view-layer session lifecycle
 
 **OFFICIAL-APP-STATIC.** `com.yuwell.cgm.view.normal.home.guide.ct5.CT5Init`
@@ -904,6 +929,7 @@ above.
 | `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, gated behind a four-part permission/GPS/Bluetooth prerequisite check whose completion timestamp is the origin of the 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL`, with `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated, non-retrying UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | **Correction of a prior entry:** the scan callback's post-`verify()` branch is three-way, not a bound-vs-unbound binary — a bound match additionally needs a passing can-recover check (same logged-in user, matching BSN, a locally recorded sensor) before it enters recovery; failing that check stops the scan without ever connecting, the only one of the three outcomes that does not reach GATT | high (source-level) | full-body trace of `CT5InitViewModel`'s scan callback and its `canRecover` method — see "Discovery and GATT topology" |
+| `CommonScan`'s per-account `TransmitterRepository.getCurrentDevice()` check blocks all new-sensor admission (CT2/CT3/CT5 alike) whenever the current login already has an active sensor on record — a broader, earlier gate than anything CT5-specific; `BeforeUseCT5` between it and the CT5 entry points is instructional UI only, no added validation | high (source-level) | static analysis of `CommonScan`, `BeforeUseCT5`, `TransmitterRepository.getCurrentDevice` — see "Multi-product-line admission gate" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
