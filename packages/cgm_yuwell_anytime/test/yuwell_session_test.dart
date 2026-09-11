@@ -1010,6 +1010,55 @@ void main() {
       );
     });
 
+    test('scan() drops unmatched advertisements and dedupes only an '
+        'unchanged RSSI', () async {
+      // Coverage-driven, not enum-driven: this scan()/mapScanResult path
+      // throws no YuwellSessionFailureKind at all, so it was invisible to
+      // this file's usual "grep the enum" gap-finding approach. All three
+      // Anytime entries share one device name on purpose -- mapScanResult
+      // derives storageKey from a hash of the name, so same name is what
+      // makes them the same tracked candidate for dedup purposes.
+      const seenTwice = BleScanResult(
+        deviceId: 'synthetic-device',
+        deviceName: 'Anytime0123456789',
+        rssi: -40,
+      );
+      const sameRssiAgain = BleScanResult(
+        deviceId: 'synthetic-device',
+        deviceName: 'Anytime0123456789',
+        rssi: -40,
+      );
+      const rssiMoved = BleScanResult(
+        deviceId: 'synthetic-device',
+        deviceName: 'Anytime0123456789',
+        rssi: -55,
+      );
+      const unrelatedDevice = BleScanResult(
+        deviceId: 'other-device',
+        deviceName: 'SomeOtherSensor',
+        rssi: -30,
+      );
+      final driver = YuwellAnytimeDriver(
+        const _ScriptedScanTransport(<BleScanResult>[
+          seenTwice,
+          sameRssiAgain,
+          rssiMoved,
+          unrelatedDevice,
+        ]),
+        credentialStore: _MemoryCredentialStore(
+          value: null,
+          events: <String>[],
+        ),
+        writeIntentStore: _MemoryIntentStore(),
+      );
+
+      final deduped = await driver.scan(allowDuplicates: false).toList();
+      expect(deduped.map((sensor) => sensor.rssi), <int>[-40, -55]);
+
+      final everything = await driver.scan(allowDuplicates: true).toList();
+      expect(everything.map((sensor) => sensor.rssi), <int>[-40, -40, -55]);
+    });
+
     test('a broken credential store fails closed before any transport '
         'connect', () async {
       // credentialStore.read() is the very first call _initialize() makes
@@ -2236,6 +2285,28 @@ final class _UnreachableTransport implements BleTransport {
     bool allowDuplicates = true,
     List<String>? withServices,
   }) => throw StateError('invalidSensor must reject before transport use');
+}
+
+/// A transport whose scan() replays a fixed, synthetic advertisement
+/// sequence. connect() is unreachable -- a scan()-only test should never
+/// need it.
+final class _ScriptedScanTransport implements BleTransport {
+  const _ScriptedScanTransport(this.results);
+
+  final List<BleScanResult> results;
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw StateError('this scan() test never connects');
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) => Stream<BleScanResult>.fromIterable(results);
 }
 
 final class _ScriptedTransport implements BleTransport {
