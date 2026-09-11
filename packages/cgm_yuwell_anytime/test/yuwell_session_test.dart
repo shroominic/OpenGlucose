@@ -690,6 +690,67 @@ void main() {
       },
     );
 
+    test('non-V1150 version response from an already-bound sensor still fails '
+        'closed and records the bound evidence', () async {
+      // Synthetic digits only — not a captured value from any real unit.
+      // Covers the other branch of the best-effort evidence read: the
+      // sensor reports itself already bound (to some other app/phone).
+      // The firmware gate must still fire first and record that fact —
+      // this must not be confused with the fresh-activation alreadyBound
+      // path, which never runs here because this unit never reaches
+      // _beginFreshActivation.
+      final fixture = _Fixture(
+        versionResponse: const <int>[
+          1,
+          20,
+          26,
+          9,
+          2,
+          0,
+          2,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+        ],
+        bindingStatus: true,
+      );
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(
+          _failure(YuwellSessionFailureKind.unsupportedFirmware)
+              .having((error) => error.firmware, 'firmware', 'V2003')
+              .having((error) => error.bound, 'bound', isTrue),
+        ),
+      );
+
+      // Same exact two reads as the unbound case — version, then the one
+      // best-effort binding-status evidence query. Being already bound
+      // must not add, skip, or reorder any write.
+      expect(fixture.connection.writes.map((write) => write.value.first), <int>[
+        0x01,
+        0x11,
+      ]);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.unsupportedFirmware.name,
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellFirmwareMetadataKey],
+        'V2003',
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellBindingStateMetadataKey],
+        'bound',
+      );
+    });
+
     test(
       'blocks accepted interrupted set-ID when the cipher was not observed',
       () async {
