@@ -141,6 +141,29 @@ GATT connect and the version handshake below before any further step —
 uses for itself, not a substitute for the authenticated binding-status check
 (`0x11`) OpenGlucose's own driver already uses for the same purpose over GATT.
 
+`verifyHolder`'s own body sharpens that grounding rather than just repeating
+it: it is a generic, length-prefixed BLE advertising-data (AD structure)
+walker, not a CT5-specific envelope parser. It recognizes standard AD
+types — `0x01` Flags (one byte, read into `Verify.type`, only at total
+length `2`), `0x03` Service UUIDs (skipped), and `0x08`/`0x09`
+Local/Shortened Name (read into `Verify.name`, except one exact total
+length that instead sets `Verify.category`) — plus `0xFF` Manufacturer
+Specific Data, where it reads exactly 3 bytes into `Verify.category` and
+one following byte into `Verify.isBound` (nonzero-vs-not), for either a
+5-byte or a 27-byte total AD structure. For the 27-byte form specifically,
+it consumes only that first 4-byte prefix and explicitly discards the
+remaining 22 bytes unparsed. Those 22 bytes are where the six-record and
+checksum content the paragraph above describes would live —
+`verifyHolder` is confirmed *not* to be the method that reads them. A
+`ProtocolToolsHolder_CT5$BroadData` class exists as an unopened, unread
+pointer for whoever picks that thread up next; going there is a new dig,
+not part of this finding. Any AD type/length combination outside the ones
+above leaves this reference parser's buffer position unresolved for that
+one structure — a fragility of the reference implementation, not a
+wire-format fact. A future OpenGlucose parser should walk every AD
+structure by its own declared length regardless of whether the type is
+recognized, rather than copy that shortcut.
+
 ## Frame integrity and command map
 
 Most CT5 command frames are:
@@ -563,6 +586,7 @@ above.
 | CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
 | application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
+| `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
