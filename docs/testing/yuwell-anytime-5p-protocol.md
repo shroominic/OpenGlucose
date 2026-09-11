@@ -132,15 +132,34 @@ to `ProtocolToolsHolder.verifyHolder`) is the exact call site that turns one
 scan-advertisement payload into `type`/`category`/`name`/`isBound` fields.
 This is **OFFICIAL-APP-STATIC** source grounding for the 27-byte
 manufacturer-data claim below, not a new claim of its own. `CT5InitViewModel`'s
-scan callback calls it on every scan result, matches the decoded `name`
-against the expected candidate, and branches on `isBound` alone: a bound
-match enters the application's own recovery flow (`enterRecoveryMode()`,
-traced under "Reference session branches" below); an
-unbound match proceeds to a fresh connect. Both branches still require a full
-GATT connect and the version handshake below before any further step —
-`isBound` read from the advertisement is a UI-routing hint the application
-uses for itself, not a substitute for the authenticated binding-status check
-(`0x11`) OpenGlucose's own driver already uses for the same purpose over GATT.
+scan callback calls it on every scan result and matches the decoded `name`
+against the expected candidate. This document previously described the
+next step as branching on `isBound` alone; tracing the callback's full
+body corrects that — it is a three-way branch, not two:
+
+- `isBound` false: classifies the already-validated BSN via
+  `CT5BSNUtils.isHospital`/`isOnline`/`isOTC` (see "Sensor-code admission
+  gate" above), persists the matching device-source preference, and
+  proceeds to a fresh connect.
+- `isBound` true, and a separate can-recover check passes — a
+  `CT5InitViewModel` method distinct from `ProtocolTools.verify`,
+  requiring the *current logged-in user* to match a saved one, the
+  *current BSN* to match a saved one, and a locally recorded sensor to
+  exist, clearing saved recovery state on either mismatch — persists the
+  BSN, calls `CGMCallbackHandlerCT5.enterRecoveryMode()` (traced under
+  "Reference session branches" below), then proceeds to the same connect
+  call the unbound branch uses.
+- `isBound` true, but that can-recover check fails: stops the scan timer,
+  posts to the `getBound()` LiveData the Activity observes, and returns
+  without connecting at all. This is the one outcome of the three that
+  never reaches GATT.
+
+Both connecting branches still require a full GATT connect and the
+version handshake below before any further step — `isBound` read from
+the advertisement is a UI-routing hint the application uses for itself,
+gated by its own additional session/account state, not a substitute for
+the authenticated binding-status check (`0x11`) OpenGlucose's own driver
+already uses for the same purpose over GATT.
 
 `verifyHolder`'s own body sharpens that grounding rather than just repeating
 it: it is a generic, length-prefixed BLE advertising-data (AD structure)
@@ -301,8 +320,9 @@ before either sequence above starts: it looks up a locally persisted
   a cipher from `PreferenceSource.getCT5InitCipher()` instead — a
   SharedPreferences-backed value distinct from any `Transmitter` record,
   written during a CT5Init flow that has not yet reached a durable save.
-  `enterRecoveryMode()` (cited above, under "Discovery and GATT topology",
-  as the effect of a bound scan-advertisement match) sets a single boolean
+  `enterRecoveryMode()` (traced above, under "Discovery and GATT topology",
+  as the effect of a bound scan-advertisement match that also passes the
+  scan callback's own can-recover check) sets a single boolean
   flag on this callback handler; this is the branch point traced here. That
   flag has other read sites in this same handler this document does not
   trace. This third path is a narrower variant of the saved-session branch,
@@ -883,6 +903,7 @@ above.
 | `CT5BSNUtils` gates all three sensor-code entry points (manual/QR/NFC) identically — a 12-character shape regex plus an 18-prefix allowlist — before any of them reaches `CT5Init`; `match()`'s jadx string-switch warning resolves in smali to an exact accepted set, though its `B2` case relies on leftover register content rather than a re-loaded literal, unlike every sibling case | high (source-level) | static analysis of `CT5ManualInput`/`CT5QrScan`/`NFCReadActivity`, full smali trace of `CT5BSNUtils.match()` — see "Sensor-code admission gate" |
 | `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, gated behind a four-part permission/GPS/Bluetooth prerequisite check whose completion timestamp is the origin of the 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL`, with `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated, non-retrying UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
+| **Correction of a prior entry:** the scan callback's post-`verify()` branch is three-way, not a bound-vs-unbound binary — a bound match additionally needs a passing can-recover check (same logged-in user, matching BSN, a locally recorded sensor) before it enters recovery; failing that check stops the scan without ever connecting, the only one of the three outcomes that does not reach GATT | high (source-level) | full-body trace of `CT5InitViewModel`'s scan callback and its `canRecover` method — see "Discovery and GATT topology" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
