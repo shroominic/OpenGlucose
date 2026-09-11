@@ -134,7 +134,8 @@ This is **OFFICIAL-APP-STATIC** source grounding for the 27-byte
 manufacturer-data claim below, not a new claim of its own. `CT5InitViewModel`'s
 scan callback calls it on every scan result, matches the decoded `name`
 against the expected candidate, and branches on `isBound` alone: a bound
-match enters the application's own recovery flow (`enterRecoveryMode()`); an
+match enters the application's own recovery flow (`enterRecoveryMode()`,
+traced under "Reference session branches" below); an
 unbound match proceeds to a fresh connect. Both branches still require a full
 GATT connect and the version handshake below before any further step —
 `isBound` read from the advertisement is a UI-routing hint the application
@@ -277,6 +278,36 @@ connect -> verify topology -> enable notifications -> version
         -> check saved communication ID -> set date -> history
         -> read binding state -> low-power/ready -> live notifications
 ```
+
+The application-layer choice between these two branches, and a third,
+narrower one, happens in `CGMCallbackHandlerCT5`'s device-prepared callback,
+before either sequence above starts: it looks up a locally persisted
+`Transmitter` record for this identity first.
+
+- A record found: reuses that record's stored `sureClose` field directly as
+  the session cipher (`AuthInfo.setCipher`), together with the
+  already-derived ID/random-A/random-B, then sends `0x31` (check
+  communication ID) — no fresh `0x30` set-ID round-trip appears in this
+  path. This is the saved-session branch above, and `sureClose` is the same
+  field `ProtocolToolsHolder_CT5.setKCipher` reads for the advertisement
+  path (see "Advertisement decoder"): `TransmitterRepository
+  .saveTransmitterFirstInit` writes it once, during first-time pairing, in
+  the same call that persists the communication ID, `K`, and `R`. For a
+  transmitter this app has already bound locally, the advertisement decoder
+  and the connected-GATT session read the identical stored value.
+- No record found, and the application is not in `enterRecoveryMode()`:
+  proceeds to `getVersion()` — the first-use branch above.
+- No record found, and the application *is* in `enterRecoveryMode()`: reads
+  a cipher from `PreferenceSource.getCT5InitCipher()` instead — a
+  SharedPreferences-backed value distinct from any `Transmitter` record,
+  written during a CT5Init flow that has not yet reached a durable save.
+  `enterRecoveryMode()` (cited above, under "Discovery and GATT topology",
+  as the effect of a bound scan-advertisement match) sets a single boolean
+  flag on this callback handler; this is the branch point traced here. That
+  flag has other read sites in this same handler this document does not
+  trace. This third path is a narrower variant of the saved-session branch,
+  not a distinct opcode sequence — it changes only where the cipher comes
+  from, not what is sent.
 
 The application also sends `0x0F` after initialization and after every
 completed history cycle. This repeated reference behavior supports treating
@@ -497,9 +528,12 @@ reads one byte split into a count (low nibble) and a type selector (high
 nibble), a little-endian 2-byte starting index, then 18 bytes it runs
 through the same `ConvertTools.encode(bytes, kCipher)` transform the GATT
 session path uses — `kCipher` here is set immediately before each call from
-`Transmitter.sureClose`, a per-transmitter persisted int field, which this
-static read does not yet prove is the same session value `driver.dart`
-derives for the GATT path. It then reads that decoded payload as `count`
+`Transmitter.sureClose`, a per-transmitter persisted int field. That field's
+full provenance, and the one case where the GATT path reads a *different*
+cipher instead, are traced under "Reference session branches" below; for a
+transmitter this app has already bound locally, it is the identical stored
+value on both paths, not independently derived ones. It then reads that
+decoded payload as `count`
 fixed 3-byte big-endian records — nothing in this method caps `count`
 against the 18-byte payload itself; an over-long count throws and is caught
 by the same shape-error handling above — branching only on the type nibble:
@@ -795,6 +829,7 @@ above.
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
+| `Transmitter.sureClose` is one persisted field written once by `TransmitterRepository.saveTransmitterFirstInit` and read by both the advertisement decoder (`ProtocolToolsHolder_CT5.setKCipher`) and the connected-GATT session (`CGMCallbackHandlerCT5`'s `AuthInfo.setCipher`) for an already-bound transmitter, resolving this document's own prior "does not yet prove" note; a third, narrower session-start path (`enterRecoveryMode()` with no local record) reads a different, SharedPreferences-backed cipher instead | high (source-level) | static analysis of `CGMCallbackHandlerCT5.lambda$onDevicePrepared$0`, `TransmitterRepository.saveTransmitterFirstInit`, and `Transmitter.sureClose`'s full read/write site list — see "Reference session branches" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
