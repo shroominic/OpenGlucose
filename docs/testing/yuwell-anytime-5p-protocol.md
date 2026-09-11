@@ -355,6 +355,62 @@ as grounds to admit those versions any further than the one read-only
 binding-status query OpenGlucose's driver already sends for evidence on any
 non-`V1150` unit (see the package's evidence-boundary doc).
 
+## Sensor-code admission gate: CT5BSNUtils (manual entry, QR scan, NFC read)
+
+**OFFICIAL-APP-STATIC**, cross-checked against smali. Before any of the
+three ways this application admits a CT5 sensor identifier —
+`CT5ManualInput` (keyboard entry), `CT5QrScan` (camera), `NFCReadActivity`
+(NFC tag read) — hands that string to `CT5Init.start(context, str)` (the
+same static launcher documented under "CT5Init activity" below), all
+three apply the identical, two-part gate, entirely upstream of any scan
+or GATT admission:
+
+1. A fixed 12-character shape check:
+   `[1-9A-Z][1-9][0-9](0[1-9]|[1-4][0-9]|5[0-3])[1-9][0-9]{6}` — one
+   alphanumeric lead character, followed by digits, with a two-digit
+   field constrained to `01`-`53` (a week-of-year-shaped range) in the
+   middle.
+2. `CT5BSNUtils.match(String)`: the first two characters must be one of
+   exactly eighteen enumerated prefixes — `A4`, `A5`, `B2`, `B3`, `B4`,
+   `C2`, `C4`, `D4`, `D5`, `E3`, `E4`, `F4`, `G4`, `N3`, `P3`, `P4`, `Q3`,
+   `Q4`. Any other two-character prefix, or a string failing the shape
+   check above, is rejected before it ever reaches `CT5Init`.
+
+All three entry points are otherwise identical past this gate: on a
+match, `CT5BSNUtils.isHospital(str)` (first character in `1ADEF`)
+branches to a distinct hospital-flow handler; every other accepted
+prefix reaches the same non-hospital handler, which clears cached
+sensor state (`PreferenceSource.clearSensorInfo()`/`setDeviceSource("")`),
+persists the code (`setHandInputSensorCode`), then calls `CT5Init.start`.
+A separate method on the same class, `getCT5DeviceSource`, reuses the
+same four channel checks (`isHospital`/`isOnline`/`isOTC`, else
+unmatched) but maps them to a *different* stored code (`"3"`/`"1"`/`"2"`/
+`"4"` respectively) — not the sensor code's own first character —
+a detail worth keeping straight for anyone re-deriving it.
+
+`match()` carries jadx's own uncertainty flag ("Failed to restore switch
+over string"), the same category of warning `lambda$algorithmGlucose$10`
+and `ProtocolToolsHolder_CT5.a([B)Z` already needed smali to resolve
+correctly (see "Advertisement decoder"). Tracing it confirms the accepted
+set above is exact, but the *mechanism* for one entry, `B2`, is not what
+the decompiled Java suggests: jadx renders it as though a literal default
+value were assigned for that case. The smali shows no such assignment
+exists there — the register holding the result index is simply never
+written on the `B2` branch (that branch's own string-equality check uses
+a different register for its literal than every sibling case does), so
+it silently keeps a value an earlier, unrelated instruction (the
+substring endpoint computation) had already placed there. The
+accepted/rejected sets are unaffected either way; what changes is that
+this is a compiler/register-reuse coincidence this reference
+implementation happens to depend on, not a deliberate default — worth
+recording precisely rather than as "a default value," which is not what
+the bytecode does.
+
+This gate has no bearing on any `HARD UNKNOWN` below and touches no
+live, history, or advertisement content — it rejects a malformed or
+unrecognized sensor-code string using only the string itself, before any
+radio activity.
+
 ## CT5Init activity: view-layer session lifecycle
 
 **OFFICIAL-APP-STATIC.** `com.yuwell.cgm.view.normal.home.guide.ct5.CT5Init`
@@ -824,6 +880,7 @@ above.
 | CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
 | application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
+| `CT5BSNUtils` gates all three sensor-code entry points (manual/QR/NFC) identically — a 12-character shape regex plus an 18-prefix allowlist — before any of them reaches `CT5Init`; `match()`'s jadx string-switch warning resolves in smali to an exact accepted set, though its `B2` case relies on leftover register content rather than a re-loaded literal, unlike every sibling case | high (source-level) | static analysis of `CT5ManualInput`/`CT5QrScan`/`NFCReadActivity`, full smali trace of `CT5BSNUtils.match()` — see "Sensor-code admission gate" |
 | `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, gated behind a four-part permission/GPS/Bluetooth prerequisite check whose completion timestamp is the origin of the 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL`, with `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated, non-retrying UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
