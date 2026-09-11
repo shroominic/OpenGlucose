@@ -465,6 +465,31 @@ sum to equal the following byte. `verify()` returns `null` for a checksum or
 shape mismatch here, and for any other exception, including a
 nibble-encoded count that reads past the end of the payload described below.
 
+That helper's other branches are worth tracing precisely against smali, not
+just jadx: a second, distinct instance of the same decompiler-fidelity issue
+this document already resolved once for `lambda$algorithmGlucose$10` (see
+below) turns up inside `a([B)Z` itself. jadx renders the non-`0xFF` branches
+so that both AD type `3` (Service UUIDs) and type `9` (Complete Local Name)
+appear to share one more, redundant skip whenever the element's length is
+exactly `13`. The smali does not agree: type `9`'s branch jumps straight
+back to the loop top and never reaches that check; only type `3` genuinely
+falls through into it, so only type `3` at length `13` is actually
+double-skipped by this helper — a real over-read, not a decompiler illusion.
+Type `8` (Shortened Local Name) reaches that same length-`13` check
+directly, with no skip of its own first: at length `13` it is skipped
+correctly, but at any other length this helper advances zero bytes for it,
+so the next loop iteration reads that element's own value bytes as a new
+length/type pair. All three are fragilities of the reference app's own
+advertisement scanner, in the same register as the `verifyHolder` fragility
+already noted above — none touch the type-`0xFF`/27-byte branch this
+document otherwise relies on, so nothing about the checksum gate or the
+record decode below changes. Exception handling in this same helper is also
+stricter than a literal reading of the decompiled `catch` block suggests:
+the smali `catch` handler for the method's one try region falls straight
+through to the method's final `return false` — an exception anywhere in one
+pass aborts the whole scan immediately, it does not log and continue looking
+at the rest of the payload for a later, valid element.
+
 Where `verifyHolder` discards the remaining 22 bytes of that structure
 unparsed (see above), `ProtocolToolsHolder_CT5.verify()` is the method that
 reads them: after 3 bytes (category) and 1 byte (bound flag, `== 1`), it
@@ -483,6 +508,15 @@ by the same shape-error handling above — branching only on the type nibble:
   40.0`;
 - type `2`: `trend = raw & 0x1F`, `errorCode = (raw >> 5) & 0xFF`,
   `glucoseValue = (raw >> 13) & 0x7FF`.
+
+Both record types also carry `nIndex = <the 27-byte structure's starting
+index> + <the record's position in this batch>`, re-deriving each record's
+absolute index from the one little-endian starting index already noted
+above. A type selector outside `1`/`2`, or a zero count, leaves the returned
+`Verify_CT5` non-null but with zero `BroadData` records: category and bound
+are still set from the fixed-position bytes read earlier, only the record
+list is empty. This is not a parse failure — it is indistinguishable, from
+the caller's side, from a genuinely empty batch.
 
 `verify()`'s only caller, `CGMService`'s `lambda$algorithmGlucose$10`,
 requires `isBound()` true and a category match before reading any record,
@@ -760,6 +794,7 @@ above.
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
+| `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
