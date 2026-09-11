@@ -834,6 +834,44 @@ above.
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
 
+## Structural investigation status: ProtocolToolsHolder_CT5 / CT5Init / notification
+
+As of 2026-09-12, static structural analysis of `ProtocolToolsHolder_CT5`
+and `CT5Init` (the Activity, and, where already cited, `CT5InitViewModel`)
+is complete at the depth this document tracks. Every method, branch, and
+cross-class call site relevant to admission, session lifecycle, and
+advertisement decoding has been traced against jadx and, wherever jadx's
+rendering of non-trivial control flow was suspect, independently
+re-verified against smali — see "Advertisement decoder" and "CT5Init
+activity" above and their confidence-table rows. Two threads this
+document itself had left as bare citations (`Transmitter.sureClose`'s
+provenance, `enterRecoveryMode()`'s effect) have since been traced and
+closed, not merely re-described. `CT5Init`'s remaining untraced methods
+(`m37049L` and similar activity-local helpers) are UI navigation/dialog
+plumbing with no admission or protocol content; tracing them further
+would not change any conclusion here.
+
+Separately, `YuwellAnytimeSession._runNotification`'s generic exception
+catch (`YuwellSessionFailureKind.notification`, in
+`packages/cgm_yuwell_anytime`) has been checked three independent ways: a
+full manual trace of every throw site inside `_handleNotification` (each
+already funnels into a more specific failure kind or is a guarded
+no-op), a coverage-tool run confirming it is the only
+failure-kind-related line in `driver.dart` with zero test coverage, and a
+check of whether `_publishFailure` itself could throw uncaught there (it
+cannot: it independently guards `_closing`/`_snapshotController.isClosed`
+before doing anything). It presents as an unreachable defensive backstop
+through the public synthetic-test surface, not a live condition.
+
+Neither of these is a closed door — a new decompiled artifact, a specific
+notification-reachability angle, or physical target evidence for the
+native-algorithm `HARD UNKNOWN` below would all extend this record. Re-
+digging the same two classes or re-asking the same general question
+without one of those would repeat already-recorded analysis rather than
+extend it, the same way this document already declined to keep asking
+Dom about the OTA lead once "OTA firmware-update path" closed it with a
+documented negative finding.
+
 ## Required physical evidence
 
 Before a live driver is registered, collect and independently review a
