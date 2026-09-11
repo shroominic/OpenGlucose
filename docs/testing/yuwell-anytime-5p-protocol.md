@@ -401,10 +401,40 @@ then hands every type-`2` record straight to
 `CGMCallbackCT5.onBroadcastNewGlucoseRead()` as a `CurrentGlucose` — with no
 native-algorithm call anywhere in that method. This is the exact source
 grounding for "a separate advertisement-display path accepts a transmitter
-value without the native algorithm" above. jadx flags this method's
-surrounding index/gap-continuity logic as unreliably decompiled; this
-finding is limited to what the smali and the plain accessor calls agree on,
-and does not characterize that continuity check.
+value without the native algorithm" above.
+
+jadx flags this same method's surrounding index/gap-continuity logic as
+unreliably decompiled ("Removed duplicated region for block"), leaving an
+empty `if` body in the Java text where the source implies real branching.
+That gap is now closed against smali directly, rather than characterized
+from "the plain accessor calls" alone as the previous revision of this
+document put it. The empty branch is a jadx duplicated-region artifact, not
+a behavioral no-op: in the raw bytecode, the comparison it hides decides
+only whether execution *joins* the one record-processing loop every entry
+path shares — it is not a second path with independent behavior. Concretely,
+with `i12` the last-published `glucoseId`, `i13 = i12 + 1`, and `i14` the new
+batch's first `nIndex`: if `i13 < i14` (a gap — the batch starts after
+records this method has not seen) or `i13 > i14 + size - 1` (the whole batch
+is already old), the branch falls through without publishing, exactly like
+the sibling "no recent record" `else` case below it. Otherwise — `i13` lands
+inside `[i14, i14 + size - 1]` — control joins that same `else` case's loop,
+which always walks the batch from its first record regardless of where
+`i13` fell inside that window. The loop's own per-record guard is the real
+replay gate: each candidate's `glucoseId` is compared against the
+last-published id and skipped unless strictly greater, independent of the
+outer window check. Two things follow, both source-level, from this trace
+alone: the outer check only gates whether the loop runs at all, never which
+records within it publish; and nothing anywhere in this method reads a
+firmware-version field. The `V1150`-only gate this document establishes
+elsewhere belongs to the connected-session alternate-record selector, a
+different code path — this advertisement callback does not consult it.
+Resolving the gap does not change any conclusion above: the method still
+runs no native algorithm and still requires only `isBound()`, a category
+match, and `verify()`'s own checksum to publish a transmitter-computed
+`glucoseValue`. If anything it sharpens the existing reason this path stays
+out of scope for OpenGlucose's own admission gate — the absence of a
+firmware check here is a property of the reference app's own code, not a
+precedent for widening OpenGlucose's `unsupportedFirmware` gate to match it.
 
 The alternate branch selector is exact: the application enables it only when
 the persisted firmware-version string starts with `V1150`. It then sends an
@@ -639,6 +669,7 @@ above.
 | application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
+| `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 | official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
 | history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
