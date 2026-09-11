@@ -324,6 +324,66 @@ as grounds to admit those versions any further than the one read-only
 binding-status query OpenGlucose's driver already sends for evidence on any
 non-`V1150` unit (see the package's evidence-boundary doc).
 
+## CT5Init activity: view-layer session lifecycle
+
+**OFFICIAL-APP-STATIC.** `com.yuwell.cgm.view.normal.home.guide.ct5.CT5Init`
+is the guide-flow Activity that hosts `CT5InitViewModel`. It is a distinct
+class, not previously covered in this document, and it adds a
+session-lifecycle layer above the ViewModel logic already recorded here:
+
+- `onCreate` reads a `BSN` string extra from the launching `Intent` and
+  compares it against `PreferenceSource.getCT5InitBSN()`, the BSN this flow
+  last saved. A mismatch clears saved CT5-init recovery state
+  (`PreferenceSource.clearCT5InitRecovery()`) before anything else runs:
+  recovery is keyed to this identifier, not only to "was there an
+  interrupted init."
+- Calling the ViewModel's `getConfig()` (a backend config fetch, not a BLE
+  operation) is itself permission-gated: `onCreate` only calls it once a
+  local permission check passes, otherwise it calls `requestPermission()`
+  first.
+- `onDestroy` unconditionally calls `CT5InitViewModel.stopBleScan()`, which
+  itself no-ops unless a scan is active (guarded by the ViewModel's own
+  boolean scan flag) and otherwise stops the platform scanner and a timer.
+  Scan lifetime is therefore bounded by this Activity's lifecycle as a
+  backstop, independent of any protocol-level timeout.
+- `CT5InitViewModel.startInit(Date)` **is** `startBleScan(Date)` — there is
+  no separate init-specific scan entry point. `startBleScan` builds
+  `ScanSettings` with `SCAN_MODE_LOW_LATENCY` and hardware batching
+  explicitly disabled, and is reentrancy-guarded by the same flag
+  `stopBleScan` checks.
+
+`onTransmitterStateReceived(TransmitterState)` is this Activity's single
+dispatch point for session state, keyed on `TransmitterState.newState`
+against the constants that class defines
+(`com.yuwell.cgm.data.model.local.TransmitterState`; source-grounded, not
+inferred). It splits into two groups:
+
+- Terminal states that return immediately: `INIT_SUCCESS` (finishes the
+  guide), `UNBINDING` (clears the saved reference timestamp), `ERROR_BOUND`,
+  `ERROR_SENSOR_INFO` (shows the app's QR-error string), and
+  `CHECK_TRANSMITTER_VERSION_FAIL` — which stores the failure detail, logs
+  the app's own `"checkTransmitterVersion fail:"` line, and shows
+  `WearVersionTipDialog`. This is the UI-layer surface of the version-handler
+  allowlist this document already establishes under "Application-side
+  version gate"; it is an independent, corroborating code path (the
+  Activity's own state-code dispatch and log string), not a new claim about
+  the gate's condition.
+- `DISCONNECTED` and `CHECK_FAIL` share one fall-through tail instead of a
+  dedicated branch: it returns immediately if a version-gate failure was
+  already recorded or there is no saved reference timestamp; otherwise,
+  inside a 30-second window of that timestamp it re-arms the UI and calls
+  `startInit` (a re-`startBleScan`, itself a no-op if a scan is already
+  running); outside that window it clears the timestamp and runs the same
+  recovery path a failed connection attempt uses. This is a UI resume/retry
+  window, not a protocol timeout, and it never fires once a version-gate
+  failure has latched.
+
+This adds a previously undocumented layer above `CT5InitViewModel` without
+changing any conclusion already recorded for it: everything here is
+session/UI lifecycle — BSN-keyed recovery, permission gating, scan
+configuration, and state-code-driven dialog-vs-resume branching — and none
+of it touches live, history, or advertisement record content.
+
 ## Live, history, and advertisement records
 
 Static analysis shows three encrypted live/history layouts:
@@ -667,6 +727,7 @@ above.
 | CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
 | target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
 | application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
+| `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, with a 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL` and `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
 | `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
