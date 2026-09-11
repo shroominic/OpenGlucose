@@ -25,6 +25,10 @@ void main() {
         () => requireValidSum8Frame(<int>[0x31, 0x30]),
         throwsA(isA<YuwellProtocolFormatException>()),
       );
+      expect(
+        () => requireValidSum8Frame(<int>[0x31]),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
     });
 
     test('returns immutable frame bytes', () {
@@ -36,6 +40,50 @@ void main() {
   group('CT5 command encoders', () {
     test('encodes the one-byte version query', () {
       expect(YuwellCt5Commands.readVersion(), <int>[0x01]);
+    });
+
+    test('encodes the fixed self-check request', () {
+      // Pairs with selfCheckAccepted (CT5 response validators, above): not
+      // currently called anywhere in driver.dart, but public clean-room API
+      // with its own encoding contract.
+      final frame = YuwellCt5Commands.selfCheck();
+      expect(frame, <int>[0x05, 0x55, 0xaa, 0x04]);
+      expect(hasValidSum8Frame(frame), isTrue);
+    });
+
+    test('encodes both initialize branches', () {
+      final transmitterComputed = YuwellCt5Commands.initialize(
+        transmitterComputed: true,
+        initializationIndex: 20,
+      );
+      expect(transmitterComputed, <int>[0x06, 20, 0x01, 0x1b]);
+      expect(hasValidSum8Frame(transmitterComputed), isTrue);
+
+      // The non-transmitter-computed branch ignores initializationIndex
+      // entirely and sends the same fixed request the reference app does
+      // for that case -- confirms the index argument cannot leak into the
+      // wrong wire form by accident.
+      final notTransmitterComputed = YuwellCt5Commands.initialize(
+        transmitterComputed: false,
+        initializationIndex: 20,
+      );
+      expect(notTransmitterComputed, <int>[0x06, 0x55, 0xaa, 0x05]);
+      expect(hasValidSum8Frame(notTransmitterComputed), isTrue);
+
+      expect(
+        () => YuwellCt5Commands.initialize(
+          transmitterComputed: true,
+          initializationIndex: -1,
+        ),
+        throwsRangeError,
+      );
+      expect(
+        () => YuwellCt5Commands.initialize(
+          transmitterComputed: true,
+          initializationIndex: 0x100,
+        ),
+        throwsRangeError,
+      );
     });
 
     test('encodes exactly four check-ID bytes', () {
