@@ -582,6 +582,28 @@ void main() {
       },
     );
 
+    test('service discovery missing the CT5 primary service fails closed '
+        'before any write', () async {
+      // Synthetic GATT topology only, not a captured device response.
+      // Exercises _verifyTopology, the first fail-closed gate in
+      // _initialize(): it runs immediately after discoverServices() and
+      // before notification subscription or any write.
+      final fixture = _Fixture(serviceOverride: const <BleService>[]);
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.topology)),
+      );
+
+      expect(fixture.connection.writes, isEmpty);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.topology.name,
+      );
+    });
+
     test('non-V1150 version response fails closed and records the exact '
         'firmware as evidence', () async {
       // Synthetic digits only — not a captured value from any real unit.
@@ -1742,6 +1764,7 @@ final class _Fixture {
     List<int> historyRecordBytes = _recordBytes,
     List<List<int>>? historySlots,
     List<int>? versionResponse,
+    List<BleService>? serviceOverride,
     this.glucoseOutputPolicy = YuwellV1150GlucoseOutputPolicy.disabled,
   }) : events = sharedEvents ?? <String>[],
        credentials = _MemoryCredentialStore(
@@ -1765,6 +1788,7 @@ final class _Fixture {
          historyRecordBytes: historyRecordBytes,
          historySlots: historySlots,
          versionResponse: versionResponse,
+         serviceOverride: serviceOverride,
          events: sharedEvents ?? <String>[],
        ) {
     // When no shared list was supplied, put every fake on this fixture's list.
@@ -2024,6 +2048,7 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     required this.historyRecordBytes,
     required this.historySlots,
     this.versionResponse,
+    this.serviceOverride,
     required this.events,
   }) : _historyRecordCount = historyRecordCount,
        _bound = bindingStatus;
@@ -2043,6 +2068,7 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   final List<int> historyRecordBytes;
   final List<List<int>>? historySlots;
   final List<int>? versionResponse;
+  final List<BleService>? serviceOverride;
   int get historyRecordCount => historySlots?.length ?? _historyRecordCount;
   List<String> events;
   final writes = <_Write>[];
@@ -2070,23 +2096,25 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   Future<BleBondState> currentBondState() async => BleBondState.unknown;
 
   @override
-  Future<List<BleService>> discoverServices() async => <BleService>[
-    BleService(
-      uuid: yuwellCt5ServiceUuid,
-      characteristics: <BleCharacteristicRef>[
-        const BleCharacteristicRef(
-          serviceUuid: yuwellCt5ServiceUuid,
-          characteristicUuid: yuwellCt5NotifyCharacteristicUuid,
-          properties: BleCharacteristicProperties(notify: true),
+  Future<List<BleService>> discoverServices() async =>
+      serviceOverride ??
+      <BleService>[
+        BleService(
+          uuid: yuwellCt5ServiceUuid,
+          characteristics: <BleCharacteristicRef>[
+            const BleCharacteristicRef(
+              serviceUuid: yuwellCt5ServiceUuid,
+              characteristicUuid: yuwellCt5NotifyCharacteristicUuid,
+              properties: BleCharacteristicProperties(notify: true),
+            ),
+            BleCharacteristicRef(
+              serviceUuid: yuwellCt5ServiceUuid,
+              characteristicUuid: yuwellCt5WriteCharacteristicUuid,
+              properties: writeProperties,
+            ),
+          ],
         ),
-        BleCharacteristicRef(
-          serviceUuid: yuwellCt5ServiceUuid,
-          characteristicUuid: yuwellCt5WriteCharacteristicUuid,
-          properties: writeProperties,
-        ),
-      ],
-    ),
-  ];
+      ];
 
   @override
   Future<void> disconnect() async {
