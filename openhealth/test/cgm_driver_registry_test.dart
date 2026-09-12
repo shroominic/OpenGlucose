@@ -373,6 +373,49 @@ void main() {
     },
   );
 
+  test('rejects a registration with a blank driver ID', () {
+    expect(
+      () => CgmDriverRegistration(
+        driver: _FakeDriver('   '),
+        scanServiceUuids: const <String>['181F'],
+        discover: (_) => null,
+      ),
+      throwsArgumentError,
+    );
+  });
+
+  test('rejects a registration with no advertised service', () {
+    expect(
+      () => CgmDriverRegistration(
+        driver: _FakeDriver('no-service'),
+        scanServiceUuids: const <String>[],
+        discover: (_) => null,
+      ),
+      throwsArgumentError,
+    );
+    // Whitespace-only and duplicate-after-normalization entries both
+    // collapse to nothing usable -- same rejection, not a silent partial
+    // registration.
+    expect(
+      () => CgmDriverRegistration(
+        driver: _FakeDriver('blank-service'),
+        scanServiceUuids: const <String>['  ', ''],
+        discover: (_) => null,
+      ),
+      throwsArgumentError,
+    );
+  });
+
+  test('rejects a registry with no registrations', () {
+    expect(
+      () => CgmDriverRegistry(
+        transport: _FakeBleTransport(),
+        registrations: const <CgmDriverRegistration>[],
+      ),
+      throwsArgumentError,
+    );
+  });
+
   test('rejects duplicate and unknown driver IDs', () async {
     final transport = _FakeBleTransport();
     final duplicate = _FakeDriver('duplicate');
@@ -396,11 +439,12 @@ void main() {
       throwsArgumentError,
     );
 
+    final known = _FakeDriver('known');
     final registry = CgmDriverRegistry(
       transport: transport,
       registrations: <CgmDriverRegistration>[
         CgmDriverRegistration(
-          driver: _FakeDriver('known'),
+          driver: known,
           scanServiceUuids: const <String>['181F'],
           discover: (_) => null,
         ),
@@ -408,6 +452,8 @@ void main() {
     );
     expect(registry.containsDriver('known'), isTrue);
     expect(registry.containsDriver('unknown'), isFalse);
+    expect(registry.driverFor('known'), same(known));
+    expect(registry.driverFor('unknown'), isNull);
     await expectLater(
       registry.connect(_sensor('unknown', 'synthetic-device')),
       throwsArgumentError,

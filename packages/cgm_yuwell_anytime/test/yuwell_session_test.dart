@@ -582,6 +582,284 @@ void main() {
       },
     );
 
+    test('service discovery missing the CT5 primary service fails closed '
+        'before any write', () async {
+      // Synthetic GATT topology only, not a captured device response.
+      // Exercises _verifyTopology, the first fail-closed gate in
+      // _initialize(): it runs immediately after discoverServices() and
+      // before notification subscription or any write.
+      final fixture = _Fixture(serviceOverride: const <BleService>[]);
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.topology)),
+      );
+
+      expect(fixture.connection.writes, isEmpty);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.topology.name,
+      );
+    });
+
+    test('non-V1150 version response fails closed and records the exact '
+        'firmware as evidence', () async {
+      // Synthetic digits only — not a captured value from any real unit.
+      // See the evidence-boundary doc: "Unit tests use synthetic values
+      // only and prove deterministic local behavior, not compatibility
+      // with a retail device or firmware version."
+      final fixture = _Fixture(
+        versionResponse: const <int>[
+          1,
+          20,
+          26,
+          9,
+          2,
+          0,
+          2,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+        ],
+      );
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(
+          _failure(YuwellSessionFailureKind.unsupportedFirmware)
+              .having((error) => error.firmware, 'firmware', 'V2003')
+              .having((error) => error.bound, 'bound', isFalse),
+        ),
+      );
+
+      // Exactly the version query and the one best-effort binding-status
+      // evidence read — the same query _beginFreshActivation sends first,
+      // unconditionally, before any state-changing write. Nothing that
+      // could touch activation, calibration, or a state-changing write ran
+      // for this firmware branch.
+      expect(fixture.connection.writes.map((write) => write.value.first), <int>[
+        0x01,
+        0x11,
+      ]);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.unsupportedFirmware.name,
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellFirmwareMetadataKey],
+        'V2003',
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellBindingStateMetadataKey],
+        'unbound',
+      );
+    });
+
+    test(
+      'non-V1150 evidence read failing does not mask the firmware diagnosis',
+      () async {
+        // The best-effort binding-status query itself gets no response here
+        // (dropResponseOpcode) — the primary unsupportedFirmware diagnostic
+        // must still surface, just without binding-state evidence attached.
+        final fixture = _Fixture(
+          versionResponse: const <int>[
+            1,
+            20,
+            26,
+            9,
+            2,
+            0,
+            2,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+          ],
+          dropResponseOpcode: 0x11,
+        );
+        final session = await fixture.connect();
+
+        await expectLater(
+          session.initialize(),
+          throwsA(
+            _failure(YuwellSessionFailureKind.unsupportedFirmware)
+                .having((error) => error.firmware, 'firmware', 'V2003')
+                .having((error) => error.bound, 'bound', isNull),
+          ),
+        );
+
+        expect(
+          session.currentSnapshot.metadata[yuwellFirmwareMetadataKey],
+          'V2003',
+        );
+        expect(
+          session.currentSnapshot.metadata.containsKey(
+            yuwellBindingStateMetadataKey,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('non-V1150 version response from an already-bound sensor still fails '
+        'closed and records the bound evidence', () async {
+      // Synthetic digits only — not a captured value from any real unit.
+      // Covers the other branch of the best-effort evidence read: the
+      // sensor reports itself already bound (to some other app/phone).
+      // The firmware gate must still fire first and record that fact —
+      // this must not be confused with the fresh-activation alreadyBound
+      // path, which never runs here because this unit never reaches
+      // _beginFreshActivation.
+      final fixture = _Fixture(
+        versionResponse: const <int>[
+          1,
+          20,
+          26,
+          9,
+          2,
+          0,
+          2,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+        ],
+        bindingStatus: true,
+      );
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(
+          _failure(YuwellSessionFailureKind.unsupportedFirmware)
+              .having((error) => error.firmware, 'firmware', 'V2003')
+              .having((error) => error.bound, 'bound', isTrue),
+        ),
+      );
+
+      // Same exact two reads as the unbound case — version, then the one
+      // best-effort binding-status evidence query. Being already bound
+      // must not add, skip, or reorder any write.
+      expect(fixture.connection.writes.map((write) => write.value.first), <int>[
+        0x01,
+        0x11,
+      ]);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.unsupportedFirmware.name,
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellFirmwareMetadataKey],
+        'V2003',
+      );
+      expect(
+        session.currentSnapshot.metadata[yuwellBindingStateMetadataKey],
+        'bound',
+      );
+    });
+
+    test('a resumed session whose saved credentials are not '
+        'transmitter-computed fails closed before any radio traffic', () async {
+      // Synthetic credentials only — this phase/cipher/coefficient
+      // combination is not a captured value from any real unit.
+      //
+      // This is a distinct branch from the three non-V1150 tests above:
+      // those all go through _initialize's fresh version query, so their
+      // exception carries the queried firmware string and the one
+      // best-effort binding-status evidence read. A resumed session with
+      // saved credentials skips that version query entirely (per
+      // _initialize's `credentials == null` branch) and instead reaches
+      // _resume, whose own bare `unsupportedFirmware` guard fires first —
+      // before check-id, before any evidence read, before the activation
+      // gate. Nothing was queried this attempt, so firmware/bound must
+      // both stay null rather than repeat a stale or synthesized value.
+      final fixture = _Fixture(
+        credentials: _activeCredentials().copyWith(transmitterComputed: false),
+      );
+      final session = await fixture.connect(authorized: true);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(
+          _failure(YuwellSessionFailureKind.unsupportedFirmware)
+              .having((error) => error.firmware, 'firmware', isNull)
+              .having((error) => error.bound, 'bound', isNull),
+        ),
+      );
+
+      // No version query, no evidence read, no write of any kind — the
+      // guard is the first statement _resume runs.
+      expect(fixture.connection.writes, isEmpty);
+      expect(fixture.journal.current, isNull);
+      expect(fixture.connection.disconnected, isTrue);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.unsupportedFirmware.name,
+      );
+      expect(
+        session.currentSnapshot.metadata.containsKey(yuwellFirmwareMetadataKey),
+        isFalse,
+      );
+      expect(
+        session.currentSnapshot.metadata.containsKey(
+          yuwellBindingStateMetadataKey,
+        ),
+        isFalse,
+      );
+    });
+
+    test('an unresolved non-setDate intent with no saved credentials at all '
+        'fails closed before any radio traffic', () async {
+      // A different hole than the test above: there credentials existed
+      // but were not transmitter-computed, so _resume's bare guard fired.
+      // Here there are no saved credentials at all, so _initialize's own
+      // fresh-admission branch does not run either (it requires
+      // _unresolvedIntent == null) — control falls into the
+      // credentials-based else-branch, whose `credentials?.transmitterComputed
+      // == false ? 'unsupported' : 'V1150'` cannot tell "never admitted"
+      // apart from "unsupported" once credentials is null, and defaults
+      // to 'V1150'. That default is never observed only because
+      // _recoverUnresolved's bare credentials-null guard fires first for
+      // every operation except the separately reviewed setDate recovery.
+      // This locks that guard in place as a regression test rather than
+      // leaving it as an unexercised side effect of the setDate tests.
+      final journal = _MemoryIntentStore(
+        initial: const YuwellUnresolvedWriteIntent(
+          token: 'opaque-no-credentials',
+          operation: YuwellActivationWrite.initialize,
+          state: YuwellWriteIntentState.unknown,
+        ),
+      );
+      final fixture = _Fixture(journal: journal);
+      final session = await fixture.connect(authorized: true);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.unresolvedWrite)),
+      );
+
+      // No version query, no evidence read, no activation write — the
+      // guard is the first statement _recoverUnresolved runs for any
+      // operation but setDate.
+      expect(fixture.connection.writes, isEmpty);
+      expect(journal.current, isNotNull);
+    });
+
     test(
       'blocks accepted interrupted set-ID when the cipher was not observed',
       () async {
@@ -638,6 +916,34 @@ void main() {
       );
     });
 
+    test('an unparseable live notification fails closed as '
+        'malformedResponse and disconnects', () async {
+      // _activeCredentials is transmitterComputed, so resuming locks this
+      // session to V1150's alternate live opcode (0x45) -- sending on it
+      // with a payload too short for any known live record layout reaches
+      // the frame-parse try/catch specifically (driver.dart), not the
+      // separate opcode-mismatch check that also maps to malformedResponse.
+      final fixture = _Fixture(credentials: _activeCredentials());
+      final session = await fixture.connect();
+      await session.initialize();
+      await _waitUntil(
+        () => session.currentSnapshot.historySync.lastSyncAt != null,
+      );
+
+      fixture.connection.emitNotification(<int>[
+        YuwellCt5Commands.alternateLiveCommand,
+        1,
+        2,
+      ]);
+      await _waitUntil(
+        () =>
+            session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey] ==
+            YuwellSessionFailureKind.malformedResponse.name,
+      );
+
+      expect(fixture.connection.disconnected, isTrue);
+    });
+
     test('leases one sensor across concurrent driver instances', () async {
       final fixture = _Fixture(credentials: _activeCredentials());
       final first = await fixture.connect();
@@ -652,6 +958,217 @@ void main() {
       final replacement = await fixture.connect();
       expect(replacement.sensor.storageKey, first.sensor.storageKey);
       await replacement.disconnect();
+    });
+
+    test('connect() rejects a sensor descriptor from a different driver '
+        'before any transport use', () async {
+      // Synthetic descriptor only. The three-part identity check
+      // (driverId/deviceId/storageKey prefix) runs synchronously at the top
+      // of connect(), before scan or connect ever reaches the transport, so
+      // this uses a transport that throws if it is ever called at all
+      // instead of one that could silently succeed.
+      final driver = YuwellAnytimeDriver(
+        const _UnreachableTransport(),
+        credentialStore: _MemoryCredentialStore(
+          value: null,
+          events: <String>[],
+        ),
+        writeIntentStore: _MemoryIntentStore(),
+      );
+      const sensor = DiscoveredSensor(
+        driverId: 'not-yuwell-anytime',
+        deviceId: 'synthetic-device',
+        displayName: 'Anytime0123456789',
+        storageKey: 'yuwell:synthetic-device',
+        rssi: -40,
+        capabilities: YuwellAnytimeDriver.capabilities,
+      );
+
+      await expectLater(
+        driver.connect(sensor),
+        throwsA(_failure(YuwellSessionFailureKind.invalidSensor)),
+      );
+    });
+
+    test('calibration capability is unconditionally unsupported', () async {
+      // No connect/initialize needed: fetchCalibrations/submitCalibration
+      // reject before touching any session or transport state, per the
+      // evidence-boundary doc's "does not implement ... calibration" rule.
+      // The value below is never read -- it exists only to satisfy the
+      // method signature -- so it is an arbitrary placeholder, not a
+      // synthetic-but-plausible reading.
+      final fixture = _Fixture();
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.fetchCalibrations(),
+        throwsA(_failure(YuwellSessionFailureKind.unsupportedCapability)),
+      );
+      await expectLater(
+        session.submitCalibration(glucoseMgdl: 0),
+        throwsA(_failure(YuwellSessionFailureKind.unsupportedCapability)),
+      );
+    });
+
+    test('scan() drops unmatched advertisements and dedupes only an '
+        'unchanged RSSI', () async {
+      // Coverage-driven, not enum-driven: this scan()/mapScanResult path
+      // throws no YuwellSessionFailureKind at all, so it was invisible to
+      // this file's usual "grep the enum" gap-finding approach. All three
+      // Anytime entries share one device name on purpose -- mapScanResult
+      // derives storageKey from a hash of the name, so same name is what
+      // makes them the same tracked candidate for dedup purposes.
+      const seenTwice = BleScanResult(
+        deviceId: 'synthetic-device',
+        deviceName: 'Anytime0123456789',
+        rssi: -40,
+      );
+      const sameRssiAgain = BleScanResult(
+        deviceId: 'synthetic-device',
+        deviceName: 'Anytime0123456789',
+        rssi: -40,
+      );
+      const rssiMoved = BleScanResult(
+        deviceId: 'synthetic-device',
+        deviceName: 'Anytime0123456789',
+        rssi: -55,
+      );
+      const unrelatedDevice = BleScanResult(
+        deviceId: 'other-device',
+        deviceName: 'SomeOtherSensor',
+        rssi: -30,
+      );
+      final driver = YuwellAnytimeDriver(
+        const _ScriptedScanTransport(<BleScanResult>[
+          seenTwice,
+          sameRssiAgain,
+          rssiMoved,
+          unrelatedDevice,
+        ]),
+        credentialStore: _MemoryCredentialStore(
+          value: null,
+          events: <String>[],
+        ),
+        writeIntentStore: _MemoryIntentStore(),
+      );
+
+      final deduped = await driver.scan(allowDuplicates: false).toList();
+      expect(deduped.map((sensor) => sensor.rssi), <int>[-40, -55]);
+
+      final everything = await driver.scan(allowDuplicates: true).toList();
+      expect(everything.map((sensor) => sensor.rssi), <int>[-40, -40, -55]);
+    });
+
+    test('a broken credential store fails closed before any transport '
+        'connect', () async {
+      // credentialStore.read() is the very first call _initialize() makes
+      // -- before _transport.connect() -- so a synthetic read failure here
+      // must never reach the transport at all. Unlike the topology/
+      // unsupportedFirmware fail-closed tests, this one must NOT assert
+      // connection.disconnected: _connection is only assigned after a
+      // successful transport connect, so cleanup's `_connection?.disconnect()`
+      // is a no-op here, not a call that happened and completed.
+      final fixture = _Fixture();
+      fixture.credentials.readError = StateError('synthetic store failure');
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.credentialStore)),
+      );
+
+      expect(fixture.connection.writes, isEmpty);
+      expect(fixture.connection.disconnected, isFalse);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.credentialStore.name,
+      );
+    });
+
+    test('a saved communication ID the transmitter rejects fails closed '
+        'after a diagnostic binding-status read', () async {
+      // checkIdAccepted: false is an existing fixture knob -- the 0x31
+      // response reports rejection, matching a transmitter that no longer
+      // recognizes this app's saved identity (a different phone bound
+      // since, a factory reset, etc). credentials.phase must not be
+      // identityPrepared for this exact branch: that phase is handled by
+      // its own, separate check earlier in _resume.
+      final fixture = _Fixture(
+        credentials: _activeCredentials(),
+        checkIdAccepted: false,
+      );
+      final session = await fixture.connect();
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.authenticationRejected)),
+      );
+
+      // The check-ID write, then one best-effort binding-status diagnostic
+      // read -- nothing that could rebind, reconfigure, or start activation.
+      expect(fixture.connection.writes.map((write) => write.value.first), <int>[
+        0x31,
+        0x11,
+      ]);
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.authenticationRejected.name,
+      );
+    });
+
+    test('a sensor-code response the clean-room decoder rejects fails '
+        'closed', () async {
+      // Same 21-character length as the working _calibrationCode fixture
+      // (so the outer frame/checksum read this document's frame-integrity
+      // section describes still passes), but with the K/R digit positions
+      // the 21-character layout defines replaced by non-digits. This
+      // targets the clean-room decoder's own rejection specifically
+      // (calibration_code_test.dart covers that decoder in isolation) --
+      // not the earlier frame-decrypt step, which is already
+      // malformedResponse and covered by a sibling test.
+      final fixture = _Fixture(
+        credentials: _authenticatedCredentials(),
+        calibrationCodeOverride: 'M4Z6123456789XXXXXABC',
+      );
+      final session = await fixture.connect(authorized: true);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.calibrationCode)),
+      );
+
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.calibrationCode.name,
+      );
+    });
+
+    test('exhausting the per-session batch budget before the sensor reports '
+        'done fails closed as historyIncomplete', () async {
+      // Every batch here is well-formed and parses cleanly (default
+      // historyRecordBytes/layout) -- this is not a malformed-frame case,
+      // it is the driver's own bounded-effort guard: _syncHistoryOnce loops
+      // at most timingProfile.maxHistoryBatches times before giving up.
+      // historyRecordCount is set far larger than what one batch can
+      // consume, so with the budget capped at 1, the loop exhausts it
+      // without the sensor ever reporting termination or an empty page --
+      // the exact "not completed" case driver.dart's own explicit
+      // `if (!completed) throw historyIncomplete;` exists for.
+      final fixture = _Fixture(
+        credentials: _activeCredentials(),
+        historyRecordCount: 5000,
+      );
+      final session = await fixture.connect(maxHistoryBatches: 1);
+
+      await expectLater(
+        session.initialize(),
+        throwsA(_failure(YuwellSessionFailureKind.historyIncomplete)),
+      );
+
+      expect(
+        session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+        YuwellSessionFailureKind.historyIncomplete.name,
+      );
     });
 
     test(
@@ -1364,7 +1881,7 @@ void main() {
   });
 }
 
-Matcher _failure(YuwellSessionFailureKind kind) =>
+TypeMatcher<YuwellSessionException> _failure(YuwellSessionFailureKind kind) =>
     isA<YuwellSessionException>().having((error) => error.kind, 'kind', kind);
 
 void _expectBefore(List<String> events, String first, String second) {
@@ -1485,6 +2002,9 @@ final class _Fixture {
     Duration lowPowerResponseDelay = Duration.zero,
     List<int> historyRecordBytes = _recordBytes,
     List<List<int>>? historySlots,
+    List<int>? versionResponse,
+    List<BleService>? serviceOverride,
+    String? calibrationCodeOverride,
     this.glucoseOutputPolicy = YuwellV1150GlucoseOutputPolicy.disabled,
   }) : events = sharedEvents ?? <String>[],
        credentials = _MemoryCredentialStore(
@@ -1507,6 +2027,9 @@ final class _Fixture {
          lowPowerResponseDelay: lowPowerResponseDelay,
          historyRecordBytes: historyRecordBytes,
          historySlots: historySlots,
+         versionResponse: versionResponse,
+         serviceOverride: serviceOverride,
+         calibrationCodeOverride: calibrationCodeOverride,
          events: sharedEvents ?? <String>[],
        ) {
     // When no shared list was supplied, put every fake on this fixture's list.
@@ -1524,17 +2047,20 @@ final class _Fixture {
   final YuwellV1150GlucoseOutputPolicy glucoseOutputPolicy;
   final YuwellSessionLeaseRegistry leaseRegistry = YuwellSessionLeaseRegistry();
 
-  Future<YuwellAnytimeSession> connect({bool authorized = false}) async {
+  Future<YuwellAnytimeSession> connect({
+    bool authorized = false,
+    int maxHistoryBatches = 8000,
+  }) async {
     final transport = _ScriptedTransport(connection);
     final driver = YuwellAnytimeDriver(
       transport,
       credentialStore: credentials,
       writeIntentStore: journal,
       identityGenerator: YuwellSecureIdentityGenerator(random: _ZeroRandom()),
-      timingProfile: const YuwellTimingProfile(
-        connectTimeout: Duration(milliseconds: 100),
-        responseTimeout: Duration(milliseconds: 40),
-        maxHistoryBatches: 8000,
+      timingProfile: YuwellTimingProfile(
+        connectTimeout: const Duration(milliseconds: 100),
+        responseTimeout: const Duration(milliseconds: 40),
+        maxHistoryBatches: maxHistoryBatches,
       ),
       sessionLeaseRegistry: leaseRegistry,
       glucoseOutputPolicy: glucoseOutputPolicy,
@@ -1569,6 +2095,11 @@ final class _MemoryCredentialStore implements YuwellCredentialStore {
 
   YuwellSessionCredentials? value;
   List<String> events;
+
+  /// When set, [read] throws this instead of returning [value]. Lets a test
+  /// exercise the driver's credentialStore-failure fail-closed path without
+  /// a real storage backend.
+  Object? readError;
   YuwellCredentialPhase? _gatedPhase;
   Completer<void>? _gatedWriteStarted;
   Future<void>? _gatedWriteRelease;
@@ -1590,7 +2121,11 @@ final class _MemoryCredentialStore implements YuwellCredentialStore {
   }
 
   @override
-  Future<YuwellSessionCredentials?> read(String storageKey) async => value;
+  Future<YuwellSessionCredentials?> read(String storageKey) async {
+    final error = readError;
+    if (error != null) throw error;
+    return value;
+  }
 
   @override
   Future<void> write(
@@ -1731,6 +2266,49 @@ final class _MemoryIntentStore implements YuwellWriteIntentStore {
   }
 }
 
+/// A transport that must never be called. [YuwellAnytimeDriver.connect]
+/// validates the [DiscoveredSensor] descriptor before touching the
+/// transport at all, so a test for that guard should prove the transport
+/// stays untouched, not merely unconfigured.
+final class _UnreachableTransport implements BleTransport {
+  const _UnreachableTransport();
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw StateError('invalidSensor must reject before transport use');
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) => throw StateError('invalidSensor must reject before transport use');
+}
+
+/// A transport whose scan() replays a fixed, synthetic advertisement
+/// sequence. connect() is unreachable -- a scan()-only test should never
+/// need it.
+final class _ScriptedScanTransport implements BleTransport {
+  const _ScriptedScanTransport(this.results);
+
+  final List<BleScanResult> results;
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw StateError('this scan() test never connects');
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) => Stream<BleScanResult>.fromIterable(results);
+}
+
 final class _ScriptedTransport implements BleTransport {
   const _ScriptedTransport(this.connection);
 
@@ -1765,6 +2343,9 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     required this.lowPowerResponseDelay,
     required this.historyRecordBytes,
     required this.historySlots,
+    this.versionResponse,
+    this.serviceOverride,
+    this.calibrationCodeOverride,
     required this.events,
   }) : _historyRecordCount = historyRecordCount,
        _bound = bindingStatus;
@@ -1783,6 +2364,9 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   final Duration lowPowerResponseDelay;
   final List<int> historyRecordBytes;
   final List<List<int>>? historySlots;
+  final List<int>? versionResponse;
+  final List<BleService>? serviceOverride;
+  final String? calibrationCodeOverride;
   int get historyRecordCount => historySlots?.length ?? _historyRecordCount;
   List<String> events;
   final writes = <_Write>[];
@@ -1810,23 +2394,25 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   Future<BleBondState> currentBondState() async => BleBondState.unknown;
 
   @override
-  Future<List<BleService>> discoverServices() async => <BleService>[
-    BleService(
-      uuid: yuwellCt5ServiceUuid,
-      characteristics: <BleCharacteristicRef>[
-        const BleCharacteristicRef(
-          serviceUuid: yuwellCt5ServiceUuid,
-          characteristicUuid: yuwellCt5NotifyCharacteristicUuid,
-          properties: BleCharacteristicProperties(notify: true),
+  Future<List<BleService>> discoverServices() async =>
+      serviceOverride ??
+      <BleService>[
+        BleService(
+          uuid: yuwellCt5ServiceUuid,
+          characteristics: <BleCharacteristicRef>[
+            const BleCharacteristicRef(
+              serviceUuid: yuwellCt5ServiceUuid,
+              characteristicUuid: yuwellCt5NotifyCharacteristicUuid,
+              properties: BleCharacteristicProperties(notify: true),
+            ),
+            BleCharacteristicRef(
+              serviceUuid: yuwellCt5ServiceUuid,
+              characteristicUuid: yuwellCt5WriteCharacteristicUuid,
+              properties: writeProperties,
+            ),
+          ],
         ),
-        BleCharacteristicRef(
-          serviceUuid: yuwellCt5ServiceUuid,
-          characteristicUuid: yuwellCt5WriteCharacteristicUuid,
-          properties: writeProperties,
-        ),
-      ],
-    ),
-  ];
+      ];
 
   @override
   Future<void> disconnect() async {
@@ -1907,7 +2493,9 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   }
 
   List<int>? _response(List<int> request) => switch (request.first) {
-    0x01 => const <int>[1, 20, 26, 9, 2, 0, 1, 1, 5, 0, 0, 0, 0, 0],
+    0x01 =>
+      versionResponse ??
+          const <int>[1, 20, 26, 9, 2, 0, 1, 1, 5, 0, 0, 0, 0, 0],
     0x03 => appendYuwellSum8(const <int>[0x03, 0]),
     0x11 => appendYuwellSum8(<int>[
       0x11,
@@ -1919,7 +2507,10 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     0x31 => appendYuwellSum8(<int>[0x31, 0, 0, 0, 0, checkIdAccepted ? 1 : 0]),
     0x3f => <int>[
       0x3f,
-      ...YuwellCt5ByteTransform.encode(_calibrationCode.codeUnits, key: 0),
+      ...YuwellCt5ByteTransform.encode(
+        (calibrationCodeOverride ?? _calibrationCode).codeUnits,
+        key: 0,
+      ),
     ],
     0x38 => appendYuwellSum8(<int>[
       0x38,
