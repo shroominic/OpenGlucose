@@ -487,6 +487,15 @@ live, history, or advertisement content — it rejects a malformed or
 unrecognized sensor-code string using only the string itself, before any
 radio activity.
 
+A negative finding worth recording alongside it: the BLE protocol layer
+does expose a direct on-device BSN read (`CGMCallbackAgreementD
+.onBSNRead(BluetoothDevice, String)`), but `CGMCallbackHandlerCT5`'s
+override only logs the value — it does not compare it against the
+user-supplied BSN this section documents, and nothing else in this
+handler reads it. Whatever admission value the on-device BSN has, this
+reference app is not shown to use it as a check against what the user
+scanned, typed, or tapped.
+
 ## Multi-product-line admission gate: CommonScan
 
 **OFFICIAL-APP-STATIC.** A separate, shared entry point,
@@ -1023,6 +1032,7 @@ above.
 | The CT2/CT3/CT5 product-line regex matching `CommonScan` uses is its fallback path only; its primary path parses the scan as a `TransformHosToOutQrCode` (a hospital-transfer credential) and, before dispatching on `connectWay`, rejects it outright unless the code's own `phoneNumber` field equals the current logged-in account's phone number | high (source-level) | static analysis of `CommonScan.m37138H`/`m37137G` and `TransformHosToOutQrCode` — see "Multi-product-line admission gate" |
 | `prepareTreatmentOut`/`prepareMultiWear` (the two `connectWay` branches this document previously left as an open pointer) both independently re-check `getCurrentDevice()` before their backend call — a second, genuinely independent already-active-device gate, not a restatement of `CommonScan`'s own check; `finishAntTreatmentOut` is a differently-shaped transfer-teardown step (matches local device identity, reads a local record index) rather than another admission gate | high (source-level) | static analysis of all three `TransformHosToOutViewModel` entry methods — see "Multi-product-line admission gate" |
 | `onCheckIDResponse` (the saved-session `0x31` continuation) sources `ERROR_BOUND` (30) exactly on a rejected check-ID while recovering, and folds an unbind trigger into the same success path a normal `setDate()` continuation uses when one is pending; `sendInit` is the write side of the already-corrected `canRecover` mechanism (persists timestamp/user ID once, not per call), closing that read-only account | high (source-level) | static analysis of `CGMCallbackHandlerCT5.onCheckIDResponse`/`sendInit`/`sendUnbindToTransmitter`/`unbind` — see "Reference session branches" |
+| Negative finding: `onBSNRead` exists as a BLE callback but `CGMCallbackHandlerCT5` only logs it — the reference app is not shown comparing an on-device BSN read against the user-supplied BSN `CT5BSNUtils` gates | high (source-level) | static analysis of `CGMCallbackHandlerCT5.onBSNRead` — see "Sensor-code admission gate" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
