@@ -346,6 +346,45 @@ reads the same `sureClose` field regardless of which of these two paths
 wrote it; this document's account of where the value comes from now
 covers both, not the on-device path alone.
 
+`CGMCallbackHandlerCT5.onCheckIDResponse` is the continuation of the
+saved-session `0x31` step above that this document had not yet traced.
+It branches again on the same recovery flag traced above:
+
+- Recovering, check succeeds: proceeds to a sensor-code query step this
+  document does not trace further here (`getSSN()`, inherited from the
+  base handler, not overridden by this class).
+- Recovering, check fails: broadcasts `TransmitterState.ERROR_BOUND`
+  (state 30 — the exact trigger for the terminal state CT5Init's own
+  section above already lists, now source-grounded), exits recovery
+  mode, and disconnects.
+- Not recovering, check fails: does not disconnect immediately. Sets a
+  flag and proceeds to a device-reset check this document does not
+  trace further (`checkDeviceReset()`, inherited) — a more exploratory
+  response to a rejected saved communication ID than OpenGlucose's own
+  `authenticationRejected` gate takes. OpenGlucose failing closed on the
+  first rejection rather than replicating this further exploration is a
+  deliberate simplification, not a gap this document is flagging.
+- Not recovering, check succeeds: branches on whether an unbind is
+  pending (below) — if not, proceeds to `setDate()`, the already-documented
+  saved-session step; if so, calls `unbind()`, CT5-specific only in that
+  it logs first — the actual send is the shared base handler's.
+
+Unbinding itself traces back to `sendUnbindToTransmitter`, called (among
+other places) when history sync reaches its natural end. It broadcasts
+`TransmitterState.UNBINDING` (state 8, already documented under
+"CT5Init activity") with the reason as `extras`, then either calls the
+shared, generic `unbindForce` immediately (already disconnected, or a
+reset-check flag already set from the branch above) or marks an unbind
+pending and attempts the graceful path first — a live protocol send
+with roughly a 3-second window before this document's trace of it ends
+at the shared base handler.
+
+This also closes the write side of the can-recover mechanism this
+document already corrected once (see the confidence table): `sendInit`
+persists the current timestamp and current user ID the *first* time it
+runs, not on every call — exactly the two values `canRecover`'s read
+side checks against a saved user and a non-zero timestamp.
+
 The application also sends `0x0F` after initialization and after every
 completed history cycle. This repeated reference behavior supports treating
 the low-power command as replayable after an interrupted response. OpenGlucose
@@ -983,6 +1022,7 @@ above.
 | `CommonScan`'s per-account `TransmitterRepository.getCurrentDevice()` check blocks all new-sensor admission (CT2/CT3/CT5 alike) whenever the current login already has an active sensor on record — a broader, earlier gate than anything CT5-specific; `BeforeUseCT5` between it and the CT5 entry points is instructional UI only, no added validation | high (source-level) | static analysis of `CommonScan`, `BeforeUseCT5`, `TransmitterRepository.getCurrentDevice` — see "Multi-product-line admission gate" |
 | The CT2/CT3/CT5 product-line regex matching `CommonScan` uses is its fallback path only; its primary path parses the scan as a `TransformHosToOutQrCode` (a hospital-transfer credential) and, before dispatching on `connectWay`, rejects it outright unless the code's own `phoneNumber` field equals the current logged-in account's phone number | high (source-level) | static analysis of `CommonScan.m37138H`/`m37137G` and `TransformHosToOutQrCode` — see "Multi-product-line admission gate" |
 | `prepareTreatmentOut`/`prepareMultiWear` (the two `connectWay` branches this document previously left as an open pointer) both independently re-check `getCurrentDevice()` before their backend call — a second, genuinely independent already-active-device gate, not a restatement of `CommonScan`'s own check; `finishAntTreatmentOut` is a differently-shaped transfer-teardown step (matches local device identity, reads a local record index) rather than another admission gate | high (source-level) | static analysis of all three `TransformHosToOutViewModel` entry methods — see "Multi-product-line admission gate" |
+| `onCheckIDResponse` (the saved-session `0x31` continuation) sources `ERROR_BOUND` (30) exactly on a rejected check-ID while recovering, and folds an unbind trigger into the same success path a normal `setDate()` continuation uses when one is pending; `sendInit` is the write side of the already-corrected `canRecover` mechanism (persists timestamp/user ID once, not per call), closing that read-only account | high (source-level) | static analysis of `CGMCallbackHandlerCT5.onCheckIDResponse`/`sendInit`/`sendUnbindToTransmitter`/`unbind` — see "Reference session branches" |
 | `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
 | `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
 | `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
