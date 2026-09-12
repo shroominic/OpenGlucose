@@ -23,7 +23,7 @@ dependencies:
   cgm_core:
     path: ../packages/cgm_core
   # Kept aligned with the Flutter SDK's flutter_localizations pin.
-  intl: ^0.20.2
+  intl: ^0.20.3
   path_provider: ^2.1.5
   share_plus: ^12.0.2
   shared_preferences: ^2.5.3
@@ -50,8 +50,8 @@ dev_dependencies:
   # on the host with no device/simulator. Keep the pre-build-hook release
   # pinned so this test-only dependency cannot download or bundle native
   # SQLite artifacts into production Android/iOS builds.
-  sqflite_common_ffi: 2.3.7+1
-  sqlite3: 2.9.4
+  sqflite_common_ffi: 2.4.0+3
+  sqlite3: 3.5.2
 
 flutter:
   generate: true
