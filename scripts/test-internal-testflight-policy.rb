@@ -199,7 +199,9 @@ end
 
 Build = Struct.new(:id)
 build = Build.new("build-id")
-approved.builds = [build]
+# App Store Connect grants automatic internal-group access to every build, but
+# Fastlane's group.fetch_builds relation can omit that implicit association.
+approved.builds = []
 approved_external.builds = [build]
 associated = require_exact_external_association(
   app: App.new([approved, approved_external]),
@@ -212,6 +214,38 @@ assert(
   associated.map(&:id).sort == [approved.id, approved_external.id].sort,
   "external build audience was not exact"
 )
+
+assert_rejected("wrong approved internal group ID in external audience") do
+  require_exact_external_association(
+    app: App.new([approved, approved_external]),
+    build: build,
+    approved_group: approved_external,
+    approved_internal_group_id: "wrong-group",
+    required: true
+  )
+end
+
+require_exclusive_internal_association(
+  app: App.new([approved]),
+  build: build,
+  approved_group: approved
+)
+
+# The automatic group can also be returned explicitly. It must not appear
+# twice in the effective audience.
+approved.builds = [build]
+associated = require_exact_external_association(
+  app: App.new([approved, approved_external]),
+  build: build,
+  approved_group: approved_external,
+  approved_internal_group_id: approved.id,
+  required: true
+)
+assert(
+  associated.map(&:id).sort == [approved.id, approved_external.id].sort,
+  "explicit automatic group access was duplicated"
+)
+approved.builds = []
 
 assert_rejected("unexpected associated group") do
   unexpected = Group.new(
@@ -228,6 +262,40 @@ assert_rejected("unexpected associated group") do
     approved_group: approved_external,
     approved_internal_group_id: approved.id,
     required: true
+  )
+end
+
+assert_rejected("unexpected implicit automatic internal group") do
+  unexpected_automatic_internal = Group.new(
+    id: "unexpected-automatic-internal",
+    name: "unexpected",
+    is_internal_group: true,
+    has_access_to_all_builds: true,
+    public_link_enabled: false,
+    builds: []
+  )
+  require_exact_external_association(
+    app: App.new([approved, approved_external, unexpected_automatic_internal]),
+    build: build,
+    approved_group: approved_external,
+    approved_internal_group_id: approved.id,
+    required: true
+  )
+end
+
+assert_rejected("unexpected implicit automatic internal group in internal release") do
+  unexpected_automatic_internal = Group.new(
+    id: "unexpected-automatic-internal",
+    name: "unexpected",
+    is_internal_group: true,
+    has_access_to_all_builds: true,
+    public_link_enabled: false,
+    builds: []
+  )
+  require_exclusive_internal_association(
+    app: App.new([approved, unexpected_automatic_internal]),
+    build: build,
+    approved_group: approved
   )
 end
 
@@ -271,6 +339,20 @@ assert_rejected("automatic external group") do
   )
   exact_internal_automatic_group(
     app: App.new([approved, external]),
+    group_name: "team",
+    group_id: "approved-group"
+  )
+end
+
+assert_rejected("unapproved automatic internal group") do
+  unexpected = Group.new(
+    id: "unexpected-automatic-internal",
+    name: "unexpected",
+    is_internal_group: true,
+    has_access_to_all_builds: true
+  )
+  exact_internal_automatic_group(
+    app: App.new([approved, unexpected]),
     group_name: "team",
     group_id: "approved-group"
   )
