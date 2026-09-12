@@ -45,8 +45,15 @@ The local health SQLite store can retain platform-owned import identities,
 source application/package, source name/device, recording method, revision, and
 deletion tombstones for deterministic reconciliation. These are restricted
 health metadata. They are not included in the current archive export, default
-timeline/UI, analytics, or production logs. Native HealthKit/Health Connect
-reading and incremental sync are not implemented by this storage contract.
+timeline/UI, analytics, or production logs. The iOS Apple Health context reader
+uses this contract only after explicit opt-in and a user-triggered import. It
+reads sleep, workouts, and heart rate in a rolling 30-day bounded query with
+one opaque anchor per type in a dedicated versioned import-state file. On iOS,
+that directory and its transaction artifacts are verified backup-excluded; an
+unknown future import-state version fails closed without being rewritten.
+Health Connect, background delivery,
+historical glucose import, source-overlap policy, and context display remain
+unimplemented.
 
 Display-only preferences may remain in platform preferences. In an actual web
 build, `PreferencesHealthStateStore` delegates to `shared_preferences`, whose
@@ -84,15 +91,30 @@ clearing one selected sensor is not equivalent to complete erasure.
 
 ## Sharing and export
 
-The iOS app implements an opt-in, write-only Apple Health integration. It sends
-glucose values and their timestamps as blood-glucose samples only after the
-user enables the integration and taps **Sync now**; simulated/demo data is
-blocked. It does not read HealthKit data. Apple Health's privacy, retention,
-backup, and deletion behavior applies once a sample is written. The local
-contiguous export watermark and last-sync time use the restricted state store,
-not backup-eligible preferences. Because a HealthKit write and the local cursor
-cannot commit atomically, an interrupted sync can write a duplicate sample on
-retry. The UI discloses this at-least-once behavior.
+The iOS app implements two separate, opt-in Apple Health integrations.
+Glucose export sends glucose values and their timestamps as blood-glucose
+samples only after the user enables it and taps **Sync now**; simulated/demo
+data is blocked. Its local contiguous export watermark and last-sync time use
+the restricted state store, not backup-eligible preferences. Because a
+HealthKit write and the local cursor cannot commit atomically, an interrupted
+sync can write a duplicate sample on retry. The UI discloses this at-least-once
+behavior.
+
+Apple Health context import reads only sleep, workouts, and heart rate after
+the user enables that separate control and taps **Import now**. Each sync is a
+bounded rolling 30-day read. It retains source identity/provenance and opaque
+per-type anchors in a separate versioned, backup-excluded iOS import-state
+file for repeat reconciliation, and applies returned source deletions locally.
+Before an anchor advances, it removes only matching Apple Health records that
+have aged out of the rolling predicate; it does not fabricate source deletion
+records. Apple does not disclose read permission to the app, so the
+UI says **No accessible data** when a query returns no records; it does not
+claim that access was granted or denied. It does not import blood glucose,
+start background delivery, or show raw imported values in the default UI.
+Disabling the toggle stops future reads but does not erase retained context;
+the verified complete-delete flow remains unimplemented. Apple Health's
+privacy, retention, backup, and deletion behavior applies after data enters
+that platform or app storage.
 
 Archived sensor details provide an explicit single-file export through the
 platform share sheet. A confirmation preview displays the sensor-session date

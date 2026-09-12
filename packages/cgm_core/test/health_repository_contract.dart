@@ -331,6 +331,71 @@ void runHealthRepositoryContractTests(HealthRepository Function() factory) {
       expect(await repo.queryImportTombstones(), isEmpty);
     });
 
+    test(
+      'expiry purges only aged records from the selected import platform',
+      () async {
+        final cutoff = DateTime.utc(2026, 1, 2);
+        await repo.upsertHeartRateSamples([
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 60,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'expired-apple-record',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 2, 8),
+            bpm: 61,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'recent-apple-record',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 62,
+            source: DataSource.healthConnect,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.healthConnect,
+                externalId: 'expired-other-platform-record',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 63,
+            source: DataSource.appleHealth,
+          ),
+        ]);
+
+        final removed = await repo.purgeImportedSamplesBefore(
+          kind: HealthSampleKind.heartRate,
+          platform: HealthSourcePlatform.appleHealth,
+          cutoff: cutoff,
+        );
+
+        expect(removed, 1);
+        final remaining = await repo.queryHeartRateSamples();
+        expect(remaining, hasLength(3));
+        expect(
+          remaining.map((sample) => sample.provenance?.identity.externalId),
+          containsAll(<String?>[
+            'recent-apple-record',
+            'expired-other-platform-record',
+            null,
+          ]),
+        );
+      },
+    );
+
     test('rejects duplicate source identities in one import batch', () async {
       final samples = [
         for (final bpm in [60.0, 61.0])

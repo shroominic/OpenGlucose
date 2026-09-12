@@ -130,6 +130,18 @@ abstract interface class HealthRepository {
     TimeWindow window = TimeWindow.all,
   });
 
+  /// Removes only imported samples for [platform] whose local timestamp is
+  /// before [cutoff]. Manual and legacy samples remain untouched.
+  ///
+  /// This retention operation deliberately does not create source-deletion
+  /// tombstones. It is used when a bounded platform query advances beyond a
+  /// record that can no longer be reconciled by that query's predicate.
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  });
+
   // --- Imported-record tombstones -----------------------------------------
 
   /// Applies source-reported record deletions by stable import identity.

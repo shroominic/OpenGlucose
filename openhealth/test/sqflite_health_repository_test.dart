@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openglucose/src/journal/fast_journal_store.dart';
 import 'package:openglucose/src/persistence/sqflite_health_repository.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -101,6 +103,129 @@ void main() {
       await repo.deleteEvent('e1');
       expect(await repo.getEvent('e1'), isNull);
     });
+  });
+
+  group('fast journal', () {
+    FastJournalEntry entry(String id, DateTime occurredAt) => FastJournalEntry(
+      id: id,
+      kind: FastJournalKind.sleep,
+      occurredAt: occurredAt,
+      label: 'Early night',
+      duration: const Duration(hours: 7),
+    );
+
+    FastJournalRiseReference rise(DateTime startedAt) =>
+        FastJournalRiseReference(
+          startedAt: startedAt,
+          lastObservedAt: startedAt.add(const Duration(minutes: 20)),
+        );
+
+    test('round-trips the isolated manual journal protocol', () async {
+      final startedAt = DateTime.utc(2026, 1, 2, 20);
+      final saved = await repo.saveFastJournalEntry(
+        entry: entry('sleep-1', DateTime.utc(2026, 1, 2, 22)),
+        requestedRise: rise(startedAt),
+      );
+
+      final loaded = await repo.queryFastJournalEntries(limit: 20);
+
+      expect(saved.kind, FastJournalKind.sleep);
+      expect(saved.source, DataSource.manual);
+      expect(saved.riseReference?.startedAt, startedAt);
+      expect(
+        saved.riseReference?.lastObservedAt,
+        DateTime.utc(2026, 1, 2, 20, 20),
+      );
+      expect(loaded, hasLength(1));
+      expect(loaded.single.id, 'sleep-1');
+      expect(loaded.single.duration, const Duration(hours: 7));
+      expect(await repo.queryEvents(), isEmpty);
+    });
+
+    test('atomically gives concurrent saves one newest-rise claim', () async {
+      final candidate = rise(DateTime.utc(2026, 1, 2, 20));
+
+      final saved = await Future.wait(<Future<FastJournalEntry>>[
+        repo.saveFastJournalEntry(
+          entry: entry('first', DateTime.utc(2026, 1, 2, 21)),
+          requestedRise: candidate,
+        ),
+        repo.saveFastJournalEntry(
+          entry: entry('second', DateTime.utc(2026, 1, 2, 22)),
+          requestedRise: candidate,
+        ),
+      ]);
+
+      expect(
+        saved.where((journalEntry) => journalEntry.riseReference != null),
+        hasLength(1),
+      );
+      final loaded = await repo.queryFastJournalEntries(limit: 20);
+      expect(
+        loaded.where((journalEntry) => journalEntry.riseReference != null),
+        hasLength(1),
+      );
+    });
+
+    test(
+      'a v0.1.4-style health-event reader ignores the isolated journal table',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'openglucose-fast-journal-',
+        );
+        final path = '${directory.path}${Platform.pathSeparator}health.db';
+        final initial = SqfliteHealthRepository(
+          path: path,
+          databaseFactory: databaseFactoryFfi,
+        );
+        try {
+          await initial.init();
+          await initial.upsertEvent(
+            meal('legacy-meal', DateTime.utc(2026, 1, 2, 8), carbs: 30),
+          );
+          await initial.saveFastJournalEntry(
+            entry: entry('new-sleep', DateTime.utc(2026, 1, 2, 22)),
+            requestedRise: rise(DateTime.utc(2026, 1, 2, 20)),
+          );
+          await initial.close();
+
+          // The released v0.1.4 repository opens this database as schema one.
+          // sqflite lowers the version marker but leaves additive unknown
+          // tables in place. Its event reader touches only health_events.
+          final legacyDatabase = await databaseFactoryFfi.openDatabase(
+            path,
+            options: OpenDatabaseOptions(version: 1),
+          );
+          expect(await legacyDatabase.getVersion(), 1);
+          final legacyRows = await legacyDatabase.query('health_events');
+          final legacyEvents = legacyRows
+              .map(
+                (row) => HealthEvent.fromJson(
+                  jsonDecode(row['data']! as String) as Map<String, Object?>,
+                ),
+              )
+              .toList(growable: false);
+          expect(legacyEvents.map((event) => event.id), <String>[
+            'legacy-meal',
+          ]);
+          await legacyDatabase.close();
+
+          final recovered = SqfliteHealthRepository(
+            path: path,
+            databaseFactory: databaseFactoryFfi,
+          );
+          await recovered.init();
+          final journals = await recovered.queryFastJournalEntries(limit: 20);
+          expect(journals.map((journalEntry) => journalEntry.id), <String>[
+            'new-sleep',
+          ]);
+          await recovered.close();
+        } finally {
+          await initial.close();
+          await directory.delete(recursive: true);
+        }
+      },
+    );
   });
 
   group('samples', () {
@@ -233,6 +358,66 @@ void main() {
         expect(samples, hasLength(2));
         expect(samples.map((sample) => sample.steps), [250, 300]);
         expect(samples.first.provenance!.sourceRevision, 'revision-2');
+      },
+    );
+
+    test(
+      'expiry removes only aged records for the requested source platform',
+      () async {
+        await repo.upsertHeartRateSamples([
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 60,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'expired-apple',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 2, 8),
+            bpm: 61,
+            source: DataSource.appleHealth,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.appleHealth,
+                externalId: 'recent-apple',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 62,
+            source: DataSource.healthConnect,
+            provenance: const HealthSampleProvenance(
+              identity: HealthImportIdentity(
+                platform: HealthSourcePlatform.healthConnect,
+                externalId: 'expired-other',
+              ),
+            ),
+          ),
+          HeartRateSample(
+            timestamp: DateTime.utc(2026, 1, 1, 8),
+            bpm: 63,
+            source: DataSource.appleHealth,
+          ),
+        ]);
+
+        final removed = await repo.purgeImportedSamplesBefore(
+          kind: HealthSampleKind.heartRate,
+          platform: HealthSourcePlatform.appleHealth,
+          cutoff: DateTime.utc(2026, 1, 2),
+        );
+
+        expect(removed, 1);
+        final remaining = await repo.queryHeartRateSamples();
+        expect(remaining, hasLength(3));
+        expect(
+          remaining.map((sample) => sample.provenance?.identity.externalId),
+          containsAll(<String?>['recent-apple', 'expired-other', null]),
+        );
       },
     );
 

@@ -126,6 +126,20 @@ The schema-two binary rejects an attempt to open a higher, unknown SQLite
 schema version. It leaves that higher version marker unchanged rather than
 silently relabelling an unrecognized schema as version two.
 
+Schema three adds an isolated `fast_journal_entries` table for the optional
+local diary. Its records use a separate strict fast-journal format one with an
+explicit manual source, selected occurrence time, optional duration, and an
+optional time-bounded observed-rise reference. The reference persists no
+glucose value and is atomically claimed once by its exact rise-start instant.
+It is not written into `health_events`: a v0.1.4 binary continues to decode
+only its known health-event JSON and ignores the additive table. A v0.1.4
+launch can lower SQLite's version marker while leaving the additive table in
+place; a schema-three launch recreates its table/index declarations with
+`IF NOT EXISTS` and preserves existing diary rows. Do not manually edit either
+table. The current partial diary has no edit or delete flow, so its one-time
+observational claim stays durable until a separately reviewed lifecycle policy
+exists.
+
 Downgrading to a schema-two app after filename migration is unsupported: the
 older app cannot locate schema-three blobs even though their bytes remain on
 disk. Roll forward to a schema-three build and preserve the original app

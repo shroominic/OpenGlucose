@@ -177,6 +177,35 @@ class InMemoryHealthRepository implements HealthRepository {
         .sortedByTime();
   }
 
+  @override
+  Future<int> purgeImportedSamplesBefore({
+    required HealthSampleKind kind,
+    required HealthSourcePlatform platform,
+    required DateTime cutoff,
+  }) async {
+    final boundary = cutoff.toUtc();
+    return switch (kind) {
+      HealthSampleKind.activity => _removeWhere(
+        _activity,
+        (sample) =>
+            sample.start.toUtc().isBefore(boundary) &&
+            sample.provenance?.identity.platform == platform,
+      ),
+      HealthSampleKind.sleep => _removeWhere(
+        _sleep,
+        (sample) =>
+            sample.start.toUtc().isBefore(boundary) &&
+            sample.provenance?.identity.platform == platform,
+      ),
+      HealthSampleKind.heartRate => _removeWhere(
+        _heartRate,
+        (sample) =>
+            sample.timestamp.toUtc().isBefore(boundary) &&
+            sample.provenance?.identity.platform == platform,
+      ),
+    };
+  }
+
   // --- Imported-record tombstones -----------------------------------------
 
   @override
