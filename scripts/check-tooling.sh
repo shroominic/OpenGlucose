@@ -39,6 +39,7 @@ command -v ruby >/dev/null 2>&1 || {
   exit 1
 }
 ruby "$repo_root/scripts/test-android-release-workflow-contract.rb"
+ruby "$repo_root/scripts/test-lefthook-format-contract.rb"
 ruby "$repo_root/scripts/test-macos-preview-workflow-contract.rb"
 ruby "$repo_root/scripts/test-testflight-release-workflow-contract.rb"
 ruby "$repo_root/scripts/test-testflight-release-tag-contract.rb"

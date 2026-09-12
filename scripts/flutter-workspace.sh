@@ -13,15 +13,6 @@ packages/cgm_aidex
 openhealth
 "
 
-# Git hooks export worktree-local variables such as GIT_INDEX_FILE. Flutter's
-# launcher runs Git inside its own SDK checkout; inheriting those values makes
-# it inspect this repository instead and can recursively rebuild the tool.
-if command -v git >/dev/null 2>&1; then
-  for git_local_variable in $(git rev-parse --local-env-vars 2>/dev/null); do
-    unset "$git_local_variable"
-  done
-fi
-
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
@@ -35,7 +26,23 @@ uses_flutter() {
   grep -q 'sdk: flutter' "$repo_root/$1/pubspec.yaml"
 }
 
+check_dart_format() {
+  dart format --output=none --set-exit-if-changed "$@"
+}
+
+clear_git_local_environment() {
+  # Git hooks export worktree-local variables such as GIT_INDEX_FILE. Flutter's
+  # launcher runs Git inside its own SDK checkout; inheriting those values makes
+  # it inspect this repository instead and can recursively rebuild the tool.
+  if command -v git >/dev/null 2>&1; then
+    for git_local_variable in $(git rev-parse --local-env-vars 2>/dev/null); do
+      unset "$git_local_variable"
+    done
+  fi
+}
+
 verify_runtime() {
+  clear_git_local_environment
   require_tool flutter
   require_tool dart
 
@@ -75,7 +82,7 @@ for_project() {
           set -- lib
           [ ! -d test ] || set -- "$@" test
           [ ! -d integration_test ] || set -- "$@" integration_test
-          dart format --output=none --set-exit-if-changed "$@"
+          check_dart_format "$@"
           ;;
         analyze)
           if uses_flutter "$project_dir"; then
@@ -108,6 +115,64 @@ for_project() {
           ;;
         *) die "unsupported project operation: $operation" ;;
       esac
+    )
+  done
+}
+
+staged_dart_files() {
+  require_tool git
+  (
+    cd "$repo_root"
+    # Deleted files do not need formatting. Additions, copies, modifications,
+    # and renames must all be checked before they enter the index.
+    git diff --cached --name-only --diff-filter=ACMR -- '*.dart'
+  )
+}
+
+format_staged_files() {
+  staged_files=$(staged_dart_files)
+  [ -n "$staged_files" ] || return 0
+
+  # Do not let a newly added Dart project or an unexpected staged path bypass
+  # the formatter. Keep project_dirs as the single source of package roots.
+  while IFS= read -r staged_file; do
+    known_project=false
+    for project_dir in $project_dirs; do
+      case "$staged_file" in
+        "$project_dir"/*.dart)
+          known_project=true
+          break
+          ;;
+      esac
+    done
+    [ "$known_project" = true ] ||
+      die "staged Dart file is outside a configured project: $staged_file"
+  done <<EOF
+$staged_files
+EOF
+
+  verify_runtime
+  for project_dir in $project_dirs; do
+    (
+      cd "$repo_root/$project_dir"
+      set --
+      while IFS= read -r staged_file; do
+        case "$staged_file" in
+          "$project_dir"/*.dart)
+            relative_file=${staged_file#"$project_dir"/}
+            [ -f "$relative_file" ] ||
+              die "staged Dart file is missing from the working tree: $staged_file"
+            set -- "$@" "$relative_file"
+            ;;
+        esac
+      done <<EOF
+$staged_files
+EOF
+
+      [ "$#" -eq 0 ] || {
+        printf '\n==> %s: staged format-check\n' "$project_dir"
+        check_dart_format "$@"
+      }
     )
   done
 }
@@ -255,6 +320,9 @@ case "$command_name" in
   pub-get|format|format-check|analyze|test-unit)
     verify_runtime
     for_project "$command_name"
+    ;;
+  format-staged)
+    format_staged_files
     ;;
   outdated)
     outdated_dependencies
