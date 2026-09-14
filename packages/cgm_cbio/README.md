@@ -30,6 +30,22 @@ epoch, or a `CgmReading`. It contains no key, decryption, fragment assembly,
 command writer, automatic retry, or sensor identifier. Only synthetic fixtures
 are used in tests. Vendor format observations are recorded in the evidence doc.
 
+Separate offline entry points inspect `08` raw-data batches,
+`F0/04` storage replies, and `F0/03` time replies:
+`parseCbioRawDataFrame`, `parseCbioStorageFrame`, and `parseCbioTimeFrame`.
+These require complete plaintext data frames and reject control ACKs. Raw
+records retain temperature/current/dump integers plus packed fields; none is
+converted to a physical unit. Time fields have no assigned epoch, and storage
+status is not interpreted. The existing `CbioFrame` hierarchy and generic
+parser acceptance remain unchanged. These entry points do not select firmware,
+send queries, or authorize a live read.
+
+`parseCbioActivationFrame` separately reads the five-byte `F0/02` state reply
+and preserves its raw byte without an active/inactive enum.
+`parseCbioStartAckFrame` checks an explicitly expected `07` activation or `03`
+clock-update ACK and retains unknown result/status values. These inspect bytes
+only. The package contains no activation/clock builder or live write path.
+
 Run package checks from this directory with the pinned Dart SDK:
 
 ```sh

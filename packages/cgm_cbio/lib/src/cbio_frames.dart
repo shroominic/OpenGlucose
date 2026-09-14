@@ -79,6 +79,11 @@ final class CbioFrameException implements Exception {
 /// Five-byte control replies are supported for the observed/query/auth opcodes.
 /// Only opcode 0x0a supports the packed record layout. Other layouts fail closed.
 CbioFrame parseCbioPlaintextFrame(List<int> bytes) {
+  _validateCbioFrame(bytes);
+  return _parseCbioPlaintextFrame(bytes);
+}
+
+void _validateCbioFrame(List<int> bytes) {
   if (bytes.length < 5 || bytes.length > 256) {
     throw const CbioFrameException(CbioFrameFailure.size);
   }
@@ -91,6 +96,9 @@ CbioFrame parseCbioPlaintextFrame(List<int> bytes) {
   if ((bytes.fold<int>(0, (sum, byte) => sum + byte) & 255) != 0) {
     throw const CbioFrameException(CbioFrameFailure.checksum);
   }
+}
+
+CbioFrame _parseCbioPlaintextFrame(List<int> bytes) {
   final opcode = bytes[1];
   if (bytes.length == 5) {
     if (!const {0x00, 0x01, 0x02, 0x0a, 0xf0}.contains(opcode)) {
@@ -132,4 +140,178 @@ CbioFrame parseCbioPlaintextFrame(List<int> bytes) {
         rawSharedWarning: bytes[9 + 2 * i] & 1,
       ),
   ]);
+}
+
+/// Fields from the separate eight-byte 0x08 record layout, without conversion.
+final class CbioRawRecord {
+  const CbioRawRecord({
+    required this.packed,
+    required this.rawTemperature,
+    required this.rawCurrent,
+    required this.rawDump,
+  });
+
+  final CbioPackedRecord packed;
+  final int rawTemperature;
+  final int rawCurrent;
+  final int rawDump;
+}
+
+/// Separate from [CbioFrame] to preserve the existing closed frame contract.
+final class CbioRawBatch {
+  CbioRawBatch(List<CbioRawRecord> records)
+    : records = List.unmodifiable(records);
+
+  final List<CbioRawRecord> records;
+}
+
+/// Parses only complete plaintext 0x08 data, never an ACK or a 0x0a batch.
+///
+/// The embedded glucose field is not a validated glucose measurement. Native
+/// algorithms, firmware selection, units, epoch, and validity remain separate.
+CbioRawBatch parseCbioRawDataFrame(List<int> bytes) {
+  _validateCbioFrame(bytes);
+  if (bytes[1] != 0x08) {
+    throw const CbioFrameException(CbioFrameFailure.opcode);
+  }
+  final count = bytes[2];
+  if (bytes.length != 12 + 8 * count) {
+    throw const CbioFrameException(CbioFrameFailure.count);
+  }
+  int le16(int offset) => bytes[offset] | (bytes[offset + 1] << 8);
+  final index = le16(3);
+  final time = le16(5) | (le16(7) << 16);
+  final reindex = le16(bytes.length - 3);
+  if (count > 0 &&
+      (index + count - 1 > 0xffff ||
+          time + 60 * (count - 1) > 0xffffffff ||
+          reindex + count - 1 > 0xffff)) {
+    throw const CbioFrameException(CbioFrameFailure.overflow);
+  }
+  return CbioRawBatch([
+    for (var i = 0; i < count; i++)
+      CbioRawRecord(
+        rawTemperature: le16(9 + 8 * i),
+        rawDump: le16(11 + 8 * i),
+        rawCurrent: le16(13 + 8 * i),
+        packed: CbioPackedRecord(
+          index: index + i,
+          rawTime: time + 60 * i,
+          reindex: reindex + count - 1 - i,
+          rawGlucose: (bytes[15 + 8 * i] >> 6) | (bytes[16 + 8 * i] << 2),
+          rawTrend: (bytes[15 + 8 * i] >> 3) & 7,
+          rawGlucoseWarning: (bytes[15 + 8 * i] >> 1) & 3,
+          rawSharedWarning: bytes[15 + 8 * i] & 1,
+        ),
+      ),
+  ]);
+}
+
+/// Storage information fields; no status or retention policy is inferred.
+final class CbioStorageInfo {
+  const CbioStorageInfo({
+    required this.rawStatus,
+    required this.rawStorageNumber,
+    required this.rawConfigTimes,
+    required this.rawKeyTimes,
+  });
+
+  final int rawStatus;
+  final int rawStorageNumber;
+  final int rawConfigTimes;
+  final int rawKeyTimes;
+}
+
+/// Time information fields; no epoch, time unit, or sensor state is inferred.
+final class CbioTimeInfo {
+  const CbioTimeInfo({
+    required this.rawStartoverTime,
+    required this.rawActivationTime,
+    required this.rawCurrentTime,
+    required this.rawLastTime,
+    required this.rawLastIndex,
+  });
+
+  final int rawStartoverTime;
+  final int rawActivationTime;
+  final int rawCurrentTime;
+  final int rawLastTime;
+  final int rawLastIndex;
+}
+
+/// The separate F0/02 state byte, without an inferred active/inactive enum.
+///
+/// This is not opcode 02 authentication switching and is not an auth ACK.
+final class CbioActivationInfo {
+  const CbioActivationInfo({required this.rawActivation});
+
+  final int rawActivation;
+}
+
+void _validateCbioInformation(List<int> bytes, int selector, int length) {
+  _validateCbioFrame(bytes);
+  if (bytes[1] != 0xf0 || bytes[2] != selector) {
+    throw const CbioFrameException(CbioFrameFailure.opcode);
+  }
+  if (bytes.length != length) {
+    throw const CbioFrameException(CbioFrameFailure.length);
+  }
+}
+
+/// Parses a complete plaintext F0/02 activation-information reply.
+///
+/// Use this selector-specific entry point for an outstanding information read.
+/// Its five-byte length alone cannot distinguish it from a control reply.
+/// All byte values are preserved; no value authorizes a sensor state change.
+CbioActivationInfo parseCbioActivationFrame(List<int> bytes) {
+  _validateCbioInformation(bytes, 2, 5);
+  return CbioActivationInfo(rawActivation: bytes[3]);
+}
+
+/// Inspects an activation (07) or clock-update (03) ACK offline.
+///
+/// This checks the requested opcode only, not freshness or transaction identity.
+/// Unknown result/status values are retained and never grant write permission.
+CbioAcknowledgement parseCbioStartAckFrame(
+  List<int> bytes, {
+  required int expectedOpcode,
+}) {
+  _validateCbioFrame(bytes);
+  if (!const {0x03, 0x07}.contains(expectedOpcode) ||
+      bytes[1] != expectedOpcode) {
+    throw const CbioFrameException(CbioFrameFailure.opcode);
+  }
+  if (bytes.length != 5) {
+    throw const CbioFrameException(CbioFrameFailure.length);
+  }
+  return CbioAcknowledgement(
+    opcode: bytes[1],
+    result: bytes[2],
+    rawStatus: bytes[3],
+  );
+}
+
+/// Parses a complete plaintext F0/04 storage reply; rejects control ACKs.
+CbioStorageInfo parseCbioStorageFrame(List<int> bytes) {
+  _validateCbioInformation(bytes, 4, 9);
+  return CbioStorageInfo(
+    rawStatus: bytes[3],
+    rawStorageNumber: bytes[4] | (bytes[5] << 8),
+    rawConfigTimes: bytes[6],
+    rawKeyTimes: bytes[7],
+  );
+}
+
+/// Parses a complete plaintext F0/03 time reply; rejects control ACKs.
+CbioTimeInfo parseCbioTimeFrame(List<int> bytes) {
+  _validateCbioInformation(bytes, 3, 20);
+  int le16(int offset) => bytes[offset] | (bytes[offset + 1] << 8);
+  int le32(int offset) => le16(offset) | (le16(offset + 2) << 16);
+  return CbioTimeInfo(
+    rawStartoverTime: le16(3),
+    rawActivationTime: le32(5),
+    rawCurrentTime: le32(9),
+    rawLastTime: le32(13),
+    rawLastIndex: le16(17),
+  );
 }
