@@ -110,6 +110,7 @@ class MessageController extends ChangeNotifier {
   List<AppMessage> _select(MessageContext context) {
     final eligible = _messages
         .where((message) => !isDismissed(message) && message.matches(context))
+        .map((message) => message.resolve(context))
         .toList(growable: false);
     eligible.sort(_byPriority);
     return List<AppMessage>.unmodifiable(eligible);
@@ -129,7 +130,8 @@ class MessageController extends ChangeNotifier {
 
   /// alert > info > tip when priority and (so the order is deterministic).
   static int _kindRank(AppMessageKind kind) => switch (kind) {
-    AppMessageKind.alert => 2,
+    AppMessageKind.alert => 3,
+    AppMessageKind.nudge => 2,
     AppMessageKind.info => 1,
     AppMessageKind.tip => 0,
   };

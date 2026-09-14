@@ -10,6 +10,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard can show a local-only, dismissible sharp-rise walk nudge when
+  fresh, non-provisional readings form a narrowly bounded monotonic rise. It
+  fails closed for unsafe sensor state, stale, sparse, malformed, low, or high
+  readings; it is wellness guidance, not an alert, diagnosis, or treatment.
+
 ## [0.1.6] - 2026-08-31
 
 ### Added

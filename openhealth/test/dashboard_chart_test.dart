@@ -6,6 +6,40 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'labels only a qualifying rising chart tail for amber highlighting',
+    (tester) async {
+      final tailStart = DateTime.utc(2026, 4, 13, 11, 50);
+      await tester.pumpWidget(
+        _chartHarness(
+          readings: <CgmReading>[
+            CgmReading(
+              valueMgdl: 95,
+              source: CgmRecordSource.vendor,
+              recordedAt: tailStart,
+            ),
+            CgmReading(
+              valueMgdl: 111,
+              source: CgmRecordSource.vendor,
+              recordedAt: tailStart.add(const Duration(minutes: 5)),
+            ),
+            CgmReading(
+              valueMgdl: 131,
+              source: CgmRecordSource.vendor,
+              recordedAt: tailStart.add(const Duration(minutes: 10)),
+            ),
+          ],
+          historySync: const CgmHistorySyncState(
+            storedCount: 3,
+            totalAvailable: 3,
+          ),
+          sharpRiseTailStart: tailStart,
+        ),
+      );
+
+      expect(find.bySemanticsLabel('Sharp rise chart tail'), findsOneWidget);
+    },
+  );
   testWidgets('shows multi-day timeframe controls for long history', (
     tester,
   ) async {
@@ -136,6 +170,7 @@ void main() {
 Widget _chartHarness({
   required List<CgmReading> readings,
   required CgmHistorySyncState historySync,
+  DateTime? sharpRiseTailStart,
   Locale locale = const Locale('en'),
 }) {
   return MaterialApp(
@@ -151,6 +186,7 @@ Widget _chartHarness({
             readings: readings,
             preferences: const DisplayPreferences(),
             historySync: historySync,
+            sharpRiseTailStart: sharpRiseTailStart,
           ),
         ),
       ),

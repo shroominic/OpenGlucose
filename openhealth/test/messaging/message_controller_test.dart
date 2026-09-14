@@ -29,6 +29,52 @@ Future<MessageController> _build(
 
 void main() {
   group('selection', () {
+    test(
+      'selects the exact recurring sharp-rise nudge with live quantification',
+      () async {
+        final controller = await _build(defaultMessageCatalog);
+        controller.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 36,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+
+        final message = controller.topMessage;
+        expect(message?.id, 'nudge.sharpRise');
+        expect(message?.title, '↑↑ Glucose is spiking');
+        expect(
+          message?.body,
+          'Up 36 mg/dL in 10 minutes\n'
+          'If walking is safe for you, take a short walk now and watch how your glucose responds.',
+        );
+        expect(message?.priority, 200);
+        expect(message?.persistence, AppMessagePersistence.recurring);
+
+        await controller.dismiss(message!);
+        expect(controller.topMessage, isNull);
+
+        final preferences = await SharedPreferences.getInstance();
+        final freshController = MessageController(
+          preferences: preferences,
+          messages: defaultMessageCatalog,
+        );
+        freshController.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 36,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+        expect(freshController.topMessage?.id, 'nudge.sharpRise');
+      },
+    );
+
     test('surfaces only messages whose trigger matches the context', () async {
       final controller = await _build(defaultMessageCatalog);
 

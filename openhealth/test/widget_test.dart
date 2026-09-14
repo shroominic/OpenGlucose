@@ -13,10 +13,67 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_controller.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets(
+    'shows the sharp-rise badge only while the deterministic signal qualifies',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: DemoCgmDriver(initialScenario: MockScenario.rapidRise),
+      );
+      await controller.initialize();
+      await controller.connect(MockScenarioCatalog.sensor);
+      final messages = MessageController(
+        preferences: preferences,
+        messages: defaultMessageCatalog,
+      );
+
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+          messageController: messages,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey<String>('sharpRiseBadge')),
+        findsOneWidget,
+      );
+      expect(find.text('Sharp rise'), findsOneWidget);
+      expect(find.text('↑↑ Glucose is spiking'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      controller.applyMockScenario(MockScenario.activeNormal);
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey<String>('sharpRiseBadge')),
+        findsNothing,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
   testWidgets('BLE support copy action is private-build gated', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'openHealth.onboarding.completed': true,

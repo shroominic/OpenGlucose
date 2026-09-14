@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'package:openglucose/l10n/generated/app_localizations.dart';
 
 import '../app_localizations_extension.dart';
 import 'app_message.dart';
@@ -14,6 +15,17 @@ import 'message_context.dart';
 /// Both plug in here (or via a merged list) without touching the controller or
 /// host. Content is wellness-framed and honest: no medical/treatment claims.
 const List<AppMessage> defaultMessageCatalog = <AppMessage>[
+  AppMessage(
+    id: 'nudge.sharpRise',
+    kind: AppMessageKind.nudge,
+    title: '↑↑ Glucose is spiking',
+    body: '',
+    priority: 200,
+    persistence: AppMessagePersistence.recurring,
+    trigger: _whenSharpRise,
+    bodyBuilder: _sharpRiseBody,
+    dataBuilder: _sharpRiseData,
+  ),
   // Info box shown only during the sensor warmup window. Disappears
   // automatically once warmup ends (trigger stops matching). Dismissing it
   // persists — once you've read the explanation you won't see it again.
@@ -53,6 +65,7 @@ const List<AppMessage> defaultMessageCatalog = <AppMessage>[
 ) {
   final l10n = context.l10n;
   return switch (message.id) {
+    'nudge.sharpRise' => _localizedSharpRiseText(l10n, message),
     'info.warmup' => (
       title: l10n.messageWarmupTitle,
       body: l10n.messageWarmupBody,
@@ -65,7 +78,31 @@ const List<AppMessage> defaultMessageCatalog = <AppMessage>[
   };
 }
 
+({String title, String body}) _localizedSharpRiseText(
+  AppLocalizations l10n,
+  AppMessage message,
+) {
+  final signal = message.data;
+  if (signal is! SharpRiseSignal) {
+    return (title: message.title, body: message.body);
+  }
+  return (
+    title: l10n.messageSharpRiseTitle,
+    body:
+        '${l10n.messageSharpRiseChange(signal.changeMgdl, signal.durationMinutes)}\n'
+        '${l10n.messageSharpRisePrompt}',
+  );
+}
+
 bool _whileWarmingUp(MessageContext context) => context.isWarmingUp;
 
 bool _whenReadingsAvailable(MessageContext context) =>
     context.hasSession && context.hasReadings;
+
+bool _whenSharpRise(MessageContext context) => context.sharpRise != null;
+
+String _sharpRiseBody(MessageContext context) =>
+    '${context.sharpRise!.englishChangeText}\n'
+    'If walking is safe for you, take a short walk now and watch how your glucose responds.';
+
+Object? _sharpRiseData(MessageContext context) => context.sharpRise;

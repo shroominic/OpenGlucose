@@ -11,15 +11,24 @@ MessageContext buildMessageContext(
   DateTime? now,
 }) {
   final snapshot = controller.snapshot;
+  final effectiveNow = now ?? DateTime.now();
   final hasSession = snapshot != null;
   final latest = controller.displayLatestReading;
   final warmup = snapshot == null
       ? null
-      : computeWarmupStatus(snapshot, latestReading: latest, now: now);
+      : computeWarmupStatus(snapshot, latestReading: latest, now: effectiveNow);
   return MessageContext(
     hasSession: hasSession,
     isWarmingUp: warmup?.phase == WarmupPhase.warming,
     hasReadings: latest != null,
-    now: now ?? DateTime.now(),
+    now: effectiveNow,
+    sharpRise: snapshot == null
+        ? null
+        : detectSharpRise(
+            snapshot: snapshot,
+            readings: controller.visibleHistory,
+            isWarmingUp: warmup?.phase == WarmupPhase.warming,
+            now: effectiveNow,
+          ),
   );
 }

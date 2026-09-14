@@ -814,6 +814,15 @@
   "messageWarmupBody": "传感器正在稳定。大约一小时后开始显示读数，无需操作。",
   "messageTapReadingTitle": "提示",
   "messageTapReadingBody": "点按图表中的数据点可查看准确读数和时间。",
+  "messageSharpRiseTitle": "↑↑ 血糖正在快速上升",
+  "messageSharpRiseChange": "{minutes} 分钟内上升 {change} mg/dL",
+  "@messageSharpRiseChange": {
+    "placeholders": {
+      "change": {"type": "int"},
+      "minutes": {"type": "int"}
+    }
+  },
+  "messageSharpRisePrompt": "如果步行对你来说是安全的，现在可以短暂步行，并观察你的血糖如何变化。",
   "scenarioWarmup": "预热",
   "scenarioActiveNormal": "正常运行",
   "scenarioActiveHigh": "运行中——高值（提醒）",

@@ -19,6 +19,7 @@ import 'package:openglucose/src/ios_export_share.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_context.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
 import 'package:openglucose/src/messaging/message_controller.dart';
 import 'package:openglucose/src/messaging/message_host.dart';
@@ -1190,6 +1191,8 @@ class _DashboardView extends StatelessWidget {
     final l10n = context.l10n;
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
+    final messageContext = buildMessageContext(controller);
+    final sharpRise = messageContext.sharpRise;
     final warmup = computeWarmupStatus(
       snapshot,
       latestReading: controller.displayLatestReading,
@@ -1285,6 +1288,7 @@ class _DashboardView extends StatelessWidget {
             child: _DashboardHeroCard(
               controller: controller,
               snapshot: snapshot,
+              sharpRise: sharpRise,
             ),
           ),
           if (!isWarmingUp)
@@ -1323,6 +1327,7 @@ class _DashboardView extends StatelessWidget {
                             readings: history,
                             preferences: preferences,
                             historySync: snapshot.historySync,
+                            sharpRiseTailStart: sharpRise?.tailStart,
                           ),
                         ),
                       ],
@@ -1401,10 +1406,15 @@ class _MetricChip extends StatelessWidget {
 }
 
 class _DashboardHeroCard extends StatefulWidget {
-  const _DashboardHeroCard({required this.controller, required this.snapshot});
+  const _DashboardHeroCard({
+    required this.controller,
+    required this.snapshot,
+    required this.sharpRise,
+  });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
+  final SharpRiseSignal? sharpRise;
 
   @override
   State<_DashboardHeroCard> createState() => _DashboardHeroCardState();
@@ -1497,41 +1507,40 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.end,
                 children: <Widget>[
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: <Widget>[
-                        Flexible(
-                          child: Text(
-                            bigValue,
-                            maxLines: 1,
-                            overflow: TextOverflow.fade,
-                            softWrap: false,
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              color: Colors.white,
-                              height: 0.92,
-                              fontWeight: FontWeight.w900,
-                            ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: <Widget>[
+                      Text(
+                        bigValue,
+                        maxLines: 1,
+                        overflow: TextOverflow.fade,
+                        softWrap: false,
+                        style: theme.textTheme.displayMedium?.copyWith(
+                          color: Colors.white,
+                          height: 0.92,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          unitLabel,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: const Color(0xFFC7E4DD),
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Text(
-                            unitLabel,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: const Color(0xFFC7E4DD),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
+                  if (widget.sharpRise != null) const _SharpRiseBadge(),
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: _StagePill(
@@ -1636,6 +1645,32 @@ class _StagePill extends StatelessWidget {
             color: Colors.white,
             fontWeight: FontWeight.w800,
             letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SharpRiseBadge extends StatelessWidget {
+  const _SharpRiseBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      key: const ValueKey<String>('sharpRiseBadge'),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3D6),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFE3A008)),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Text(
+          'Sharp rise',
+          style: TextStyle(
+            color: Color(0xFF4A2B00),
+            fontWeight: FontWeight.w800,
           ),
         ),
       ),

@@ -814,6 +814,15 @@
   "messageWarmupBody": "Your sensor is settling in. Readings begin after about an hour — no action needed.",
   "messageTapReadingTitle": "Tip",
   "messageTapReadingBody": "Tap a point on the chart to see the exact reading and time.",
+  "messageSharpRiseTitle": "↑↑ Glucose is spiking",
+  "messageSharpRiseChange": "Up {change} mg/dL in {minutes} minutes",
+  "@messageSharpRiseChange": {
+    "placeholders": {
+      "change": {"type": "int"},
+      "minutes": {"type": "int"}
+    }
+  },
+  "messageSharpRisePrompt": "If walking is safe for you, take a short walk now and watch how your glucose responds.",
   "scenarioWarmup": "Warmup",
   "scenarioActiveNormal": "Active — normal",
   "scenarioActiveHigh": "Active — high (alert)",
