@@ -182,6 +182,44 @@ void main() {
       expect(_detect(outOfOrder), isNull);
     });
 
+    test('rejects flat, noisy, and insufficient-total-rise traces', () {
+      final flatStep = <CgmReading>[
+        _reading(95, at: _now.subtract(const Duration(minutes: 10))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 7))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 4))),
+        _reading(131, at: _now),
+      ];
+      final noisyFall = <CgmReading>[
+        _reading(95, at: _now.subtract(const Duration(minutes: 10))),
+        _reading(118, at: _now.subtract(const Duration(minutes: 7))),
+        _reading(110, at: _now.subtract(const Duration(minutes: 4))),
+        _reading(131, at: _now),
+      ];
+      final belowTwentyMgdl = <CgmReading>[
+        _reading(100, at: _now.subtract(const Duration(minutes: 10))),
+        _reading(110, at: _now.subtract(const Duration(minutes: 5))),
+        _reading(119, at: _now),
+      ];
+
+      expect(
+        _detect(flatStep),
+        isNull,
+        reason: 'the strictly increasing-step guard must reject a flat step',
+      );
+      expect(
+        _detect(noisyFall),
+        isNull,
+        reason:
+            'the strictly increasing-step guard must reject a falling noisy step despite a positive endpoint',
+      );
+      expect(
+        _detect(belowTwentyMgdl),
+        isNull,
+        reason:
+            'the 20 mg/dL total-rise guard must reject an otherwise coherent 19 mg/dL tail',
+      );
+    });
+
     test(
       'fails closed for unsafe, stale, malformed, or non-qualifying input',
       () {
