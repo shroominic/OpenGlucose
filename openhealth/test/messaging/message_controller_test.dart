@@ -132,37 +132,45 @@ void main() {
       expect(controller.topMessage?.id, 'always');
     });
 
-    test('orders by priority, then kind (alert>info>tip), then id', () async {
-      final controller = await _build(const <AppMessage>[
-        AppMessage(id: 'tip', kind: AppMessageKind.tip, title: 't', body: 'b'),
-        AppMessage(
-          id: 'info',
-          kind: AppMessageKind.info,
-          title: 't',
-          body: 'b',
-        ),
-        AppMessage(
-          id: 'alertLow',
-          kind: AppMessageKind.alert,
-          title: 't',
-          body: 'b',
-        ),
-        AppMessage(
-          id: 'alertHigh',
-          kind: AppMessageKind.alert,
-          title: 't',
-          body: 'b',
-          priority: 50,
-        ),
-      ]);
-      controller.updateContext(_context());
-      expect(controller.visibleMessages.map((m) => m.id).toList(), <String>[
-        'alertHigh',
-        'alertLow',
-        'info',
-        'tip',
-      ]);
-    });
+    test(
+      'orders by priority, then kind (alert>nudge>info>tip), then id',
+      () async {
+        final controller = await _build(const <AppMessage>[
+          AppMessage(
+            id: 'tip',
+            kind: AppMessageKind.tip,
+            title: 't',
+            body: 'b',
+          ),
+          AppMessage(
+            id: 'info',
+            kind: AppMessageKind.info,
+            title: 't',
+            body: 'b',
+          ),
+          AppMessage(
+            id: 'alertLow',
+            kind: AppMessageKind.alert,
+            title: 't',
+            body: 'b',
+          ),
+          AppMessage(
+            id: 'alertHigh',
+            kind: AppMessageKind.alert,
+            title: 't',
+            body: 'b',
+            priority: 50,
+          ),
+        ]);
+        controller.updateContext(_context());
+        expect(controller.visibleMessages.map((m) => m.id).toList(), <String>[
+          'alertHigh',
+          'alertLow',
+          'info',
+          'tip',
+        ]);
+      },
+    );
   });
 
   group('dismissal', () {

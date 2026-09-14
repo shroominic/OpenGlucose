@@ -68,9 +68,7 @@ void main() {
       controller.updateContext(_context());
 
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: MessageHost(controller: controller)),
-        ),
+        _localizedApp(Scaffold(body: MessageHost(controller: controller))),
       );
       await tester.pumpAndSettle();
 
@@ -105,9 +103,7 @@ void main() {
         ),
       );
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: MessageHost(controller: controller)),
-        ),
+        _localizedApp(Scaffold(body: MessageHost(controller: controller))),
       );
       await tester.pumpAndSettle();
       expect(find.textContaining('Up 36 mg/dL in 10 minutes'), findsOneWidget);

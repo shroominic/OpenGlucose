@@ -76,7 +76,7 @@ class AppMessage {
   final bool dismissible;
 
   /// Higher wins when multiple messages are eligible at once. Ties break on a
-  /// stable kind ordering (alert > info > tip) and then [id].
+  /// stable kind ordering (alert > nudge > info > tip) and then [id].
   final int priority;
 
   /// Show-once / show-until-dismissed semantics. See [AppMessagePersistence].

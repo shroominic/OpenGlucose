@@ -128,7 +128,8 @@ class MessageController extends ChangeNotifier {
     return a.id.compareTo(b.id);
   }
 
-  /// alert > info > tip when priority and (so the order is deterministic).
+  /// alert > nudge > info > tip when priority ties, so the order is
+  /// deterministic.
   static int _kindRank(AppMessageKind kind) => switch (kind) {
     AppMessageKind.alert => 3,
     AppMessageKind.nudge => 2,
