@@ -27,6 +27,7 @@ MessageContext buildMessageContext(
         : detectSharpRise(
             snapshot: snapshot,
             readings: controller.visibleHistory,
+            latestReading: latest,
             isWarmingUp: warmup?.phase == WarmupPhase.warming,
             now: effectiveNow,
           ),

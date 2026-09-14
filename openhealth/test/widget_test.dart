@@ -20,6 +20,63 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets(
+    'expires the sharp-rise surface when its injected clock advances without a reading update',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      var now = DateTime.utc(2026, 6, 22, 12);
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: DemoCgmDriver(
+          initialScenario: MockScenario.rapidRise,
+          clock: () => now,
+        ),
+      );
+      await controller.initialize();
+      await controller.connect(MockScenarioCatalog.sensor);
+      final messages = MessageController(
+        preferences: preferences,
+        messages: defaultMessageCatalog,
+      );
+
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+          messageController: messages,
+          clock: () => now,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey<String>('sharpRiseBadge')),
+        findsOneWidget,
+      );
+
+      now = now.add(const Duration(minutes: 6, microseconds: 1));
+      await tester.pump(const Duration(seconds: 15));
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey<String>('sharpRiseBadge')),
+        findsNothing,
+      );
+      expect(find.text('↑↑ Glucose is spiking'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
     'shows the sharp-rise badge only while the deterministic signal qualifies',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(320, 800));

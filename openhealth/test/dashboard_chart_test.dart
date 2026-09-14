@@ -1,8 +1,11 @@
+import 'dart:ui' as ui;
+
 import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/l10n/generated/app_localizations.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -38,6 +41,51 @@ void main() {
       );
 
       expect(find.bySemanticsLabel('Sharp rise chart tail'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'keeps a visually bounded amber tail after seven-day downsampling',
+    (tester) async {
+      final tailStart = DateTime.utc(2026, 4, 13, 11, 50);
+      final readings = _buildHistory(totalMinutes: 7 * 24 * 60);
+      readings.replaceRange(readings.length - 3, readings.length, <CgmReading>[
+        CgmReading(
+          valueMgdl: 95,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 10070,
+          recordedAt: tailStart,
+        ),
+        CgmReading(
+          valueMgdl: 111,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 10075,
+          recordedAt: tailStart.add(const Duration(minutes: 5)),
+        ),
+        CgmReading(
+          valueMgdl: 131,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 10080,
+          recordedAt: tailStart.add(const Duration(minutes: 10)),
+        ),
+      ]);
+      await tester.pumpWidget(
+        _chartHarness(
+          readings: readings,
+          historySync: const CgmHistorySyncState(
+            storedCount: 2017,
+            totalAvailable: 2017,
+          ),
+          sharpRiseTailStart: tailStart,
+        ),
+      );
+      await tester.tap(find.text('7d'));
+      await tester.pumpAndSettle();
+
+      final amberPixels = await _amberPixelCount(tester);
+      expect(find.bySemanticsLabel('Sharp rise chart tail'), findsOneWidget);
+      expect(amberPixels, greaterThan(0));
+      expect(amberPixels, lessThan(250));
     },
   );
   testWidgets('shows multi-day timeframe controls for long history', (
@@ -211,4 +259,23 @@ List<CgmReading> _buildHistory({required int totalMinutes}) {
     );
   }
   return readings;
+}
+
+Future<int> _amberPixelCount(WidgetTester tester) async {
+  final boundary = tester.renderObject<RenderRepaintBoundary>(
+    find.byKey(const ValueKey<String>('dashboardChartPaint')),
+  );
+  final image = await boundary.toImage(pixelRatio: 1);
+  final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+  final pixels = data!.buffer.asUint8List();
+  var count = 0;
+  for (var index = 0; index < pixels.length; index += 4) {
+    if (pixels[index] == 0xB8 &&
+        pixels[index + 1] == 0x6B &&
+        pixels[index + 2] == 0x00 &&
+        pixels[index + 3] == 0xFF) {
+      count += 1;
+    }
+  }
+  return count;
 }

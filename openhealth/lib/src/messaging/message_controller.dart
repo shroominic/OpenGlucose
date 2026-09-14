@@ -141,7 +141,9 @@ class MessageController extends ChangeNotifier {
       return false;
     }
     for (var i = 0; i < a.length; i += 1) {
-      if (a[i].id != b[i].id) {
+      if (a[i].id != b[i].id ||
+          a[i].title != b[i].title ||
+          a[i].body != b[i].body) {
         return false;
       }
     }

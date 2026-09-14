@@ -1606,6 +1606,15 @@ class AppLocalizationsEn extends AppLocalizations {
       'If walking is safe for you, take a short walk now and watch how your glucose responds.';
 
   @override
+  String get sharpRiseBadge => 'Sharp rise';
+
+  @override
+  String get sharpRiseNudgeSemantics => 'Sharp rise wellness nudge';
+
+  @override
+  String get sharpRiseChartTailSemantics => 'Sharp rise chart tail';
+
+  @override
   String get scenarioWarmup => 'Warmup';
 
   @override

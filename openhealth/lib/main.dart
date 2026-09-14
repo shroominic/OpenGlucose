@@ -331,6 +331,7 @@ class OpenGlucoseApp extends StatefulWidget {
     this.languageController,
     this.messageController,
     this.archivedSensorShareAction,
+    this.clock,
   });
 
   final CgmAppController controller;
@@ -344,6 +345,9 @@ class OpenGlucoseApp extends StatefulWidget {
 
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
+
+  /// Injectable clock for time-bounded dashboard surfaces.
+  final DateTime Function()? clock;
 
   @override
   State<OpenGlucoseApp> createState() => _OpenGlucoseAppState();
@@ -441,6 +445,7 @@ class _OpenGlucoseAppState extends State<OpenGlucoseApp> {
                 home: CgmHomePage(
                   controller: widget.controller,
                   messageController: widget.messageController,
+                  clock: widget.clock,
                 ),
               ),
               // --- end TASK-007 onboarding gate ---
@@ -502,10 +507,12 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.clock,
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
+  final DateTime Function()? clock;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -513,8 +520,10 @@ class CgmHomePage extends StatefulWidget {
 
 class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   static const _foregroundFreshnessInterval = Duration(seconds: 45);
+  static const _signalExpiryRebuildInterval = Duration(seconds: 15);
 
   Timer? _freshnessTimer;
+  Timer? _signalExpiryTimer;
 
   @override
   void initState() {
@@ -523,11 +532,17 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
       unawaited(widget.controller.ensureFreshData());
     });
+    _signalExpiryTimer = Timer.periodic(_signalExpiryRebuildInterval, (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
   }
 
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _signalExpiryTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -545,6 +560,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     return AnimatedBuilder(
       animation: widget.controller,
       builder: (context, _) {
+        final now = widget.clock?.call() ?? DateTime.now();
         final snapshot = widget.controller.snapshot;
         // Contextual-messaging bridge: recompute which messages are relevant
         // from the latest app state on every controller change. Deferred to
@@ -553,7 +569,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
         if (messageController != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             messageController.updateContext(
-              buildMessageContext(widget.controller),
+              buildMessageContext(widget.controller, now: now),
             );
           });
         }
@@ -577,6 +593,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                       controller: widget.controller,
                       snapshot: snapshot,
                       messageController: widget.messageController,
+                      now: now,
                     ),
             ),
           ),
@@ -1179,11 +1196,13 @@ class _DashboardView extends StatelessWidget {
     required this.controller,
     required this.snapshot,
     this.messageController,
+    required this.now,
   });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
   final MessageController? messageController;
+  final DateTime now;
 
   @override
   Widget build(BuildContext context) {
@@ -1191,7 +1210,7 @@ class _DashboardView extends StatelessWidget {
     final l10n = context.l10n;
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
-    final messageContext = buildMessageContext(controller);
+    final messageContext = buildMessageContext(controller, now: now);
     final sharpRise = messageContext.sharpRise;
     final warmup = computeWarmupStatus(
       snapshot,
@@ -1664,11 +1683,11 @@ class _SharpRiseBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: const Color(0xFFE3A008)),
       ),
-      child: const Padding(
+      child: Padding(
         padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Text(
-          'Sharp rise',
-          style: TextStyle(
+          context.l10n.sharpRiseBadge,
+          style: const TextStyle(
             color: Color(0xFF4A2B00),
             fontWeight: FontWeight.w800,
           ),

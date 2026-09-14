@@ -75,6 +75,40 @@ void main() {
       },
     );
 
+    test(
+      'notifies when live sharp-rise quantification changes under one id',
+      () async {
+        final controller = await _build(defaultMessageCatalog);
+        controller.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 36,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+        var notifications = 0;
+        controller.addListener(() => notifications += 1);
+
+        controller.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 42,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+
+        expect(notifications, 1);
+        expect(
+          controller.topMessage?.body,
+          startsWith('Up 42 mg/dL in 10 minutes'),
+        );
+      },
+    );
+
     test('surfaces only messages whose trigger matches the context', () async {
       final controller = await _build(defaultMessageCatalog);
 

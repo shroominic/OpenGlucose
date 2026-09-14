@@ -823,6 +823,9 @@
     }
   },
   "messageSharpRisePrompt": "If walking is safe for you, take a short walk now and watch how your glucose responds.",
+  "sharpRiseBadge": "Sharp rise",
+  "sharpRiseNudgeSemantics": "Sharp rise wellness nudge",
+  "sharpRiseChartTailSemantics": "Sharp rise chart tail",
   "scenarioWarmup": "Warmup",
   "scenarioActiveNormal": "Active — normal",
   "scenarioActiveHigh": "Active — high (alert)",

@@ -57,6 +57,131 @@ void main() {
       );
     });
 
+    test('requires the actual live latest reading to complete the tail', () {
+      final history = _readings(
+        <double>[95, 111, 131],
+        startMinutesAgo: 15,
+        middleMinutesAgo: 10,
+      );
+      final liveHigh = _reading(180, at: _now);
+      final liveProvisional = _reading(
+        131,
+        at: _now,
+        provisional: true,
+      );
+      final liveQualifying = _reading(131, at: _now);
+
+      expect(
+        _detect(history, latestReading: liveHigh),
+        isNull,
+        reason: 'a high live reading must suppress a history-only nudge',
+      );
+      expect(
+        _detect(history, latestReading: liveProvisional),
+        isNull,
+        reason: 'a provisional live reading must suppress a history-only nudge',
+      );
+      expect(
+        _detect(history.take(2).toList(), latestReading: liveQualifying),
+        isNull,
+        reason: 'the selected history tail must end at the live current sample',
+      );
+      expect(
+        _detect(<CgmReading>[...history.take(2), liveQualifying]),
+        isNotNull,
+      );
+    });
+
+    test('chooses the most recent coherent qualifying trailing window', () {
+      final history = <CgmReading>[
+        _reading(120, at: _now.subtract(const Duration(minutes: 20))),
+        _reading(95, at: _now.subtract(const Duration(minutes: 10))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 5))),
+      ];
+      final latest = _reading(131, at: _now);
+
+      final signal = _detect(history, latestReading: latest);
+
+      expect(signal?.changeMgdl, 36);
+      expect(signal?.durationMinutes, 10);
+    });
+
+    test('clears a stale signal only when clearing is explicit', () {
+      final signal = SharpRiseSignal(
+        changeMgdl: 36,
+        durationMinutes: 10,
+        tailStart: DateTime(2026, 6, 22, 11, 50),
+      );
+      final context = MessageContext(
+        hasSession: true,
+        isWarmingUp: false,
+        hasReadings: true,
+        now: _now,
+        sharpRise: signal,
+      );
+
+      expect(context.copyWith().sharpRise, same(signal));
+      expect(context.copyWith(clearSharpRise: true).sharpRise, isNull);
+    });
+
+    test('rejects strict freshness, ordering, gap, and slope boundaries', () {
+      final history = _readings(<double>[95, 111]);
+      final latest = _reading(131, at: _now);
+      final sparse = <CgmReading>[
+        _reading(95, at: _now.subtract(const Duration(minutes: 20))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 9))),
+        _reading(131, at: _now),
+      ];
+      final fractionalSlope = <CgmReading>[
+        _reading(
+          95,
+          at: _now.subtract(const Duration(minutes: 10, milliseconds: 500)),
+        ),
+        _reading(105, at: _now.subtract(const Duration(minutes: 5))),
+        _reading(115, at: _now),
+      ];
+      final duplicate = <CgmReading>[
+        _reading(95, at: _now.subtract(const Duration(minutes: 10))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 5))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 5))),
+        _reading(131, at: _now),
+      ];
+      final outOfOrder = <CgmReading>[
+        _reading(95, at: _now.subtract(const Duration(minutes: 10))),
+        _reading(111, at: _now.subtract(const Duration(minutes: 5))),
+        _reading(105, at: _now.subtract(const Duration(minutes: 7))),
+        _reading(131, at: _now),
+      ];
+
+      expect(
+        _detect(
+          history,
+          latestReading: latest,
+          now: _now.add(const Duration(minutes: 6)),
+        ),
+        isNotNull,
+      );
+      expect(
+        _detect(
+          history,
+          latestReading: latest,
+          now: _now.add(const Duration(minutes: 6, microseconds: 1)),
+        ),
+        isNull,
+      );
+      expect(
+        _detect(<CgmReading>[
+          ...history,
+          _reading(131, at: _now.add(const Duration(microseconds: 1))),
+        ]),
+        isNull,
+      );
+      expect(_detect(sparse), isNull);
+      expect(_detect(fractionalSlope), isNull);
+      expect(_detect(duplicate), isNull);
+      expect(_detect(outOfOrder), isNull);
+    });
+
     test(
       'fails closed for unsafe, stale, malformed, or non-qualifying input',
       () {
@@ -200,11 +325,11 @@ void main() {
         for (final entry in cases.entries) {
           final input = entry.value;
           expect(
-            detectSharpRise(
+            _detect(
+              input.readings,
               snapshot: input.snapshot,
-              readings: input.readings,
-              isWarmingUp: input.warming,
               now: input.now,
+              isWarmingUp: input.warming,
             ),
             isNull,
             reason: '${entry.key} must suppress the wellness nudge',
@@ -242,7 +367,38 @@ List<CgmReading> _provisional(List<CgmReading> readings) => <CgmReading>[
   readings.last.copyWith(isDisplayProvisional: true),
 ];
 
-CgmSessionSnapshot _readySnapshot(List<CgmReading> readings) =>
-    MockScenarioCatalog(clock: () => _now)
-        .buildSnapshot(MockScenario.activeNormal)
-        .copyWith(history: readings, latestReading: readings.last);
+CgmSessionSnapshot _readySnapshot(
+  List<CgmReading> readings, {
+  CgmReading? latestReading,
+}) => MockScenarioCatalog(clock: () => _now)
+    .buildSnapshot(MockScenario.activeNormal)
+    .copyWith(history: readings, latestReading: latestReading ?? readings.last);
+
+CgmReading _reading(
+  double value, {
+  required DateTime at,
+  bool provisional = false,
+}) => CgmReading(
+  valueMgdl: value,
+  source: CgmRecordSource.vendor,
+  recordedAt: at,
+  isDisplayProvisional: provisional,
+);
+
+SharpRiseSignal? _detect(
+  List<CgmReading> readings, {
+  CgmSessionSnapshot? snapshot,
+  CgmReading? latestReading,
+  bool isWarmingUp = false,
+  DateTime? now,
+}) {
+  final effectiveSnapshot =
+      snapshot ?? _readySnapshot(readings, latestReading: latestReading);
+  return detectSharpRise(
+    snapshot: effectiveSnapshot,
+    readings: readings,
+    latestReading: latestReading ?? effectiveSnapshot.latestReading,
+    isWarmingUp: isWarmingUp,
+    now: now ?? _now,
+  );
+}

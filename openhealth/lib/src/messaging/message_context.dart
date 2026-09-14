@@ -58,13 +58,14 @@ class MessageContext {
     bool? hasReadings,
     DateTime? now,
     SharpRiseSignal? sharpRise,
+    bool clearSharpRise = false,
   }) {
     return MessageContext(
       hasSession: hasSession ?? this.hasSession,
       isWarmingUp: isWarmingUp ?? this.isWarmingUp,
       hasReadings: hasReadings ?? this.hasReadings,
       now: now ?? this.now,
-      sharpRise: sharpRise ?? this.sharpRise,
+      sharpRise: clearSharpRise ? null : (sharpRise ?? this.sharpRise),
     );
   }
 }
@@ -77,6 +78,7 @@ class MessageContext {
 SharpRiseSignal? detectSharpRise({
   required CgmSessionSnapshot snapshot,
   required Iterable<CgmReading> readings,
+  CgmReading? latestReading,
   required bool isWarmingUp,
   required DateTime now,
 }) {
@@ -91,54 +93,70 @@ SharpRiseSignal? detectSharpRise({
     return null;
   }
 
+  final current = snapshot.latestReading;
+  if (current == null ||
+      (latestReading != null && !_sameReading(latestReading, current)) ||
+      !_isUsableCurrent(current, now)) {
+    return null;
+  }
   final allReadings = readings.toList(growable: false);
-  if (allReadings.length < 3 ||
-      allReadings.any(
-        (reading) =>
-            !reading.valueMgdl.isFinite ||
-            reading.recordedAt == null ||
-            reading.isDisplayProvisional,
-      )) {
+  if (allReadings.length < 3 || !_sameReading(allReadings.last, current)) {
     return null;
   }
-  final timestamped = allReadings.toList(growable: false)
-    ..sort((a, b) => a.recordedAt!.compareTo(b.recordedAt!));
-  final latest = timestamped.last;
-  final latestAge = now.difference(latest.recordedAt!);
-  if (latestAge.isNegative || latestAge > const Duration(minutes: 6)) {
-    return null;
+  for (var start = allReadings.length - 3; start >= 0; start -= 1) {
+    final candidate = allReadings.sublist(start);
+    final signal = _signalForTail(candidate, current);
+    if (signal != null) {
+      return signal;
+    }
   }
-  if (latest.valueMgdl < 100 || latest.valueMgdl >= 180) {
-    return null;
-  }
+  return null;
+}
 
-  final tailStartLimit = latest.recordedAt!.subtract(
-    const Duration(minutes: 20),
-  );
-  final tail = timestamped
-      .where((reading) => !reading.recordedAt!.isBefore(tailStartLimit))
-      .toList(growable: false);
-  if (tail.length < 3) {
+bool _isUsableCurrent(CgmReading reading, DateTime now) {
+  final recordedAt = reading.recordedAt;
+  if (!reading.valueMgdl.isFinite ||
+      recordedAt == null ||
+      reading.isDisplayProvisional ||
+      reading.valueMgdl < 100 ||
+      reading.valueMgdl >= 180) {
+    return false;
+  }
+  final age = now.difference(recordedAt);
+  return !age.isNegative && age <= const Duration(minutes: 6);
+}
+
+SharpRiseSignal? _signalForTail(
+  List<CgmReading> tail,
+  CgmReading current,
+) {
+  if (tail.length < 3 || !_sameReading(tail.last, current)) {
     return null;
   }
-  final span = latest.recordedAt!.difference(tail.first.recordedAt!);
+  for (final reading in tail) {
+    if (!reading.valueMgdl.isFinite ||
+        reading.recordedAt == null ||
+        reading.isDisplayProvisional) {
+      return null;
+    }
+  }
+  final span = current.recordedAt!.difference(tail.first.recordedAt!);
   if (span < const Duration(minutes: 10) ||
       span > const Duration(minutes: 20)) {
     return null;
   }
   for (var index = 1; index < tail.length; index += 1) {
     final previous = tail[index - 1];
-    final current = tail[index];
-    final gap = current.recordedAt!.difference(previous.recordedAt!);
+    final next = tail[index];
+    final gap = next.recordedAt!.difference(previous.recordedAt!);
     if (gap <= Duration.zero ||
         gap > const Duration(minutes: 10) ||
-        current.valueMgdl <= previous.valueMgdl) {
+        next.valueMgdl <= previous.valueMgdl) {
       return null;
     }
   }
-
-  final totalRise = latest.valueMgdl - tail.first.valueMgdl;
-  final spanMinutes = span.inSeconds / Duration.secondsPerMinute;
+  final totalRise = current.valueMgdl - tail.first.valueMgdl;
+  final spanMinutes = span.inMicroseconds / Duration.microsecondsPerMinute;
   if (totalRise < 20 || totalRise / spanMinutes < 2) {
     return null;
   }
@@ -148,3 +166,8 @@ SharpRiseSignal? detectSharpRise({
     tailStart: tail.first.recordedAt!,
   );
 }
+
+bool _sameReading(CgmReading left, CgmReading right) =>
+    left.valueMgdl == right.valueMgdl &&
+    left.recordedAt == right.recordedAt &&
+    left.isDisplayProvisional == right.isDisplayProvisional;

@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app_localizations_extension.dart';
+
 import 'app_message.dart';
 import 'message_controller.dart';
 
@@ -93,7 +95,7 @@ class _MessageCard extends StatelessWidget {
     return Semantics(
       container: true,
       label: message.kind == AppMessageKind.nudge
-          ? 'Sharp rise wellness nudge'
+          ? context.l10n.sharpRiseNudgeSemantics
           : null,
       child: DecoratedBox(
         key: ValueKey<String>('messageCard-${message.id}'),

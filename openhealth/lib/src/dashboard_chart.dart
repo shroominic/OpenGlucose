@@ -58,6 +58,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
           samples,
           timeframeMinutes: effectiveTimeframe,
           maxWidth: constraints.maxWidth,
+          sharpRiseTailStart: widget.sharpRiseTailStart,
         );
         final hasTimeframeControls = timeframes.length > 1;
         final overlayInsetTop = hasTimeframeControls ? 42.0 : 0.0;
@@ -225,6 +226,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
     List<_ReadingSample> samples, {
     required int timeframeMinutes,
     required double maxWidth,
+    DateTime? sharpRiseTailStart,
   }) {
     if (samples.isEmpty) {
       return const <_PlottedPoint>[];
@@ -245,26 +247,59 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
       width: maxWidth,
     );
     if (visibleSamples.length <= targetPoints) {
-      return visibleSamples
-          .map(
-            (sample) => _PlottedPoint(
-              id: sample.minute,
-              minute: sample.minute,
-              recordedAt: sample.recordedAt,
-              value: sample.value,
-              low: sample.value,
-              high: sample.value,
-              sampleCount: 1,
-            ),
-          )
-          .toList(growable: false);
+      return _rawPoints(visibleSamples);
     }
 
-    final bucketSize = (visibleSamples.length / targetPoints).ceil();
+    final tail = sharpRiseTailStart == null
+        ? const <_ReadingSample>[]
+        : visibleSamples
+              .where(
+                (sample) =>
+                    sample.recordedAt != null &&
+                    !sample.recordedAt!.isBefore(sharpRiseTailStart),
+              )
+              .toList(growable: false);
+    final beforeTail = tail.isEmpty
+        ? visibleSamples
+        : visibleSamples
+              .where(
+                (sample) =>
+                    sample.recordedAt == null ||
+                    sample.recordedAt!.isBefore(sharpRiseTailStart!),
+              )
+              .toList(growable: false);
+    return <_PlottedPoint>[
+      ..._aggregatePoints(beforeTail, targetPoints: targetPoints),
+      ..._rawPoints(tail),
+    ];
+  }
+
+  List<_PlottedPoint> _rawPoints(List<_ReadingSample> samples) => samples
+      .map(
+        (sample) => _PlottedPoint(
+          id: sample.minute,
+          minute: sample.minute,
+          recordedAt: sample.recordedAt,
+          value: sample.value,
+          low: sample.value,
+          high: sample.value,
+          sampleCount: 1,
+        ),
+      )
+      .toList(growable: false);
+
+  List<_PlottedPoint> _aggregatePoints(
+    List<_ReadingSample> samples, {
+    required int targetPoints,
+  }) {
+    if (samples.length <= targetPoints) {
+      return _rawPoints(samples);
+    }
+    final bucketSize = (samples.length / targetPoints).ceil();
     final points = <_PlottedPoint>[];
-    for (var start = 0; start < visibleSamples.length; start += bucketSize) {
-      final end = math.min(start + bucketSize, visibleSamples.length);
-      final bucket = visibleSamples.sublist(start, end);
+    for (var start = 0; start < samples.length; start += bucketSize) {
+      final end = math.min(start + bucketSize, samples.length);
+      final bucket = samples.sublist(start, end);
       final anchor = bucket[bucket.length ~/ 2];
       final values = bucket
           .map((sample) => sample.value)
@@ -373,21 +408,24 @@ class _InteractiveHistoryChart extends StatelessWidget {
               Semantics(
                 label: sharpRiseTailStart == null
                     ? null
-                    : 'Sharp rise chart tail',
-                child: CustomPaint(
-                  painter: _DashboardChartPainter(
-                    points: points,
-                    preferences: preferences,
-                    theme: Theme.of(context),
-                    timeframeMinutes: timeframeMinutes,
-                    selectedPointId: selectedPointId,
-                    chartStyle: chartStyle,
-                    overlayInsetTop: overlayInsetTop,
-                    sharpRiseTailStart: sharpRiseTailStart,
-                    localeName: localeName,
-                    minuteLabel: minuteLabel,
+                    : context.l10n.sharpRiseChartTailSemantics,
+                child: RepaintBoundary(
+                  key: const ValueKey<String>('dashboardChartPaint'),
+                  child: CustomPaint(
+                    painter: _DashboardChartPainter(
+                      points: points,
+                      preferences: preferences,
+                      theme: Theme.of(context),
+                      timeframeMinutes: timeframeMinutes,
+                      selectedPointId: selectedPointId,
+                      chartStyle: chartStyle,
+                      overlayInsetTop: overlayInsetTop,
+                      sharpRiseTailStart: sharpRiseTailStart,
+                      localeName: localeName,
+                      minuteLabel: minuteLabel,
+                    ),
+                    child: const SizedBox.expand(),
                   ),
-                  child: const SizedBox.expand(),
                 ),
               ),
               if (selectedPoint != null && selectedOffset != null)

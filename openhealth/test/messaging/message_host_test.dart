@@ -91,6 +91,70 @@ void main() {
     },
   );
 
+  testWidgets(
+    'rerenders live sharp-rise quantification after one message id updates',
+    (tester) async {
+      final controller = await _controllerFor(defaultMessageCatalog);
+      controller.updateContext(
+        _context().copyWith(
+          sharpRise: SharpRiseSignal(
+            changeMgdl: 36,
+            durationMinutes: 10,
+            tailStart: DateTime(2026, 6, 22, 11, 50),
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: MessageHost(controller: controller)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Up 36 mg/dL in 10 minutes'), findsOneWidget);
+
+      controller.updateContext(
+        _context().copyWith(
+          sharpRise: SharpRiseSignal(
+            changeMgdl: 42,
+            durationMinutes: 10,
+            tailStart: DateTime(2026, 6, 22, 11, 50),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Up 42 mg/dL in 10 minutes'), findsOneWidget);
+    },
+  );
+
+  testWidgets('localizes sharp-rise accessibility semantics', (tester) async {
+    final controller = await _controllerFor(defaultMessageCatalog);
+    controller.updateContext(
+      _context().copyWith(
+        sharpRise: SharpRiseSignal(
+          changeMgdl: 36,
+          durationMinutes: 10,
+          tailStart: DateTime(2026, 6, 22, 11, 50),
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(
+      _localizedApp(
+        Scaffold(
+          body: MessageHost(
+            controller: controller,
+            messageTextResolver: localizedCatalogMessageText,
+          ),
+        ),
+        locale: const Locale('zh'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.bySemanticsLabel('血糖快速上升提示'), findsOneWidget);
+  });
+
   testWidgets('renders the top message and dismisses it on tap', (
     tester,
   ) async {

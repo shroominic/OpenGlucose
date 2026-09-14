@@ -2581,6 +2581,24 @@ abstract class AppLocalizations {
   /// **'If walking is safe for you, take a short walk now and watch how your glucose responds.'**
   String get messageSharpRisePrompt;
 
+  /// No description provided for @sharpRiseBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharp rise'**
+  String get sharpRiseBadge;
+
+  /// No description provided for @sharpRiseNudgeSemantics.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharp rise wellness nudge'**
+  String get sharpRiseNudgeSemantics;
+
+  /// No description provided for @sharpRiseChartTailSemantics.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharp rise chart tail'**
+  String get sharpRiseChartTailSemantics;
+
   /// No description provided for @scenarioWarmup.
   ///
   /// In en, this message translates to:
