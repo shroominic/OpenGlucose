@@ -2,6 +2,33 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('backfill alias follows the original capability and serialized key', () {
+    const none = CgmCapabilities();
+    expect(none.supportsHistoryBackfill, isFalse);
+    final backfill = none.copyWith(supportsHistory: true);
+    expect(backfill.supportsHistoryBackfill, isTrue);
+    expect(
+      backfill.copyWith(supportsHistory: false).supportsHistoryBackfill,
+      isFalse,
+    );
+    final sensor = DiscoveredSensor(
+      driverId: 'synthetic',
+      deviceId: 'synthetic-device',
+      displayName: 'Synthetic',
+      storageKey: 'synthetic-storage',
+      rssi: -40,
+      capabilities: backfill,
+    );
+    final json = sensor.toJson();
+    final capabilities = json['capabilities']! as Map<String, Object?>;
+    expect(capabilities['supportsHistory'], isTrue);
+    expect(capabilities.containsKey('supportsHistoryBackfill'), isFalse);
+    expect(
+      DiscoveredSensor.fromJson(json).capabilities.supportsHistoryBackfill,
+      isTrue,
+    );
+  });
+
   test('mmol conversion uses standard divisor', () {
     expect(GlucoseUnit.mmolL.convertFromMgdl(180), 10);
   });

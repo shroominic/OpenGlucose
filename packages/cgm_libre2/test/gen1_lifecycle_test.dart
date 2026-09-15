@@ -8,6 +8,31 @@ void main() {
   );
 
   group('Gen1 lifecycle evidence', () {
+    for (final values in [
+      (0, 0),
+      (59, 20160),
+      (60, 20160),
+      (256, 0xffff),
+      (20161, 20160),
+      (0xffff, 0xffff),
+    ]) {
+      test('FRAM timing is an observation, not inferred lifecycle $values', () {
+        final timing = parseLibreGen1FramTiming(
+          core.decryptFram(
+            _encryptedFramFixture(0x07, age: values.$1, lifetime: values.$2),
+          ),
+        );
+        expect(timing.elapsedMinutes, values.$1);
+        expect(
+          timing.expectedLifetimeMinutes,
+          values.$2 == 0 ? null : values.$2,
+        );
+        // In particular age >= lifetime cannot replace the observed state.
+        expect(timing.lifecycle, LibreGen1LifecycleState.unknown);
+        expect(timing.toString(), 'LibreGen1FramTiming(data: <redacted>)');
+      });
+    }
+
     for (final entry in <(int, LibreGen1LifecycleState)>[
       (0x01, LibreGen1LifecycleState.notActivated),
       (0x02, LibreGen1LifecycleState.warmingUp),
@@ -54,9 +79,13 @@ void main() {
   });
 }
 
-List<int> _encryptedFramFixture(int lifecycleByte) {
+List<int> _encryptedFramFixture(int lifecycleByte, {int? age, int? lifetime}) {
   final referenceClear = _syntheticClearFram(0x03);
-  final desiredClear = _syntheticClearFram(lifecycleByte);
+  final desiredClear = _syntheticClearFram(
+    lifecycleByte,
+    age: age,
+    lifetime: lifetime,
+  );
   final referenceEncrypted = _hex(
     'fbd6e447b519369a3bfe1348b837c3820b31c742fe1c595f'
     'f557302d47328c477e07b30886ce3e4548a3c4873fe0cb5d'
@@ -80,9 +109,17 @@ List<int> _encryptedFramFixture(int lifecycleByte) {
   ];
 }
 
-List<int> _syntheticClearFram(int lifecycleByte) {
+List<int> _syntheticClearFram(int lifecycleByte, {int? age, int? lifetime}) {
   final bytes = List<int>.generate(344, (index) => (index * 73 + 19) & 0xff);
   bytes[4] = lifecycleByte;
+  if (age != null) {
+    bytes[316] = age & 0xff;
+    bytes[317] = age >> 8;
+  }
+  if (lifetime != null) {
+    bytes[326] = lifetime & 0xff;
+    bytes[327] = lifetime >> 8;
+  }
   _writeRegionCrc(bytes, 0, 24);
   _writeRegionCrc(bytes, 24, 320);
   _writeRegionCrc(bytes, 320, 344);

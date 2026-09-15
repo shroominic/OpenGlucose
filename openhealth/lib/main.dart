@@ -5,11 +5,16 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:openglucose/src/ai/ai_settings_pane.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
+import 'package:openglucose/src/bluetooth_enable_prompt.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
 import 'package:openglucose/src/libre2_nfc_setup.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
+import 'package:openglucose/src/libre_gen1_observation_store.dart';
+import 'package:openglucose/src/libre_nfc_history_pane.dart';
+import 'package:openglucose/src/libre_history_sync_prompt.dart';
+import 'package:openglucose/src/libre_nfc_history_tools.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
@@ -22,9 +27,11 @@ import 'package:openglucose/src/onboarding/onboarding_flow.dart';
 import 'package:openglucose/src/onboarding/onboarding_store.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:openglucose/src/sensor_archive_export.dart';
+import 'package:openglucose/src/sensor_archive_export_data.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sensor_connection_screen.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
+import 'package:openglucose/src/sensor_history_repository.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
@@ -63,10 +70,16 @@ Future<_BootstrapResult> _bootstrap() async {
   }
   final preferences = await SharedPreferences.getInstance();
   final healthStateStore = createHealthStateStore(preferences);
+  await healthStateStore.initialize();
+  final historyRepository = SensorHistoryRepository(healthStateStore);
+  await configurePlatformSensorHistory(
+    LibreGen1HistoryObservationStore(historyRepository),
+  );
   final controller = CgmAppController(
     preferences: preferences,
     driver: buildDefaultDriver(),
     healthStateStore: healthStateStore,
+    historyRepository: historyRepository,
   );
   await controller.initialize();
   final healthExport = HealthExportController(
@@ -91,6 +104,10 @@ Future<_BootstrapResult> _bootstrap() async {
     preferences: preferences,
     healthExport: healthExport,
     messages: messages,
+    libreHistoryTools: createPlatformLibreNfcHistoryTools(
+      controller: controller,
+      repository: historyRepository,
+    ),
   );
 }
 
@@ -99,6 +116,7 @@ typedef _BootstrapResult = ({
   HealthExportController healthExport,
   MessageController messages,
   SharedPreferences preferences,
+  LibreNfcHistoryTools? libreHistoryTools,
 });
 
 /// Scans with the demo driver and connects to the first discovered sensor so
@@ -147,6 +165,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           healthExport: result.healthExport,
           preferences: result.preferences,
           messageController: result.messages,
+          libreHistoryTools: result.libreHistoryTools,
         );
       },
     );
@@ -242,16 +261,14 @@ typedef ArchivedSensorShareAction = Future<void> Function(ShareParams params);
 
 typedef _ArchivedSensorExportRequest = ({
   ArchivedSensorExportFormat format,
-  ArchivedSensorSession session,
-  List<CgmReading> readings,
+  ArchivedSensorExportData data,
 });
 
 Uint8List _buildArchivedSensorExportInBackground(
   _ArchivedSensorExportRequest request,
-) => buildArchivedSensorExport(
+) => buildArchivedSensorExportFromData(
   format: request.format,
-  session: request.session,
-  readings: request.readings,
+  data: request.data,
 );
 
 class _ArchivedSensorShareScope extends InheritedWidget {
@@ -300,6 +317,7 @@ class OpenGlucoseApp extends StatelessWidget {
     required this.preferences,
     this.messageController,
     this.archivedSensorShareAction,
+    this.libreHistoryTools,
   });
 
   final CgmAppController controller;
@@ -313,6 +331,10 @@ class OpenGlucoseApp extends StatelessWidget {
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
 
+  /// Optional explicitly composed sensor history flow, absent in builds that
+  /// do not contain a reviewed decoder/reader pair.
+  final LibreNfcHistoryTools? libreHistoryTools;
+
   @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF0B6E69);
@@ -324,6 +346,12 @@ class OpenGlucoseApp extends StatelessWidget {
     return MaterialApp(
       title: 'OpenGlucose',
       debugShowCheckedModeBanner: false,
+      // Settings and archive details are pushed above the home route. Keep
+      // the share owner above Navigator so those routes retain it as well.
+      builder: (context, child) => _ArchivedSensorShareScope(
+        share: archivedSensorShareAction ?? _shareArchivedSensorFile,
+        child: child ?? const SizedBox.shrink(),
+      ),
       theme: ThemeData(
         colorScheme: colorScheme,
         scaffoldBackgroundColor: const Color(0xFFF6EFE6),
@@ -356,18 +384,16 @@ class OpenGlucoseApp extends StatelessWidget {
       // First-run only: show the skippable onboarding flow, then hand off to
       // the existing scan/connect home. Persisted via OnboardingStore; once
       // completed/skipped the gate falls straight through on later launches.
-      home: _ArchivedSensorShareScope(
-        share: archivedSensorShareAction ?? _shareArchivedSensorFile,
-        child: HealthExportScope(
-          controller: healthExport,
-          child: _OnboardingGate(
-            store: OnboardingStore(preferences),
+      home: HealthExportScope(
+        controller: healthExport,
+        child: _OnboardingGate(
+          store: OnboardingStore(preferences),
+          controller: controller,
+          unit: controller.displayPreferences.unit,
+          home: CgmHomePage(
             controller: controller,
-            unit: controller.displayPreferences.unit,
-            home: CgmHomePage(
-              controller: controller,
-              messageController: messageController,
-            ),
+            messageController: messageController,
+            libreHistoryTools: libreHistoryTools,
           ),
         ),
       ),
@@ -426,10 +452,16 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.presentationNow,
+    this.libreHistoryTools,
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
+  final LibreNfcHistoryTools? libreHistoryTools;
+
+  /// Optional clock for deterministic display-age tests; never drives I/O.
+  final DateTime Function()? presentationNow;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -451,6 +483,10 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     }
     _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
       unawaited(widget.controller.ensureFreshData());
+      if (mounted &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        setState(() {});
+      }
     });
   }
 
@@ -463,6 +499,12 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
 
   void _startSensorConnection() {
     if (mounted) setState(() => _connectionRequested = true);
+  }
+
+  void _finishSensorDisconnection() {
+    if (mounted && widget.controller.snapshot == null) {
+      setState(() => _connectionRequested = false);
+    }
   }
 
   @override
@@ -514,6 +556,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
               child: snapshot == null || _connectionRequested
                   ? _NoSensorHome(
                       controller: widget.controller,
+                      libreHistoryTools: widget.libreHistoryTools,
                       connectionRequested: _connectionRequested,
                       lastLibreActivationVerified: _lastLibreActivationVerified,
                       onConnect: _startSensorConnection,
@@ -522,8 +565,10 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                     )
                   : _DashboardView(
                       controller: widget.controller,
+                      libreHistoryTools: widget.libreHistoryTools,
                       snapshot: snapshot,
                       messageController: widget.messageController,
+                      presentationNow: widget.presentationNow,
                     ),
             ),
           ),
@@ -540,9 +585,11 @@ class _NoSensorHome extends StatelessWidget {
     required this.onConnect,
     required this.onCloseSetup,
     required this.lastLibreActivationVerified,
+    this.libreHistoryTools,
   });
 
   final CgmAppController controller;
+  final LibreNfcHistoryTools? libreHistoryTools;
   final bool connectionRequested;
   final bool lastLibreActivationVerified;
   final VoidCallback onConnect;
@@ -595,7 +642,11 @@ class _NoSensorHome extends StatelessWidget {
                         ),
                         IconButton(
                           tooltip: 'Settings',
-                          onPressed: () => _showSettings(context, controller),
+                          onPressed: () => _showSettings(
+                            context,
+                            controller,
+                            libreHistoryTools: libreHistoryTools,
+                          ),
                           color: Colors.white,
                           icon: const Icon(Icons.settings_outlined),
                         ),
@@ -648,7 +699,7 @@ class _NoSensorHome extends StatelessWidget {
               child: MacosPreviewNotice(),
             ),
           ),
-        if (archivedSensors.isNotEmpty)
+        if (archivedSensors.isNotEmpty || controller.archiveManifestUnavailable)
           SliverToBoxAdapter(
             child: _HistoricalOverviewCard(controller: controller),
           ),
@@ -666,6 +717,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final storedReadingCount = controller.archivedReadingCount;
     final readings = controller.allHistoricalReadings;
     final timestampedReadings = readings
         .where((reading) => reading.recordedAt != null)
@@ -701,9 +753,8 @@ class _HistoricalOverviewCard extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                '${controller.archivedSensors.length} previous '
-                '${controller.archivedSensors.length == 1 ? 'sensor' : 'sensors'} · '
-                '${readings.length} readings'
+                '${controller.archiveManifestUnavailable ? 'Saved sessions unavailable' : '${controller.archivedSensors.length} saved ${controller.archivedSensors.length == 1 ? 'session' : 'sessions'}'} · '
+                '${storedReadingCount == null ? 'Stored readings unavailable' : '$storedReadingCount stored readings'}'
                 '${latest == null ? '' : ' · last ${DateFormat('MMM d, HH:mm').format(latest.toLocal())}'}',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF5B6E6A),
@@ -737,7 +788,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
                         value: '${controller.archivedSensors.length}',
                       ),
                       const Text(
-                        'Each sensor keeps its own chart in Sensor archive, so '
+                        'Each session keeps its own chart in Sensor archive, so '
                         'separate sessions are never joined into one line.',
                         style: TextStyle(color: Color(0xFF5B6E6A)),
                       ),
@@ -775,11 +826,15 @@ class _DashboardView extends StatelessWidget {
     required this.controller,
     required this.snapshot,
     this.messageController,
+    this.presentationNow,
+    this.libreHistoryTools,
   });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
   final MessageController? messageController;
+  final DateTime Function()? presentationNow;
+  final LibreNfcHistoryTools? libreHistoryTools;
 
   @override
   Widget build(BuildContext context) {
@@ -795,6 +850,7 @@ class _DashboardView extends StatelessWidget {
     final isWarmingUp = warmup?.phase == WarmupPhase.warming;
     final remainingLife = sensorLifeText(
       snapshot.sessionInfo.sessionStart,
+      elapsedMinutes: snapshot.sessionInfo.elapsedMinutes,
       totalLife: Duration(
         minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
       ),
@@ -865,7 +921,12 @@ class _DashboardView extends StatelessWidget {
                     ),
                   ),
                   IconButton.filledTonal(
-                    onPressed: () => _showSettings(context, controller),
+                    tooltip: 'Settings',
+                    onPressed: () => _showSettings(
+                      context,
+                      controller,
+                      libreHistoryTools: libreHistoryTools,
+                    ),
                     icon: const Icon(Icons.tune_rounded),
                   ),
                 ],
@@ -882,6 +943,8 @@ class _DashboardView extends StatelessWidget {
             child: _DashboardHeroCard(
               controller: controller,
               snapshot: snapshot,
+              libreHistoryTools: libreHistoryTools,
+              presentationNow: presentationNow,
             ),
           ),
           if (!isWarmingUp)
@@ -914,23 +977,6 @@ class _DashboardView extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 12),
-                        if (history.any(
-                          (reading) => reading.isDisplayProvisional,
-                        )) ...<Widget>[
-                          const Text(
-                            'Includes provisional readings. Not validated for body glucose.',
-                            key: ValueKey<String>('historyQualityNotice'),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                        if (!snapshot.capabilities.supportsHistory &&
-                            !controller.isMockDriver) ...<Widget>[
-                          Text(
-                            'Readings received by this phone',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                          const SizedBox(height: 8),
-                        ],
                         SizedBox(
                           height: 336,
                           child: CgmDashboardChart(
@@ -989,10 +1035,17 @@ class _DashboardView extends StatelessWidget {
 }
 
 class _DashboardHeroCard extends StatefulWidget {
-  const _DashboardHeroCard({required this.controller, required this.snapshot});
+  const _DashboardHeroCard({
+    required this.controller,
+    required this.snapshot,
+    this.libreHistoryTools,
+    this.presentationNow,
+  });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
+  final LibreNfcHistoryTools? libreHistoryTools;
+  final DateTime Function()? presentationNow;
 
   @override
   State<_DashboardHeroCard> createState() => _DashboardHeroCardState();
@@ -1034,12 +1087,26 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     final theme = Theme.of(context);
     final preferences = widget.controller.displayPreferences;
     final snapshot = widget.snapshot;
+    final now = widget.presentationNow?.call() ?? DateTime.now();
     final latest = currentReadingForSnapshot(
       snapshot,
       widget.controller.displayLatestReading,
     );
-    final warmup = computeWarmupStatus(snapshot, latestReading: latest);
+    final warmup = computeWarmupStatus(
+      snapshot,
+      latestReading: latest,
+      now: now,
+    );
     final primaryError = primaryErrorTextForSnapshot(snapshot);
+    final showRetry =
+        primaryError != null &&
+        !widget.controller.sensorConnectionCleanupUnconfirmed &&
+        widget.controller.connectionRequiresUserAction;
+    final showHistorySync =
+        warmup == null &&
+        widget.libreHistoryTools != null &&
+        !widget.controller.sensorConnectionCleanupUnconfirmed &&
+        shouldOfferLibreNfcHistorySync(snapshot, now: now);
     final privateSupportCode =
         kOgPrivateSupport && shouldOfferPrivateBleSupportCode(snapshot)
         ? privateBleSupportCodeForSnapshot(snapshot)
@@ -1055,14 +1122,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
       subtitle = warmupSubtext(warmup);
       stageLabel = warmupStageLabel(warmup);
     } else {
-      final fallbackValue = isLibreGen1Snapshot(snapshot)
-          ? null
-          : snapshot.lastAdvertisement?.displayValueMgdl;
-      final displayedValue =
-          latest?.displayValue(preferences) ??
-          (fallbackValue == null
-              ? null
-              : preferences.unit.convertFromMgdl(fallbackValue));
+      final recent = dashboardReadingIsRecent(latest, now: now);
+      // Advertisements have no recording time. They cannot replace a missing
+      // or old verified reading with a current-looking dashboard value.
+      final displayedValue = recent ? latest!.displayValue(preferences) : null;
       bigValue = displayedValue == null
           ? '--'
           : displayedValue.toStringAsFixed(
@@ -1070,12 +1133,13 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
             );
       unitLabel = preferences.unit.label;
       subtitle = primaryError == null
-          ? (latest?.isDisplayProvisional == true
-                    ? null
-                    : libreConnectionDetailForSnapshot(snapshot)) ??
-                'Latest reading at ${readingTimeText(latest)}'
-          : 'Latest reading at ${readingTimeText(latest)}';
-      stageLabel = stageLabelForSnapshot(snapshot);
+          ? libreConnectionDetailForSnapshot(snapshot) ??
+                'Latest reading at ${readingTimeText(latest, now: now)}'
+          : 'Latest reading at ${readingTimeText(latest, now: now)}';
+      stageLabel =
+          snapshot.stage == CgmSyncStage.ready && latest != null && !recent
+          ? 'No recent reading'
+          : stageLabelForSnapshot(snapshot);
     }
 
     return Padding(
@@ -1097,6 +1161,9 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                         Flexible(
                           child: Text(
                             bigValue,
+                            key: const ValueKey<String>(
+                              'dashboardGlucoseValue',
+                            ),
                             maxLines: 1,
                             overflow: TextOverflow.fade,
                             softWrap: false,
@@ -1135,17 +1202,6 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   color: const Color(0xFFD6ECE7),
                 ),
               ),
-              if (latest?.isDisplayProvisional == true) ...<Widget>[
-                const SizedBox(height: 6),
-                Text(
-                  libreConnectionDetailForSnapshot(snapshot) ??
-                      'Provisional reading. Not yet verified.',
-                  key: const ValueKey<String>('provisionalReadingNotice'),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFFC7E4DD),
-                  ),
-                ),
-              ],
               if (primaryError != null) ...<Widget>[
                 const SizedBox(height: 12),
                 Text(
@@ -1165,35 +1221,45 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                       color: const Color(0xFFFFC4AA),
                     ),
                   ),
-                ] else if (widget
-                    .controller
-                    .connectionRequiresUserAction) ...<Widget>[
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: <Widget>[
+                ],
+              ],
+              if (snapshotNeedsBluetoothEnabled(snapshot) &&
+                  !widget
+                      .controller
+                      .sensorConnectionCleanupUnconfirmed) ...<Widget>[
+                const SizedBox(height: 12),
+                BluetoothEnablePrompt(
+                  key: ValueKey(
+                    'bluetoothEnable-${snapshot.sensor.driverId}-${snapshot.sensor.storageKey}',
+                  ),
+                  dark: true,
+                  onEnabled: () => widget.controller
+                      .retryBluetoothConnectionFor(snapshot.sensor),
+                ),
+              ],
+              if (showRetry || showHistorySync) ...<Widget>[
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    if (showRetry)
                       FilledButton.tonal(
-                        key: const ValueKey<String>('retryBleSetupButton'),
+                        key: const ValueKey('retryBleSetupButton'),
                         onPressed: () =>
                             unawaited(widget.controller.retryConnection()),
                         child: const Text('Try again'),
                       ),
-                      OutlinedButton(
-                        key: const ValueKey<String>(
-                          'chooseAnotherSensorButton',
-                        ),
-                        onPressed: () =>
-                            unawaited(widget.controller.chooseAnotherSensor()),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: const BorderSide(color: Color(0xFF9CC9C1)),
-                        ),
-                        child: const Text('Choose another sensor'),
+                    if (showHistorySync)
+                      LibreHistorySyncPrompt(
+                        key: const ValueKey('dashboardLibreHistoryPrompt'),
+                        controller: widget.controller,
+                        sensor: snapshot.sensor,
+                        tools: widget.libreHistoryTools!,
+                        dark: true,
                       ),
-                    ],
-                  ),
-                ],
+                  ],
+                ),
               ],
               if (privateSupportCode != null) ...<Widget>[
                 const SizedBox(height: 12),
@@ -1232,7 +1298,8 @@ class _StagePill extends StatelessWidget {
       'Setting up' ||
       'Reconnecting' ||
       'Warmup' ||
-      'Waiting' => const Color(0xFFF2A65A),
+      'Waiting' ||
+      'No recent reading' => const Color(0xFFF2A65A),
       _ => const Color(0xFF78A5A3),
     };
     return DecoratedBox(
@@ -1256,8 +1323,31 @@ class _StagePill extends StatelessWidget {
   }
 }
 
+String _sensorModel(String legacyModel, CgmSensorVariant? variant) =>
+    legacyModel.isNotEmpty ? legacyModel : variant?.model ?? '';
+
+List<Widget> _sensorVersionRows(
+  CgmSensorVariant? variant, {
+  required String legacyFirmware,
+}) => <Widget>[
+  if (variant?.variantCode case final String value)
+    _KeyValueRow(label: 'Sensor variant', value: value),
+  if (variant?.securityGeneration case final String value)
+    _KeyValueRow(label: 'Security version', value: value),
+  if (variant?.region case final String value)
+    _KeyValueRow(label: 'Region', value: value),
+  if (variant?.hardwareRevision case final String value)
+    _KeyValueRow(label: 'Hardware', value: value),
+  if (variant?.softwareRevision case final String value)
+    _KeyValueRow(label: 'Software', value: value),
+  if (variant?.firmwareRevision case final String value)
+    _KeyValueRow(label: 'Firmware', value: value)
+  else if (variant?.softwareRevision == null)
+    _KeyValueRow(label: 'Firmware', value: legacyFirmware),
+];
+
 class _KeyValueRow extends StatelessWidget {
-  const _KeyValueRow({required this.label, required this.value});
+  const _KeyValueRow({super.key, required this.label, required this.value});
 
   final String label;
   final String value;
@@ -1286,8 +1376,9 @@ class _KeyValueRow extends StatelessWidget {
 
 Future<void> _showSettings(
   BuildContext context,
-  CgmAppController controller,
-) async {
+  CgmAppController controller, {
+  LibreNfcHistoryTools? libreHistoryTools,
+}) async {
   final homeState = context.findAncestorStateOfType<_CgmHomePageState>();
   if (controller.snapshot != null) {
     unawaited(controller.refreshDiagnostics());
@@ -1352,6 +1443,9 @@ Future<void> _showSettings(
                         Navigator.of(context).pop<void>();
                         homeState?._startSensorConnection();
                       },
+                      onSensorDisconnected:
+                          homeState?._finishSensorDisconnection,
+                      libreHistoryTools: libreHistoryTools,
                       developerPane: snapshot == null
                           ? null
                           : _buildDeveloperSettingsPane(
@@ -1393,7 +1487,9 @@ class _SettingsOverview extends StatelessWidget {
     required this.displayPane,
     required this.hasActiveSensor,
     required this.onConnectSensor,
+    this.onSensorDisconnected,
     this.developerPane,
+    this.libreHistoryTools,
   });
 
   final CgmAppController controller;
@@ -1401,7 +1497,9 @@ class _SettingsOverview extends StatelessWidget {
   final Widget displayPane;
   final bool hasActiveSensor;
   final VoidCallback onConnectSensor;
+  final VoidCallback? onSensorDisconnected;
   final Widget? developerPane;
+  final LibreNfcHistoryTools? libreHistoryTools;
 
   @override
   Widget build(BuildContext context) {
@@ -1441,6 +1539,8 @@ class _SettingsOverview extends StatelessWidget {
                       context,
                       controller,
                       snapshot,
+                      onDisconnected: onSensorDisconnected,
+                      libreHistoryTools: libreHistoryTools,
                     );
                   },
                 )
@@ -1455,8 +1555,8 @@ class _SettingsOverview extends StatelessWidget {
                 icon: Icons.archive_outlined,
                 title: 'Sensor archive',
                 subtitle:
-                    '$archivedCount previous '
-                    '${archivedCount == 1 ? 'sensor' : 'sensors'}',
+                    '$archivedCount saved '
+                    '${archivedCount == 1 ? 'session' : 'sessions'}',
                 listenable: controller,
                 builder: (_) => _SensorArchivePane(controller: controller),
               ),
@@ -1618,6 +1718,7 @@ class _SettingsHero extends StatelessWidget {
                       ? 'Your previous data stays on this device.'
                       : sensorLifeText(
                           snapshot.sessionInfo.sessionStart,
+                          elapsedMinutes: snapshot.sessionInfo.elapsedMinutes,
                           totalLife: Duration(
                             minutes:
                                 snapshot.sessionInfo.expectedLifetimeMinutes,
@@ -1842,9 +1943,14 @@ class _SensorArchivePane extends StatelessWidget {
       itemBuilder: (context, index) {
         final session = sessions[index];
         final date = session.endedAt ?? session.lastReadingAt;
-        final displayReadingCount = controller
-            .displayReadingsForArchivedSensor(session)
-            .length;
+        int? displayReadingCount;
+        try {
+          displayReadingCount = controller
+              .displayReadingsForArchivedSensor(session)
+              .length;
+        } catch (_) {
+          // Do not show a corrupt archive as an empty, valid session.
+        }
         return Card(
           child: ListTile(
             minTileHeight: 76,
@@ -1855,7 +1961,7 @@ class _SensorArchivePane extends StatelessWidget {
             ),
             subtitle: Text(
               '${_archiveReasonLabel(session.reason)} · '
-              '$displayReadingCount readings'
+              '${displayReadingCount == null ? 'History unavailable' : '$displayReadingCount readings'}'
               '${date == null ? '' : ' · ${DateFormat('MMM d, y').format(date)}'}',
             ),
             trailing: const Icon(Icons.chevron_right_rounded),
@@ -1886,8 +1992,25 @@ class _ArchivedSensorDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rawReadings = controller.readingsForArchivedSensor(session);
-    final readings = controller.displayReadingsForArchivedSensor(session);
+    final List<CgmReading> rawReadings;
+    final List<CgmReading> readings;
+    try {
+      rawReadings = controller.readingsForArchivedSensor(session);
+      readings = controller.displayReadingsForArchivedSensor(session);
+    } catch (_) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Previous sensor')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Archived sensor data is unavailable.',
+              key: ValueKey<String>('archivedSensorDataUnavailable'),
+            ),
+          ),
+        ),
+      );
+    }
     final wellnessReadings = readingsForWellness(readings);
     final theme = Theme.of(context);
     var recapAnchor = session.lastReadingAt;
@@ -1938,23 +2061,32 @@ class _ArchivedSensorDetail extends StatelessWidget {
                         ? '--'
                         : DateFormat('MMM d, y HH:mm').format(session.endedAt!),
                   ),
-                  if (session.model.isNotEmpty)
-                    _KeyValueRow(label: 'Model', value: session.model),
+                  if (_sensorModel(
+                    session.model,
+                    session.sensorVariant,
+                  ).isNotEmpty)
+                    _KeyValueRow(
+                      label: 'Model',
+                      value: _sensorModel(session.model, session.sensorVariant),
+                    ),
+                  if (session.sensorVariant != null)
+                    ..._sensorVersionRows(
+                      session.sensorVariant,
+                      legacyFirmware: session.firmware,
+                    ),
+                  if (readingQualityLabelFor(readings)
+                      case final String quality)
+                    _KeyValueRow(
+                      key: const ValueKey<String>('sensorDataQuality'),
+                      label: 'Data quality',
+                      value: quality,
+                    ),
                 ],
               ),
             ),
           ),
           if (readings.isNotEmpty) ...<Widget>[
             const SizedBox(height: 16),
-            if (readings.any(
-              (reading) => reading.isDisplayProvisional,
-            )) ...<Widget>[
-              const Text(
-                'Includes provisional readings. Not validated for body glucose.',
-                key: ValueKey<String>('historyQualityNotice'),
-              ),
-              const SizedBox(height: 8),
-            ],
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -1993,21 +2125,27 @@ class _ArchivedSensorDetail extends StatelessWidget {
                 child: OutlinedButton.icon(
                   key: const ValueKey<String>('exportArchivedSensorData'),
                   onPressed: () async {
-                    final format = await _chooseArchivedSensorExportFormat(
-                      buttonContext,
-                      session: session,
-                      readings: rawReadings,
-                      displayReadingCount: readings.length,
-                    );
-                    if (format == null || !buttonContext.mounted) {
-                      return;
+                    try {
+                      final data = controller.archivedSensorExportData(session);
+                      final format = await _chooseArchivedSensorExportFormat(
+                        buttonContext,
+                        data: data,
+                        displayReadingCount: readings.length,
+                      );
+                      if (format == null || !buttonContext.mounted) {
+                        return;
+                      }
+                      await _exportArchivedSensorData(
+                        buttonContext,
+                        format: format,
+                        controller: controller,
+                        session: session,
+                      );
+                    } catch (_) {
+                      if (buttonContext.mounted) {
+                        _showArchivedSensorExportError(buttonContext);
+                      }
                     }
-                    await _exportArchivedSensorData(
-                      buttonContext,
-                      format: format,
-                      session: session,
-                      readings: rawReadings,
-                    );
                   },
                   icon: const Icon(Icons.ios_share_rounded),
                   label: const Text('Export data'),
@@ -2023,10 +2161,11 @@ class _ArchivedSensorDetail extends StatelessWidget {
 
 Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
   BuildContext context, {
-  required ArchivedSensorSession session,
-  required List<CgmReading> readings,
+  required ArchivedSensorExportData data,
   required int displayReadingCount,
 }) async {
+  final session = data.session;
+  final readings = data.readings;
   final hiddenWarmupCount = readings.length - displayReadingCount;
   DateTime? firstReadingAt;
   DateTime? lastReadingAt;
@@ -2127,6 +2266,11 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
               const Text('• Reading times, source, and sensor minute'),
               const Text('• Raw quality fields and provisional state'),
               const Text('• Archive reason and session timing'),
+              if (data.hasAcquisitionEvidence)
+                const Text(
+                  '• Acquisition method, first receipt, and timing basis',
+                  key: ValueKey<String>('archivedExportAcquisitionDisclosure'),
+                ),
               const SizedBox(height: 14),
               const Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2177,8 +2321,8 @@ String _archivedSensorFormatDescription(ArchivedSensorExportFormat format) =>
 Future<void> _exportArchivedSensorData(
   BuildContext context, {
   required ArchivedSensorExportFormat format,
+  required CgmAppController controller,
   required ArchivedSensorSession session,
-  required List<CgmReading> readings,
 }) async {
   final share = _ArchivedSensorShareScope.of(context);
   final renderBox = context.findRenderObject() as RenderBox?;
@@ -2187,10 +2331,12 @@ Future<void> _exportArchivedSensorData(
       : renderBox.localToGlobal(Offset.zero) & renderBox.size;
   String? preparedFilePath;
   try {
+    // Revalidate the exact archive at confirmation. A stale format dialog must
+    // not export a removed/corrupt archive from its earlier display snapshot.
+    final data = controller.archivedSensorExportData(session);
     final bytes = await compute(_buildArchivedSensorExportInBackground, (
       format: format,
-      session: session,
-      readings: List<CgmReading>.of(readings, growable: false),
+      data: data,
     ));
     final filename = archivedSensorExportFilename(format);
     preparedFilePath = await prepareArchivedSensorShareFileBytes(
@@ -2208,17 +2354,21 @@ Future<void> _exportArchivedSensorData(
       ),
     );
   } catch (_) {
-    if (!context.mounted) {
-      return;
+    if (context.mounted) {
+      _showArchivedSensorExportError(context);
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('The archived sensor data could not be exported.'),
-      ),
-    );
   } finally {
     await disposeArchivedSensorShareFile(preparedFilePath);
   }
+}
+
+void _showArchivedSensorExportError(BuildContext context) {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('The archived sensor data could not be exported.'),
+    ),
+  );
 }
 
 String _archiveReasonLabel(SensorArchiveReason reason) => switch (reason) {
@@ -2421,8 +2571,10 @@ Widget _buildDisplaySettingsPane({
 Widget _buildSensorSettingsPane(
   BuildContext context,
   CgmAppController controller,
-  CgmSessionSnapshot snapshot,
-) {
+  CgmSessionSnapshot snapshot, {
+  VoidCallback? onDisconnected,
+  LibreNfcHistoryTools? libreHistoryTools,
+}) {
   final sessionStart = snapshot.sessionInfo.sessionStart;
   final interruptedTransferState =
       snapshot.metadata[cgmBondTransferStateMetadataKey];
@@ -2442,7 +2594,9 @@ Widget _buildSensorSettingsPane(
       SensorLifecycleCard(
         snapshot: snapshot,
         latestReading: controller.displayLatestReading,
-        onReplaceSensor: () => unawaited(controller.replaceCurrentSensor()),
+        onReplaceSensor: controller.historyReadInProgress
+            ? null
+            : () => unawaited(controller.replaceCurrentSensor()),
         outerPadding: EdgeInsets.zero,
       ),
       if (supportsLiveGlucoseConsent) ...<Widget>[
@@ -2476,8 +2630,27 @@ Widget _buildSensorSettingsPane(
       ),
       const SizedBox(height: 8),
       _KeyValueRow(label: 'Serial', value: snapshot.sessionInfo.serial),
-      _KeyValueRow(label: 'Model', value: snapshot.sessionInfo.model),
-      _KeyValueRow(label: 'Firmware', value: snapshot.sessionInfo.firmware),
+      _KeyValueRow(
+        label: 'Model',
+        value: _sensorModel(
+          snapshot.sessionInfo.model,
+          snapshot.sessionInfo.sensorVariant,
+        ),
+      ),
+      ..._sensorVersionRows(
+        snapshot.sessionInfo.sensorVariant,
+        legacyFirmware: snapshot.sessionInfo.firmware,
+      ),
+      if (readingQualityLabelFor([
+            ...snapshot.history,
+            if (snapshot.latestReading case final CgmReading reading) reading,
+          ])
+          case final String quality)
+        _KeyValueRow(
+          key: const ValueKey<String>('sensorDataQuality'),
+          label: 'Data quality',
+          value: quality,
+        ),
       _KeyValueRow(
         label: 'Sensor start',
         value: sessionStart == null
@@ -2488,6 +2661,16 @@ Widget _buildSensorSettingsPane(
         label: 'History',
         value: '${snapshot.history.length} reading(s)',
       ),
+      if (snapshot.sensor.driverId == 'libre2-gen1' &&
+          libreHistoryTools != null) ...<Widget>[
+        const SizedBox(height: 18),
+        LibreNfcHistoryPane(
+          key: ValueKey<String>('libreHistory-${snapshot.sensor.storageKey}'),
+          sensor: snapshot.sensor,
+          tools: libreHistoryTools,
+          cleanupBlocked: controller.sensorConnectionCleanupUnconfirmed,
+        ),
+      ],
       const SizedBox(height: 18),
       Wrap(
         spacing: 12,
@@ -2501,6 +2684,7 @@ Widget _buildSensorSettingsPane(
             ),
             onPressed:
                 controller.bondTransferInFlight ||
+                    controller.historyReadInProgress ||
                     (hasInterruptedTransfer &&
                         !canAcknowledgeInterruptedTransfer)
                 ? null
@@ -2513,6 +2697,7 @@ Widget _buildSensorSettingsPane(
                   )
                 : () async {
                     await controller.disconnect();
+                    if (controller.snapshot == null) onDisconnected?.call();
                     if (context.mounted) {
                       Navigator.of(context).pop();
                     }
@@ -2697,6 +2882,7 @@ Widget _buildDeveloperSettingsPane({
   required TextEditingController cropController,
   required ValueChanged<MockScenario> onScenarioChanged,
 }) {
+  final supportsCalibration = snapshot.capabilities.supportsCalibration;
   final metadataEntries = <MapEntry<String, String>>[
     MapEntry('deviceId', snapshot.sensor.deviceId),
     MapEntry('driverId', snapshot.sensor.driverId),
@@ -2762,25 +2948,30 @@ Widget _buildDeveloperSettingsPane({
         ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
       ),
       const SizedBox(height: 6),
-      const Text(
-        'Advanced corrections for diagnostics and sensor-data troubleshooting.',
-        style: TextStyle(color: Color(0xFF5B6E6A)),
+      Text(
+        supportsCalibration
+            ? 'Advanced corrections for diagnostics and sensor-data troubleshooting.'
+            : 'Local history display options. Sensor calibration is not available.',
+        style: const TextStyle(color: Color(0xFF5B6E6A)),
       ),
       const SizedBox(height: 12),
+      if (supportsCalibration) ...<Widget>[
+        TextField(
+          key: const ValueKey<String>('advancedCalibrationScale'),
+          controller: scaleController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(labelText: 'Calibration scale'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: offsetController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(labelText: 'Calibration offset'),
+        ),
+        const SizedBox(height: 12),
+      ],
       TextField(
-        key: const ValueKey<String>('advancedCalibrationScale'),
-        controller: scaleController,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: const InputDecoration(labelText: 'Calibration scale'),
-      ),
-      const SizedBox(height: 12),
-      TextField(
-        controller: offsetController,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: const InputDecoration(labelText: 'Calibration offset'),
-      ),
-      const SizedBox(height: 12),
-      TextField(
+        key: const ValueKey<String>('advancedCropFirstSamples'),
         controller: cropController,
         keyboardType: TextInputType.number,
         decoration: const InputDecoration(labelText: 'Crop first N samples'),
@@ -2792,16 +2983,21 @@ Widget _buildDeveloperSettingsPane({
         children: <Widget>[
           FilledButton(
             onPressed: () {
-              final scale = double.tryParse(scaleController.text);
-              final offset = double.tryParse(offsetController.text);
+              final scale = supportsCalibration
+                  ? double.tryParse(scaleController.text)
+                  : null;
+              final offset = supportsCalibration
+                  ? double.tryParse(offsetController.text)
+                  : null;
               final crop = int.tryParse(cropController.text);
-              if (scale == null ||
-                  offset == null ||
-                  crop == null ||
-                  !scale.isFinite ||
-                  !offset.isFinite ||
-                  scale <= 0 ||
-                  crop < 0) {
+              if (crop == null ||
+                  crop < 0 ||
+                  (supportsCalibration &&
+                      (scale == null ||
+                          offset == null ||
+                          !scale.isFinite ||
+                          !offset.isFinite ||
+                          scale <= 0))) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('Enter valid engineering correction values.'),
@@ -2834,10 +3030,9 @@ Widget _buildDeveloperSettingsPane({
       ),
       if (!controller.isMockDriver) ...<Widget>[
         const SizedBox(height: 8),
-        const Text(
-          'Clears only the active sensor’s local cache. Sensor archive is not '
-          'deleted, and available readings may download again from the sensor.',
-          style: TextStyle(color: Color(0xFF5B6E6A)),
+        Text(
+          _activeSensorCacheDisclosure(snapshot.capabilities.supportsHistory),
+          style: const TextStyle(color: Color(0xFF5B6E6A)),
         ),
       ],
       const Divider(height: 28),
@@ -2883,24 +3078,26 @@ Widget _buildDeveloperSettingsPane({
           ],
           const Divider(height: 28),
         ],
-      Text(
-        'Calibrations',
-        style: Theme.of(
-          context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
-      ),
-      const SizedBox(height: 8),
-      if (calibrations.isEmpty)
-        const Text('No calibration entries loaded.')
-      else
-        for (final entry in calibrations)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Text(
-              '#${entry.index}  ${entry.glucoseMgdl ?? '--'} mg/dL  ${entry.recordedAt == null ? '' : DateFormat('MMM d, HH:mm').format(entry.recordedAt!.toLocal())}',
+      if (supportsCalibration) ...<Widget>[
+        Text(
+          'Calibrations',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 8),
+        if (calibrations.isEmpty)
+          const Text('No calibration entries loaded.')
+        else
+          for (final entry in calibrations)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(
+                '#${entry.index}  ${entry.glucoseMgdl ?? '--'} mg/dL  ${entry.recordedAt == null ? '' : DateFormat('MMM d, HH:mm').format(entry.recordedAt!.toLocal())}',
+              ),
             ),
-          ),
-      const SizedBox(height: 16),
+        const SizedBox(height: 16),
+      ],
       Text(
         'Logs',
         style: Theme.of(
@@ -2938,6 +3135,11 @@ Widget _buildDeveloperSettingsPane({
   );
 }
 
+String _activeSensorCacheDisclosure(bool supportsBackfill) =>
+    'This removes only the locally cached history for the active sensor. '
+    'Archived sensors and saved connection setup are kept. '
+    '${supportsBackfill ? 'Available readings may download again.' : 'This sensor cannot download removed readings again.'}';
+
 Future<void> _confirmClearActiveSensorCache(
   BuildContext context,
   CgmAppController controller,
@@ -2946,9 +3148,11 @@ Future<void> _confirmClearActiveSensorCache(
     context: context,
     builder: (context) => AlertDialog(
       title: const Text('Clear active sensor cache?'),
-      content: const Text(
-        'This removes only the locally cached history for the active sensor. '
-        'Archived sensors are kept, and available readings may download again.',
+      content: Text(
+        _activeSensorCacheDisclosure(
+          controller.snapshot?.capabilities.supportsHistory == true,
+        ),
+        key: const ValueKey<String>('clearActiveSensorCacheDisclosure'),
       ),
       actions: <Widget>[
         TextButton(

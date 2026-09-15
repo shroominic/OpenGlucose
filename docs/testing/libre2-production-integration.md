@@ -1,9 +1,11 @@
 # Libre 2 Android production integration
 
-Status: extraction started; production NFC remains disabled. Updated 2026-09-05.
+Status: recorder-free read-only Android integration implemented, default off;
+saved-receiver composition is now available only in explicitly opted-in Android
+debug validation. Production sensor connection remains disabled. Updated 2026-09-10.
 Scope: the reviewed Libre 2 security-Gen1 branch, not Plus, Gen2, or Libre 3.
 
-## Completed, not wired
+## Read-only core and Android integration
 
 [Libre2Gen1ReadTransaction](../../openhealth/android/app/src/main/java/com/aidex/aidex_flutter/Libre2Gen1ReadTransaction.java)
 is a pure, injected read-only core. It sends one patch-information read and
@@ -20,35 +22,82 @@ transport/close failures, evidence isolation, and no retry. Run
 `./scripts/test-libre-nfc-java.sh`; all eleven suites passed for this extraction.
 These tests do not establish physical-device or production support.
 
+The core is now used by `Libre2NfcSessionCoordinator` and `Libre2NfcBridge`.
+The explicit Gradle property `openGlucoseLibreNfcReadOnly=true` selects this
+reader instead of the debug recorder. Its default is `false`; malformed values
+fail the build. The main manifest declares NFC as an optional hardware feature.
+The normal AiDEX registry is unchanged. In release/profile this option does not
+enable the Libre BLE receiver. Android debug builds can additionally restore
+an existing receiver through the separate private-validation composition below.
+No decoder, activation, or streaming setup is enabled by this option.
+
+The dedicated method channel is `com.openglucose/libre2`; closed UI events use
+`com.openglucose/libre2_events`. `capabilities({})` has exactly seven fields:
+`schemaVersion: 1`, `backend: readOnly`, `readAvailable`, and four false flags:
+`activationAvailable`, `streamingAvailable`, `receiverAvailable`, `rawCapture`.
+The only reader operations are `startLibre2NfcSetup` and exact-attempt
+`stopLibre2NfcSetup`.
+No raw sensor identifiers, FRAM, coefficients, receiver bytes, or native error
+text enter these events. NFC disabled and foreground checks happen again at
+start. Android reader mode is [foreground scoped](https://developer.android.com/reference/android/nfc/NfcAdapter#enableReaderMode(android.app.Activity,%20android.nfc.NfcAdapter.ReaderCallback,%20int,%20android.os.Bundle)).
+
+The coordinator bounds one attempt to 120 seconds, serializes read operations,
+revokes on pause/exact-attempt stop/detach, and publishes success only after confirmed
+transport close, reader shutdown, and exact-owner lease release. Uncertain
+cleanup keeps the lease and blocks reuse, including after a late close. The
+read evidence is wiped after the closed lifecycle result; this slice creates
+no reusable activation/streaming proof.
+
+Before reader admission, the backend syncs the owner file and each containing
+directory, then rechecks exact ownership. Cleanup performs all fallible sync
+and owner checks before deletion. Successful exact-owner lease-directory
+deletion is the release success point; no later fallible sync can turn that
+success into an uncertain result with no restart blocker. A crash can restore
+a released lease and conservatively block reuse. A pre-delete or partial-delete
+failure retains the directory blocker. The app never recreates or resets an
+unknown lease. An eight-second watchdog quarantines pending cleanup even if
+Dart disappears after native start fails.
+
+Cancelling an event subscription stops event delivery, not RF ownership. Normal
+UI teardown sends exact-attempt stop separately. An unexpected lost listener
+cannot cancel a newer owner; foreground and attempt deadlines still apply.
+
+`libre2_platform.dart` selects the matching method/event backend without a
+fallback to debug capture. Native capability validation enables the existing
+inline UI. A cancelled capability lookup cannot dispatch a late native start;
+after dispatch, capability loss cannot skip native cleanup. Read-only sessions
+cannot poll/accept activation proof or return a completed-read handoff token.
+Native pause can invalidate a displayed read without reviving it from its
+expired UI timer. The debug setup behavior remains separate.
+
+This first slice intentionally blocks existing receiver/calibration files,
+capture/grant/journal contents, and uncertain legacy leases. It neither deletes
+nor migrates them. The current private sensor container is therefore not an
+eligible test container for this backend. Do not clear that container to make
+the check pass. Physical testing requires a separately approved eligible
+device/container, with no hidden receiver migration or sensor-changing command.
+
 ## Next implementation slices
 
-1. **Foreground reader and dedicated channel (R2).** Add proposed
-   `Libre2NfcBridge.java` and `Libre2NfcSessionCoordinator.java`. Use
-   `com.openglucose/libre2` and `com.openglucose/libre2_events`, with strict
-   capabilities and the existing closed start/stop/status vocabulary. Update
-   `MainActivity.java` lifecycle forwarding and an explicit, default-off native
-   build option in `android/app/build.gradle.kts`. Select exactly one backend
-   per build: production reader or debug recorder, never two reader-mode owners.
-   Add optional NFC permission/feature to the main manifest only with this
-   reviewed integration. Do not enable release tracing or weaken recorder gates.
+1. **Validate the read-only integration (R2).** Run the native coordinator,
+   Dart routing, UI, and default/opt-in Android builds. Then collect physical
+   foreground, tag-loss, pause/cancel, expiry, and close evidence on an eligible
+   container. Passing synthetic tests is not physical reader validation.
 
-   The coordinator owns one explicit attempt, tag, native/process generation,
-   foreground lease, and bounded monotonic deadline. Its Android adapter must
-   validate the ISO15693 manufacturer and serialize actual connect/transceive
-   calls with the native authorization lock. The core's separate `Guard`
-   callbacks are not an atomic RF mutex. Cancellation must close exactly once;
-   uncertain close retains the lease and blocks a replacement attempt. Retain
-   fresh read evidence only in native memory, with attempt and observation
-   clocks; raw evidence must not enter Flutter UI or ordinary logs.
-
-2. **Dart routing, without a new UI.** Add proposed `libre2_platform.dart` to
-   select capabilities/methods/events. Inject it into `libre2_nfc_setup.dart`,
-   `libre_gen1_streaming_setup.dart`, and `libre_gen1_secure_store.dart`, which
-   already have test injection points. Update factories in
-   `sensor_connection_screen.dart`; keep the current inline widgets. Availability
-   must come from strict native capabilities, not a hard-coded success or
-   `kDebugMode`. Keep AiDEX registered. Add Libre to the normal registry only
-   when the receiver slice is complete; retain its discovery-restore hook.
+2. **Complete receiver integration.** Recorder-free native/store/transport
+   components now exist with a separate exact-owner channel and durable
+   connection lease. See the [receiver contract](libre2-receiver-integration.md).
+   The existing recorder-free selector now registers the separate bridge only
+   in debuggable applications. Android debug normal-main composition can restore
+   an exact saved receiver without capture or enrollment authority. Normal
+   release composition, process-death/unknown-owner recovery, initial enrollment,
+   and device evidence are still required.
+   A separate exact-receiver NFC history purpose now reuses the existing reader
+   and importer after BLE cleanup. The existing private glucose entry can inject
+   protected calibration without trace flags; normal main stays decoder-free.
+   This is not new enrollment or a distribution approval.
+   Do not route receiver methods to the read-only channel or bypass a retained
+   lease. The installed private driver still uses the recorder path.
 
 3. **Streaming receiver (separate R3 slice).** Add a production streaming
    transaction that accepts only fresh, same-target native read evidence.

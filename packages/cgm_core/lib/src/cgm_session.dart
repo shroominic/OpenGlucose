@@ -25,6 +25,10 @@ abstract interface class CgmSession {
 
   Future<void> refreshLiveData();
 
+  /// Request sensor backfill only when capabilities.supportsHistoryBackfill.
+  /// The optional offset follows the driver's documented normalized cursor
+  /// contract; it is not a universal record index or permission to replay setup.
+  /// A null offset lets the driver select its safe resume point.
   Future<void> syncHistory({
     bool includeRawHistory = false,
     int? requestedStartOffset,

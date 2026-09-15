@@ -11,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.SystemClock;
 
 import java.io.Serializable;
 import java.lang.reflect.Method;
@@ -18,6 +19,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.UUID;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -26,8 +28,12 @@ public final class GlucoseLiveUpdateService extends Service {
   private static final String BRAND_NAME = "OpenGlucose";
   static final String ACTION_UPSERT =
       "com.aidex.aidex_flutter.action.UPSERT_LIVE_UPDATE";
-  static final String ACTION_END =
-      "com.aidex.aidex_flutter.action.END_LIVE_UPDATE";
+  static final String ACTION_CONNECTION_STATUS =
+      "com.aidex.aidex_flutter.action.CONNECTION_STATUS";
+  static final String EXTRA_PROCESS_TOKEN = "service_process_token";
+  static final String EXTRA_OPERATION_EPOCH = "service_operation_epoch";
+  static final LiveUpdateServiceLifecycle LIFECYCLE =
+      new LiveUpdateServiceLifecycle(UUID.randomUUID().toString(), SystemClock::elapsedRealtime);
   static final String PREFS_NAME = "glucose_live_update";
   static final String PREF_BACKGROUND_SENSOR = "background_sensor_name";
   static final String PREF_BACKGROUND_SERIAL = "background_sensor_serial";
@@ -42,41 +48,49 @@ public final class GlucoseLiveUpdateService extends Service {
   private static final int COLOR_TEAL = 0xFF2E7D74;
 
   @Override
-  public void onCreate() {
-    super.onCreate();
-    ensureNotificationChannel();
+  public int onStartCommand(Intent intent, int flags, int startId) {
+    final boolean statusOnly = intent != null && ACTION_CONNECTION_STATUS.equals(intent.getAction());
+    final boolean knownAction = statusOnly || (intent != null && ACTION_UPSERT.equals(intent.getAction()));
+    final LiveUpdateServiceLifecycle.Operation operation = knownAction
+        ? LIFECYCLE.admit(intent.getStringExtra(EXTRA_PROCESS_TOKEN),
+            intent.getLongExtra(EXTRA_OPERATION_EPOCH, 0), statusOnly) : null;
+    if (operation == null) {
+      // Ignore an old intent without stopping a newer operation. Null sticky
+      // restarts and intents from another process incarnation have no owner.
+      if (LIFECYCLE.current() == null) stopWithoutOwner();
+      return START_NOT_STICKY;
+    }
+    try {
+      Map<String, Object> payload = statusOnly
+          ? LiveUpdateServiceLifecycle.connectionStatusPayload() : payloadFromIntent(intent);
+      if (payload.isEmpty()) payload = loadPersistedPayload();
+      if (payload.isEmpty()) payload = buildFallbackPayload();
+      if (payload.isEmpty() || !persistPayload(this, payload)) {
+        throw new IllegalStateException("Private status storage unavailable.");
+      }
+      ensureNotificationChannel();
+      final Notification notification = statusOnly
+          ? buildConnectionStatusNotification() : buildNotification(payload);
+      if (!LIFECYCLE.beforeForeground(operation)) {
+        if (LIFECYCLE.current() == null) stopWithoutOwner();
+        return START_NOT_STICKY;
+      }
+      startForegroundCompat(notification);
+      if (!LIFECYCLE.started(operation) && LIFECYCLE.current() == null) {
+        stopWithoutOwner();
+      }
+    } catch (RuntimeException error) {
+      if (LIFECYCLE.fail(operation, LiveUpdateServiceLifecycle.Failure.START_FAILED)) {
+        stopWithoutOwner();
+      }
+    }
+    return START_NOT_STICKY;
   }
 
-  @Override
-  public int onStartCommand(Intent intent, int flags, int startId) {
-    if (intent != null && ACTION_END.equals(intent.getAction())) {
-      clearPersistedPayload(this);
-      stopForegroundCompat();
-      stopSelf();
-      return START_NOT_STICKY;
-    }
-
-    Map<String, Object> payload = payloadFromIntent(intent);
-    if (payload.isEmpty()) {
-      payload = loadPersistedPayload();
-    }
-    if (payload.isEmpty()) {
-      payload = buildFallbackPayload();
-    }
-    if (payload.isEmpty()) {
-      stopForegroundCompat();
-      stopSelf();
-      return START_NOT_STICKY;
-    }
-
-    if (!persistPayload(this, payload)) {
-      stopForegroundCompat();
-      stopSelf();
-      return START_NOT_STICKY;
-    }
-    final Notification notification = buildNotification(payload);
-    startForegroundCompat(notification);
-    return START_STICKY;
+  private void stopWithoutOwner() {
+    try { clearPersistedPayload(this); } catch (RuntimeException ignored) { }
+    try { stopForegroundCompat(); } catch (RuntimeException ignored) { }
+    stopSelf();
   }
 
   @Override
@@ -118,6 +132,9 @@ public final class GlucoseLiveUpdateService extends Service {
   }
 
   private Notification buildNotification(Map<String, Object> payload) {
+    if (Boolean.TRUE.equals(payload.get("connectionStatusOnly"))) {
+      return buildConnectionStatusNotification();
+    }
     final String valueText = stringValue(payload, "valueText", "--");
     final String unitText = stringValue(payload, "unitText", "mg/dL");
     final String detailText = stringValue(payload, "detailText", "Waiting for sensor");
@@ -228,6 +245,23 @@ public final class GlucoseLiveUpdateService extends Service {
         CHANNEL_ID,
         buildLaunchIntent(),
         stringValue(payload, "stageLabel", "Sensor active"));
+  }
+
+  private Notification buildConnectionStatusNotification() {
+    final Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
+    builder.setSmallIcon(R.drawable.ic_glucose_notification)
+        .setContentTitle(BRAND_NAME)
+        .setContentText("Sensor connection service is running")
+        .setContentIntent(buildLaunchIntent())
+        .setCategory(Notification.CATEGORY_STATUS)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setShowWhen(false)
+        .setColor(COLOR_TEAL);
+    requestImmediateForeground(builder);
+    return builder.build();
   }
 
   static Integer validatedWarmupMinutes(Map<String, Object> payload) {

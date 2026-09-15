@@ -217,6 +217,9 @@ final class DebugProtocolCaptureBridge {
     new MethodChannel(messenger, CHANNEL_NAME)
         .setMethodCallHandler(
             (call, result) -> {
+              if (handleLibreFreshHistoryEvidenceMethod(call.method, call.arguments, result)) {
+                return;
+              }
               if (handleLibreReceiverReuseProofMethod(call.method, call.arguments, result)) {
                 return;
               }
@@ -883,6 +886,8 @@ final class DebugProtocolCaptureBridge {
   }
 
   private void captureTag(Tag tag) {
+    final NfcRfReadiness.CallbackCompletion completion =
+        new NfcRfReadiness.CallbackCompletion();
     synchronized (rfAuthorizationLock) {
       if (nfcCallbackActive || inFlightNfcV != null) {
         return;
@@ -890,15 +895,17 @@ final class DebugProtocolCaptureBridge {
       nfcCallbackActive = true;
     }
     try {
-      captureTagOnce(tag);
+      captureTagOnce(tag, completion);
     } finally {
-      synchronized (rfAuthorizationLock) {
-        nfcCallbackActive = false;
-      }
+      completion.finish(() -> {
+        synchronized (rfAuthorizationLock) {
+          nfcCallbackActive = false;
+        }
+      });
     }
   }
 
-  private void captureTagOnce(Tag tag) {
+  private void captureTagOnce(Tag tag, NfcRfReadiness.CallbackCompletion completion) {
     final StreamingAttempt streaming;
     synchronized (rfAuthorizationLock) { streaming = streamingAttempt; }
     if (streaming != null) {
@@ -1037,7 +1044,8 @@ final class DebugProtocolCaptureBridge {
           techList,
           patchInfoCommand,
           nfcV,
-          explicitAttempt);
+          explicitAttempt,
+          completion);
       return;
     }
 
@@ -1601,7 +1609,8 @@ final class DebugProtocolCaptureBridge {
       JSONArray techList,
       byte[] patchInfoCommand,
       NfcV nfcV,
-      Libre2NfcSetupAttempt attempt) {
+      Libre2NfcSetupAttempt attempt,
+      NfcRfReadiness.CallbackCompletion completion) {
     if (!beginExplicitNfcSetupRfOperation(
         expectedCaptureEpoch,
         authorizationGeneration,
@@ -1872,14 +1881,21 @@ final class DebugProtocolCaptureBridge {
           final LibreGen1CalibrationPersistence.Result cacheResult =
               preserveMatchedCalibrationEvidence(
                   expectedCaptureEpoch, targetUid, patchInfoResponse, encryptedFram);
-          publishExplicitUiEventForEpoch(
-              expectedCaptureEpoch,
-              attempt,
-              "metadataRead",
-              classified.model,
-              lifecycle,
-              null);
-          recordCalibrationCacheResultAfterUi(expectedCaptureEpoch, cacheResult);
+          final String completedModel = classified.model;
+          final String completedLifecycle = lifecycle;
+          // Dart can immediately query fresh evidence on metadataRead. Deliver
+          // only after the outer tag callback clears its active guard and this
+          // method wipes its buffers; stop alone cannot prove callback drain.
+          completion.defer(() -> {
+            publishExplicitUiEventForEpoch(
+                expectedCaptureEpoch,
+                attempt,
+                "metadataRead",
+                completedModel,
+                completedLifecycle,
+                null);
+            recordCalibrationCacheResultAfterUi(expectedCaptureEpoch, cacheResult);
+          });
         }
       }
       if (patchInfoResponse != null) {
@@ -2241,6 +2257,120 @@ final class DebugProtocolCaptureBridge {
       appendReservedEventForEpoch(
           expectedCaptureEpoch, "nfc.connection.closed", new JSONObject());
       releaseNfcTransactionTrace(expectedCaptureEpoch);
+    }
+  }
+
+  private boolean handleLibreFreshHistoryEvidenceMethod(
+      String method, Object arguments, MethodChannel.Result result) {
+    if (!"readLibreGen1FreshHistoryEvidence".equals(method)) return false;
+    try {
+      final Map<?, ?> args = exactStreamingArguments(arguments, 2);
+      final String attemptId = requiredSafeToken(args, "attemptId");
+      final String bootstrapId = requiredSafeToken(args, "bootstrapId");
+      final long expectedEpoch = captureEpoch;
+      final long expectedGeneration;
+      synchronized (rfAuthorizationLock) { expectedGeneration = rfAuthorizationGeneration; }
+      statusExecutor.execute(() -> {
+        LibreGen1ReceiverReuseProof.FreshHistoryEvidence pending = null;
+        try {
+          pending = readLibreGen1FreshHistoryEvidence(
+              attemptId, bootstrapId, expectedEpoch, expectedGeneration);
+          final LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence = pending;
+          if (!mainHandler.post(() -> {
+            try {
+              deliverLibreGen1FreshHistoryEvidence(evidence, expectedEpoch, expectedGeneration, result);
+            } catch (Exception unavailable) {
+              result.error("libre_history_evidence_unavailable",
+                  "Fresh Libre history evidence is unavailable.", null);
+            } finally {
+              evidence.close();
+            }
+          })) throw new IOException("Fresh Libre history evidence is unavailable.");
+          pending = null; // The posted callback now owns cleanup, including revocation.
+        } catch (Exception unavailable) {
+          if (pending != null) pending.close();
+          postResult(() -> result.error("libre_history_evidence_unavailable",
+              "Fresh Libre history evidence is unavailable.", null));
+        }
+      });
+    } catch (IllegalArgumentException invalid) {
+      result.error("bad_args", "Invalid fresh Libre history request.", null);
+    } catch (RejectedExecutionException closed) {
+      result.error("capture_closed", "Protocol capture worker is closed.", null);
+    }
+    return true;
+  }
+
+  /** Fixed fresh explicit-read source only. No cache fallback, file mutation or RF. */
+  private LibreGen1ReceiverReuseProof.FreshHistoryEvidence readLibreGen1FreshHistoryEvidence(
+      String attemptId, String bootstrapId, long expectedEpoch, long expectedGeneration)
+      throws Exception {
+    synchronized (captureEpochLock) {
+      synchronized (rfAuthorizationLock) {
+        requireReceiverReuseQueryReadyLocked(expectedEpoch, expectedGeneration);
+        byte[] sourceBytes = null;
+        LibreGen1StreamingJournal.Record receiver = null;
+        LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence = null;
+        try {
+          sourceBytes = readActivationUiProofFile(new File(captureDirectory, NFC_GEN1_FRAM_CAPTURE_FILE));
+          // Use this one immutable string for strict proof and byte extraction.
+          // There is no second file read which could replace the verified source.
+          final String sourceJson = new String(sourceBytes, StandardCharsets.UTF_8);
+          final LibreGen1StreamingJournal journal = LibreGen1StreamingStore.journal(activity);
+          synchronized (journal) {
+            if (!receiverReuseRecordPresent()) throw new IOException("Saved receiver is absent.");
+            receiver = journal.read();
+            if (receiver == null || !receiverReuseRecordPresent()) {
+              throw new IOException("Saved receiver is unavailable.");
+            }
+            evidence = LibreGen1ReceiverReuseProof.readFreshHistory(sourceJson, receiver,
+                attemptId, bootstrapId, sessionToken, expectedDartProcessSessionId,
+                installedVersionCode, installedLastUpdateTime,
+                System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos());
+            requireReceiverReuseQueryReadyLocked(expectedEpoch, expectedGeneration);
+            final LibreGen1ReceiverReuseProof.FreshHistoryEvidence result = evidence;
+            evidence = null;
+            return result;
+          }
+        } finally {
+          if (evidence != null) evidence.close();
+          if (sourceBytes != null) Arrays.fill(sourceBytes, (byte) 0);
+          if (receiver != null) {
+            Arrays.fill(receiver.uid, (byte) 0);
+            Arrays.fill(receiver.initialPatchInfo, (byte) 0);
+          }
+        }
+      }
+    }
+  }
+
+  /** Main-thread point-of-use checks; the result is never sent to a UI event/log. */
+  private void deliverLibreGen1FreshHistoryEvidence(
+      LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence,
+      long expectedEpoch, long expectedGeneration, MethodChannel.Result result) throws Exception {
+    synchronized (captureEpochLock) {
+      synchronized (rfAuthorizationLock) {
+        requireReceiverReuseQueryReadyLocked(expectedEpoch, expectedGeneration);
+        final LibreGen1StreamingJournal journal = LibreGen1StreamingStore.journal(activity);
+        synchronized (journal) {
+          LibreGen1StreamingJournal.Record receiver = null;
+          try {
+            if (!receiverReuseRecordPresent()) throw new IOException("Saved receiver is absent.");
+            receiver = journal.read();
+            if (receiver == null || !receiverReuseRecordPresent()) {
+              throw new IOException("Saved receiver is unavailable.");
+            }
+            requireReceiverReuseQueryReadyLocked(expectedEpoch, expectedGeneration);
+            evidence.deliver(receiver, System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos(),
+                value -> result.success(value));
+          } finally {
+            if (receiver != null) {
+              Arrays.fill(receiver.uid, (byte) 0);
+              Arrays.fill(receiver.initialPatchInfo, (byte) 0);
+            }
+          }
+        }
+      }
     }
   }
 

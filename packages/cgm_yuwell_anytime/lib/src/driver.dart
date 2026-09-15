@@ -120,7 +120,8 @@ final class YuwellAnytimeDiscovery {
   }
 }
 
-final class YuwellAnytimeDriver implements CgmDriver {
+final class YuwellAnytimeDriver
+    implements CgmDriver, CgmSensorDataProfileProvider {
   YuwellAnytimeDriver(
     this._transport, {
     required YuwellCredentialStore credentialStore,
@@ -147,6 +148,17 @@ final class YuwellAnytimeDriver implements CgmDriver {
        _clock = clock ?? DateTime.now;
 
   static const driverIdentifier = 'yuwell-anytime';
+
+  static const dataProfile = CgmSensorDataProfile(
+    warmupMinutes: 45,
+    expectedLifetimeMinutes: 23085,
+    // Engineering timestamps include initializationClockOffset. Subtracting
+    // the sample minute does not recover the protected activation instant.
+    retainedLifecyclePolicy: CgmRetainedLifecyclePolicy.reportedOnly,
+  );
+
+  @override
+  CgmSensorDataProfile get sensorDataProfile => dataProfile;
 
   static const capabilities = CgmCapabilities(
     supportsDirectBle: true,

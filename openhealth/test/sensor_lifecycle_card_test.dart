@@ -32,6 +32,171 @@ void main() {
     await tester.pump();
   }
 
+  CgmReading storedReading({
+    DateTime? at,
+    double value = 123,
+    CgmRecordSource source = CgmRecordSource.vendor,
+    bool provisional = true,
+  }) => CgmReading(
+    valueMgdl: value,
+    recordedAt: at,
+    sensorMinute: 80,
+    source: source,
+    isDisplayProvisional: provisional,
+  );
+
+  CgmSessionSnapshot retainedSnapshot({
+    String driverId = 'libre2-gen1',
+    List<CgmReading> history = const [],
+    CgmHistorySyncState historySync = const CgmHistorySyncState(),
+    CgmSyncStage stage = CgmSyncStage.syncing,
+  }) => CgmSessionSnapshot(
+    stage: stage,
+    statusText: 'Synthetic retained history',
+    sensor: DiscoveredSensor(
+      driverId: driverId,
+      deviceId: 'synthetic-lifecycle',
+      displayName: 'Synthetic sensor',
+      storageKey: '$driverId:synthetic-lifecycle',
+      rssi: -45,
+      capabilities: const CgmCapabilities(),
+    ),
+    capabilities: const CgmCapabilities(),
+    sessionInfo: const CgmSessionInfo(elapsedMinutes: 100),
+    history: history,
+    historySync: historySync,
+  );
+
+  Future<void> pumpRetained(
+    WidgetTester tester,
+    CgmSessionSnapshot snapshot,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SensorLifecycleCard(snapshot: snapshot, clock: () => now),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  }
+
+  for (final driverId in ['aidex', 'yuwell-anytime']) {
+    testWidgets('$driverId completed history sync keeps its own time', (
+      tester,
+    ) async {
+      final sync = CgmHistorySyncState(
+        lastSyncAt: now.subtract(const Duration(minutes: 2)),
+      );
+      final snapshot = retainedSnapshot(
+        driverId: driverId,
+        history: [storedReading(at: now.subtract(const Duration(hours: 2)))],
+        historySync: sync,
+      );
+      await pumpRetained(tester, snapshot);
+      expect(find.text('Last history sync'), findsOneWidget);
+      expect(find.text('2 min ago'), findsOneWidget);
+      expect(find.text('Latest stored reading'), findsNothing);
+      expect(identical(snapshot.historySync, sync), isTrue);
+    });
+  }
+
+  testWidgets(
+    'Libre history without current glucose shows stored sample time',
+    (
+      tester,
+    ) async {
+      final snapshot = retainedSnapshot(
+        history: [storedReading(at: now.subtract(const Duration(minutes: 12)))],
+      );
+      await pumpRetained(tester, snapshot);
+      expect(find.text('Latest stored reading'), findsOneWidget);
+      expect(find.text('12 min ago'), findsOneWidget);
+      expect(find.text('Not yet'), findsNothing);
+      expect(snapshot.latestReading, isNull);
+      expect(snapshot.stage, CgmSyncStage.syncing);
+      expect(snapshot.historySync.lastSyncAt, isNull);
+    },
+  );
+
+  testWidgets('old imported history does not acquire the render time', (
+    tester,
+  ) async {
+    final at = now.subtract(const Duration(hours: 2));
+    final reading = storedReading(at: at);
+    final snapshot = retainedSnapshot(history: [reading]);
+    await pumpRetained(tester, snapshot);
+    expect(find.text('2 hours ago'), findsOneWidget);
+    expect(find.text('just now'), findsNothing);
+    expect(snapshot.history.single.recordedAt, at);
+    expect(snapshot.latestReading, isNull);
+    expect(snapshot.historySync.lastSyncAt, isNull);
+  });
+
+  testWidgets('restored history preserves its stored sample timestamp', (
+    tester,
+  ) async {
+    final at = now.subtract(const Duration(minutes: 25));
+    final snapshot = retainedSnapshot(
+      history: [storedReading(at: at)],
+      stage: CgmSyncStage.disconnected,
+    );
+    await pumpRetained(tester, snapshot);
+    expect(find.text('25 min ago'), findsOneWidget);
+    expect(snapshot.stage, CgmSyncStage.disconnected);
+    expect(snapshot.latestReading, isNull);
+  });
+
+  testWidgets('empty and untimed history have distinct honest labels', (
+    tester,
+  ) async {
+    await pumpRetained(tester, retainedSnapshot());
+    expect(find.text('No readings yet'), findsOneWidget);
+    await pumpRetained(
+      tester,
+      retainedSnapshot(history: [storedReading()]),
+    );
+    expect(find.text('Time unavailable'), findsOneWidget);
+    expect(find.text('No readings yet'), findsNothing);
+  });
+
+  testWidgets('future newest sample never falls back to an older timestamp', (
+    tester,
+  ) async {
+    await pumpRetained(
+      tester,
+      retainedSnapshot(
+        history: [
+          storedReading(at: now.subtract(const Duration(minutes: 3))),
+          storedReading(at: now.add(const Duration(seconds: 1))),
+        ],
+      ),
+    );
+    expect(find.text('Time unavailable'), findsOneWidget);
+    expect(find.text('3 min ago'), findsNothing);
+    expect(find.text('just now'), findsNothing);
+  });
+
+  testWidgets('stored time includes provisional but excludes raw and invalid', (
+    tester,
+  ) async {
+    await pumpRetained(
+      tester,
+      retainedSnapshot(
+        history: [
+          storedReading(at: now.subtract(const Duration(minutes: 8))),
+          storedReading(at: now, source: CgmRecordSource.raw),
+          storedReading(at: now, value: double.nan),
+          storedReading(at: now, value: double.infinity),
+          storedReading(at: now, value: 0),
+          storedReading(at: now, value: -1),
+        ],
+      ),
+    );
+    expect(find.text('8 min ago'), findsOneWidget);
+    expect(find.text('just now'), findsNothing);
+  });
+
   testWidgets('active scenario shows lifecycle, %-used, and time remaining', (
     tester,
   ) async {

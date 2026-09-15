@@ -7,6 +7,32 @@ import 'package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('Yuwell declares timing without inferring protected activation', () {
+    final fixture = _Fixture();
+    final CgmSensorDataProfileProvider provider = YuwellAnytimeDriver(
+      _ScriptedTransport(fixture.connection),
+      credentialStore: fixture.credentials,
+      writeIntentStore: fixture.journal,
+    );
+    final profile = provider.sensorDataProfile;
+    expect(profile, same(YuwellAnytimeDriver.dataProfile));
+    expect(profile.warmupMinutes, 45);
+    expect(profile.expectedLifetimeMinutes, 23085);
+    expect(profile.timestampBasis, CgmReadingTimestampBasis.sessionRelative);
+    expect(profile.duplicatePolicy, CgmHistoryDuplicatePolicy.replaceExisting);
+    expect(
+      profile.currentReadingPolicy,
+      CgmCurrentReadingPolicy.latestOrHistory,
+    );
+    expect(
+      profile.retainedLifecyclePolicy,
+      CgmRetainedLifecyclePolicy.reportedOnly,
+    );
+    expect(profile.canInferRetainedLifecycle, isFalse);
+    expect(YuwellAnytimeDriver.capabilities.supportsHistory, isTrue);
+    expect(fixture.events, isEmpty);
+  });
+
   group('Yuwell live session safety', () {
     test(
       'requires explicit activation and performs no persistent write',

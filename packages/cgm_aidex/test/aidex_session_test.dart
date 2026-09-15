@@ -7,6 +7,24 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('AiDEX declares its existing data semantics without connecting', () {
+    final CgmSensorDataProfileProvider provider = AidexSensorDriver(
+      _FakeBleTransport(),
+    );
+    final profile = provider.sensorDataProfile;
+    expect(profile, same(AidexSensorDriver.dataProfile));
+    expect(profile.warmupMinutes, 60);
+    expect(profile.expectedLifetimeMinutes, 21600);
+    expect(profile.timestampBasis, CgmReadingTimestampBasis.sessionRelative);
+    expect(profile.duplicatePolicy, CgmHistoryDuplicatePolicy.replaceExisting);
+    expect(
+      profile.currentReadingPolicy,
+      CgmCurrentReadingPolicy.latestOrHistory,
+    );
+    expect(profile.canInferRetainedLifecycle, isTrue);
+    expect(AidexSensorDriver.capabilities.supportsHistory, isTrue);
+  });
+
   test('session initializes, pairs, and syncs vendor history', () async {
     final transport = _FakeBleTransport();
     final driver = AidexSensorDriver(
@@ -54,6 +72,11 @@ void main() {
     );
 
     expect(ready.sessionInfo.serial, '2222293Q2E');
+    _expectDeviceInformationVariant(ready.sessionInfo);
+    expect(
+      transport.operations.indexOf('read:${AidexUuids.modelNumber}'),
+      greaterThan(transport.operations.indexOf('write:${AidexUuids.f001}')),
+    );
     expect(ready.history.map((reading) => reading.valueMgdl).toList(), <double>[
       85,
       86,
@@ -380,6 +403,99 @@ void main() {
         reason: 'error=${session.currentSnapshot.lastError}',
       );
       expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      _expectDeviceInformationVariant(session.currentSnapshot.sessionInfo);
+      expect(
+        transport.operations.indexOf('read:${AidexUuids.modelNumber}'),
+        lessThan(transport.operations.indexOf('write:${AidexUuids.f001}')),
+      );
+      await session.disconnect();
+    },
+  );
+
+  test(
+    'observed model and software revisions refresh without firmware gates',
+    () async {
+      final transport = _FakeBleTransport();
+      final session =
+          await _activationTestDriver(
+                transport,
+              ).connect(_activationTestSensor())
+              as AidexSession;
+      await session.initialize();
+      _expectDeviceInformationVariant(session.currentSnapshot.sessionInfo);
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      final connection = transport.lastConnection;
+
+      for (final field in [
+        AidexUuids.modelNumber,
+        AidexUuids.softwareRevision,
+      ]) {
+        expect(
+          transport.operations.where((operation) => operation == 'read:$field'),
+          hasLength(2),
+          reason: 'Keep the existing identity and baseline reads only.',
+        );
+      }
+      for (final fixture
+          in <
+            ({
+              List<int> model,
+              List<int> software,
+              String? expectedModel,
+              String? expectedSoftware,
+            })
+          >[
+            (
+              model: 'Synthetic revised model'.codeUnits,
+              software: 'future-release'.codeUnits,
+              expectedModel: 'Synthetic revised model',
+              expectedSoftware: 'future-release',
+            ),
+            (
+              model: [0x20, 0x00, 0x58],
+              software: [0x20, 0x00, 0x31],
+              expectedModel: null,
+              expectedSoftware: null,
+            ),
+            (
+              model: 'Synthetic model'.codeUnits,
+              software: [0xFF, 0x00, 0x31],
+              expectedModel: 'Synthetic model',
+              expectedSoftware: '\uFFFD',
+            ),
+          ]) {
+        connection.setDeviceInformation(
+          model: fixture.model,
+          softwareRevision: fixture.software,
+        );
+        final operationStart = transport.operations.length;
+        await session.refresh();
+        expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+        expect(session.currentSnapshot.lastError, isNull);
+        _expectDeviceInformationVariant(
+          session.currentSnapshot.sessionInfo,
+          model: fixture.expectedModel,
+          softwareRevision: fixture.expectedSoftware,
+        );
+        final operations = transport.operations.skip(operationStart).toList();
+        expect(operations.where((operation) => operation.startsWith('read:')), [
+          'read:${AidexUuids.manufacturerName}',
+          'read:${AidexUuids.modelNumber}',
+          'read:${AidexUuids.serialNumber}',
+          'read:${AidexUuids.softwareRevision}',
+          'read:${AidexUuids.feature}',
+          'read:${AidexUuids.status}',
+          'read:${AidexUuids.sessionStart}',
+          'read:${AidexUuids.sessionRunTime}',
+          'read:${AidexUuids.f005}',
+        ]);
+        expect(connection.didRequestStartSession, isFalse);
+        expect(connection.didWriteSessionStart, isFalse);
+        expect(connection.didVendorUnpair, isFalse);
+        expect(connection.didRemoveBond, isFalse);
+        expect(connection.didClearBondViaBms, isFalse);
+        expect(transport.connections, hasLength(1));
+      }
       await session.disconnect();
     },
   );
@@ -2595,6 +2711,25 @@ AidexSensorDriver _activationTestDriver(_FakeBleTransport transport) {
   );
 }
 
+void _expectDeviceInformationVariant(
+  CgmSessionInfo info, {
+  String? model = 'GX-01S',
+  String? softwareRevision = '1.8.1',
+}) {
+  final variant = info.sensorVariant;
+  expect(variant, isNotNull);
+  expect(variant!.protocolFamily, 'aidex');
+  expect(variant.source, CgmSensorVariantSource.deviceInformation);
+  expect(variant.model, model);
+  expect(variant.softwareRevision, softwareRevision);
+  expect(info.firmware, softwareRevision ?? '');
+  expect(variant.firmwareRevision, isNull);
+  expect(variant.hardwareRevision, isNull);
+  expect(variant.region, isNull);
+  expect(variant.variantCode, isNull);
+  expect(variant.securityGeneration, isNull);
+}
+
 DiscoveredSensor _activationTestSensor({bool? allowSessionActivation}) {
   return DiscoveredSensor(
     driverId: 'aidex',
@@ -3066,6 +3201,14 @@ class _FakeBleConnection implements BleConnection {
   int get activeNotificationListenerCount => _notifications.values
       .where((controller) => controller.hasListener)
       .length;
+
+  void setDeviceInformation({
+    required List<int> model,
+    required List<int> softwareRevision,
+  }) {
+    _reads[AidexUuids.modelNumber] = Uint8List.fromList(model);
+    _reads[AidexUuids.softwareRevision] = Uint8List.fromList(softwareRevision);
+  }
 
   int get notificationCancellationCount => operations
       .where((operation) => operation.startsWith('cancelNotification:'))

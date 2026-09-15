@@ -3,13 +3,18 @@ package com.aidex.aidex_flutter;
 import android.content.Context;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
+import android.system.StructStat;
 
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.UUID;
@@ -38,51 +43,126 @@ final class LibreGen1StreamingStore implements LibreGen1StreamingJournal.Backend
   }
 
   @Override public byte[] read() throws Exception {
-    if (!file.exists()) return null;
-    final byte[] encrypted;
-    try (FileInputStream input = new FileInputStream(file)) {
-      if (input.getChannel().size() < 30 || input.getChannel().size() > 2048) {
-        throw new java.io.IOException("Invalid encrypted streaming record.");
-      }
-      encrypted = new byte[(int) input.getChannel().size()];
-      new java.io.DataInputStream(input).readFully(encrypted);
-    }
-    if (encrypted[0] != 1) throw new java.io.IOException("Unsupported streaming envelope.");
-    final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-    cipher.init(Cipher.DECRYPT_MODE, key(false),
-        new GCMParameterSpec(128, Arrays.copyOfRange(encrypted, 1, 13)));
-    cipher.updateAAD(AAD);
-    return cipher.doFinal(encrypted, 13, encrypted.length - 13);
+    final byte[] encrypted = LibreGen1StreamingFilePolicy.read(new NativeFiles(), android.os.Process.myUid());
+    if (encrypted == null) return null;
+    try {
+      if (encrypted[0] != 1) throw new IOException("Unsupported streaming envelope.");
+      final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+      cipher.init(Cipher.DECRYPT_MODE, key(false),
+          new GCMParameterSpec(128, Arrays.copyOfRange(encrypted, 1, 13)));
+      cipher.updateAAD(AAD);
+      return cipher.doFinal(encrypted, 13, encrypted.length - 13);
+    } finally { Arrays.fill(encrypted, (byte) 0); }
   }
 
   @Override public void write(byte[] bytes) throws Exception {
-    final File directory = file.getParentFile();
+    final NativeFiles files = new NativeFiles();
+    final int owner = android.os.Process.myUid();
+    LibreGen1StreamingFilePolicy.requireDirectory(files.directory(), owner);
     if (bytes == null) {
-      if (file.exists() && !file.delete()) throw new java.io.IOException("Streaming deletion failed.");
-      syncDirectory(directory);
+      // The existing journal permits this only for an unconsumed prepared attempt.
+      // Do not turn a denied, linked, or malformed file into apparent absence.
+      final LibreGen1StreamingFilePolicy.Metadata existing = files.existing();
+      if (existing != null) {
+        LibreGen1StreamingFilePolicy.requireFile(existing, owner,
+            LibreGen1StreamingFilePolicy.MIN_ENVELOPE_BYTES, LibreGen1StreamingFilePolicy.MAX_ENVELOPE_BYTES);
+        Os.remove(file.getAbsolutePath());
+      }
+      files.syncDirectory();
       return;
     }
+    if (bytes.length == 0 || bytes.length > 1024) throw new IOException("Invalid streaming record.");
     final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
     cipher.init(Cipher.ENCRYPT_MODE, key(true));
     cipher.updateAAD(AAD);
     final byte[] iv = cipher.getIV();
-    if (iv.length != 12) throw new java.io.IOException("Invalid streaming IV.");
+    if (iv.length != 12) throw new IOException("Invalid streaming IV.");
     final byte[] encrypted = cipher.doFinal(bytes);
-    final File temporary = new File(directory, ".libre-streaming-" + UUID.randomUUID());
+    final byte[] envelope = new byte[1 + iv.length + encrypted.length];
     try {
-      if (!temporary.createNewFile()) throw new java.io.IOException("Streaming staging conflict.");
-      Os.chmod(temporary.getAbsolutePath(), 0600);
-      try (FileOutputStream output = new FileOutputStream(temporary)) {
-        output.write(1);
-        output.write(iv);
-        output.write(encrypted);
-        output.flush();
-        output.getFD().sync();
-      }
-      Os.rename(temporary.getAbsolutePath(), file.getAbsolutePath());
-      syncDirectory(directory);
+      envelope[0] = 1;
+      System.arraycopy(iv, 0, envelope, 1, iv.length);
+      System.arraycopy(encrypted, 0, envelope, 1 + iv.length, encrypted.length);
+      LibreGen1StreamingFilePolicy.write(files, owner, envelope);
     } finally {
-      if (temporary.exists()) temporary.delete();
+      Arrays.fill(envelope, (byte) 0);
+      Arrays.fill(encrypted, (byte) 0);
+    }
+  }
+
+  /** No path-following Java file checks. Only ENOENT is a positive absent result. */
+  private final class NativeFiles implements LibreGen1StreamingFilePolicy.ReadAccess,
+      LibreGen1StreamingFilePolicy.WriteAccess {
+    private final File directory = file.getParentFile();
+    private final File temporary = new File(directory, ".libre-streaming-" + UUID.randomUUID());
+
+    public LibreGen1StreamingFilePolicy.Metadata directory() throws Exception {
+      return metadata(Os.lstat(directory.getAbsolutePath()));
+    }
+
+    public LibreGen1StreamingFilePolicy.Metadata existing() throws Exception {
+      try { return metadata(Os.lstat(file.getAbsolutePath())); }
+      catch (ErrnoException failure) {
+        if (failure.errno == OsConstants.ENOENT) return null;
+        throw failure;
+      }
+    }
+
+    public LibreGen1StreamingFilePolicy.ReadHandle open() throws Exception {
+      final FileDescriptor fd;
+      try {
+        // NONBLOCK prevents a substituted FIFO from hanging before the descriptor type check.
+        fd = Os.open(file.getAbsolutePath(),
+            OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW | OsConstants.O_NONBLOCK, 0);
+      } catch (ErrnoException failure) {
+        if (failure.errno == OsConstants.ENOENT) throw new LibreGen1StreamingFilePolicy.AbsentFile();
+        throw failure;
+      }
+      final FileInputStream input = new FileInputStream(fd);
+      return new LibreGen1StreamingFilePolicy.ReadHandle() {
+        public LibreGen1StreamingFilePolicy.Metadata metadata() throws Exception {
+          return NativeFiles.this.metadata(Os.fstat(fd));
+        }
+        public InputStream input() { return input; }
+        public void close() throws Exception { input.close(); }
+      };
+    }
+
+    public LibreGen1StreamingFilePolicy.WriteHandle createExclusive() throws Exception {
+      final FileDescriptor fd = Os.open(temporary.getAbsolutePath(),
+          OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_EXCL | OsConstants.O_NOFOLLOW, 0600);
+      final FileOutputStream output = new FileOutputStream(fd);
+      return new LibreGen1StreamingFilePolicy.WriteHandle() {
+        public LibreGen1StreamingFilePolicy.Metadata metadata() throws Exception {
+          return NativeFiles.this.metadata(Os.fstat(fd));
+        }
+        public OutputStream output() { return output; }
+        public void sync() throws Exception { output.getFD().sync(); }
+        public void close() throws Exception { output.close(); }
+      };
+    }
+
+    public void replace() throws Exception {
+      Os.rename(temporary.getAbsolutePath(), file.getAbsolutePath());
+    }
+
+    public void syncDirectory() throws Exception {
+      final FileDescriptor fd = Os.open(directory.getAbsolutePath(),
+          OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW | OsConstants.O_NONBLOCK, 0);
+      try {
+        LibreGen1StreamingFilePolicy.requireDirectory(metadata(Os.fstat(fd)), android.os.Process.myUid());
+        Os.fsync(fd);
+      } finally { Os.close(fd); }
+    }
+
+    public void discardStaging() throws Exception {
+      try { Os.remove(temporary.getAbsolutePath()); }
+      catch (ErrnoException failure) { if (failure.errno != OsConstants.ENOENT) throw failure; }
+    }
+
+    private LibreGen1StreamingFilePolicy.Metadata metadata(StructStat stat) {
+      return new LibreGen1StreamingFilePolicy.Metadata(OsConstants.S_ISDIR(stat.st_mode),
+          OsConstants.S_ISREG(stat.st_mode), stat.st_uid, stat.st_mode & 0777, stat.st_size);
     }
   }
 
@@ -99,10 +179,5 @@ final class LibreGen1StreamingStore implements LibreGen1StreamingJournal.Backend
         .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
         .setKeySize(256).build());
     return generator.generateKey();
-  }
-
-  private static void syncDirectory(File directory) throws Exception {
-    final FileDescriptor descriptor = Os.open(directory.getAbsolutePath(), OsConstants.O_RDONLY, 0);
-    try { Os.fsync(descriptor); } finally { Os.close(descriptor); }
   }
 }

@@ -87,6 +87,33 @@ excluded.
 
 ## Fixture policy
 
+### Timing observations
+
+The MIT timing parser uses only sensor-relative field locations from the
+pinned DiaBLE revision above: BLE bytes 40–41 in
+[`Libre2.swift`](https://github.com/gui-dos/DiaBLE/blob/e6a909c88faeada49f461d30834174cd95db4042/DiaBLE/Libre2.swift)
+and FRAM bytes 316–317 (age), 326–327 (lifetime), and the already implemented
+byte 4 lifecycle in
+[`Libre.swift`](https://github.com/gui-dos/DiaBLE/blob/e6a909c88faeada49f461d30834174cd95db4042/DiaBLE/Libre.swift).
+All fields are read only after the existing CRC gates. The implementation
+does not copy the reference's inferred start timestamp, unknown-to-active
+fallback, or glucose conversion. A saved FRAM observation is not current
+lifecycle evidence. The live driver uses BLE age independently of the decoder,
+with a monotonic minute frontier and bounded observation expiry. The injected
+app observation store atomically retains that frontier and an optional accepted
+reading. Completed commits prevent known-minute replay after restart using the
+same bootstrap; migration cannot recover rejected ages from old accepted history.
+Those guards do not prove cryptographic authenticity, freshness of a previously
+unobserved packet, continuity after re-enrollment, or physical timing conformance.
+
+The optional decoder result can also supply the nine older BLE slots already
+converted by the private adapter. The MIT driver validates their exact packet
+positions, quality, and age, then passes normalized historical readings to the
+same atomic observation transaction. The original receipt anchors historical
+offsets; it does not prove measurement time or activation. No conversion formula
+or additional RF request is added here. Sparse packet backfill is not the longer
+NFC history ring, and both still require a physical timing comparison.
+
 Core tests use synthetic UID, patch metadata, FRAM, BLE, streaming-base, and
 counter values. The validator also uses the pinned MIT-licensed LibreTools
 Example2 interoperability vector to prove that direct Android `Tag.getId()`

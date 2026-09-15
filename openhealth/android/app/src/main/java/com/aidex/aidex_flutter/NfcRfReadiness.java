@@ -11,6 +11,30 @@ package com.aidex.aidex_flutter;
 final class NfcRfReadiness {
   private NfcRfReadiness() {}
 
+  /** One callback-thread handoff. A successful read cannot precede callback cleanup. */
+  static final class CallbackCompletion {
+    private Runnable pending;
+    private boolean finished;
+
+    void defer(Runnable completion) {
+      if (completion == null || pending != null || finished) {
+        throw new IllegalStateException("NFC callback completion is unavailable.");
+      }
+      pending = completion;
+    }
+
+    void finish(Runnable cleanup) {
+      if (finished) return;
+      finished = true;
+      final Runnable completion = pending;
+      pending = null;
+      // Keep completion suppressed if cleanup fails. Do not weaken the fresh
+      // evidence query's independent callback-active and ownership checks.
+      cleanup.run();
+      if (completion != null) completion.run();
+    }
+  }
+
   static boolean isHostReady(
       boolean captureRequested,
       boolean resumed,

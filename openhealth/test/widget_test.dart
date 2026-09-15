@@ -12,13 +12,649 @@ import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/libre_nfc_history_tools.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.openglucose/libre2'),
+          (call) async => null,
+        );
+  });
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.openglucose/libre2'),
+          null,
+        );
+  });
+
+  for (final timing in ['observed', 'stale', 'repeatedOrRegressed']) {
+    testWidgets(
+      'Libre dashboard keeps historical-only $timing reception out of warmup',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final preferences = await SharedPreferences.getInstance();
+        const sensor = DiscoveredSensor(
+          driverId: 'libre2-gen1',
+          deviceId: 'synthetic-history-only',
+          displayName: 'Synthetic Libre',
+          storageKey: 'synthetic-history-only',
+          rssi: -40,
+          capabilities: CgmCapabilities(supportsDirectBle: true),
+        );
+        final now = DateTime.utc(2030, 1, 1, 12);
+        final history = [
+          CgmReading(
+            valueMgdl: 101,
+            source: CgmRecordSource.vendor,
+            sensorMinute: 585,
+            recordedAt: now.subtract(const Duration(minutes: 15)),
+            isDisplayProvisional: true,
+          ),
+        ];
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: _PrivateSupportDriver(
+            sensor: sensor,
+            snapshotBuilder: (sensor) => CgmSessionSnapshot(
+              stage: CgmSyncStage.syncing,
+              statusText: 'Synthetic reception',
+              sensor: sensor,
+              capabilities: sensor.capabilities,
+              sessionInfo: CgmSessionInfo(
+                elapsedMinutes: timing == 'stale' ? null : 600,
+              ),
+              history: history,
+              metadata: {
+                cgmAutomaticReconnectAllowedMetadataKey: 'false',
+                'cgm.libre2.phase': 'validatedPacket',
+                'cgm.libre2.timing': timing,
+                'cgm.libre2.observationCommitted': timing == 'observed'
+                    ? 'true'
+                    : 'false',
+                'cgm.libre2.decoder': timing == 'stale'
+                    ? 'stale'
+                    : 'invalidData',
+              },
+            ),
+          ),
+        );
+        await controller.initialize();
+        await controller.connect(sensor);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: CgmHomePage(
+              controller: controller,
+              presentationNow: () => now,
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(
+          tester
+              .widget<Text>(find.byKey(const ValueKey('dashboardGlucoseValue')))
+              .data,
+          '--',
+        );
+        expect(find.text('waiting for first reading'), findsNothing);
+        expect(find.text('Warmup complete'), findsNothing);
+        expect(find.text('1 readings'), findsOneWidget);
+        expect(
+          find.text(switch (timing) {
+            'observed' => 'No current reading',
+            'stale' => 'No recent reading',
+            _ => 'Waiting',
+          }),
+          findsOneWidget,
+        );
+        expect(
+          find.text(switch (timing) {
+            'observed' =>
+              'Receiving sensor data. No usable glucose reading yet.',
+            'stale' => 'No recent sensor update. Waiting for new data.',
+            _ => 'Waiting for a new sensor reading.',
+          }),
+          findsOneWidget,
+        );
+        expect(controller.displayLatestReading, isNull);
+        expect(
+          controller.snapshot!.history.single.recordedAt,
+          history.single.recordedAt,
+        );
+        expect(
+          controller.snapshot!.history.single.isDisplayProvisional,
+          isTrue,
+        );
+        expect(controller.allHistoricalReadings, isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.pump();
+      },
+    );
+  }
+
+  for (final stage in [
+    CgmSyncStage.disconnected,
+    CgmSyncStage.ready,
+    CgmSyncStage.error,
+  ]) {
+    testWidgets('Libre history gap offers a compact live-card action: $stage', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      const sensor = DiscoveredSensor(
+        driverId: 'libre2-gen1',
+        deviceId: 'synthetic-history-gap',
+        displayName: 'Synthetic Libre',
+        storageKey: 'synthetic-history-gap',
+        rssi: -40,
+        capabilities: CgmCapabilities(supportsDirectBle: true),
+      );
+      final now = DateTime.utc(2030, 1, 1, 12);
+      final stale = CgmReading(
+        valueMgdl: 101,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 585,
+        recordedAt: now.subtract(const Duration(minutes: 21)),
+        isDisplayProvisional: true,
+      );
+      final fresh = CgmReading(
+        valueMgdl: 103,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 606,
+        recordedAt: now,
+        isDisplayProvisional: true,
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _PrivateSupportDriver(
+          sensor: sensor,
+          snapshotBuilder: (selected) => CgmSessionSnapshot(
+            stage: stage,
+            statusText: stage.name,
+            sensor: selected,
+            capabilities: selected.capabilities,
+            history: [stale, if (stage == CgmSyncStage.ready) fresh],
+            latestReading: stage == CgmSyncStage.ready ? fresh : stale,
+            lastError: stage == CgmSyncStage.error
+                ? 'libre2.bluetoothOff'
+                : null,
+            metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+          ),
+        ),
+      );
+      final tools = LibreNfcHistoryTools(
+        createSync: () => throw StateError('NFC must be explicit'),
+        readBootstrap: () async => null,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.initialize();
+      await controller.connect(sensor);
+      expect(controller.snapshot, isNotNull);
+      expect(
+        shouldOfferLibreNfcHistorySync(controller.snapshot!, now: now),
+        isTrue,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CgmHomePage(
+            controller: controller,
+            presentationNow: () => now,
+            libreHistoryTools: tools,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey<String>('dashboardLibreHistoryPrompt')),
+        findsOneWidget,
+      );
+      expect(find.text('Sync history'), findsOneWidget);
+      expect(find.text('History may be missing'), findsNothing);
+      expect(find.text('Readings received by this phone'), findsNothing);
+      expect(find.text('Choose another sensor'), findsNothing);
+      expect(find.byKey(const ValueKey('syncLibreHistory')), findsNothing);
+      final liveCard = find.ancestor(
+        of: find.byKey(const ValueKey('dashboardGlucoseValue')),
+        matching: find.byType(Card),
+      );
+      expect(
+        find.descendant(
+          of: liveCard,
+          matching: find.byKey(const ValueKey('openLibreHistorySyncButton')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Scan your Libre 2 with NFC to copy recent stored readings.'),
+        findsNothing,
+      );
+      expect(find.text('History'), findsOneWidget);
+      expect(
+        find.text('Turn on Bluetooth'),
+        stage == CgmSyncStage.error ? findsOneWidget : findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('changing sensor requires disconnect in Settings', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _PrivateSupportDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await controller.connect(driver.sensor);
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Choose another sensor'), findsNothing);
+    expect(find.byKey(const ValueKey('connectSensorButton')), findsNothing);
+    expect(find.byKey(const ValueKey('disconnectSensorButton')), findsNothing);
+
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Connect a sensor'), findsNothing);
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+    final disconnect = find.byKey(const ValueKey('disconnectSensorButton'));
+    await tester.ensureVisible(disconnect);
+    await tester.pumpAndSettle();
+    await tester.tap(disconnect);
+    for (var turn = 0; turn < 40; turn++) {
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    await tester.pumpAndSettle();
+    expect(controller.snapshot, isNull);
+    expect(find.text('Connect a sensor'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('connectSensorButton')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final driverId in ['aidex', 'libre2-gen1']) {
+    testWidgets('home ages $driverId values without a new snapshot', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = DiscoveredSensor(
+        driverId: driverId,
+        deviceId: 'synthetic-freshness-sensor',
+        displayName: 'Synthetic sensor',
+        storageKey: 'synthetic-freshness-sensor',
+        rssi: -40,
+        capabilities: const CgmCapabilities(supportsDirectBle: true),
+      );
+      var now = DateTime.utc(2030, 1, 1, 12);
+      final first = CgmReading(
+        valueMgdl: 101,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 100,
+        recordedAt: now.subtract(const Duration(minutes: 10)),
+        isDisplayProvisional: driverId == 'libre2-gen1',
+      );
+      var latest = first;
+      var history = [first];
+      var connects = 0;
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _PrivateSupportDriver(
+          sensor: sensor,
+          snapshotBuilder: (sensor) {
+            connects++;
+            return CgmSessionSnapshot(
+              stage: CgmSyncStage.ready,
+              statusText: 'Ready',
+              sensor: sensor,
+              capabilities: sensor.capabilities,
+              latestReading: latest,
+              history: history,
+              metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+            );
+          },
+        ),
+      );
+      await controller.initialize();
+      await controller.connect(sensor);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CgmHomePage(
+            controller: controller,
+            presentationNow: () => now,
+          ),
+        ),
+      );
+      await tester.pump();
+      final value = find.byKey(const ValueKey('dashboardGlucoseValue'));
+      expect(tester.widget<Text>(value).data, '101');
+      expect(find.text('Connected'), findsOneWidget);
+      now = now.add(const Duration(microseconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(tester.widget<Text>(value).data, '--');
+      expect(find.text('No recent reading'), findsOneWidget);
+      expect(
+        find.text('Latest reading at ${readingTimeText(first, now: now)}'),
+        findsOneWidget,
+      );
+      expect(find.text('1 readings'), findsOneWidget);
+      expect(controller.snapshot!.history.single.recordedAt, first.recordedAt);
+      expect(controller.snapshot!.stage, CgmSyncStage.ready);
+      expect(connects, 1);
+      expect(find.byKey(const ValueKey('sensorDataQuality')), findsNothing);
+
+      latest = CgmReading(
+        valueMgdl: 103,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 101,
+        recordedAt: now,
+        isDisplayProvisional: first.isDisplayProvisional,
+      );
+      history = [first, latest];
+      await _pumpControllerMutation(tester, controller.connect(sensor));
+      await tester.pump();
+      expect(tester.widget<Text>(value).data, '103');
+      expect(find.text('No recent reading'), findsNothing);
+      expect(find.text('Connected'), findsOneWidget);
+      expect(find.text('2 readings'), findsOneWidget);
+      expect(controller.snapshot!.history.first.recordedAt, first.recordedAt);
+      expect(
+        controller.snapshot!.history.last.isDisplayProvisional,
+        first.isDisplayProvisional,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.pump();
+    });
+  }
+
+  for (final timestamp in ['absent', 'future', 'raw', 'missing']) {
+    testWidgets('home hides an unusable Libre current value: $timestamp', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      const sensor = DiscoveredSensor(
+        driverId: 'libre2-gen1',
+        deviceId: 'synthetic-unreadable-sensor',
+        displayName: 'Synthetic sensor',
+        storageKey: 'synthetic-unreadable-sensor',
+        rssi: -40,
+        capabilities: CgmCapabilities(supportsDirectBle: true),
+      );
+      final now = DateTime.utc(2030, 1, 1, 12);
+      final reading = CgmReading(
+        valueMgdl: 101,
+        source: timestamp == 'raw'
+            ? CgmRecordSource.raw
+            : CgmRecordSource.vendor,
+        sensorMinute: 100,
+        recordedAt: timestamp == 'absent'
+            ? null
+            : now.add(const Duration(minutes: 3)),
+        isDisplayProvisional: true,
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _PrivateSupportDriver(
+          sensor: sensor,
+          snapshotBuilder: (sensor) => CgmSessionSnapshot(
+            stage: CgmSyncStage.ready,
+            statusText: 'Ready',
+            sensor: sensor,
+            capabilities: sensor.capabilities,
+            latestReading: timestamp == 'missing' ? null : reading,
+            history: [reading],
+            metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+          ),
+        ),
+      );
+      await controller.initialize();
+      await controller.connect(sensor);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CgmHomePage(
+            controller: controller,
+            presentationNow: () => now,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('dashboardGlucoseValue')))
+            .data,
+        '--',
+      );
+      expect(
+        find.text(
+          timestamp == 'raw' || timestamp == 'missing'
+              ? 'Waiting'
+              : 'No recent reading',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('1 readings'), findsOneWidget);
+      expect(controller.snapshot!.history.single.isDisplayProvisional, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.pump();
+    });
+  }
+
+  testWidgets('observed software is labelled in settings, not on home', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues({
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    const sensor = DiscoveredSensor(
+      driverId: 'synthetic-variant',
+      deviceId: 'synthetic-device',
+      displayName: 'Synthetic sensor',
+      storageKey: 'synthetic-storage',
+      rssi: -40,
+      capabilities: CgmCapabilities(),
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _PrivateSupportDriver(
+        sensor: sensor,
+        snapshotBuilder: (sensor) => CgmSessionSnapshot(
+          stage: CgmSyncStage.ready,
+          statusText: 'Ready',
+          sensor: sensor,
+          capabilities: sensor.capabilities,
+          latestReading: const CgmReading(
+            valueMgdl: 100,
+            source: CgmRecordSource.standard,
+            sensorMinute: 100,
+          ),
+          sessionInfo: const CgmSessionInfo(
+            firmware: 'release-Z',
+            sensorVariant: CgmSensorVariant(
+              protocolFamily: 'synthetic-family',
+              source: CgmSensorVariantSource.deviceInformation,
+              model: 'Synthetic model',
+              softwareRevision: 'release-Z',
+            ),
+          ),
+        ),
+      ),
+    );
+    await controller.initialize();
+    await controller.connect(sensor);
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    expect(find.text('release-Z'), findsNothing);
+    expect(find.text('Synthetic model'), findsNothing);
+    expect(find.byTooltip('Settings'), findsOneWidget);
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+    expect(find.text('Software'), findsOneWidget);
+    expect(find.text('release-Z'), findsOneWidget);
+    expect(find.text('Synthetic model'), findsOneWidget);
+    expect(find.text('Firmware'), findsNothing);
+    expect(find.text('Region'), findsNothing);
+    expect(find.text('Hardware'), findsNothing);
+    expect(find.byKey(const ValueKey('sensorDataQuality')), findsNothing);
+    expect(find.text('Data quality'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  testWidgets('Libre settings omit transfer and unsupported calibration', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues({
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    const sensor = DiscoveredSensor(
+      driverId: 'libre2-gen1',
+      deviceId: 'synthetic-libre-settings',
+      displayName: 'FreeStyle Libre 2',
+      storageKey: 'synthetic-libre-settings',
+      rssi: -40,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _PrivateSupportDriver(
+        sensor: sensor,
+        snapshotBuilder: (sensor) => CgmSessionSnapshot(
+          stage: CgmSyncStage.ready,
+          statusText: 'Ready',
+          sensor: sensor,
+          capabilities: sensor.capabilities,
+          metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+        ),
+      ),
+    );
+    await controller.initialize();
+    controller.updateDisplayPreferences(
+      controller.displayPreferences.copyWith(
+        calibrationScale: 1.2,
+        calibrationOffset: 7,
+      ),
+    );
+    await controller.connect(sensor);
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('moveSensorToAnotherPhoneButton')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('disconnectSensorButton')),
+      findsOneWidget,
+    );
+    expect(controller.canMoveSensorToAnotherPhone, isFalse);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Advanced'));
+    await tester.tap(find.text('Advanced'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('advancedCalibrationScale')),
+      findsNothing,
+    );
+    expect(find.text('Calibration offset'), findsNothing);
+    expect(find.text('Calibrations'), findsNothing);
+    expect(find.text('No calibration entries loaded.'), findsNothing);
+    expect(
+      find.textContaining('Sensor calibration is not available'),
+      findsOneWidget,
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('advancedCropFirstSamples')),
+      '2',
+    );
+    await tester.tap(find.text('Save engineering settings'));
+    await tester.pump();
+    expect(controller.displayPreferences.cropFirstSamples, 2);
+    expect(controller.displayPreferences.calibrationScale, 1.2);
+    expect(controller.displayPreferences.calibrationOffset, 7);
+    await tester.tap(find.byKey(const ValueKey('clearActiveSensorCache')));
+    await tester.pumpAndSettle();
+    final disclosure = tester
+        .widget<Text>(
+          find.byKey(const ValueKey('clearActiveSensorCacheDisclosure')),
+        )
+        .data!;
+    expect(disclosure, contains('cannot download removed readings again'));
+    expect(disclosure, contains('saved connection setup are kept'));
+    expect(disclosure, isNot(contains('may download again')));
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(controller.snapshot?.sensor.driverId, sensor.driverId);
+    expect(controller.snapshot?.sensor.storageKey, sensor.storageKey);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await tester.pump();
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   testWidgets(
-    'Libre live history is charted with time and provisional context',
+    'Libre live history shows time with quality only in sensor details',
     (tester) async {
       SharedPreferences.setMockInitialValues({
         'openHealth.onboarding.completed': true,
@@ -71,12 +707,24 @@ void main() {
       );
       await tester.pump();
       expect(find.textContaining('Latest reading at'), findsOneWidget);
+      expect(find.text('102'), findsOneWidget);
+      expect(find.text('Connected'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('provisionalReadingNotice')),
-        findsOneWidget,
+        findsNothing,
       );
       expect(find.text('3 readings'), findsOneWidget);
-      expect(find.text('Readings received by this phone'), findsOneWidget);
+      expect(find.text('Readings received by this phone'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('historyQualityNotice')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('sensorDataQuality')), findsNothing);
+      expect(find.textContaining('Bench estimate'), findsNothing);
+      expect(
+        find.textContaining('Not validated for body glucose'),
+        findsNothing,
+      );
       expect(
         find.byKey(const ValueKey('dashboardPatternsSection')),
         findsNothing,
@@ -86,11 +734,202 @@ void main() {
         findsNothing,
       );
       expect(controller.allHistoricalReadings, isEmpty);
+      await tester.tap(find.byIcon(Icons.tune_rounded));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Current sensor'));
+      await tester.pumpAndSettle();
+      final quality = find.byKey(const ValueKey('sensorDataQuality'));
+      await tester.ensureVisible(quality);
+      expect(quality, findsOneWidget);
+      expect(find.text('Data quality'), findsOneWidget);
+      expect(find.text('Provisional readings'), findsOneWidget);
+      expect(
+        controller.snapshot!.history.every(
+          (reading) => reading.isDisplayProvisional,
+        ),
+        isTrue,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       controller.dispose();
       await tester.pump();
     },
   );
+
+  for (final stage in [CgmSyncStage.error, CgmSyncStage.connecting]) {
+    for (final raw in [false, true]) {
+      testWidgets('history quality stays in details in $stage (raw: $raw)', (
+        tester,
+      ) async {
+        SharedPreferences.setMockInitialValues({
+          'openHealth.onboarding.completed': true,
+        });
+        final preferences = await SharedPreferences.getInstance();
+        const sensor = DiscoveredSensor(
+          driverId: 'libre2-gen1',
+          deviceId: 'synthetic-libre-history',
+          displayName: 'FreeStyle Libre 2',
+          storageKey: 'synthetic-libre-history',
+          rssi: -40,
+          capabilities: CgmCapabilities(supportsDirectBle: true),
+        );
+        final history = List.generate(
+          3,
+          (index) => CgmReading(
+            valueMgdl: 100.0 + index,
+            source: raw ? CgmRecordSource.raw : CgmRecordSource.vendor,
+            sensorMinute: 100 + index,
+            recordedAt: DateTime.now().subtract(Duration(minutes: 3 - index)),
+            isDisplayProvisional: !raw,
+          ),
+        );
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: _PrivateSupportDriver(
+            sensor: sensor,
+            snapshotBuilder: (sensor) => CgmSessionSnapshot(
+              stage: stage,
+              statusText: stage.name,
+              sensor: sensor,
+              capabilities: sensor.capabilities,
+              history: history,
+              metadata: {
+                cgmAutomaticReconnectAllowedMetadataKey: 'false',
+                'cgm.libre2.phase': stage == CgmSyncStage.error
+                    ? 'failed'
+                    : 'awaitingAdvertisement',
+              },
+            ),
+          ),
+        );
+        await controller.initialize();
+        await controller.connect(sensor);
+        await tester.pumpWidget(
+          OpenGlucoseApp(
+            controller: controller,
+            healthExport: HealthExportController(
+              preferences: preferences,
+              writesAllowed: false,
+            )..initialize(),
+            preferences: preferences,
+          ),
+        );
+        await tester.pump();
+        expect(
+          find.byKey(const ValueKey('historyQualityNotice')),
+          findsNothing,
+        );
+        expect(find.byKey(const ValueKey('sensorDataQuality')), findsNothing);
+        expect(find.text('3 readings'), findsOneWidget);
+        expect(
+          find.textContaining('Not validated for body glucose'),
+          findsNothing,
+        );
+        expect(controller.allHistoricalReadings, isEmpty);
+        expect(
+          find.byKey(const ValueKey('dashboardPatternsSection')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('dashboardWeeklyRecapSection')),
+          findsNothing,
+        );
+        await tester.tap(find.byIcon(Icons.tune_rounded));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Current sensor'));
+        await tester.pumpAndSettle();
+        final quality = find.byKey(const ValueKey('sensorDataQuality'));
+        await tester.ensureVisible(quality);
+        expect(quality, findsOneWidget);
+        expect(
+          find.text(raw ? 'Raw sensor data' : 'Provisional readings'),
+          findsOneWidget,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.pump();
+      });
+    }
+  }
+
+  for (final cleanupUnconfirmed in [false, true]) {
+    testWidgets(
+      'Libre dashboard exposes only safe recovery actions (cleanup: $cleanupUnconfirmed)',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'openHealth.onboarding.completed': true,
+        });
+        final preferences = await SharedPreferences.getInstance();
+        const sensor = DiscoveredSensor(
+          driverId: 'libre2-gen1',
+          deviceId: 'synthetic-libre-recovery',
+          displayName: 'FreeStyle Libre 2',
+          storageKey: 'synthetic-libre-recovery',
+          rssi: -40,
+          capabilities: CgmCapabilities(supportsDirectBle: true),
+        );
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: _PrivateSupportDriver(
+            sensor: sensor,
+            snapshotBuilder: (sensor) => CgmSessionSnapshot(
+              stage: CgmSyncStage.error,
+              statusText: 'Error',
+              sensor: sensor,
+              capabilities: sensor.capabilities,
+              lastError: cleanupUnconfirmed
+                  ? 'libre2.cleanupUnconfirmed'
+                  : 'libre2.advertisementUnavailable',
+              metadata: {
+                cgmAutomaticReconnectAllowedMetadataKey: 'false',
+                'cgm.libre2.phase': 'failed',
+              },
+            ),
+          ),
+        );
+        await controller.initialize();
+        await controller.connect(sensor);
+        await tester.pumpWidget(
+          OpenGlucoseApp(
+            controller: controller,
+            healthExport: HealthExportController(
+              preferences: preferences,
+              writesAllowed: false,
+            )..initialize(),
+            preferences: preferences,
+          ),
+        );
+        await tester.pump();
+        expect(find.text('OpenGlucose'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('sensorConnectionScreen')),
+          findsNothing,
+        );
+        final retry = find.byKey(const ValueKey('retryBleSetupButton'));
+        if (cleanupUnconfirmed) {
+          expect(retry, findsNothing);
+        } else {
+          expect(retry, findsOneWidget);
+          expect(
+            tester.widget<ButtonStyleButton>(retry).onPressed,
+            isNotNull,
+          );
+        }
+        expect(
+          find.byKey(const ValueKey('chooseAnotherSensorButton')),
+          findsNothing,
+        );
+        expect(
+          find.textContaining(
+            'Close and reopen OpenGlucose before connecting again',
+          ),
+          cleanupUnconfirmed ? findsOneWidget : findsNothing,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.pump();
+      },
+    );
+  }
 
   testWidgets('Libre dashboard uses safe progress without cached current data', (
     tester,
@@ -333,7 +1172,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Current sensor'));
     await tester.pumpAndSettle();
-    await tester.runAsync(controller.disconnect);
+    await _pumpControllerMutation(tester, controller.disconnect());
     await tester.pumpAndSettle();
     expect(find.text('This sensor is no longer active'), findsOneWidget);
     await tester.tap(find.text('Back to Settings'));
@@ -985,6 +1824,35 @@ Future<void> _waitForSensorConnectionFlowToClose(WidgetTester tester) async {
     await tester.pump(const Duration(milliseconds: 50));
   }
   await tester.pump();
+}
+
+Future<void> _pumpControllerMutation(
+  WidgetTester tester,
+  Future<void> mutation,
+) async {
+  // History writes can already be queued in this test's FakeAsync zone.
+  // runAsync would suspend that zone while a reconnect/clear awaits its queue.
+  // Keep the mutation in the fake zone. A bounded real event-loop turn also
+  // services stream cancellation futures created outside it; never await the
+  // mutation itself from runAsync while its fake-zone queue is suspended.
+  var settled = false;
+  Object? failure;
+  StackTrace? failureStack;
+  final completion = mutation.then<void>(
+    (_) => settled = true,
+    onError: (Object error, StackTrace stack) {
+      failure = error;
+      failureStack = stack;
+      settled = true;
+    },
+  );
+  for (var turn = 0; turn < 40 && !settled; turn++) {
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+  }
+  expect(settled, isTrue, reason: 'Controller mutation did not settle.');
+  await completion;
+  if (failure != null) Error.throwWithStackTrace(failure!, failureStack!);
 }
 
 class _PrivateSupportDriver implements CgmDriver {

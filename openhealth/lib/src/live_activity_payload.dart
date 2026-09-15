@@ -52,16 +52,40 @@ class LiveActivityPayload {
   };
 }
 
+/// Connection work, not glucose eligibility, owns Android's foreground
+/// service. A retained selection or old ready snapshot alone is insufficient.
+bool shouldKeepAndroidConnectionActive({
+  required CgmSessionSnapshot? snapshot,
+  required bool hasSession,
+  required bool connectionAttemptActive,
+  required bool recoveryScheduled,
+  required bool transportCleanupInProgress,
+  required bool cleanupUnconfirmed,
+}) {
+  if (snapshot == null ||
+      !snapshot.capabilities.supportsDirectBle ||
+      cleanupUnconfirmed) {
+    return false;
+  }
+  if (transportCleanupInProgress || recoveryScheduled) return true;
+  if (snapshot.stage == CgmSyncStage.error ||
+      snapshot.stage == CgmSyncStage.scanning) {
+    return false;
+  }
+  if (snapshot.stage == CgmSyncStage.disconnected) {
+    // An owned reconnect attempt can be between old-transport close and the
+    // next connect. Do not stop then restart an FGS from the background.
+    return connectionAttemptActive;
+  }
+  return hasSession || connectionAttemptActive;
+}
+
 bool shouldPublishLiveActivity({
   required CgmSessionSnapshot snapshot,
   required CgmReading? latestReading,
   DateTime? now,
 }) {
   final reading = currentReadingForSnapshot(snapshot, latestReading);
-  if (reading?.isDisplayProvisional == true ||
-      reading?.source == CgmRecordSource.raw) {
-    return false;
-  }
   final effectiveNow = now ?? DateTime.now();
   final warmup = computeWarmupStatus(
     snapshot,
@@ -70,6 +94,10 @@ bool shouldPublishLiveActivity({
   );
   if (warmup?.phase == WarmupPhase.warming) {
     return true;
+  }
+  if (reading?.isDisplayProvisional == true ||
+      reading?.source == CgmRecordSource.raw) {
+    return false;
   }
   if (snapshot.stage != CgmSyncStage.ready) {
     return false;
@@ -90,27 +118,31 @@ LiveActivityPayload buildLiveActivityPayload({
 }) {
   final reading = currentReadingForSnapshot(snapshot, latestReading);
   final effectiveNow = now ?? DateTime.now();
-  if (reading?.isDisplayProvisional == true ||
-      reading?.source == CgmRecordSource.raw) {
-    return const LiveActivityPayload(
-      sensorName: liveSurfaceBrandName,
-      stageCode: 'progress',
-      stageLabel: 'VERIFYING',
-      valueText: '--',
-      unitText: '',
-      lastReadingText: '--',
-      lifeText: '',
-      detailText: 'Experimental readings are available in the app only.',
-      trendSymbol: '',
-      deltaText: '',
-      isStale: true,
-    );
-  }
   final warmup = computeWarmupStatus(
     snapshot,
     latestReading: reading,
     now: effectiveNow,
   );
+  if (reading?.isDisplayProvisional == true ||
+      reading?.source == CgmRecordSource.raw) {
+    // A verified session countdown is independent of early measurement
+    // quality. Keep it available without publishing the early glucose value.
+    if (warmup?.phase != WarmupPhase.warming) {
+      return const LiveActivityPayload(
+        sensorName: liveSurfaceBrandName,
+        stageCode: 'progress',
+        stageLabel: 'VERIFYING',
+        valueText: '--',
+        unitText: '',
+        lastReadingText: '--',
+        lifeText: '',
+        detailText: 'Experimental readings are available in the app only.',
+        trendSymbol: '',
+        deltaText: '',
+        isStale: true,
+      );
+    }
+  }
   if (warmup != null) {
     return LiveActivityPayload(
       sensorName: liveSurfaceBrandName,
@@ -121,6 +153,7 @@ LiveActivityPayload buildLiveActivityPayload({
       lastReadingText: '--',
       lifeText: sensorLifeText(
         snapshot.sessionInfo.sessionStart,
+        elapsedMinutes: snapshot.sessionInfo.elapsedMinutes,
         now: effectiveNow,
         totalLife: Duration(
           minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
@@ -180,6 +213,7 @@ LiveActivityPayload buildLiveActivityPayload({
     lastReadingText: readingTime,
     lifeText: sensorLifeText(
       snapshot.sessionInfo.sessionStart,
+      elapsedMinutes: snapshot.sessionInfo.elapsedMinutes,
       now: effectiveNow,
       totalLife: Duration(
         minutes: snapshot.sessionInfo.expectedLifetimeMinutes,

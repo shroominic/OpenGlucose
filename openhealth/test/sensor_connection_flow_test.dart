@@ -3,17 +3,36 @@ import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:cgm_libre2/cgm_libre2.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/cgm_driver_registry.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/libre2_nfc_setup.dart';
 import 'package:openglucose/src/libre_gen1_streaming_setup.dart';
+import 'package:openglucose/src/sensor_connection_policy.dart';
 import 'package:openglucose/src/sensor_connection_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.openglucose/libre2'),
+          (call) async => null,
+        );
+  });
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.openglucose/libre2'),
+          null,
+        );
+  });
+
   const savedLibre = DiscoveredSensor(
     driverId: 'libre2-gen1',
     deviceId: 'synthetic-saved-libre',
@@ -22,6 +41,451 @@ void main() {
     rssi: 0,
     capabilities: CgmCapabilities(supportsDirectBle: true),
   );
+
+  CgmSessionSnapshot receivedWithoutCurrent(
+    DiscoveredSensor sensor, {
+    String timing = 'observed',
+    String committed = 'true',
+    String phase = 'validatedPacket',
+    CgmSyncStage stage = CgmSyncStage.syncing,
+    String? error,
+  }) => CgmSessionSnapshot(
+    stage: stage,
+    statusText: 'Synthetic reception',
+    sensor: sensor,
+    capabilities: sensor.capabilities,
+    sessionInfo: const CgmSessionInfo(elapsedMinutes: 600),
+    history: [
+      CgmReading(
+        valueMgdl: 101,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 585,
+        recordedAt: DateTime.utc(2030),
+        isDisplayProvisional: true,
+      ),
+    ],
+    metadata: {
+      cgmAutomaticReconnectAllowedMetadataKey: 'false',
+      'cgm.libre2.observationCommitted': committed,
+      'cgm.libre2.phase': phase,
+      'cgm.libre2.timing': timing,
+      'cgm.libre2.decoder': 'invalidData',
+    },
+    lastError: error,
+  );
+
+  testWidgets(
+    'inline Libre setup completes on durable history-only reception once',
+    (tester) async {
+      final session = _EmittingSession(savedLibre);
+      final driver = _ControlledDriver(
+        driverId: 'libre2-gen1',
+        discoveredSensors: [savedLibre],
+        connectSessionBuilder: (_) => session,
+      );
+      var completed = 0;
+      final controller = await _pumpConnectionScreen(
+        tester,
+        driver,
+        inline: true,
+        onConnected: () => completed++,
+      );
+      await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+      expect(completed, 0);
+      session.emit(receivedWithoutCurrent(savedLibre));
+      for (var index = 0; index < 20; index++) {
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(completed, 1);
+      expect(controller.snapshot?.stage, CgmSyncStage.syncing);
+      expect(controller.displayLatestReading, isNull);
+      expect(controller.visibleHistory, hasLength(1));
+      session.emit(receivedWithoutCurrent(savedLibre));
+      await tester.pump();
+      await tester.pump();
+      expect(completed, 1);
+      await _disposeConnectionScreen(tester, controller);
+      await session.close();
+    },
+  );
+
+  for (final variant in [
+    'pending',
+    'replayed',
+    'stale',
+    'restored',
+    'failed',
+    'cleanup',
+    'wrongTarget',
+  ]) {
+    testWidgets('Libre setup does not finish for $variant history evidence', (
+      tester,
+    ) async {
+      final session = _EmittingSession(savedLibre);
+      final driver = _ControlledDriver(
+        driverId: 'libre2-gen1',
+        discoveredSensors: [savedLibre],
+        connectSessionBuilder: (_) => session,
+      );
+      var completed = 0;
+      final controller = await _pumpConnectionScreen(
+        tester,
+        driver,
+        inline: true,
+        onConnected: () => completed++,
+      );
+      await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+      const other = DiscoveredSensor(
+        driverId: 'libre2-gen1',
+        deviceId: 'other-synthetic-target',
+        displayName: 'Synthetic other',
+        storageKey: 'other-synthetic-target',
+        rssi: 0,
+        capabilities: CgmCapabilities(supportsDirectBle: true),
+      );
+      session.emit(
+        receivedWithoutCurrent(
+          variant == 'wrongTarget' ? other : savedLibre,
+          committed: variant == 'pending' ? 'false' : 'true',
+          timing: switch (variant) {
+            'replayed' => 'repeatedOrRegressed',
+            'stale' => 'stale',
+            _ => 'observed',
+          },
+          phase: variant == 'restored' ? 'awaitingPacket' : 'validatedPacket',
+          stage: variant == 'cleanup'
+              ? CgmSyncStage.error
+              : CgmSyncStage.syncing,
+          error: switch (variant) {
+            'failed' => 'libre2.observationStorageUnavailable',
+            'cleanup' => 'libre2.cleanupUnconfirmed',
+            _ => null,
+          },
+        ),
+      );
+      for (var index = 0; index < 15; index++) {
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(completed, 0);
+      expect(controller.displayLatestReading, isNull);
+      await _disposeConnectionScreen(tester, controller);
+      await session.close();
+    });
+  }
+
+  testWidgets(
+    'modal Libre setup returns after durable history-only reception',
+    (tester) async {
+      final session = _EmittingSession(savedLibre);
+      final driver = _ControlledDriver(
+        driverId: 'libre2-gen1',
+        discoveredSensors: [savedLibre],
+        connectSessionBuilder: (_) => session,
+      );
+      final controller = await _createController(driver);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () =>
+                    unawaited(showSensorConnectionFlow(context, controller)),
+                child: const Text('Open setup'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Open setup'));
+      await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+      session.emit(receivedWithoutCurrent(savedLibre));
+      for (var index = 0; index < 20; index++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(
+        find.byKey(const ValueKey('sensorConnectionScreen')),
+        findsNothing,
+      );
+      expect(find.text('Open setup'), findsOneWidget);
+      expect(controller.displayLatestReading, isNull);
+      await _disposeConnectionScreen(tester, controller);
+      await session.close();
+    },
+  );
+
+  testWidgets(
+    'Libre save failure leaves pending progress for closed recovery actions',
+    (tester) async {
+      final session = _EmittingSession(savedLibre);
+      final driver = _ControlledDriver(
+        driverId: 'libre2-gen1',
+        discoveredSensors: [savedLibre],
+        connectSessionBuilder: (_) => session,
+      );
+      final store = _ReceptionFailureHealthStateStore();
+      var completed = 0;
+      final controller = await _pumpConnectionScreen(
+        tester,
+        driver,
+        inline: true,
+        healthStateStore: store,
+        onConnected: () => completed++,
+      );
+      await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+      session.emit(receivedWithoutCurrent(savedLibre));
+      for (var index = 0; index < 10; index++) {
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(store.writeStarted, isTrue);
+      expect(controller.hasLibreReceptionSetupFailureFor(savedLibre), isFalse);
+      expect(find.byKey(const ValueKey('connectionRetryButton')), findsNothing);
+      expect(completed, 0);
+      store.release.complete();
+      for (var index = 0; index < 20; index++) {
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      expect(controller.hasLibreReceptionSetupFailureFor(savedLibre), isTrue);
+      expect(controller.snapshot?.stage, CgmSyncStage.syncing);
+      expect(controller.displayLatestReading, isNull);
+      expect(completed, 0);
+      expect(find.text('Could not connect'), findsOneWidget);
+      expect(
+        find.textContaining('Sensor setup could not finish.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('synthetic-private-storage'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('connectionRetryButton')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('chooseAnotherSensorButton')),
+        findsNothing,
+      );
+      expect(controller.visibleHistory, hasLength(1));
+      await _disposeConnectionScreen(tester, controller);
+      await session.close();
+    },
+  );
+
+  testWidgets('blocked saved NFC setup explains review and disables retry', (
+    tester,
+  ) async {
+    final nfc = _FakeLibre2NfcSetupSession();
+    final driver = _ControlledDriver(driverId: 'protocol_capture_observation');
+    final controller = await _pumpConnectionScreen(
+      tester,
+      driver,
+      libre2NfcSetupSession: nfc,
+    );
+    await tester.pumpAndSettle();
+    await _openLibre2Nfc(tester);
+    nfc.emit(
+      const Libre2NfcSetupState.failed(Libre2NfcFailureKind.setupBlocked),
+    );
+    await tester.pump();
+    expect(find.text('Sensor setup needs review'), findsOneWidget);
+    expect(
+      find.text(
+        'Saved sensor setup needs review. No sensor changes were made.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Try the NFC tap again'), findsNothing);
+    final retry = find.byKey(const ValueKey('libre2NfcRetryButton'));
+    expect(tester.widget<FilledButton>(retry).onPressed, isNull);
+    await tester.pump(const Duration(seconds: 5));
+    expect(nfc.startCalls, 1);
+    expect(nfc.retryCalls, 0);
+    expect(driver.connectedSensors, isEmpty);
+    await _disposeConnectionScreen(tester, controller);
+  });
+
+  testWidgets('native read-only Libre setup has no streaming authority', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    const channel = MethodChannel('com.openglucose/libre2');
+    const events = MethodChannel('com.openglucose/libre2_events');
+    const codec = StandardMethodCodec();
+    final calls = <String>[];
+    String? attemptId;
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(events, (_) async => null);
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      if (call.method == 'capabilities') {
+        return {
+          'schemaVersion': 1,
+          'backend': 'readOnly',
+          'readAvailable': true,
+          'activationAvailable': false,
+          'streamingAvailable': false,
+          'receiverAvailable': false,
+          'rawCapture': false,
+        };
+      }
+      if (call.method == 'startLibre2NfcSetup') {
+        attemptId = (call.arguments as Map)['attemptId'] as String;
+        return null;
+      }
+      if (call.method == 'stopLibre2NfcSetup') {
+        expect((call.arguments as Map)['attemptId'], attemptId);
+        return null;
+      }
+      fail('Read-only setup must not invoke ${call.method}');
+    });
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(channel, null);
+      messenger.setMockMethodCallHandler(events, null);
+    });
+    final driver = _ControlledDriver();
+    final controller = await _pumpConnectionScreen(
+      tester,
+      driver,
+      inline: true,
+    );
+    await tester.pumpAndSettle();
+    expect(calls, ['capabilities']);
+    expect(find.textContaining('NFC'), findsNothing);
+    await _openLibre2Nfc(tester);
+    await tester.pump();
+    expect(calls.where((call) => call == 'startLibre2NfcSetup'), hasLength(1));
+    expect(find.text('Hold near the sensor'), findsOneWidget);
+    expect(find.byKey(const ValueKey('connectLibre2Sensor')), findsNothing);
+    await messenger.handlePlatformMessage(
+      events.name,
+      codec.encodeSuccessEnvelope({
+        'attemptId': attemptId!,
+        'event': 'metadataRead',
+        'model': 'libre2',
+        'status': 'notActivated',
+      }),
+      (_) {},
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.byKey(const ValueKey('libre2NfcSafeResult')), findsOneWidget);
+    expect(find.byKey(const ValueKey('connectLibre2Sensor')), findsNothing);
+    expect(find.textContaining('Activated'), findsNothing);
+    expect(driver.connectedSensors, isEmpty);
+    expect(
+      calls.toSet(),
+      {'capabilities', 'startLibre2NfcSetup'},
+    );
+    await tester.pump(const Duration(seconds: 106));
+    expect(find.text('Scan again to check sensor'), findsOneWidget);
+    expect(find.textContaining('before connecting'), findsNothing);
+    expect(find.text('Scan again to connect'), findsNothing);
+    expect(find.byKey(const ValueKey('connectLibre2Sensor')), findsNothing);
+    expect(calls.toSet(), {'capabilities', 'startLibre2NfcSetup'});
+    await _disposeConnectionScreen(tester, controller);
+    await tester.pump();
+    expect(
+      calls.toSet(),
+      {'capabilities', 'startLibre2NfcSetup', 'stopLibre2NfcSetup'},
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  for (final scenario in [
+    (
+      driverId: 'aidex',
+      stage: CgmSyncStage.syncing,
+      phase: 'awaitingPacket',
+      expected: 'Syncing sensor history',
+      receiving: false,
+    ),
+    (
+      driverId: 'libre2-gen1',
+      stage: CgmSyncStage.connecting,
+      phase: 'awaitingPacket',
+      expected: 'Connecting to FreeStyle Libre 2',
+      receiving: false,
+    ),
+    (
+      driverId: 'libre2-gen1',
+      stage: CgmSyncStage.syncing,
+      phase: 'loggingIn',
+      expected: 'Waiting for verified sensor data.',
+      receiving: false,
+    ),
+    (
+      driverId: 'libre2-gen1',
+      stage: CgmSyncStage.syncing,
+      phase: 'awaitingPacket',
+      expected: 'Connected. Waiting for sensor data.',
+      receiving: true,
+    ),
+  ]) {
+    testWidgets(
+      'connection progress validates driver and stage: ${scenario.driverId}/${scenario.stage.name}/${scenario.phase}',
+      (tester) async {
+        final sensor = DiscoveredSensor(
+          driverId: scenario.driverId,
+          deviceId: 'synthetic-progress-sensor',
+          displayName: 'Synthetic sensor',
+          storageKey: 'synthetic-progress-sensor',
+          rssi: -40,
+          capabilities: const CgmCapabilities(supportsDirectBle: true),
+        );
+        final driver = _ControlledDriver(
+          driverId: scenario.driverId,
+          discoveredSensors: [sensor],
+          connectSessionBuilder: (sensor) => _StaticSession(
+            sensor,
+            stage: scenario.stage,
+            metadata: {'cgm.libre2.phase': scenario.phase},
+          ),
+        );
+        final controller = await _pumpConnectionScreen(tester, driver);
+        await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+        expect(find.text(scenario.expected), findsOneWidget);
+        expect(
+          find.byIcon(Icons.bluetooth_connected_rounded),
+          scenario.receiving ? findsOneWidget : findsNothing,
+        );
+        expect(driver.connectedSensors, hasLength(1));
+        await _disposeConnectionScreen(tester, controller);
+      },
+    );
+  }
+
+  testWidgets('connection progress scrolls on compact large-text screens', (
+    tester,
+  ) async {
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final driver = _ControlledDriver(
+      driverId: 'libre2-gen1',
+      discoveredSensors: [savedLibre],
+      connectSessionBuilder: (sensor) => _StaticSession(
+        sensor,
+        metadata: {'cgm.libre2.phase': 'awaitingAdvertisement'},
+      ),
+    );
+    final controller = await _pumpConnectionScreen(
+      tester,
+      driver,
+      textScaler: const TextScaler.linear(2),
+    );
+    await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+    await tester.binding.setSurfaceSize(const Size(320, 300));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    final guidance = find.text(
+      'Keep the phone and sensor close while setup continues.',
+    );
+    await tester.ensureVisible(guidance);
+    expect(guidance.hitTestable(), findsOneWidget);
+    expect(driver.connectedSensors, hasLength(1));
+    await _disposeConnectionScreen(tester, controller);
+  });
 
   testWidgets('Libre connection lost title needs current validated packets', (
     tester,
@@ -145,6 +609,13 @@ void main() {
     expect(driver.connectedSensors, hasLength(1));
     expect(driver.connectedSensors.single.deviceId, savedLibre.deviceId);
     expect(driver.connectedSensors.single.storageKey, savedLibre.storageKey);
+    expect(
+      driver
+          .connectedSensors
+          .single
+          .metadata[cgmAllowSessionActivationMetadataKey],
+      'false',
+    );
     expect(find.text('Looking for your Libre 2 sensor'), findsOneWidget);
     expect(controller.snapshot?.stage, CgmSyncStage.connecting);
     expect(find.byIcon(Icons.bluetooth_connected_rounded), findsNothing);
@@ -152,6 +623,36 @@ void main() {
     expect(nfc.retryCalls, 0);
     expect(streaming.startCalls, 0);
     expect(restoreCalls, 1);
+    await _disposeConnectionScreen(tester, controller);
+  });
+
+  testWidgets('nearby Libre selection never grants session activation', (
+    tester,
+  ) async {
+    final nfc = _FakeLibre2NfcSetupSession();
+    final streaming = _FakeLibreStreamingSession();
+    final driver = _ControlledDriver(
+      driverId: 'libre2-gen1',
+      discoveredSensors: const [savedLibre],
+    );
+    final controller = await _pumpConnectionScreen(
+      tester,
+      driver,
+      libre2NfcSetupSession: nfc,
+      libreGen1StreamingSession: streaming,
+    );
+    await _scanAndConnectFirstResult(tester, settleAfterConnect: false);
+    expect(driver.connectedSensors, hasLength(1));
+    expect(
+      driver
+          .connectedSensors
+          .single
+          .metadata[cgmAllowSessionActivationMetadataKey],
+      'false',
+    );
+    expect(nfc.startCalls, 0);
+    expect(nfc.retryCalls, 0);
+    expect(streaming.startCalls, 0);
     await _disposeConnectionScreen(tester, controller);
   });
 
@@ -227,6 +728,39 @@ void main() {
       }
     },
   );
+
+  testWidgets('receiver restore does not grant NFC streaming setup', (
+    tester,
+  ) async {
+    final nfc = _FakeLibre2NfcSetupSession();
+    final driver = _ControlledDriver(driverId: 'libre2-gen1');
+    final controller = await _pumpConnectionScreen(
+      tester,
+      driver,
+      inline: true,
+      libre2NfcSetupSession: nfc,
+      libreGen1StreamingEnabled: false,
+      libreGen1ReceiverRestoreEnabled: true,
+      prepareLibreGen1Connection: () async => savedLibre,
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('savedLibreReceiver')), findsOneWidget);
+    expect(driver.connectedSensors, isEmpty);
+    await tester.tap(find.text("Can't find your sensor?"));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('chooseLibre2Help')));
+    await tester.pumpAndSettle();
+    nfc.emit(
+      const Libre2NfcSetupState.metadataRead(
+        model: Libre2SensorModel.libre2,
+        sensorStatus: Libre2SensorStatus.active,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('connectLibre2Sensor')), findsNothing);
+    expect(driver.connectedSensors, isEmpty);
+    await _disposeConnectionScreen(tester, controller);
+  });
 
   testWidgets('saved setup read timeout never revives from a late response', (
     tester,
@@ -534,7 +1068,7 @@ void main() {
     'Libre connected transport stays syncing with its closed data status',
     (tester) async {
       const sensor = DiscoveredSensor(
-        driverId: 'libre2-test',
+        driverId: 'libre2-gen1',
         deviceId: 'synthetic-libre',
         displayName: 'FreeStyle Libre 2',
         storageKey: 'synthetic-libre',
@@ -549,7 +1083,7 @@ void main() {
         ),
       ]) {
         final driver = _ControlledDriver(
-          driverId: 'libre2-test',
+          driverId: 'libre2-gen1',
           discoveredSensors: [sensor],
           connectSessionBuilder: (sensor) => _StaticSession(
             sensor,
@@ -1514,18 +2048,18 @@ void main() {
       );
       expect(
         find.byKey(
-          const ValueKey<String>('yuwellActivationConfirmation'),
+          const ValueKey<String>('sensorActivationConfirmation'),
         ),
         findsOneWidget,
       );
-      expect(find.text('Start this Yuwell sensor?'), findsOneWidget);
+      expect(find.text('Start this sensor?'), findsOneWidget);
       expect(find.textContaining('activate the sensor'), findsOneWidget);
       expect(find.textContaining('this app installation'), findsOneWidget);
       expect(find.textContaining('connection credentials'), findsOneWidget);
 
       await tester.tap(
         find.byKey(
-          const ValueKey<String>('confirmYuwellActivationButton'),
+          const ValueKey<String>('confirmSensorActivationButton'),
         ),
       );
       await tester.pumpAndSettle();
@@ -1575,11 +2109,154 @@ void main() {
       'false',
     );
     expect(
-      find.byKey(const ValueKey<String>('yuwellActivationConfirmation')),
+      find.byKey(const ValueKey<String>('sensorActivationConfirmation')),
       findsNothing,
     );
 
     await _disposeConnectionScreen(tester, controller);
+  });
+
+  for (final policy in <SensorConnectionPolicy?>[
+    ...SensorConnectionPolicy.values,
+    null,
+  ]) {
+    testWidgets(
+      'synthetic registration uses ${policy?.name ?? 'restrictive default'} '
+      'instead of discovery activation metadata',
+      (tester) async {
+        const sensor = DiscoveredSensor(
+          driverId: 'synthetic-future-sensor',
+          deviceId: 'synthetic-policy-device',
+          displayName: 'Synthetic sensor',
+          storageKey: 'synthetic-policy-storage',
+          rssi: -50,
+          capabilities: CgmCapabilities(supportsDirectBle: true),
+          metadata: {
+            cgmAllowSessionActivationMetadataKey: 'true',
+            'connectionPolicy': 'explicitConnect',
+          },
+        );
+        final driver = _ControlledDriver(
+          driverId: sensor.driverId,
+          discoveredSensors: const [sensor],
+          connectSessionBuilder: (connected) => _StaticSession(
+            connected,
+            stage: CgmSyncStage.error,
+            lastError: 'Activation confirmation is required.',
+            metadata: const {'activationRequired': 'true'},
+          ),
+        );
+        final controller = await _pumpConnectionScreen(
+          tester,
+          _registeredPolicyDriver(driver, policy),
+        );
+        await _scanAndConnectFirstResult(tester);
+
+        expect(driver.connectedSensors, hasLength(1));
+        expect(
+          driver
+              .connectedSensors
+              .single
+              .metadata[cgmAllowSessionActivationMetadataKey],
+          policy == SensorConnectionPolicy.explicitConnect ? 'true' : 'false',
+        );
+        expect(
+          find.byKey(const ValueKey('sensorActivationConfirmation')),
+          policy == SensorConnectionPolicy.separateConfirmation
+              ? findsOneWidget
+              : findsNothing,
+        );
+        if (policy != SensorConnectionPolicy.separateConfirmation) {
+          expect(find.text('Could not connect'), findsOneWidget);
+        }
+        await _disposeConnectionScreen(tester, controller);
+      },
+    );
+  }
+
+  testWidgets('synthetic separate policy confirms only the current sensor', (
+    tester,
+  ) async {
+    const sensor = DiscoveredSensor(
+      driverId: 'synthetic-future-sensor',
+      deviceId: 'synthetic-first-device',
+      displayName: 'Synthetic first sensor',
+      storageKey: 'synthetic-first-storage',
+      rssi: -50,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    const otherSensor = DiscoveredSensor(
+      driverId: 'synthetic-future-sensor',
+      deviceId: 'synthetic-second-device',
+      displayName: 'Synthetic second sensor',
+      storageKey: 'synthetic-second-storage',
+      rssi: -50,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    for (final changeSelection in [false, true]) {
+      final driver = _ControlledDriver(
+        driverId: sensor.driverId,
+        discoveredSensors: const [sensor],
+        connectSessionBuilder: (connected) => _StaticSession(
+          connected,
+          stage: CgmSyncStage.error,
+          lastError: 'Activation confirmation is required.',
+          metadata: const {'activationRequired': 'true'},
+        ),
+      );
+      final controller = await _pumpConnectionScreen(
+        tester,
+        _registeredPolicyDriver(
+          driver,
+          SensorConnectionPolicy.separateConfirmation,
+        ),
+      );
+      await _scanAndConnectFirstResult(tester);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(
+        driver
+            .connectedSensors
+            .single
+            .metadata[cgmAllowSessionActivationMetadataKey],
+        'false',
+      );
+      if (changeSelection) {
+        var changed = false;
+        final changing = controller
+            .connect(otherSensor, allowSessionActivation: false)
+            .then((_) => changed = true);
+        for (var attempt = 0; attempt < 20; attempt++) {
+          await tester.pump();
+          await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        }
+        expect(changed, isTrue);
+        await changing;
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(
+        find.byKey(const ValueKey('confirmSensorActivationButton')),
+      );
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      }
+      await tester.pumpAndSettle();
+
+      expect(driver.connectedSensors, hasLength(2));
+      expect(
+        driver
+            .connectedSensors
+            .last
+            .metadata[cgmAllowSessionActivationMetadataKey],
+        changeSelection ? 'false' : 'true',
+      );
+      expect(
+        driver.connectedSensors.last.deviceId,
+        changeSelection ? otherSensor.deviceId : sensor.deviceId,
+      );
+      await _disposeConnectionScreen(tester, controller);
+    }
   });
 
   testWidgets('unstructured scan failure renders failure and a live region', (
@@ -1627,7 +2304,7 @@ void main() {
   });
 
   testWidgets(
-    'Choose another after a first connection failure does not archive',
+    'first connection failure keeps selection until explicit cancellation',
     (
       tester,
     ) async {
@@ -1653,21 +2330,110 @@ void main() {
       expect(find.text('Could not connect'), findsOneWidget);
       expect(controller.archivedSensors, isEmpty);
 
-      await tester.tap(find.text('Choose another sensor'));
+      expect(find.text('Choose another sensor'), findsNothing);
+      await _settleControllerAction(tester, controller.chooseAnotherSensor());
+      await tester.pump();
+
+      expect(controller.snapshot, isNull);
+      expect(controller.archivedSensors, isEmpty);
+
+      await _disposeConnectionScreen(tester, controller);
+    },
+  );
+
+  for (final driverId in ['libre2-gen1', 'aidex']) {
+    testWidgets('snapshot cleanup guidance is driver-bound ($driverId)', (
+      tester,
+    ) async {
+      final sensor = DiscoveredSensor(
+        driverId: driverId,
+        deviceId: 'synthetic-cleanup-device',
+        displayName: 'Synthetic sensor',
+        storageKey: 'synthetic-cleanup-storage',
+        rssi: -50,
+        capabilities: const CgmCapabilities(supportsDirectBle: true),
+      );
+      final driver = _ControlledDriver(
+        driverId: driverId,
+        discoveredSensors: [sensor],
+        connectSessionBuilder: (connected) => _StaticSession(
+          connected,
+          stage: CgmSyncStage.error,
+          lastError: 'libre2.cleanupUnconfirmed',
+          metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+        ),
+      );
+      final controller = await _pumpConnectionScreen(tester, driver);
+      await _scanAndConnectFirstResult(tester);
+      final requiresRestart = driverId == 'libre2-gen1';
+      expect(controller.sensorConnectionCleanupUnconfirmed, requiresRestart);
+      expect(
+        find.byKey(const ValueKey('connectionRestartRequired')),
+        requiresRestart ? findsOneWidget : findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('connectionRetryButton')),
+        requiresRestart ? findsNothing : findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('chooseAnotherSensorButton')),
+        findsNothing,
+      );
+      expect(driver.connectedSensors, hasLength(1));
+      await _disposeConnectionScreen(tester, controller);
+    });
+  }
+
+  testWidgets(
+    'unconfirmed Libre cleanup replaces retry with restart guidance',
+    (
+      tester,
+    ) async {
+      const sensor = DiscoveredSensor(
+        driverId: 'libre2-gen1',
+        deviceId: 'synthetic-cleanup-device',
+        displayName: 'FreeStyle Libre 2',
+        storageKey: 'synthetic-cleanup-storage',
+        rssi: -50,
+        capabilities: CgmCapabilities(supportsDirectBle: true),
+      );
+      final driver = _ControlledDriver(
+        driverId: 'libre2-gen1',
+        discoveredSensors: const [sensor],
+        connectSessionBuilder: (connected) => _StaticSession(
+          connected,
+          stage: CgmSyncStage.error,
+          lastError: 'libre2.connectionFailed',
+          metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+          disconnectError: const LibreGen1LiveException(
+            LibreGen1LiveFailure.cleanupUnconfirmed,
+          ),
+        ),
+      );
+      final controller = await _pumpConnectionScreen(tester, driver);
+      await _scanAndConnectFirstResult(tester);
+      await _settleControllerAction(tester, controller.disconnect());
       await tester.runAsync(() async {
         for (var attempt = 0; attempt < 40; attempt += 1) {
-          if (controller.snapshot == null) break;
+          if (controller.sensorConnectionCleanupUnconfirmed) break;
           await Future<void>.delayed(const Duration(milliseconds: 5));
         }
       });
-      await tester.pump();
+      await tester.pumpAndSettle();
 
+      expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
       expect(
-        find.byKey(const ValueKey<String>('sensorConnectionChooser')),
+        find.byKey(const ValueKey('connectionRestartRequired')),
         findsOneWidget,
       );
-      expect(controller.archivedSensors, isEmpty);
-
+      expect(find.textContaining('Do not reset the sensor'), findsOneWidget);
+      expect(find.byKey(const ValueKey('connectionRetryButton')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('chooseAnotherSensorButton')),
+        findsNothing,
+      );
+      expect(driver.connectedSensors, hasLength(1));
+      expect(controller.snapshot, isNotNull);
       await _disposeConnectionScreen(tester, controller);
     },
   );
@@ -1704,7 +2470,7 @@ void main() {
     await _scanAndConnectFirstResult(tester);
     expect(find.text('Could not connect'), findsOneWidget);
 
-    await tester.tap(find.text('Choose another sensor'));
+    await _settleControllerAction(tester, controller.disconnect());
     await tester.runAsync(() async {
       for (var attempt = 0; attempt < 40; attempt += 1) {
         if (controller.lastError?.contains('Clearing the selected sensor') ??
@@ -1760,16 +2526,13 @@ void main() {
     final retry = tester.widget<FilledButton>(
       find.widgetWithText(FilledButton, 'Try again'),
     );
-    final choose = tester.widget<OutlinedButton>(
-      find.widgetWithText(OutlinedButton, 'Choose another sensor'),
-    );
     expect(retry.onPressed, isNull);
-    expect(choose.onPressed, isNull);
+    expect(find.text('Choose another sensor'), findsNothing);
     expect(firstSession.disconnectCalls, 1);
     expect(driver.connectCalls, 1);
 
     await tester.tap(
-      find.widgetWithText(OutlinedButton, 'Choose another sensor'),
+      find.widgetWithText(FilledButton, 'Try again'),
       warnIfMissed: false,
     );
     await tester.pump();
@@ -1784,7 +2547,7 @@ void main() {
     await _disposeConnectionScreen(tester, controller);
   });
 
-  testWidgets('failure actions stay disabled during Choose another cleanup', (
+  testWidgets('failure retry cannot reconnect during explicit disconnect', (
     tester,
   ) async {
     const sensor = DiscoveredSensor(
@@ -1809,9 +2572,7 @@ void main() {
     await _scanAndConnectFirstResult(tester);
     expect(find.text('Could not connect'), findsOneWidget);
 
-    await tester.tap(
-      find.widgetWithText(OutlinedButton, 'Choose another sensor'),
-    );
+    final disconnect = controller.disconnect();
     await tester.pump();
     await tester.runAsync(() async {
       for (var attempt = 0; attempt < 40; attempt += 1) {
@@ -1821,27 +2582,22 @@ void main() {
     });
     await tester.pump();
 
-    final retry = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Try again'),
-    );
-    final choose = tester.widget<OutlinedButton>(
-      find.widgetWithText(OutlinedButton, 'Choose another sensor'),
-    );
-    expect(retry.onPressed, isNull);
-    expect(choose.onPressed, isNull);
+    expect(find.text('Choose another sensor'), findsNothing);
     expect(firstSession.disconnectCalls, 1);
 
     await tester.tap(
-      find.widgetWithText(OutlinedButton, 'Choose another sensor'),
+      find.widgetWithText(FilledButton, 'Try again'),
       warnIfMissed: false,
     );
     await tester.pump();
     expect(firstSession.disconnectCalls, 1);
+    expect(driver.connectCalls, 1);
     expect(controller.archivedSensors, isEmpty);
 
     teardown.complete();
-    await tester.pumpAndSettle();
+    await _settleControllerAction(tester, disconnect);
     expect(firstSession.disconnectCalls, 1);
+    expect(driver.connectCalls, 1);
     expect(controller.archivedSensors, hasLength(1));
 
     await _disposeConnectionScreen(tester, controller);
@@ -2177,9 +2933,11 @@ Future<CgmAppController> _pumpConnectionScreen(
   bool disableAnimations = false,
   bool inline = false,
   VoidCallback? onClose,
+  VoidCallback? onConnected,
   Libre2NfcSetupSession? libre2NfcSetupSession,
   LibreGen1StreamingSession? libreGen1StreamingSession,
   bool? libreGen1StreamingEnabled,
+  bool? libreGen1ReceiverRestoreEnabled,
   Future<DiscoveredSensor?> Function()? prepareLibreGen1Connection,
 }) async {
   final controller = await _createController(
@@ -2191,9 +2949,11 @@ Future<CgmAppController> _pumpConnectionScreen(
     controller: controller,
     inline: inline,
     onClose: onClose,
+    onConnected: onConnected,
     libre2NfcSetupSession: libre2NfcSetupSession,
     libreGen1StreamingSession: libreGen1StreamingSession,
     libreGen1StreamingEnabled: libreGen1StreamingEnabled,
+    libreGen1ReceiverRestoreEnabled: libreGen1ReceiverRestoreEnabled,
     prepareLibreGen1Connection: prepareLibreGen1Connection,
   );
   await tester.pumpWidget(
@@ -2240,6 +3000,12 @@ Future<void> _scanAndConnectFirstResult(
   await tester.pumpAndSettle();
   await tester.tap(find.byKey(const ValueKey<String>('connectButton-1')));
   if (settleAfterConnect) {
+    // Probe teardown crosses secure-storage/platform futures. Drain both
+    // zones before waiting for its progress animation to stop.
+    for (var attempt = 0; attempt < 20; attempt += 1) {
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
     await tester.pumpAndSettle();
   } else {
     for (var attempt = 0; attempt < 10; attempt += 1) {
@@ -2260,12 +3026,72 @@ void _expectLiveRegion(WidgetTester tester, Finder descendant) {
   expect(data.flagsCollection.isLiveRegion, isTrue);
 }
 
+Future<void> _settleControllerAction(
+  WidgetTester tester,
+  Future<void> action,
+) async {
+  var complete = false;
+  final completion = action.whenComplete(() => complete = true);
+  // Teardown crosses root-zone stream cancellation and widget-zone storage.
+  for (var attempt = 0; attempt < 40 && !complete; attempt++) {
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+  }
+  expect(complete, isTrue, reason: 'Controller action did not complete.');
+  await completion;
+}
+
 Future<void> _disposeConnectionScreen(
   WidgetTester tester,
   CgmAppController controller,
 ) async {
   await tester.pumpWidget(const SizedBox.shrink());
   controller.dispose();
+}
+
+CgmDriverRegistry _registeredPolicyDriver(
+  _ControlledDriver driver,
+  SensorConnectionPolicy? policy,
+) => CgmDriverRegistry(
+  transport: const _SyntheticPolicyTransport(),
+  registrations: [
+    if (policy == null)
+      CgmDriverRegistration(
+        driver: driver,
+        scanServiceUuids: const ['181F'],
+        discover: (_) => driver.discoveredSensors.single,
+      )
+    else
+      CgmDriverRegistration(
+        driver: driver,
+        scanServiceUuids: const ['181F'],
+        discover: (_) => driver.discoveredSensors.single,
+        connectionPolicy: policy,
+      ),
+  ],
+);
+
+final class _SyntheticPolicyTransport implements BleTransport {
+  const _SyntheticPolicyTransport();
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) => Stream.value(
+    const BleScanResult(
+      deviceId: 'synthetic-policy-advertisement',
+      deviceName: 'Synthetic sensor',
+      rssi: -50,
+    ),
+  );
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw StateError('The synthetic driver owns connection.');
 }
 
 final class _ControlledDriver implements CgmDriver {
@@ -2401,6 +3227,7 @@ final class _StaticSession implements CgmSession {
     String? lastError,
     Map<String, String> metadata = const <String, String>{},
     List<CgmDiagnosticItem> diagnostics = const [],
+    this.disconnectError,
   }) : currentSnapshot = CgmSessionSnapshot(
          stage: stage,
          statusText: stage == CgmSyncStage.error ? 'Error' : 'Connecting',
@@ -2417,6 +3244,8 @@ final class _StaticSession implements CgmSession {
   @override
   final CgmSessionSnapshot currentSnapshot;
 
+  final Object? disconnectError;
+
   @override
   Stream<CgmLogEntry> get logs => const Stream<CgmLogEntry>.empty();
 
@@ -2428,7 +3257,10 @@ final class _StaticSession implements CgmSession {
   CgmUnsafeAdmin? get unsafeAdmin => null;
 
   @override
-  Future<void> disconnect() async {}
+  Future<void> disconnect() async {
+    final error = disconnectError;
+    if (error != null) Error.throwWithStackTrace(error, StackTrace.current);
+  }
 
   @override
   Future<List<CgmCalibrationEntry>> fetchCalibrations() async =>
@@ -2482,6 +3314,11 @@ final class _EmittingSession implements CgmSession {
       statusText: 'Ready',
     );
     _snapshots.add(currentSnapshot);
+  }
+
+  void emit(CgmSessionSnapshot value) {
+    currentSnapshot = value;
+    _snapshots.add(value);
   }
 
   Future<void> close() => _snapshots.close();
@@ -2645,6 +3482,31 @@ final class _BlockingScanDriver implements CgmDriver {
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) {
     throw StateError('The blocking scan fixture must not connect.');
+  }
+}
+
+final class _ReceptionFailureHealthStateStore implements HealthStateStore {
+  final _values = <String, String>{};
+  final release = Completer<void>();
+  bool writeStarted = false;
+
+  @override
+  Future<void> initialize() async {}
+  @override
+  String? getString(String key) => _values[key];
+  @override
+  Future<void> remove(String key) async {
+    _values.remove(key);
+  }
+
+  @override
+  Future<void> setString(String key, String value) async {
+    if (key == 'openHealth.lastSensor') {
+      writeStarted = true;
+      await release.future;
+      throw StateError('synthetic-private-storage failure');
+    }
+    _values[key] = value;
   }
 }
 

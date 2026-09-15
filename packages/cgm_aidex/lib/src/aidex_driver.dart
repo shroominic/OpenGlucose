@@ -130,7 +130,7 @@ final class AidexDiscovery {
   }
 }
 
-class AidexSensorDriver implements CgmDriver {
+class AidexSensorDriver implements CgmDriver, CgmSensorDataProfileProvider {
   AidexSensorDriver(
     this._transport, {
     DateTime Function()? clock,
@@ -143,6 +143,14 @@ class AidexSensorDriver implements CgmDriver {
   final DateTime Function() _clock;
   final AidexTimingProfile _timingProfile;
   final AidexDiscovery discovery;
+
+  static const dataProfile = CgmSensorDataProfile(
+    warmupMinutes: 60,
+    expectedLifetimeMinutes: 15 * 24 * 60,
+  );
+
+  @override
+  CgmSensorDataProfile get sensorDataProfile => dataProfile;
 
   static const CgmCapabilities capabilities = CgmCapabilities(
     supportsDirectBle: true,
@@ -1558,6 +1566,15 @@ class AidexSession implements CgmSession, CgmBondTransferSession {
           model: model,
           serial: serial,
           firmware: firmware,
+          // Observe the fields already read from Device Information. 2A28 is
+          // software revision; keep the legacy firmware alias above without
+          // inventing distinct firmware, hardware, region, or model support.
+          sensorVariant: CgmSensorVariant(
+            protocolFamily: 'aidex',
+            source: CgmSensorVariantSource.deviceInformation,
+            model: model.isEmpty ? null : model,
+            softwareRevision: firmware.isEmpty ? null : firmware,
+          ),
         ),
         metadata: <String, String>{
           ..._snapshot.metadata,

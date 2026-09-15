@@ -26,6 +26,25 @@ String readingTimeText(CgmReading? reading, {DateTime? now}) {
   return DateFormat('HH:mm').format(recordedAt);
 }
 
+/// Home-value freshness only. History, driver state, and export eligibility are
+/// unchanged. Matches the existing live-surface ten-minute stale boundary.
+bool dashboardReadingIsRecent(CgmReading? reading, {DateTime? now}) {
+  if (reading == null ||
+      !reading.valueMgdl.isFinite ||
+      reading.valueMgdl <= 0 ||
+      reading.source == CgmRecordSource.raw) {
+    return false;
+  }
+  final effectiveNow = now ?? DateTime.now();
+  final recordedAt = clampedDisplayRecordedAt(
+    reading.recordedAt,
+    now: effectiveNow,
+  );
+  if (recordedAt == null) return false;
+  final age = effectiveNow.difference(recordedAt);
+  return !age.isNegative && age <= const Duration(minutes: 10);
+}
+
 /// Local charts and explicit raw exports may retain provisional samples, with
 /// their quality flag. They are not inputs to wellness summaries or messaging.
 List<CgmReading> readingsForWellness(Iterable<CgmReading> readings) =>
@@ -38,6 +57,21 @@ List<CgmReading> readingsForWellness(Iterable<CgmReading> readings) =>
             reading.valueMgdl > 0,
       ),
     );
+
+/// Decoder/source quality for sensor details, independent of test placement.
+/// This label does not change eligibility for summaries, export, or display.
+String? readingQualityLabelFor(Iterable<CgmReading> readings) {
+  var provisional = false;
+  var raw = false;
+  for (final reading in readings) {
+    provisional = provisional || reading.isDisplayProvisional;
+    raw = raw || reading.source == CgmRecordSource.raw;
+  }
+  if (provisional && raw) return 'Provisional and raw readings';
+  if (provisional) return 'Provisional readings';
+  if (raw) return 'Raw sensor data';
+  return null;
+}
 
 enum WarmupPhase { warming, waiting }
 
@@ -94,7 +128,10 @@ WarmupStatus? computeWarmupStatus(
       totalMinutes: total,
     );
   }
-  if (latestReading != null) {
+  if (latestReading != null || isLibreGen1Snapshot(snapshot)) {
+    // A missing Libre current sample after the warmup window can mean a
+    // quality rejection, a replay, or stale reception. It is not evidence that
+    // this is the sensor's first reading or a new warmup transition.
     return null;
   }
   return WarmupStatus(
@@ -177,13 +214,17 @@ const Duration kSensorExpiringSoonThreshold = Duration(hours: 12);
 String sensorLifeText(
   DateTime? sessionStart, {
   DateTime? now,
+  int? elapsedMinutes,
   Duration totalLife = kSensorLifeDuration,
 }) {
-  if (sessionStart == null) {
+  if (sessionStart == null && (elapsedMinutes == null || elapsedMinutes < 0)) {
     return 'Life remaining unavailable';
   }
   final effectiveNow = now ?? DateTime.now();
-  final remaining = totalLife - effectiveNow.difference(sessionStart);
+  final age = sessionStart == null
+      ? Duration(minutes: elapsedMinutes!)
+      : effectiveNow.difference(sessionStart);
+  final remaining = totalLife - age;
   if (remaining <= Duration.zero) {
     return 'Sensor expired';
   }
@@ -199,7 +240,7 @@ String sensorLifeText(
 
 /// Lifecycle phase of the sensor derived purely from session timing + health.
 enum SensorLifecyclePhase {
-  /// No `sessionStart` known yet — can't place the sensor in its life.
+  /// Neither a session start nor a current sensor-relative age is known.
   unknown,
 
   /// Inside the ~1h warmup window after insertion (no reliable readings yet).
@@ -217,7 +258,7 @@ enum SensorLifecyclePhase {
 
 /// A self-contained, testable view-model for the sensor lifecycle card.
 ///
-/// Derived from the session timing (`sessionStart` / `warmupMinutes`) plus the
+/// Derived from session timing (start or reported age) plus the
 /// expiry/stopped health flags. Pure: pass `now` in tests for determinism.
 class SensorLifecycle {
   const SensorLifecycle({
@@ -276,7 +317,9 @@ SensorLifecycle computeSensorLifecycle(
   final stoppedOrFlagged =
       snapshot.sessionInfo.sessionStopped || snapshot.health.expired;
 
-  if (sessionStart == null) {
+  final reportedElapsed = snapshot.sessionInfo.elapsedMinutes;
+  final hasReportedAge = reportedElapsed != null && reportedElapsed >= 0;
+  if (sessionStart == null && !hasReportedAge) {
     return SensorLifecycle(
       phase: stoppedOrFlagged
           ? SensorLifecyclePhase.expired
@@ -288,7 +331,14 @@ SensorLifecycle computeSensorLifecycle(
     );
   }
 
-  final rawAge = effectiveNow.difference(sessionStart);
+  // A driver can report a current sensor-relative age without knowing the UTC
+  // activation instant. Display that observation without advancing it using
+  // the phone clock or inventing a start/end date. The driver owns freshness
+  // and must withdraw stale elapsed values. This nominal life display is not
+  // authority to retire a receiver or delete its recording segment.
+  final rawAge = sessionStart == null
+      ? Duration(minutes: reportedElapsed!)
+      : effectiveNow.difference(sessionStart);
   final age = rawAge.isNegative ? Duration.zero : rawAge;
   final rawRemaining = totalLife - age;
   final remaining = rawRemaining.isNegative ? Duration.zero : rawRemaining;
@@ -372,24 +422,25 @@ int? historySyncPercent(CgmHistorySyncState historySync) {
 }
 
 String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
+  if (snapshotNeedsBluetoothEnabled(snapshot)) return 'Bluetooth off';
   if (isLibreGen1Snapshot(snapshot)) {
     if (libreConnectionWasLost(snapshot)) return 'Connection lost';
     if (snapshot.stage == CgmSyncStage.error) return 'Error';
     if (snapshot.stage == CgmSyncStage.disconnected) return 'Disconnected';
     if (snapshot.stage == CgmSyncStage.ready) {
       return currentReadingForSnapshot(snapshot, snapshot.latestReading) == null
-          ? 'Waiting'
+          ? _libreMissingCurrentLabel(snapshot)
           : 'Connected';
     }
     if (snapshot.stage == CgmSyncStage.connecting &&
         snapshot.metadata['cgm.libre2.phase'] == 'awaitingAdvertisement') {
-      return 'Searching';
+      return _libreWaitingForReturn(snapshot) ? 'Waiting' : 'Searching';
     }
     if (snapshot.stage == CgmSyncStage.syncing &&
         const {'awaitingPacket', 'validatedPacket'}.contains(
           snapshot.metadata['cgm.libre2.phase'],
         )) {
-      return 'Waiting';
+      return _libreMissingCurrentLabel(snapshot);
     }
     return 'Connecting';
   }
@@ -417,7 +468,19 @@ String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
   return 'Connecting';
 }
 
+String _libreMissingCurrentLabel(CgmSessionSnapshot snapshot) {
+  final timing = snapshot.metadata['cgm.libre2.timing'];
+  if (timing == 'stale') return 'No recent reading';
+  final age = snapshot.sessionInfo.elapsedMinutes;
+  return timing == 'observed' &&
+          age != null &&
+          age >= snapshot.sessionInfo.warmupMinutes
+      ? 'No current reading'
+      : 'Waiting';
+}
+
 String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (snapshotNeedsBluetoothEnabled(snapshot)) return 'progress';
   if (isLibreGen1Snapshot(snapshot)) {
     return switch (stageLabelForSnapshot(snapshot)) {
       'Error' || 'Disconnected' || 'Connection lost' => 'error',
@@ -440,6 +503,7 @@ String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
 }
 
 bool shouldShowPrimaryError(CgmSessionSnapshot snapshot) {
+  if (snapshotNeedsBluetoothEnabled(snapshot)) return false;
   if (snapshot.lastError == null || snapshot.lastError!.isEmpty) {
     return false;
   }
@@ -467,8 +531,51 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
       : userMessageForBleFailure(bleFailure);
 }
 
+/// Bluetooth being disabled is an expected system state. It needs an action,
+/// not an error banner or a support code.
+bool snapshotNeedsBluetoothEnabled(CgmSessionSnapshot snapshot) {
+  if (snapshot.stage != CgmSyncStage.error &&
+      snapshot.stage != CgmSyncStage.disconnected) {
+    return false;
+  }
+  if (isLibreGen1Snapshot(snapshot)) {
+    return snapshot.lastError == 'libre2.bluetoothOff';
+  }
+  return BleFailure.fromMetadata(snapshot.metadata)?.kind ==
+      BleFailureKind.bluetoothOff;
+}
+
 bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
     snapshot.sensor.driverId == 'libre2-gen1';
+
+/// Fresh, durably acknowledged reception, independent of glucose acceptance.
+///
+/// Only the live driver emits this marker after the observation write settles.
+/// Retained readings, setup phases, and packet counters alone cannot satisfy
+/// it. Callers must also check that their current session still owns the target
+/// and that no cleanup or persistence failure is pending. This never makes a
+/// historical reading eligible as current glucose.
+bool hasVerifiedLibreReception(
+  CgmSessionSnapshot snapshot, {
+  required DiscoveredSensor expectedSensor,
+}) {
+  // The caller must separately own the active session and completed saves.
+  final sensor = snapshot.sensor;
+  final elapsed = snapshot.sessionInfo.elapsedMinutes;
+  return isLibreGen1Snapshot(snapshot) &&
+      expectedSensor.driverId == sensor.driverId &&
+      expectedSensor.deviceId == sensor.deviceId &&
+      expectedSensor.storageKey == sensor.storageKey &&
+      (snapshot.stage == CgmSyncStage.syncing ||
+          snapshot.stage == CgmSyncStage.ready) &&
+      snapshot.lastError == null &&
+      snapshot.metadata['cgm.libre2.observationCommitted'] == 'true' &&
+      snapshot.metadata['cgm.libre2.phase'] == 'validatedPacket' &&
+      snapshot.metadata['cgm.libre2.timing'] == 'observed' &&
+      elapsed != null &&
+      elapsed >= 0 &&
+      elapsed <= 0xffff;
+}
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter
 /// on each snapshot. Retained glucose history or a saved NFC state is not proof
@@ -526,6 +633,9 @@ CgmReading? currentReadingForSnapshot(
 /// A saved phase must not turn a disconnected session into a connected claim.
 String? libreConnectionDetailForSnapshot(CgmSessionSnapshot snapshot) {
   if (!isLibreGen1Snapshot(snapshot)) return null;
+  if (snapshotNeedsBluetoothEnabled(snapshot)) {
+    return 'Bluetooth is off. Turn it on to reconnect to your sensor.';
+  }
   if (libreConnectionWasLost(snapshot)) {
     return userMessageForLibreConnectionLoss(snapshot.lastError);
   }
@@ -538,9 +648,7 @@ String? libreConnectionDetailForSnapshot(CgmSessionSnapshot snapshot) {
   if (snapshot.stage == CgmSyncStage.ready) {
     final reading = currentReadingForSnapshot(snapshot, snapshot.latestReading);
     if (reading == null) return 'Waiting for a verified glucose reading.';
-    return reading.isDisplayProvisional
-        ? 'Bench estimate. Not validated for body glucose.'
-        : null;
+    return null;
   }
   final phase = snapshot.metadata['cgm.libre2.phase'];
   if (snapshot.stage == CgmSyncStage.syncing) {
@@ -548,12 +656,16 @@ String? libreConnectionDetailForSnapshot(CgmSessionSnapshot snapshot) {
       'awaitingPacket' => 'Connected. Waiting for sensor data.',
       'validatedPacket' => libreGlucoseWaitingDetail(
         snapshot.metadata['cgm.libre2.decoder'],
+        timing: snapshot.metadata['cgm.libre2.timing'],
       ),
       _ => 'Waiting for verified sensor data.',
     };
   }
   if (snapshot.stage != CgmSyncStage.connecting) {
     return 'Preparing the sensor connection.';
+  }
+  if (_libreWaitingForReturn(snapshot)) {
+    return 'Waiting for your sensor to return. Keep it close to the phone.';
   }
   return switch (phase) {
     'reconnecting' => 'Connection lost. Reconnecting once to your sensor.',
@@ -565,14 +677,101 @@ String? libreConnectionDetailForSnapshot(CgmSessionSnapshot snapshot) {
   };
 }
 
+/// Whether a Libre 2 history catch-up action should be visible in the home
+/// surface. The action is presentation-only: it never starts NFC or changes
+/// the connection state. Libre history is stored on the sensor for a bounded
+/// window. Fresh BLE readings do not fill older gaps. Historical NFC readings
+/// have a 15-minute cadence, so allow two minutes of timestamp tolerance.
+bool shouldOfferLibreNfcHistorySync(
+  CgmSessionSnapshot snapshot, {
+  DateTime? now,
+  Duration staleAfter = const Duration(minutes: 10),
+}) {
+  if (!isLibreGen1Snapshot(snapshot) ||
+      snapshot.historySync.inProgress ||
+      const {
+        'libre2.cleanupUnconfirmed',
+        'libre2.loginOutcomeUnknown',
+        'libre2.observationStorageUnavailable',
+      }.contains(snapshot.lastError) ||
+      (snapshot.stage == CgmSyncStage.connecting &&
+          snapshot.metadata['cgm.libre2.phase'] != 'awaitingAdvertisement') ||
+      snapshot.stage == CgmSyncStage.bonding ||
+      snapshot.stage == CgmSyncStage.pairing ||
+      snapshot.stage == CgmSyncStage.activating ||
+      snapshot.stage == CgmSyncStage.syncing) {
+    return false;
+  }
+  final readings = <CgmReading>[...snapshot.history];
+  if (snapshot.latestReading case final reading?) {
+    readings.add(reading);
+  }
+  final currentTime = now ?? DateTime.now();
+  final times =
+      readings
+          .where(
+            (reading) =>
+                reading.source != CgmRecordSource.raw &&
+                reading.valueMgdl.isFinite &&
+                reading.valueMgdl > 0,
+          )
+          .map((reading) => reading.recordedAt)
+          .whereType<DateTime>()
+          .where((at) => !at.isAfter(currentTime))
+          .map((at) => at.toUtc())
+          .toSet()
+          .toList()
+        ..sort();
+  if (times.isEmpty) return false;
+  if (currentTime.difference(times.last) >= staleAfter) return true;
+  final windowStart = currentTime.subtract(const Duration(hours: 8));
+  for (var index = 1; index < times.length; index++) {
+    final previous = times[index - 1];
+    final recoverableStart = previous.isBefore(windowStart)
+        ? windowStart
+        : previous;
+    if (times[index].difference(recoverableStart) >
+        const Duration(minutes: 17)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Presentation only; this marker cannot grant radio or receiver authority.
+bool _libreWaitingForReturn(CgmSessionSnapshot snapshot) =>
+    snapshot.stage == CgmSyncStage.connecting &&
+    snapshot.metadata['cgm.libre2.phase'] == 'awaitingAdvertisement' &&
+    snapshot.metadata['cgm.libre2.waitingForReturn'] == 'true';
+
 /// Closed decoder outcomes only; native exceptions and coefficients stay private.
-String libreGlucoseWaitingDetail(String? outcome) => switch (outcome) {
-  'warmingUp' => 'Sensor warming up. Waiting for glucose readings.',
-  'invalidData' => 'Receiving sensor data. No usable glucose reading yet.',
-  _ => 'Receiving sensor data. Glucose decoding is not ready.',
-};
+String libreGlucoseWaitingDetail(String? outcome, {String? timing}) =>
+    switch (timing) {
+      'stale' => 'No recent sensor update. Waiting for new data.',
+      'repeatedOrRegressed' => 'Waiting for a new sensor reading.',
+      _ => switch (outcome) {
+        'warmingUp' => 'Sensor warming up. Waiting for glucose readings.',
+        'invalidData' =>
+          'Receiving sensor data. No usable glucose reading yet.',
+        'stale' => 'No recent sensor update. Waiting for new data.',
+        _ => 'Receiving sensor data. Glucose decoding is not ready.',
+      },
+    };
 
 String userMessageForLibreConnectionFailure(String? code) => switch (code) {
+  'libre2.bluetoothOff' =>
+    "Bluetooth is off. Turn it on in your phone's quick settings or "
+        'Settings, then try again.',
+  'libre2.permissionRequired' =>
+    'OpenGlucose needs Bluetooth access. In your phone settings, allow '
+        'Bluetooth and nearby-device permissions. Some phones also require '
+        'Location to be allowed and turned on for scanning. Then try again.',
+  'libre2.bluetoothUnavailable' =>
+    'Bluetooth is not available on this phone right now. Restart Bluetooth '
+        'or the phone, then try again.',
+  'libre2.scanFailed' =>
+    'The Bluetooth search could not finish. Check Bluetooth and app '
+        'permissions, then try again.',
   'libre2.advertisementUnavailable' =>
     'Your Libre 2 sensor was not found. Keep it close and try again.',
   'libre2.invalidBootstrap' ||
@@ -594,6 +793,12 @@ String userMessageForLibreConnectionFailure(String? code) => switch (code) {
     'Could not start sensor updates. Keep the sensor close and try again.',
   'libre2.invalidPacket' =>
     'The sensor data could not be verified. No glucose reading is available.',
+  'libre2.observationStorageUnavailable' =>
+    'Sensor updates stopped because readings could not be saved. '
+        'Keep the app data and check available phone storage before trying again.',
+  'libre2.observationQueueOverflow' =>
+    'Sensor updates stopped because saving readings could not keep up. '
+        'Wait for saving to finish before trying again.',
   'libre2.disconnected' =>
     'The sensor disconnected. Keep it close and try again.',
   'libre2.cancelled' => 'Sensor connection cancelled.',
@@ -641,6 +846,7 @@ String? privateBleSupportCodeForSnapshot(CgmSessionSnapshot snapshot) {
 }
 
 bool shouldOfferPrivateBleSupportCode(CgmSessionSnapshot snapshot) {
+  if (snapshotNeedsBluetoothEnabled(snapshot)) return false;
   if (privateBleSupportCodeForSnapshot(snapshot) == null) {
     return false;
   }

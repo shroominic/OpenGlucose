@@ -11,7 +11,7 @@ import 'session_presentation.dart';
 ///  - the warmup countdown while the sensor is warming up,
 ///  - a heads-up banner when the sensor is expiring soon,
 ///  - a full offboarding state (replace prompt) when the sensor has expired,
-///  - the last-sync time.
+///  - the last completed history sync, or the latest stored reading's time.
 ///
 /// Stateless: it recomputes the lifecycle on every parent rebuild. The
 /// parent rebuilds on each controller notification, so the countdown/age stay
@@ -104,6 +104,7 @@ class SensorLifecycleCard extends StatelessWidget {
               : _ActiveLifecycle(
                   lifecycle: lifecycle,
                   lastSyncAt: snapshot.historySync.lastSyncAt,
+                  storedHistory: snapshot.history,
                   now: now,
                 ),
         ),
@@ -116,11 +117,13 @@ class _ActiveLifecycle extends StatelessWidget {
   const _ActiveLifecycle({
     required this.lifecycle,
     required this.lastSyncAt,
+    required this.storedHistory,
     required this.now,
   });
 
   final SensorLifecycle lifecycle;
   final DateTime? lastSyncAt;
+  final List<CgmReading> storedHistory;
   final DateTime now;
 
   @override
@@ -195,12 +198,7 @@ class _ActiveLifecycle extends StatelessWidget {
                     label: 'Total life',
                     value: '${lifecycle.totalLife.inDays} days',
                   ),
-                  _LifeStatRow(
-                    label: 'Last sync',
-                    value: lastSyncText(lastSyncAt, now: now)
-                        .replaceFirst('Synced ', '')
-                        .replaceFirst('Not synced yet', 'Not yet'),
-                  ),
+                  _historyTimeRow(lastSyncAt, storedHistory, now),
                 ],
               ),
             ),
@@ -228,6 +226,51 @@ class _ActiveLifecycle extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Presentation only. A retained sample time is neither its acquisition time
+/// nor evidence of current glucose or a completed history pull. Rendering this
+/// row must not update any history-sync or live-freshness state.
+Widget _historyTimeRow(
+  DateTime? lastSyncAt,
+  List<CgmReading> history,
+  DateTime now,
+) {
+  String knownTime(DateTime at) => at.isAfter(now)
+      ? 'Time unavailable'
+      : lastSyncText(at, now: now).replaceFirst('Synced ', '');
+
+  if (lastSyncAt != null) {
+    return _LifeStatRow(
+      label: 'Last history sync',
+      value: knownTime(lastSyncAt),
+    );
+  }
+
+  var hasStoredReading = false;
+  DateTime? latestStoredAt;
+  for (final reading in history) {
+    if (reading.source == CgmRecordSource.raw ||
+        !reading.valueMgdl.isFinite ||
+        reading.valueMgdl <= 0) {
+      continue;
+    }
+    hasStoredReading = true;
+    final at = reading.recordedAt;
+    // Select before checking the clock. A future newest record must not be
+    // hidden by silently falling back to an older, apparently recent record.
+    if (at != null && (latestStoredAt == null || at.isAfter(latestStoredAt))) {
+      latestStoredAt = at;
+    }
+  }
+  return _LifeStatRow(
+    label: 'Latest stored reading',
+    value: latestStoredAt != null
+        ? knownTime(latestStoredAt)
+        : hasStoredReading
+        ? 'Time unavailable'
+        : 'No readings yet',
+  );
 }
 
 class _ExpiredOffboarding extends StatelessWidget {

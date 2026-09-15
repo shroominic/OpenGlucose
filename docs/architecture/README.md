@@ -153,3 +153,13 @@ For a new sensor driver:
 Public API evolution follows [compatibility.md](../compatibility.md).
 Dependencies follow [dependencies.md](../dependencies.md). Accepted decisions
 and their implementation status are indexed in [adr/README.md](adr/README.md).
+
+For the implemented extension points, use the
+[sensor driver guide](../development/sensor-driver-guide.md). Drivers declare
+`CgmSensorDataProfile` through an optional provider; the app registry separately
+declares `SensorConnectionPolicy`. Shared history/restore/archive behavior uses
+these declarations rather than treating every sensor as AiDEX. Custom NFC
+state machines remain specialized; a connection policy does not authorize
+their commands. [ADR 0005](adr/0005-sensor-data-and-setup-policies.md) records
+the compatibility boundary. For protocol investigation and bug reproduction,
+use the [capture-to-regression workflow](../development/sensor-protocol-workflow.md).

@@ -1,3 +1,4 @@
+import 'package:cgm_core/cgm_core.dart';
 import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:test/test.dart';
 
@@ -7,6 +8,81 @@ void main() {
   final core = LibreGen1OfflineCore(uid: uid, patchInfo: patchInfo);
 
   group('strict Gen1 inputs', () {
+    for (final entry in <String, LibreGen1Model>{
+      '9d0830': LibreGen1Model.libre2,
+      'c50930': LibreGen1Model.libre2,
+      '7f0e30': LibreGen1Model.libre2,
+      'c60931': LibreGen1Model.libre2Plus,
+      '7f0e31': LibreGen1Model.libre2Plus,
+    }.entries) {
+      test('describes only the accepted ${entry.key} signature', () {
+        // The remaining bytes are synthetic, not regional identity evidence.
+        for (final suffix in ['000000', '013412', '02ffff', 'ffabcd']) {
+          final patch = LibreGen1PatchInfo(_hex('${entry.key}$suffix'));
+          final variant = patch.sensorVariant;
+          expect(patch.model, entry.value);
+          expect(variant.protocolFamily, 'abbott-sas');
+          expect(variant.source, CgmSensorVariantSource.nfcPatchInfo);
+          expect(
+            variant.model,
+            entry.value == LibreGen1Model.libre2
+                ? 'FreeStyle Libre 2'
+                : 'FreeStyle Libre 2 Plus',
+          );
+          expect(variant.variantCode, entry.key);
+          expect(variant.securityGeneration, 'gen1');
+          expect(variant.region, isNull);
+          expect(variant.hardwareRevision, isNull);
+          expect(variant.firmwareRevision, isNull);
+          expect(variant.softwareRevision, isNull);
+          expect(variant.toJson(), {
+            'protocolFamily': 'abbott-sas',
+            'source': 'nfcPatchInfo',
+            'model': variant.model,
+            'variantCode': entry.key,
+            'securityGeneration': 'gen1',
+          });
+          expect(variant.toString(), contains('<redacted>'));
+        }
+      });
+    }
+
+    for (final marker in ['39', '3f', '74', '7f']) {
+      test('variant metadata does not admit Gen2 marker $marker', () {
+        expect(
+          () => LibreGen1PatchInfo(_hex('9d08${marker}013412')),
+          throwsA(
+            isA<LibreProtocolError>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  LibreProtocolErrorKind.unsupportedSecurityGeneration,
+                )
+                .having(
+                  (error) => error.generation,
+                  'generation',
+                  LibreSecurityGeneration.gen2,
+                ),
+          ),
+        );
+      });
+    }
+
+    for (final signature in ['9d0838', '9d0873', '9d0800', 'aabb30']) {
+      test('variant metadata does not admit unknown signature $signature', () {
+        expect(
+          () => LibreGen1PatchInfo(_hex('${signature}013412')),
+          throwsA(
+            isA<LibreProtocolError>().having(
+              (error) => error.kind,
+              'kind',
+              LibreProtocolErrorKind.unsupportedPatchInfo,
+            ),
+          ),
+        );
+      });
+    }
+
     test('accepts only exact UID and patch-info lengths', () {
       expect(
         () => LibreGen1Uid.algorithmOrder(List<int>.filled(7, 0)),

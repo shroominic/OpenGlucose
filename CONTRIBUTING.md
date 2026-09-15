@@ -101,6 +101,11 @@ consequences, and link it from the index.
 
 ## Tests and evidence
 
+For sensor work, follow the [driver implementation guide](docs/development/sensor-driver-guide.md)
+and [protocol investigation workflow](docs/development/sensor-protocol-workflow.md).
+They cover custom setup, history/timing contracts, private capture, synthetic
+regressions, real-device evidence, and the release gates for a new driver.
+
 Add the narrowest deterministic test that would fail without the change. Bug
 fixes should include a regression test when practical.
 

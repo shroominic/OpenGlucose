@@ -1,5 +1,13 @@
 ## Unreleased
 
+- Publish descriptive variant information from the existing connected model
+  and `2A28` Software Revision reads. Retain the legacy `firmware` field; do not
+  infer hardware, true firmware revision, country, or a new compatibility gate.
+  No additional GATT read or sensor operation is added.
+
+- Declare the optional sensor-neutral data profile: 60-minute warmup, 15-day
+  lifetime, session-timed history, corrected-record replacement, and existing
+  latest/history selection. No Bluetooth or reading behavior changes.
 - Expose the pure `AidexDiscovery` mapper so an application can route one
   physical Bluetooth scan across multiple vendor drivers without changing
   existing AiDEX identifiers or storage keys.

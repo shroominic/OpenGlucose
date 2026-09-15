@@ -166,15 +166,27 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
   List<_ReadingSample> _buildSamples(List<CgmReading> readings) {
     final samples = <_ReadingSample>[];
     var fallbackMinute = 0;
+    var segment = 0;
     for (final reading in readings) {
       final minute = reading.sensorMinute ?? fallbackMinute;
       fallbackMinute = minute + 1;
+      final previous = samples.lastOrNull;
+      if (previous != null &&
+          dashboardChartHasGap(
+            previousMinute: previous.minute,
+            minute: minute,
+            previousRecordedAt: previous.recordedAt,
+            recordedAt: reading.recordedAt,
+          )) {
+        segment += 1;
+      }
       samples.add(
         _ReadingSample(
           reading: reading,
           minute: minute,
           recordedAt: reading.recordedAt,
           value: reading.displayValue(widget.preferences),
+          segment: segment,
         ),
       );
     }
@@ -245,6 +257,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
               low: sample.value,
               high: sample.value,
               sampleCount: 1,
+              segment: sample.segment,
             ),
           )
           .toList(growable: false);
@@ -252,8 +265,14 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
 
     final bucketSize = (visibleSamples.length / targetPoints).ceil();
     final points = <_PlottedPoint>[];
-    for (var start = 0; start < visibleSamples.length; start += bucketSize) {
-      final end = math.min(start + bucketSize, visibleSamples.length);
+    for (var start = 0; start < visibleSamples.length;) {
+      var end = math.min(start + bucketSize, visibleSamples.length);
+      for (var index = start + 1; index < end; index++) {
+        if (visibleSamples[index].segment != visibleSamples[start].segment) {
+          end = index;
+          break;
+        }
+      }
       final bucket = visibleSamples.sublist(start, end);
       final anchor = bucket[bucket.length ~/ 2];
       final values = bucket
@@ -269,8 +288,10 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
           low: values.reduce(math.min),
           high: values.reduce(math.max),
           sampleCount: bucket.length,
+          segment: anchor.segment,
         ),
       );
+      start = end;
     }
     return points;
   }
@@ -625,18 +646,27 @@ class _DashboardChartPainter extends CustomPainter {
 
     if (effectiveStyle != ChartStyle.candles) {
       final linePath = Path();
+      final fillPath = Path();
+      Offset? segmentStart;
       for (var index = 0; index < chartPoints.length; index++) {
         final point = chartPoints[index];
-        if (index == 0) {
+        if (index == 0 || points[index].segment != points[index - 1].segment) {
+          segmentStart = point;
           linePath.moveTo(point.dx, point.dy);
+          fillPath.moveTo(point.dx, plotRect.bottom);
+          fillPath.lineTo(point.dx, point.dy);
         } else {
           linePath.lineTo(point.dx, point.dy);
+          fillPath.lineTo(point.dx, point.dy);
+        }
+        if (index == chartPoints.length - 1 ||
+            points[index].segment != points[index + 1].segment) {
+          // Close each segment at its own boundary; never fill a missing interval.
+          fillPath.lineTo(point.dx, plotRect.bottom);
+          fillPath.lineTo(segmentStart!.dx, plotRect.bottom);
+          fillPath.close();
         }
       }
-      final fillPath = Path.from(linePath)
-        ..lineTo(plotRect.right, plotRect.bottom)
-        ..lineTo(plotRect.left, plotRect.bottom)
-        ..close();
       final fillPaint = Paint()
         ..shader = const LinearGradient(
           begin: Alignment.topCenter,
@@ -729,20 +759,38 @@ class _DashboardChartPainter extends CustomPainter {
     }
 
     final labelCount = math.min(4, math.max(2, points.length));
+    final labelPainters = <TextPainter>[];
+    final labelBounds = <Rect>[];
+    final labelIndices = <int>{};
     for (var index = 0; index < labelCount; index++) {
       final fraction = labelCount == 1 ? 0.0 : index / (labelCount - 1);
       final sourceIndex = ((points.length - 1) * fraction).round();
+      if (!labelIndices.add(sourceIndex)) continue;
       final point = points[sourceIndex];
       final x = _xForMinute(point.minute, plotRect, minMinute, maxMinute);
-      final label = _axisLabel(point, timeframeMinutes);
+      final label = dashboardChartAxisLabel(
+        recordedAt: point.recordedAt,
+        sensorMinute: point.minute,
+        visibleSpanMinutes: maxMinute - minMinute,
+      );
       final textPainter = TextPainter(
         text: TextSpan(text: label, style: labelStyle),
         textDirection: ui.TextDirection.ltr,
       )..layout();
-      textPainter.paint(
-        canvas,
-        Offset(x - (textPainter.width / 2), plotRect.bottom + 8),
+      labelPainters.add(textPainter);
+      labelBounds.add(
+        Rect.fromLTWH(
+          (x - textPainter.width / 2)
+              .clamp(0, math.max(0, size.width - textPainter.width))
+              .toDouble(),
+          plotRect.bottom + 8,
+          textPainter.width,
+          textPainter.height,
+        ),
       );
+    }
+    for (final index in dashboardChartVisibleLabelIndices(labelBounds)) {
+      labelPainters[index].paint(canvas, labelBounds[index].topLeft);
     }
   }
 
@@ -757,15 +805,76 @@ class _DashboardChartPainter extends CustomPainter {
   }
 }
 
-String _axisLabel(_PlottedPoint point, int timeframeMinutes) {
-  if (point.recordedAt == null) {
-    return 'm${point.minute}';
+/// Display policy, not a claim about any sensor's sampling cadence. Keep
+/// intervals over 15 minutes and clock discontinuities visibly unconnected.
+/// Apply before aggregation so a bucket cannot erase the gap.
+@visibleForTesting
+bool dashboardChartHasGap({
+  required int previousMinute,
+  required int minute,
+  required DateTime? previousRecordedAt,
+  required DateTime? recordedAt,
+}) {
+  final minutes = minute - previousMinute;
+  if (minutes <= 0 || minutes > 15) return true;
+  if (previousRecordedAt == null || recordedAt == null) return false;
+  final elapsed = recordedAt.difference(previousRecordedAt);
+  return elapsed <= Duration.zero || elapsed > const Duration(minutes: 15);
+}
+
+/// Preserve the latest label first, then keep only labels with a clear gutter.
+/// This also avoids duplicate one-point labels and crowded sparse-history ticks.
+@visibleForTesting
+List<int> dashboardChartVisibleLabelIndices(List<Rect> bounds) {
+  final kept = <int>[];
+  for (final index in [
+    if (bounds.isNotEmpty) bounds.length - 1,
+    for (var i = 0; i < bounds.length - 1; i++) i,
+  ]) {
+    if (kept.every(
+      (other) => !bounds[index].inflate(4).overlaps(bounds[other].inflate(4)),
+    )) {
+      kept.add(index);
+    }
   }
-  final recordedAt = point.recordedAt!.toLocal();
-  if (timeframeMinutes == 0 || timeframeMinutes > 1440) {
-    return DateFormat('MMM d').format(recordedAt);
+  return kept..sort();
+}
+
+/// A read-only test view of the buckets actually passed to the painter.
+@visibleForTesting
+Iterable<
+  ({int minute, int segment, int count, double value, double low, double high})
+>
+dashboardChartPlottedData(CustomPainter? painter) sync* {
+  if (painter is! _DashboardChartPainter) return;
+  for (final point in painter.points) {
+    yield (
+      minute: point.minute,
+      segment: point.segment,
+      count: point.sampleCount,
+      value: point.value,
+      low: point.low,
+      high: point.high,
+    );
   }
-  return DateFormat('HH:mm').format(recordedAt);
+}
+
+/// Use the plotted span, not the ALL selector's zero sentinel. A short new
+/// session has no timeframe controls and must still show useful clock labels.
+@visibleForTesting
+String dashboardChartAxisLabel({
+  required DateTime? recordedAt,
+  required int sensorMinute,
+  required int visibleSpanMinutes,
+}) {
+  if (recordedAt == null) {
+    return 'm$sensorMinute';
+  }
+  final localTime = recordedAt.toLocal();
+  if (visibleSpanMinutes > 1440) {
+    return DateFormat('MMM d').format(localTime);
+  }
+  return DateFormat('HH:mm').format(localTime);
 }
 
 Rect _plotRect(Size size, {double overlayInsetTop = 0}) {
@@ -824,12 +933,14 @@ class _ReadingSample {
     required this.minute,
     required this.recordedAt,
     required this.value,
+    required this.segment,
   });
 
   final CgmReading reading;
   final int minute;
   final DateTime? recordedAt;
   final double value;
+  final int segment;
 }
 
 class _PlottedPoint {
@@ -841,6 +952,7 @@ class _PlottedPoint {
     required this.low,
     required this.high,
     required this.sampleCount,
+    required this.segment,
   });
 
   final int id;
@@ -850,6 +962,7 @@ class _PlottedPoint {
   final double low;
   final double high;
   final int sampleCount;
+  final int segment;
 }
 
 extension<T> on List<T> {

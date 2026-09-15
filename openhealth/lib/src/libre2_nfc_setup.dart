@@ -42,6 +42,7 @@ enum Libre2NfcFailureKind {
   tagMoved,
   readFailed,
   cleanupUnconfirmed,
+  setupBlocked,
 }
 
 @immutable
@@ -178,6 +179,9 @@ final class PlatformLibre2NfcSetupSession
     this.activationPollInterval = const Duration(seconds: 1),
     this.methodTimeout = const Duration(seconds: 30),
     this.readValidity = const Duration(seconds: 110),
+    this.allowActivationProof = true,
+    this.allowCompletedReadHandoff = true,
+    this.allowTerminalReadRevocation = false,
   }) : _invokeMethod = invokeMethod ?? _invokePlatformMethod,
        _attemptIdFactory = attemptIdFactory ?? newLibre2NfcSetupAttemptId,
        _platformEvents =
@@ -200,6 +204,16 @@ final class PlatformLibre2NfcSetupSession
   final String Function() _attemptIdFactory;
   final Duration activationPollInterval;
   final Duration methodTimeout;
+
+  /// The recorder-free reader cannot activate or consume activation proofs.
+  /// Keep that authority out of its event and polling paths as well as native.
+  final bool allowActivationProof;
+
+  /// Read-only native results have no retained setup evidence to hand off.
+  final bool allowCompletedReadHandoff;
+
+  /// A foreground-only reader can revoke its displayed result on pause.
+  final bool allowTerminalReadRevocation;
   // The native 120-second proof remains authoritative. This earlier UI hint
   // leaves a margin for channel delivery and the explicit connection action.
   final Duration readValidity;
@@ -226,7 +240,8 @@ final class PlatformLibre2NfcSetupSession
 
   @override
   String? get completedReadAttemptId =>
-      !_disposed &&
+      allowCompletedReadHandoff &&
+          !_disposed &&
           !_disposing &&
           !_cleanupUncertain &&
           _activeAttemptTerminal &&
@@ -287,13 +302,25 @@ final class PlatformLibre2NfcSetupSession
     } on PlatformException catch (error) {
       if (lifecycleGeneration == _lifecycleGeneration &&
           _activeAttemptId == attemptId) {
-        _activeAttemptId = null;
-        _activeAttemptReceivedEvent = false;
-        _emit(
-          Libre2NfcSetupState.failed(
-            _failureFromPlatformException(error),
-          ),
-        );
+        final failure = _failureFromPlatformException(error);
+        if (failure == Libre2NfcFailureKind.cleanupUnconfirmed) {
+          _cleanupUncertain = true;
+        }
+        _emit(Libre2NfcSetupState.failed(failure));
+        if (const {
+          'bad_args',
+          'nfc_unavailable',
+          'nfc_permission_missing',
+          'nfc_disabled',
+        }.contains(error.code)) {
+          // These native preflight checks occur before acquiring an attempt.
+          _activeAttemptId = null;
+          _activeAttemptReceivedEvent = false;
+        } else {
+          // Other errors can follow ownership acquisition. Do not make the
+          // owner retryable until the matching native stop is confirmed.
+          await _cancelActiveAttempt();
+        }
       }
     } catch (_) {
       if (lifecycleGeneration == _lifecycleGeneration &&
@@ -397,7 +424,15 @@ final class PlatformLibre2NfcSetupSession
     }
     final activationEvent =
         event is Map && event['event'] == 'activationVerified';
-    if (activationEvent ? !_awaitingActivationProof : _activeAttemptTerminal) {
+    if (activationEvent && !allowActivationProof) return;
+    final readRevocation =
+        allowTerminalReadRevocation &&
+        event is Map &&
+        event['event'] == 'failed' &&
+        _lastState?.phase == Libre2NfcSetupPhase.metadataRead;
+    if (activationEvent
+        ? !_awaitingActivationProof
+        : _activeAttemptTerminal && !readRevocation) {
       return;
     }
     final state = libre2NfcSetupStateFromPlatformEvent(
@@ -408,6 +443,13 @@ final class PlatformLibre2NfcSetupSession
       return;
     }
     _activeAttemptReceivedEvent = true;
+    if (state.phase == Libre2NfcSetupPhase.failed) {
+      _readExpiryTimer?.cancel();
+      _readExpiryTimer = null;
+    }
+    if (state.failure == Libre2NfcFailureKind.cleanupUnconfirmed) {
+      _cleanupUncertain = true;
+    }
     _emit(state);
     if (state.phase == Libre2NfcSetupPhase.metadataRead ||
         state.phase == Libre2NfcSetupPhase.failed) {
@@ -445,6 +487,7 @@ final class PlatformLibre2NfcSetupSession
   }
 
   bool get _awaitingActivationProof =>
+      allowActivationProof &&
       _activeAttemptTerminal &&
       _lastState?.phase == Libre2NfcSetupPhase.metadataRead &&
       _lastState?.sensorStatus == Libre2SensorStatus.notActivated &&
@@ -539,6 +582,9 @@ Libre2NfcFailureKind _failureFromPlatformException(
   'nfc_unavailable' ||
   'nfc_permission_missing' => Libre2NfcFailureKind.unavailable,
   'nfc_disabled' => Libre2NfcFailureKind.disabled,
+  'nfc_state_blocked' => Libre2NfcFailureKind.setupBlocked,
+  'cleanup_unconfirmed' ||
+  'nfc_cleanup_unconfirmed' => Libre2NfcFailureKind.cleanupUnconfirmed,
   _ => Libre2NfcFailureKind.readFailed,
 };
 
@@ -684,6 +730,8 @@ Libre2NfcFailureKind? _libre2FailureFromCode(Object? code) => switch (code) {
   'disabled' => Libre2NfcFailureKind.disabled,
   'tagMoved' => Libre2NfcFailureKind.tagMoved,
   'readFailed' => Libre2NfcFailureKind.readFailed,
+  'cleanupUnconfirmed' => Libre2NfcFailureKind.cleanupUnconfirmed,
+  'setupBlocked' => Libre2NfcFailureKind.setupBlocked,
   _ => null,
 };
 

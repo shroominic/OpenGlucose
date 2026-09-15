@@ -2,6 +2,11 @@ package com.aidex.aidex_flutter;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Standalone JVM checks for distinct host and explicit NFC readiness. */
 public final class NfcRfReadinessTest {
@@ -13,6 +18,84 @@ public final class NfcRfReadinessTest {
   public static void main(String[] arguments) throws Exception {
     explicitAttemptDoesNotDependOnBleEligibility();
     explicitAttemptRequiresEveryExactBinding();
+    successfulReadWaitsForCallbackDrain();
+    failedCleanupCannotDeliverSuccess();
+    callbackCompletionIsSingleUse();
+  }
+
+  private static void successfulReadWaitsForCallbackDrain() throws Exception {
+    final NfcRfReadiness.CallbackCompletion completion =
+        new NfcRfReadiness.CallbackCompletion();
+    final CountDownLatch readCompleted = new CountDownLatch(1);
+    final CountDownLatch allowCallbackDrain = new CountDownLatch(1);
+    final AtomicBoolean callbackActive = new AtomicBoolean(true);
+    final AtomicBoolean buffersCleared = new AtomicBoolean(false);
+    final AtomicBoolean successDelivered = new AtomicBoolean(false);
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final Thread callback = new Thread(() -> {
+      try {
+        completion.defer(() -> {
+          // This models an immediate fresh-evidence query from the delivered
+          // metadata event. The callback-active guard remains strict.
+          check(!callbackActive.get(), "success must follow callback drain");
+          check(buffersCleared.get(), "read buffers must be cleared before success");
+          successDelivered.set(true);
+        });
+        readCompleted.countDown();
+        check(allowCallbackDrain.await(5, TimeUnit.SECONDS), "callback drain gate timed out");
+        buffersCleared.set(true);
+        completion.finish(() -> callbackActive.set(false));
+      } catch (Throwable error) {
+        failure.set(error);
+      }
+    }, "synthetic-nfc-callback");
+    callback.start();
+    try {
+      check(readCompleted.await(5, TimeUnit.SECONDS), "read completion gate timed out");
+      check(callbackActive.get(), "the gated callback must still be active");
+      check(!successDelivered.get(), "metadata must not overtake callback cleanup");
+    } finally {
+      allowCallbackDrain.countDown();
+      callback.join(5_000L);
+    }
+    check(!callback.isAlive(), "the synthetic callback must finish");
+    if (failure.get() != null) throw new AssertionError("callback handoff failed", failure.get());
+    check(successDelivered.get(), "success must be delivered after confirmed drain");
+  }
+
+  private static void failedCleanupCannotDeliverSuccess() {
+    final NfcRfReadiness.CallbackCompletion completion =
+        new NfcRfReadiness.CallbackCompletion();
+    final AtomicBoolean delivered = new AtomicBoolean(false);
+    completion.defer(() -> delivered.set(true));
+    try {
+      completion.finish(() -> { throw new IllegalStateException("synthetic cleanup failure"); });
+      throw new AssertionError("cleanup failure must propagate");
+    } catch (IllegalStateException expected) {
+      check(!delivered.get(), "failed cleanup must suppress success");
+    }
+    completion.finish(() -> {});
+    check(!delivered.get(), "a failed cleanup cannot later replay success");
+  }
+
+  private static void callbackCompletionIsSingleUse() {
+    final NfcRfReadiness.CallbackCompletion completion =
+        new NfcRfReadiness.CallbackCompletion();
+    final AtomicInteger deliveries = new AtomicInteger();
+    final AtomicInteger cleanups = new AtomicInteger();
+    completion.defer(() -> {
+      deliveries.incrementAndGet();
+      completion.finish(cleanups::incrementAndGet);
+    });
+    completion.finish(cleanups::incrementAndGet);
+    completion.finish(cleanups::incrementAndGet);
+    check(deliveries.get() == 1 && cleanups.get() == 1, "completion and drain must be single-use");
+    try {
+      completion.defer(deliveries::incrementAndGet);
+      throw new AssertionError("a finished callback cannot accept another completion");
+    } catch (IllegalStateException expected) {
+      check(deliveries.get() == 1, "late completion must not be delivered");
+    }
   }
 
   private static void explicitAttemptDoesNotDependOnBleEligibility()

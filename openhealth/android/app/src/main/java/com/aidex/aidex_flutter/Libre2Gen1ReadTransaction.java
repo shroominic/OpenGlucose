@@ -84,15 +84,27 @@ final class Libre2Gen1ReadTransaction {
 
   private final byte[] expectedUid;
   private final byte[] expectedPatch;
+  private final int patchBindingBytes;
   private boolean used;
 
   Libre2Gen1ReadTransaction(byte[] expectedUid, byte[] expectedPatch) {
+    this(expectedUid, expectedPatch, 6);
+  }
+
+  /** A saved receiver freezes identity, not the two-byte seed read on each tap. */
+  static Libre2Gen1ReadTransaction forReceiver(byte[] expectedUid, byte[] frozenPatch) {
+    if (frozenPatch == null) throw new IllegalArgumentException("Invalid Libre read binding.");
+    return new Libre2Gen1ReadTransaction(expectedUid, frozenPatch, 4);
+  }
+
+  private Libre2Gen1ReadTransaction(byte[] expectedUid, byte[] expectedPatch, int patchBindingBytes) {
     if (expectedUid == null || expectedUid.length != 8
         || (expectedPatch != null && expectedPatch.length != 6)) {
       throw new IllegalArgumentException("Invalid Libre read binding.");
     }
     this.expectedUid = expectedUid.clone();
     this.expectedPatch = expectedPatch == null ? null : expectedPatch.clone();
+    this.patchBindingBytes = patchBindingBytes;
   }
 
   /**
@@ -132,8 +144,10 @@ final class Libre2Gen1ReadTransaction {
       if (signature != 0x9d0830 && signature != 0xc50930 && signature != 0x7f0e30) {
         throw new ReadException(Failure.unsupportedPatch);
       }
-      if (expectedPatch != null && !Arrays.equals(expectedPatch, patch)) {
-        throw new ReadException(Failure.targetChanged);
+      if (expectedPatch != null) {
+        for (int i = 0; i < patchBindingBytes; i++) {
+          if (expectedPatch[i] != patch[i]) throw new ReadException(Failure.targetChanged);
+        }
       }
       for (LibreGen1NfcFrames.Frame frame : LibreGen1NfcFrames.frames()) {
         response = exchange(transport, guard, frame.request());

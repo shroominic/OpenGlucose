@@ -6,16 +6,26 @@ import 'package:flutter/widgets.dart';
 import 'main.dart' as app;
 import 'src/driver_factory_io.dart';
 import 'src/libre_gen1_glucose_adapter.dart';
+import 'src/libre_gen1_receiver_store.dart';
 
 /// Normal OpenGlucose UI with an explicitly selected private bench decoder.
-/// No sensor is connected, activated or reset merely by starting this entry.
+/// Normal app restoration can reconnect a saved receiver. Launch does not
+/// authorize NFC activation, streaming enablement, or sensor reset.
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (!kDebugMode || !platformLibreGen1StreamingEnabled) {
+  if (!kDebugMode) {
     throw UnsupportedError(
-      'Libre glucose bench requires Android debug capture.',
+      'Private Libre glucose requires an Android debug build.',
     );
   }
-  configurePrivateLibreGlucoseDecoder(PrivateLibreGlucoseDecoderProvider());
+  if (kOgProtocolTrace) {
+    configurePrivateLibreGlucoseDecoder(PrivateLibreGlucoseDecoderProvider());
+  } else {
+    configurePrivateRecorderFreeLibreGlucoseDecoder(
+      PrivateLibreGlucoseDecoderProvider(
+        readEvidence: LibreGen1ReceiverStore().readCalibrationEvidence,
+      ),
+    );
+  }
   await app.main();
 }

@@ -2,8 +2,10 @@
 
 A separate **GPL-3.0-only**, pure Dart Libre 2 security-Gen1 factory decoder.
 It converts CRC-checked encrypted BLE records using coefficients from the
-same receiver's CRC-checked encrypted FRAM. It does not scan, connect, activate,
-store data, or change the existing MIT protocol package.
+same receiver's CRC-checked encrypted FRAM. A separate pure NFC function
+converts a scan's trend/history rings using that same scan's factory evidence.
+It does not scan, connect, activate, store data, or change the MIT protocol
+package's license or sensor-support boundary.
 
 This is a reference-derived estimate, not a clinically validated measurement.
 Agreement with an open-source formula is not device conformance or evidence
@@ -54,6 +56,41 @@ package suppresses sample minutes below 60, pre-start samples, packets before
 the FRAM capture's sensor age, and records at/after declared maximum life.
 The app must also gate known failed/expired/shutdown lifecycle evidence.
 
+### NFC trend and history conversion
+
+```dart
+final scan = decodeLibre2Gen1EncryptedNfcFram(
+  uid: freshRead.uid, // same exact target, algorithm order
+  currentPatchInfo: freshRead.patchInfo, // current seed, not the BLE login patch
+  encryptedFram: freshRead.encryptedFram,
+);
+final trend = scan.trend; // at most 16 samples, newest first
+final history = scan.history; // at most 32 samples, newest first
+```
+
+This function decrypts one immutable input, checks all three CRCs, and uses
+that identical verified FRAM for the model/lifecycle/age/lifetime, ring records,
+and factory coefficients. It accepts no existing decoder or cached calibration
+argument. It cannot prove freshness or authenticate identity: the caller must
+prove that UID, current patch and FRAM came from one fresh exact-target read.
+Calling it again with cached bytes produces historical results, not a new
+observation, lifecycle assertion, or permission to import those points again.
+
+The result reports `sensorAgeMinutes`, `maxLifeMinutes`, `lifecycleAtScan`, and
+separate immutable `trend`/`history` lists. Each sample retains `sensorMinute`
+and `isHistory`; there is no date, receipt, current-reading getter, storage
+mutation or sensor command. Unfilled pre-start slots are omitted. The MIT
+parser rejects out-of-range ring positions and a history index inconsistent
+with the sensor's age/three-minute history delay instead of guessing timestamps.
+
+NFC quality has its own layout: any nonzero nine-bit quality code, either flag,
+the explicit error bit, or zero raw glucose suppresses that sample. Rejection
+does not remove or replace neighboring slots. The existing warm-up, declared
+lifetime, temperature-domain, finite-number and positive-glucose checks still
+apply. The caller owns exact-bootstrap deduplication, gap tracking, age-to-time
+mapping, clear tombstones, provisional/source attribution, and export policy.
+NFC history does not automatically become BLE current-reading evidence.
+
 Raw-zero records always yield `sensorError`, retaining the full encoded
 12-bit quality field and its two flag bits. Unknown quality bits are not
 accepted as glucose. Invalid logarithm/division domains, nonfinite values,
@@ -93,8 +130,11 @@ dart run tool/verify_reference_vectors.dart
 The last command requires Swift on the host. It runs the pinned original
 factory method and original tables against all 1023 coefficient indices and
 compares the resulting rounded values with the checked-in synthetic vectors.
-Dart tests decrypt synthetic FRAM/BLE, then compare its conversion against those
-vectors and check CRC/input/model/lifecycle/age/quality/domain rejection.
+Dart tests decrypt synthetic FRAM/BLE and NFC ring snapshots, then compare both
+conversions against those vectors and check CRC/input/model/lifecycle/age/quality/
+domain rejection. NFC tests also cover ring wrap and partial fill, immutable
+origin/minutes, changed current patch seeds and factory coefficients, wider
+signed temperature adjustments, and rejection of ambiguous ring timing.
 Vector columns are index, signed offset, scale, temperature reference, raw
 glucose, raw temperature, signed temperature adjustment, rounded reference
 mg/dL. They are not real sensor readings.

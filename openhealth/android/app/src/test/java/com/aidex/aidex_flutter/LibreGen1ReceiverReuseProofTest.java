@@ -1,6 +1,7 @@
 package com.aidex.aidex_flutter;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -14,6 +15,7 @@ public final class LibreGen1ReceiverReuseProofTest {
   private static final String ATTEMPT = "synthetic_attempt";
   private static final String NATIVE = "synthetic_native";
   private static final String PROCESS = "synthetic_process";
+  private static final String BOOTSTRAP = "00000000-0000-4000-8000-000000000001";
   private static final long WALL = Instant.parse("2026-09-06T00:00:00Z").toEpochMilli();
   private static final long MONO = 500_000_000_000L;
   private static final byte[] UID = {0, 0x11, 0x22, 0x33, 0x44, 0x55, 7, (byte) 0xe0};
@@ -24,6 +26,9 @@ public final class LibreGen1ReceiverReuseProofTest {
     freshBindingsAndStrictShape();
     changedNfcKeyAndAllCrcs();
     uncertainReceiverAndDifferentIdentity();
+    freshHistoryDeliveryAndClearing();
+    freshHistoryRequiresReceiverAndExactSource();
+    freshHistoryRechecksAtDelivery();
     System.out.println("Libre receiver reuse proof synthetic checks passed.");
   }
 
@@ -67,16 +72,20 @@ public final class LibreGen1ReceiverReuseProofTest {
       source.put((String) replacement[0], replacement[1]);
       rejects(() -> read(source, receiver(UID, PATCH, "confirmed")));
       rejects(() -> read(source, null)); // Invalid evidence must never permit fresh enablement.
+      rejects(() -> fresh(source, receiver(UID, PATCH, "confirmed"), BOOTSTRAP));
     }
     final Map<String, Object> valid = source(3, PATCH);
     for (String key : valid.keySet()) {
       final Map<String, Object> missing = new LinkedHashMap<>(valid); missing.remove(key);
       rejects(() -> read(missing, null));
+      rejects(() -> fresh(missing, receiver(UID, PATCH, "confirmed"), BOOTSTRAP));
     }
     final Map<String, Object> extra = new LinkedHashMap<>(valid); extra.put("unexpected", "private-value-sentinel");
     rejects(() -> read(extra, null));
+    rejects(() -> fresh(extra, receiver(UID, PATCH, "confirmed"), BOOTSTRAP));
     final String json = json(valid);
     rejects(() -> readJson("{\"\\u0073chemaVersion\":2," + json.substring(1), null));
+    rejects(() -> freshJson("{\"\\u0073chemaVersion\":2," + json.substring(1), receiver(UID, PATCH, "confirmed"), BOOTSTRAP));
     rejects(() -> readJson(json + "{}", null));
     rejects(() -> readJson(" ".repeat(4097), null));
     rejects(() -> LibreGen1ReceiverReuseProof.read(json, null, "other_attempt", NATIVE, PROCESS, 1, 1, WALL, MONO));
@@ -101,6 +110,7 @@ public final class LibreGen1ReceiverReuseProofTest {
       final Map<String, Object> changed = new LinkedHashMap<>(current); changed.put("encryptedFramHex", hex(corrupt));
       rejects(() -> read(changed, receiver(UID, PATCH, "confirmed")));
       rejects(() -> read(changed, null));
+      rejects(() -> fresh(changed, receiver(UID, PATCH, "confirmed"), BOOTSTRAP));
     }
     for (int index = 0; index < 4; index++) {
       final byte[] changed = PATCH.clone(); changed[index] ^= 1;
@@ -118,8 +128,126 @@ public final class LibreGen1ReceiverReuseProofTest {
   }
 
   private static LibreGen1StreamingJournal.Record receiver(byte[] uid, byte[] patch, String state) {
-    return new LibreGen1StreamingJournal.Record("00000000-0000-4000-8000-000000000001", uid, patch,
+    return new LibreGen1StreamingJournal.Record(BOOTSTRAP, uid, patch,
         42, 2, state, "00:11:22:33:44:55", 7, "acknowledged");
+  }
+
+  private static void freshHistoryDeliveryAndClearing() throws Exception {
+    final byte[] currentPatch = PATCH.clone(); currentPatch[4] ^= 0x41; currentPatch[5] ^= 0x23;
+    final Map<String, Object> source = source(3, currentPatch);
+    final LibreGen1StreamingJournal.Record receiver = receiver(UID, PATCH, "confirmed");
+    final LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence = fresh(source, receiver, BOOTSTRAP);
+    final byte[][] owned = evidenceBuffers(evidence);
+    final byte[] expectedFram = encrypted(3, currentPatch);
+    // Source maps are no longer referenced once their immutable JSON was read.
+    source.put("encryptedFramHex", "00");
+    source.put("observedAtUtc", "2099-01-01T00:00:00Z");
+    final boolean[] called = {false};
+    evidence.deliver(receiver, WALL, MONO, value -> {
+      called[0] = true;
+      check(value.keySet().equals(new HashSet<>(Arrays.asList("attemptId", "bootstrapId", "uid",
+          "receiverInitialPatchInfo", "currentPatchInfo", "encryptedFram", "observedAtUtc"))), "open history shape");
+      check(ATTEMPT.equals(value.get("attemptId")) && BOOTSTRAP.equals(value.get("bootstrapId")), "history binding changed");
+      check(Arrays.equals((byte[]) value.get("uid"), UID), "UID not from verified source");
+      check(Arrays.equals((byte[]) value.get("receiverInitialPatchInfo"), PATCH), "frozen receiver patch replaced");
+      check(Arrays.equals((byte[]) value.get("currentPatchInfo"), currentPatch), "fresh NFC seed lost");
+      check(Arrays.equals((byte[]) value.get("encryptedFram"), expectedFram), "source changed after validation");
+      check("2026-09-06T00:00:00Z".equals(value.get("observedAtUtc")), "receipt time was refreshed");
+      try { value.put("raw", "forbidden"); throw new AssertionError("mutable evidence map"); }
+      catch (UnsupportedOperationException expected) { /* Closed shape cannot be extended. */ }
+    });
+    check(called[0], "history was not delivered");
+    cleared(owned);
+    rejects(() -> evidence.deliver(receiver, WALL, MONO, ignored -> { throw new AssertionError("second delivery"); }));
+    check(Arrays.equals(receiver.uid, UID) && Arrays.equals(receiver.initialPatchInfo, PATCH)
+        && receiver.unlockCount == 7 && receiver.streamingBase == 42, "receiver mutated by history read");
+    check(evidence.toString().equals("LibreGen1FreshHistoryEvidence(data: <redacted>)"), "open history diagnostics");
+
+    final LibreGen1ReceiverReuseProof.FreshHistoryEvidence cancelled = fresh(source(3, PATCH), receiver, BOOTSTRAP);
+    final byte[][] cancelledBytes = evidenceBuffers(cancelled);
+    cancelled.close(); cancelled.close();
+    cleared(cancelledBytes);
+    rejects(() -> cancelled.deliver(receiver, WALL, MONO, ignored -> { throw new AssertionError("cancelled delivery"); }));
+
+    final LibreGen1ReceiverReuseProof.FreshHistoryEvidence failed = fresh(source(3, PATCH), receiver, BOOTSTRAP);
+    final byte[][] failedBytes = evidenceBuffers(failed);
+    rejects(() -> failed.deliver(receiver, WALL, MONO, ignored -> { throw new IOException("private-value-sentinel"); }));
+    cleared(failedBytes);
+  }
+
+  private static void freshHistoryRequiresReceiverAndExactSource() throws Exception {
+    final Map<String, Object> source = source(3, PATCH);
+    rejects(() -> fresh(source, null, BOOTSTRAP));
+    for (String bootstrap : new String[] {"different_bootstrap", "", "invalid/value", "a".repeat(121)}) {
+      rejects(() -> fresh(source, receiver(UID, PATCH, "confirmed"), bootstrap));
+    }
+    for (String state : new String[] {"prepared", "unknown", "invalid"}) {
+      rejects(() -> fresh(source, receiver(UID, PATCH, state), BOOTSTRAP));
+    }
+    final byte[] otherUid = UID.clone(); otherUid[0] ^= 1;
+    rejects(() -> fresh(source, receiver(otherUid, PATCH, "confirmed"), BOOTSTRAP));
+    for (int lifecycle : new int[] {0, 1, 4, 5, 6, 255}) {
+      rejects(() -> fresh(source(lifecycle, PATCH), receiver(UID, PATCH, "confirmed"), BOOTSTRAP));
+    }
+    for (int lifecycle : new int[] {2, 3}) {
+      try (LibreGen1ReceiverReuseProof.FreshHistoryEvidence ignored =
+          fresh(source(lifecycle, PATCH), receiver(UID, PATCH, "confirmed"), BOOTSTRAP)) {
+        check(ignored != null, "eligible lifecycle rejected");
+      }
+    }
+  }
+
+  private static void freshHistoryRechecksAtDelivery() throws Exception {
+    for (long[] now : new long[][] {
+        {WALL + 120_001L, MONO}, {WALL, MONO + 120_000_000_001L},
+        {WALL - 5_001L, MONO}, {WALL, MONO - 1L}, {0, MONO}, {WALL, 0}}) {
+      final LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence =
+          fresh(source(3, PATCH), receiver(UID, PATCH, "confirmed"), BOOTSTRAP);
+      final byte[][] buffers = evidenceBuffers(evidence);
+      rejects(() -> evidence.deliver(receiver(UID, PATCH, "confirmed"), now[0], now[1],
+          ignored -> { throw new AssertionError("stale delivery"); }));
+      cleared(buffers);
+    }
+    final LibreGen1ReceiverReuseProof.FreshHistoryEvidence boundary =
+        fresh(source(3, PATCH), receiver(UID, PATCH, "confirmed"), BOOTSTRAP);
+    boundary.deliver(receiver(UID, PATCH, "confirmed"), WALL + 120_000L, MONO + 120_000_000_000L,
+        value -> check("2026-09-06T00:00:00Z".equals(value.get("observedAtUtc")), "boundary receipt refreshed"));
+    final byte[] otherUid = UID.clone(); otherUid[0] ^= 1;
+    final byte[] otherPatch = PATCH.clone(); otherPatch[5] ^= 1;
+    for (LibreGen1StreamingJournal.Record replacement : new LibreGen1StreamingJournal.Record[] {
+        null, receiver(UID, PATCH, "unknown"), receiver(otherUid, PATCH, "confirmed"),
+        receiver(UID, otherPatch, "confirmed"),
+        new LibreGen1StreamingJournal.Record("00000000-0000-4000-8000-000000000002", UID, PATCH,
+            42, 2, "confirmed", "00:11:22:33:44:55", 7, "acknowledged")}) {
+      final LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence =
+          fresh(source(3, PATCH), receiver(UID, PATCH, "confirmed"), BOOTSTRAP);
+      final byte[][] buffers = evidenceBuffers(evidence);
+      rejects(() -> evidence.deliver(replacement, WALL, MONO,
+          ignored -> { throw new AssertionError("changed receiver delivered"); }));
+      cleared(buffers);
+    }
+  }
+
+  private static LibreGen1ReceiverReuseProof.FreshHistoryEvidence fresh(
+      Map<String, Object> source, LibreGen1StreamingJournal.Record receiver, String bootstrap) throws IOException {
+    return freshJson(json(source), receiver, bootstrap);
+  }
+  private static LibreGen1ReceiverReuseProof.FreshHistoryEvidence freshJson(
+      String source, LibreGen1StreamingJournal.Record receiver, String bootstrap) throws IOException {
+    return LibreGen1ReceiverReuseProof.readFreshHistory(source, receiver, ATTEMPT, bootstrap,
+        NATIVE, PROCESS, 1, 1, WALL, MONO);
+  }
+  private static byte[][] evidenceBuffers(LibreGen1ReceiverReuseProof.FreshHistoryEvidence evidence) throws Exception {
+    final byte[][] result = new byte[4][];
+    int index = 0;
+    for (String name : new String[] {"uid", "receiverPatch", "currentPatch", "fram"}) {
+      final Field field = evidence.getClass().getDeclaredField(name); field.setAccessible(true);
+      result[index++] = (byte[]) field.get(evidence);
+    }
+    return result;
+  }
+  private static void cleared(byte[][] buffers) {
+    for (byte[] bytes : buffers) for (byte value : bytes) check(value == 0, "owned history bytes were retained");
   }
   private static Map<String, Object> source(int lifecycle, byte[] patch) throws Exception {
     final Map<String, Object> value = new LinkedHashMap<>();

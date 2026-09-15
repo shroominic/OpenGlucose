@@ -12,6 +12,77 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Added
 
+- Show a compact home-dashboard **History may be missing** action when a
+  selected Libre 2 has a stale retained timestamp. It reuses the existing
+  exact-target NFC history flow and stays hidden during setup, active sync, and
+  for other sensor families. This does not change the production-support or
+  physical-qualification gates.
+
+- Resume the exact saved Libre receiver after successful foreground NFC history
+  sync and confirmed reader disposal, without a separate Resume Bluetooth tap.
+  Keep cancellation, failed imports, target changes, backgrounding, and uncertain
+  cleanup from starting automatic connections; show reconnect progress separately
+  from the imported count. Explain the sensor's eight-hour history window.
+- Wait for a previously connected Libre sensor to return without repeatedly
+  logging in or requiring Retry merely because its recovery search elapsed.
+  Keep the owned connection service and show a distinct Waiting state; retain
+  cancellation, native failure, exact receiver, cleanup, and fresh-counter gates.
+- Add an exact saved-receiver NFC history route to the recorder-free Android
+  debug integration. Reuse read-only commands and the atomic importer, preserve
+  credentials/counters, and revoke one-use evidence on cancellation or lifecycle
+  loss. The existing private glucose entry can use protected calibration without
+  capture; normal main stays decoder-free and release support remains gated.
+- Retain accepted older Libre samples already present in Bluetooth packets,
+  with distinct trend/history origin and sensor-relative timestamps. Commit
+  them with the live observation, preserve first acquisition and clear-history
+  protection, and keep them separate from current glucose. A lazy schema-three
+  history envelope supports BLE-only backfill without inventing an NFC scan.
+  Physical backfill comparison and release qualification remain open.
+- Add a fresh, exact-receiver Libre NFC history path: verified ring parsing,
+  private decoder conversion, owner-bound atomic imports, and provenance-aware
+  archives. Keep NFC scan age separate from live BLE observation age and
+  preserve clear-history protection. The explicit settings action is under
+  private integration; hardware backfill and release support remain unverified.
+- Retain Libre acquisition origin, first receipt, and timestamp basis in
+  CSV, text, and Excel archive exports. Legacy exports keep their 13-column
+  format; acquisition-bearing archives add four columns. Validate the exact
+  archived owner again at confirmation and block missing or corrupt data.
+- Fix archive sharing from pushed settings routes and show unavailable
+  archive data without a screen error or a misleading empty export.
+- Pause the selected Libre connection for explicit history reads, awaiting
+  Bluetooth and background-service cleanup before granting the read scope.
+  Block competing reconnects and preserve the receiver and saved readings.
+- Compose recorder-free Android receiver components for exact saved-receiver
+  restore, durable login counters, and a transport-lifetime ownership lease.
+  The existing read-only opt-in permits this validation path only in Android
+  debug; default/release builds still omit it. Enrollment, crash recovery,
+  decoder distribution, and hardware validation remain release gates.
+- Store each private Libre observed-minute frontier and optional accepted
+  reading in one atomic, receiver-bound history envelope before publication.
+  Restore history without fresh live data; preserve clear-history tombstones
+  and stop on uncertain writes. Existing accepted records provide only a
+  lower-bound migration frontier. Older list-only builds cannot downgrade this
+  active history format safely; receiver credentials/counters are unchanged.
+- Add MIT Libre Gen1 timing parsing independent of glucose conversion. Live
+  age expires without a newer packet and can show nominal remaining life
+  without inventing a UTC activation instant.
+- Add a default-off, recorder-free Android Libre 2 read-only NFC integration
+  with strict native capabilities, foreground/attempt ownership, bounded reads,
+  confirmed cleanup, and closed UI results. It does not activate sensors,
+  enable streaming, migrate receivers, or add production glucose support.
+- Add descriptive sensor variant evidence for model, region, security generation,
+  and separate hardware/firmware/software revisions. Publish existing Libre
+  patch identification and AiDEX Device Information observations in settings
+  and archives; unknown fields remain unknown and grant no connection authority.
+  Add a source-backed variant matrix and contributor test requirements.
+- Correct private Libre live snapshots to use their declared 14-day nominal
+  lifetime instead of the shared 15-day default, without inventing session time.
+
+- Add optional driver data profiles for history duplicates, timestamp meaning,
+  current-reading eligibility, model timing, and retained lifecycle inference.
+  Add trusted app connection policies plus driver and protocol-investigation
+  guides for contributors. Existing protocol/native setup remains specialized.
+
 - Add a private Android Gen1 Libre 2 receiver path with an explicitly initiated
   NFC streaming exchange, encrypted receiver state, durable login counters,
   exact-target Bluetooth connection, and CRC-validated packet diagnostics.
@@ -39,6 +110,68 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Changed
 
+- Renew the private durable Libre link-recovery allowance only after three
+  fresh committed observations over two monotonic minutes. Keep cleanup,
+  exact receiver, fresh advertisement, and new login-counter checks. A failed
+  replacement, replay, or uncertain commit cannot create a retry loop.
+- Leave chart intervals over 15 minutes and clock discontinuities unconnected,
+  including during aggregation and area fill. Omit overlapping axis labels.
+  This is a display policy, not a change to stored data or sensor cadence.
+- Allow an explicit new debug scan to recover from an exhausted Bluetooth-off
+  failure after confirmed scanner cleanup. Keep automatic retries bounded and
+  retain quarantine for unknown failures or uncertain scan/connection cleanup.
+- Distinguish the last history sync from the latest stored reading in sensor
+  details. Use stored timestamps, not render time, and keep future or missing
+  timestamps unavailable.
+- Let an exact, durably verified Libre reception finish sensor setup even
+  when the current glucose sample is unavailable. Keep saved history separate
+  from current glucose, do not label a post-warmup missing sample as a new
+  warmup, and reject stale, wrong-target, pending-save, or cleanup-uncertain
+  completion evidence.
+- Archive only new Libre observations on Disconnect, preserving existing
+  segments and the active replay frontier. Count old overlapping segments once
+  per saved bootstrap, and report unreadable archive data as unavailable.
+- Retain a verified Libre connection during warmup or decoder-free reception
+  only after a fresh observation commits. This does not make it a glucose
+  reading. Reject an unbound legacy clear that could reimport archive-only data.
+- Use time labels on short all-history charts, based on the actual visible
+  span. Label archived recordings as saved sessions, not separate sensors.
+- Save final driver readings after confirmed Disconnect and flush pending
+  history before reconnect. Serialize writes to prevent old saves replacing
+  newer history; keep data and block reconnect if the final save fails.
+- Distinguish Libre Bluetooth-off, missing-permission, unavailable-adapter, and
+  failed-scan errors from a real nearby-sensor search timeout. Native details
+  remain private and no automatic retry is added.
+- Suppress stale, untimestamped, non-finite, and raw home-screen values while
+  retaining reading time and history. Validate connection progress against the
+  actual driver/stage, support large-text setup, and label the Settings control.
+- Preserve closed Android pre-login diagnostics without implying another phone
+  caused the failure or changing retry, bond, or login-counter behavior.
+- Use normal connection status and reading time on the home screen, without
+  bench/body warnings or repeated history banners. Show source quality only as
+  a `Data quality` row in Current sensor and archive details. Provisional/source
+  flags, export disclosures, and wellness/health/live-surface gates are unchanged;
+  sensor placement is not a runtime mode.
+- Use each driver's timing for restored and archived history, preserving the
+  reported warmup in new archives instead of applying 60 minutes to every
+  sensor. Separate activation confirmation uses trusted connection policy,
+  including a restrictive default for newly registered drivers.
+
+- Retain accepted private Libre samples in the local history chart and archive,
+  including across reconnect/restart. Preserve quality flags and the first
+  receipt of each sensor minute; do not invent missing points or sensor expiry
+  from receipt times. Provisional/raw data stays outside wellness summaries,
+  Apple Health, and numeric live surfaces.
+- Keep Libre NFC setup behind secondary model help. Expire stale NFC read
+  proofs, and require a full app reopen after uncertain Bluetooth cleanup
+  instead of offering an ineffective retry or sensor switch.
+- Preserve verified warmup countdowns when early samples are provisional,
+  without publishing their glucose values to live surfaces.
+- Hide unsupported sensor calibration controls and preserve provisional/raw
+  values without applying a previous sensor's local display correction.
+- Harden the private Libre receiver file against ambiguous absence, unsafe
+  paths, incomplete reads, and failed writes. Preserve the encrypted format,
+  receiver identity, and monotonic login-counter contract.
 - Keep the current NFC calibration patch separate from the frozen Libre 2
   Bluetooth receiver patch. Verify the receiver binding and all FRAM CRCs
   before saving calibration for the private debug decoder.

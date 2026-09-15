@@ -67,6 +67,16 @@ as MIT merely because DiaBLE's root license is MIT: DiaBLE's Glucose.swift
 attributes that calculation to GPL xdripswift. This package instead uses the
 GPL original with its license.
 
+The 2026-09-10 NFC addition delegates six-byte ring layout/minute parsing to
+the separately MIT-licensed `cgm_libre2` parser. Its pinned sources are DiaBLE
+`Libre.swift` lines 122–181 (raw/quality/temperature fields and ring order) and
+LibreTools `SensorData.swift` lines 170–187 (history delay/first history minute).
+The parser rejects inconsistent history index/age evidence; this package adds
+conservative NFC quality rejection and applies the existing GPL factory formula
+to values and coefficients from the same verified snapshot. No upstream
+timestamp shifting, default slope, smoothing, calibration fallback, or implicit
+freshness inference is ported. Existing BLE API and arithmetic remain unchanged.
+
 Dependency cgm_libre2 remains under its own MIT license. Existing repository
 files are not relicensed by this package. A combined application that includes
 this package requires a separate distribution/license compatibility review;
