@@ -1,0 +1,17 @@
+name: cgm_cbio
+description: Offline, target-unverified Cbio GS1 driver scaffold.
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  cgm_ble:
+    path: ../cgm_ble
+  cgm_core:
+    path: ../cgm_core
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

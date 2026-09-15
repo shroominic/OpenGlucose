@@ -47,6 +47,7 @@ The public API of a package is the surface exported from its top-level library:
 - `package:cgm_core/cgm_core.dart`
 - `package:cgm_ble/cgm_ble.dart`
 - `package:cgm_aidex/cgm_aidex.dart`
+- `package:cgm_cbio/cgm_cbio.dart` (offline, target-unverified scaffold)
 - `package:cgm_libre2/cgm_libre2.dart`
 - `package:cgm_libre2_glucose/cgm_libre2_glucose.dart` (separate GPL bench decoder)
 - `package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart`
@@ -103,6 +104,15 @@ combination, redacted physical-device evidence, expected capability gaps, and a
 last-verified release/date. A shared name, service UUID, or demo-driver result
 alone is not compatibility evidence. Protocol changes should remain tolerant
 of unknown data while failing safely on malformed or unauthenticated input.
+
+`cgm_cbio` 0.0.1 is a Cbio GS1 scaffold with pure `FF30` discovery mapping.
+Matches are unverified Cbio / SiSensing candidates because GS1 and GS3 share
+the UUID. It declares no sensor capabilities and fails scan/connect without transport
+access. It is not registered in any app build. Local SiSensing GS1/GS3 APK
+evidence and a Mac GATT connection do not prove glucose compatibility. The
+offline plaintext parser returns raw ACK/record fields, never normalized
+glucose; unsupported layouts and unknown counter wrap fail closed. See the
+[offline evidence record](testing/cbio-gs1-offline.md).
 
 `cgm_libre2` includes a target-unverified, explicitly bootstrapped Gen1 BLE
 receiver. Android private debug builds can use a journaled NFC streaming
