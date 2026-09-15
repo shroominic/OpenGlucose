@@ -8,6 +8,7 @@ import 'package:archive/archive.dart';
 import 'package:cgm_core/cgm_core.dart';
 
 import 'sensor_archive.dart';
+import 'sensor_archive_export_data.dart';
 
 /// Column names for the stable archived-sensor CSV interchange format.
 ///
@@ -27,6 +28,18 @@ const archivedSensorCsvColumns = <String>[
   'raw_value',
   'qualifier',
   'provisional',
+];
+
+/// Additive version-two columns. The legacy prefix and its meanings do not
+/// change; value source and acquisition origin remain separate concepts.
+/// BLE trend/history use explicit origin values within this same export
+/// schema; a storage-envelope version does not change the file's columns.
+const archivedSensorAcquisitionCsvColumns = <String>[
+  ...archivedSensorCsvColumns,
+  'export_schema_version',
+  'acquisition_origin',
+  'first_received_at_utc',
+  'timestamp_basis',
 ];
 
 /// Supported, local-only archive export formats.
@@ -74,6 +87,35 @@ Uint8List buildArchivedSensorExport({
   };
 }
 
+/// Builds an explicit archive snapshot without dropping acquisition evidence.
+/// Legacy inputs use the byte-compatible version-one serializers. Version two
+/// sorts whole reading/evidence entries and never invents a missing receipt.
+Uint8List buildArchivedSensorExportFromData({
+  required ArchivedSensorExportFormat format,
+  required ArchivedSensorExportData data,
+}) {
+  if (!data.hasAcquisitionEvidence) {
+    return buildArchivedSensorExport(
+      format: format,
+      session: data.session,
+      readings: data.readings,
+    );
+  }
+  final rows = _acquisitionExportRows(data);
+  return switch (format) {
+    ArchivedSensorExportFormat.csv => Uint8List.fromList(
+      utf8.encode('${rows.map(_encodeCsvRow).join('\r\n')}\r\n'),
+    ),
+    ArchivedSensorExportFormat.txt => Uint8List.fromList(
+      utf8.encode(
+        '${rows.map((row) => row.map(_encodeTextField).join('\t')).join('\r\n')}'
+        '\r\n',
+      ),
+    ),
+    ArchivedSensorExportFormat.xlsx => _buildXlsx(rows),
+  };
+}
+
 /// Builds an RFC 4180 CSV containing one archived sensor session.
 ///
 /// Readings are exported in chronological order. Untimestamped readings are
@@ -109,8 +151,9 @@ String buildArchivedSensorText({
 Uint8List buildArchivedSensorXlsx({
   required ArchivedSensorSession session,
   required List<CgmReading> readings,
-}) {
-  final rows = _exportRows(session, readings);
+}) => _buildXlsx(_exportRows(session, readings));
+
+Uint8List _buildXlsx(List<List<String>> rows) {
   final archive = Archive()
     ..addFile(ArchiveFile.string('[Content_Types].xml', _xlsxContentTypes))
     ..addFile(ArchiveFile.string('_rels/.rels', _xlsxRootRelationships))
@@ -147,21 +190,8 @@ List<List<String>> _exportRows(
 ) {
   final indexedReadings = readings.indexed.toList(growable: false)
     ..sort((left, right) {
-      final leftAt = left.$2.recordedAt;
-      final rightAt = right.$2.recordedAt;
-      if (leftAt == null && rightAt != null) {
-        return 1;
-      }
-      if (leftAt != null && rightAt == null) {
-        return -1;
-      }
-      if (leftAt != null && rightAt != null) {
-        final timestampOrder = leftAt.compareTo(rightAt);
-        if (timestampOrder != 0) {
-          return timestampOrder;
-        }
-      }
-      return left.$1.compareTo(right.$1);
+      final order = _compareReadingTimes(left.$2, right.$2);
+      return order == 0 ? left.$1.compareTo(right.$1) : order;
     });
 
   return <List<String>>[
@@ -170,6 +200,36 @@ List<List<String>> _exportRows(
     for (final indexedReading in indexedReadings)
       _rowFor(session, indexedReading.$2),
   ];
+}
+
+List<List<String>> _acquisitionExportRows(ArchivedSensorExportData data) {
+  final indexedEntries =
+      data.acquisitionEntries!.indexed.toList(growable: false)
+        ..sort((left, right) {
+          final order = _compareReadingTimes(left.$2.reading, right.$2.reading);
+          return order == 0 ? left.$1.compareTo(right.$1) : order;
+        });
+  return <List<String>>[
+    archivedSensorAcquisitionCsvColumns,
+    if (indexedEntries.isEmpty)
+      [..._rowFor(data.session, null), '2', '', '', ''],
+    for (final (_, entry) in indexedEntries)
+      [
+        ..._rowFor(data.session, entry.reading),
+        '2',
+        entry.origin.name,
+        _utcTimestamp(entry.firstReceivedAt),
+        entry.timestampBasis.name,
+      ],
+  ];
+}
+
+int _compareReadingTimes(CgmReading left, CgmReading right) {
+  final leftAt = left.recordedAt;
+  final rightAt = right.recordedAt;
+  if (leftAt == null && rightAt != null) return 1;
+  if (leftAt != null && rightAt == null) return -1;
+  return leftAt == null || rightAt == null ? 0 : leftAt.compareTo(rightAt);
 }
 
 List<String> _rowFor(ArchivedSensorSession session, CgmReading? reading) =>
@@ -224,7 +284,7 @@ String _encodeTextField(String value) => value
     .replaceAll('\r', r'\r')
     .replaceAll('\n', r'\n');
 
-const _numericColumns = <int>{4, 6, 7, 9, 10, 11};
+const _numericColumns = <int>{4, 6, 7, 9, 10, 11, 13};
 
 const _xlsxColumnWidths = <double>[
   18,
@@ -240,10 +300,15 @@ const _xlsxColumnWidths = <double>[
   14,
   12,
   14,
+  24,
+  20,
+  28,
+  20,
 ];
 
 String _buildWorksheetXml(List<List<String>> rows) {
-  final lastColumn = _xlsxColumnName(archivedSensorCsvColumns.length - 1);
+  final columnCount = rows.first.length;
+  final lastColumn = _xlsxColumnName(columnCount - 1);
   final buffer = StringBuffer(
     '<worksheet xmlns="http://schemas.openxmlformats.org/'
     'spreadsheetml/2006/main">'
@@ -256,7 +321,7 @@ String _buildWorksheetXml(List<List<String>> rows) {
     '<sheetFormatPr defaultRowHeight="20"/>'
     '<cols>',
   );
-  for (var index = 0; index < _xlsxColumnWidths.length; index += 1) {
+  for (var index = 0; index < columnCount; index += 1) {
     final number = index + 1;
     buffer.write(
       '<col min="$number" max="$number" '

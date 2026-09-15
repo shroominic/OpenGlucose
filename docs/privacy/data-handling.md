@@ -75,7 +75,25 @@ after relaunch. See `docs/runbooks/data-recovery.md`.
 The current app does not provide a verified delete-all flow. Disconnecting or
 clearing one selected sensor is not equivalent to complete erasure.
 
+The private Libre bench path retains accepted provisional samples in the same
+restricted history store, with their source, sensor-minute, receipt time, and
+quality flags intact. A `Data quality` row in Current sensor and archive details
+discloses provisional or raw data. Home shows normal connection status and
+reading time without bench/body warnings or repeated history banners. Sensor
+placement is not a runtime mode; physical test conditions belong in the evidence
+record, separate from driver-reported data quality. These samples are excluded
+from wellness summaries, AI aggregates, Apple Health, and numeric live surfaces.
+Explicit archive-file export can include them with the disclosed quality
+columns; this is not a validated blood-glucose export. See
+[the received-history policy](../testing/libre2-release-readiness.md#provisional-data-policy).
+
 ## Sharing and export
+
+Optional observed sensor model/version metadata is retained with the restricted
+session archive and shown in sensor details. It is not a public support code or
+telemetry payload. Variant fields must not contain device identifiers, raw
+frames, keys, or calibration data. Current archive reading-file export has not
+been extended to include this descriptor.
 
 The iOS app implements an opt-in, write-only Apple Health integration. It sends
 glucose values and their timestamps as blood-glucose samples only after the
@@ -95,6 +113,14 @@ opens. Every format contains glucose values/times, units, record source,
 sensor-relative minute, raw/qualifier fields, provisional state, archive reason,
 and session timing. XLSX exports are genuine Office Open XML workbooks with
 numeric measurement cells; they are not renamed CSV files.
+Legacy archives retain the 13-column format. Acquisition-bearing Libre
+archives add export schema version, acquisition origin, first receipt time,
+and timestamp basis in all three formats. The preview discloses these extra
+categories. Unknown legacy receipts stay blank; NFC and older BLE sample times
+remain sensor-relative estimates, not live Bluetooth receipt evidence. The two
+BLE historical origins are distinct from `bleLive`. The exact persisted archive is checked
+again at confirmation, before file preparation. Missing, corrupt, conflicting,
+or uncertain archive state blocks export rather than substituting display data.
 Stable session IDs, storage keys, serials, device IDs, display names, model,
 firmware, and driver IDs are omitted. The filename is neutral. Native exports
 use one scoped temporary directory, delete their source file after the share
@@ -112,6 +138,25 @@ Recovery exports remain planned: they must be encrypted, versioned, integrity
 checked, and restored only after an explicit preview.
 
 ## Logs, analytics, and incidents
+
+The default-off Android read-only Libre NFC backend does not record raw NFC
+payloads. It keeps temporary tag/FRAM evidence in native memory, clears it after
+completion or failure, and sends only attempt-scoped closed lifecycle/status
+events to Dart. Its durable exact-owner lease contains an opaque operation
+token, not sensor identity; uncertain cleanup retains that lease to block reuse.
+It refuses existing private capture/receiver state rather than deleting or
+migrating it. This path provides no receiver credentials or activation proof.
+
+The separate default-off, debug-only saved-receiver history route uses the same
+fixed read-only transaction under an exact confirmed receiver binding. It does
+not record raw payloads or rewrite the receiver, login counters, or calibration
+cache. One-use FRAM evidence can cross the restricted native/decoder boundary
+only after proven read cleanup; lifecycle loss, cancellation, disposal, and
+bounded expiry revoke it. Successful stop briefly retains it for decoding, so
+stop is distinct from explicit evidence discard. Only decoded, validated history
+enters the existing restricted store with acquisition provenance. Closed UI
+events contain no protocol bytes or sensor identity. Normal main has no glucose
+adapter, and this route does not grant enrollment or distribution authority.
 
 Policy requires production logs to omit health values, sensor identity, BLE
 payloads, notes, prompts/responses, API keys, and signing credentials. Release

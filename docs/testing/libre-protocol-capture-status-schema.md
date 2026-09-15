@@ -44,12 +44,19 @@ A healthy Dart status is written only after `recordCaptureHeartbeat()` appends
 and flushes a new event through the same recorder and sink as BLE data. Thus
 each healthy status has a strictly newer BLE sequence. The publisher serializes
 the complete commit, snapshot, and native-write transaction. Its periodic
-two-second timer exists only while scanner state is `running` and the sink is
-healthy. State transitions, including `suspended`, `error`, and `stopping`, are
+two-second timer runs while scanner state is `running` or `suspended`, the sink
+is healthy, and capture is not stopping. State transitions, including
+`suspended`, `error`, and `stopping`, are
 also published and get a new committed sequence while the sink remains healthy.
 `running` additionally requires an acknowledgement from the exact
 FlutterBluePlus scan attempt after its awaited native `startScan` succeeds;
 the process-global `isScanning` flag alone cannot establish readiness.
+
+During an active BLE connection, `suspended` can be the expected scanner state.
+An advancing, healthy, bound recorder can continue recording in this state
+without NFC RF readiness. Do not resume scanning only to satisfy the NFC-ready
+check. Recorder heartbeats prove recording progress, not receipt of sensor
+notifications; verify live packets separately.
 
 Readiness fails closed unless the persisted record is current, bound to the
 installed build/PID/process/native sessions, has `rfPointOfUseEligible=true`,

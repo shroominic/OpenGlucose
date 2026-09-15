@@ -30,17 +30,20 @@ class ArchivedSensorSession {
     required this.displayName,
     required this.reason,
     required this.readingCount,
+    this.warmupMinutes,
     this.serial = '',
     this.model = '',
     this.firmware = '',
+    this.sensorVariant,
     this.startedAt,
     this.endedAt,
     this.lastReadingAt,
   });
 
-  /// Stable identity for one physical sensor session. This deliberately
-  /// includes session timing so two sessions using the same hardware/storage
-  /// key remain separate archive entries.
+  /// Stable identity for one retained archive entry. Ordinary drivers include
+  /// physical-session timing. Libre entries are immutable observation segments
+  /// within one bootstrap; their opaque collision discriminator does not prove
+  /// activation time or a new physical sensor session.
   final String id;
 
   /// Restricted-state key containing the immutable reading snapshot for this
@@ -53,8 +56,15 @@ class ArchivedSensorSession {
   final String serial;
   final String model;
   final String firmware;
+
+  /// Historical identification only; this does not authorize a new connection.
+  final CgmSensorVariant? sensorVariant;
   final SensorArchiveReason reason;
   final int readingCount;
+
+  /// Reported warmup for this archived segment, retained without a live driver.
+  /// Null denotes an older record; the app resolves its compatibility profile.
+  final int? warmupMinutes;
   final DateTime? startedAt;
   final DateTime? endedAt;
   final DateTime? lastReadingAt;
@@ -71,8 +81,10 @@ class ArchivedSensorSession {
     'serial': serial,
     'model': model,
     'firmware': firmware,
+    if (sensorVariant != null) 'sensorVariant': sensorVariant!.toJson(),
     'reason': reason.name,
     'readingCount': readingCount,
+    if (warmupMinutes != null) 'warmupMinutes': warmupMinutes,
     'startedAt': startedAt?.toUtc().toIso8601String(),
     'endedAt': endedAt?.toUtc().toIso8601String(),
     'lastReadingAt': lastReadingAt?.toUtc().toIso8601String(),
@@ -97,8 +109,16 @@ class ArchivedSensorSession {
       serial: json['serial'] as String? ?? '',
       model: json['model'] as String? ?? '',
       firmware: json['firmware'] as String? ?? '',
+      sensorVariant: switch (json['sensorVariant']) {
+        final Map<String, Object?> value => CgmSensorVariant.fromJson(value),
+        _ => null,
+      },
       reason: SensorArchiveReason.fromJson(json['reason']),
       readingCount: (json['readingCount'] as num?)?.toInt() ?? 0,
+      warmupMinutes: switch (json['warmupMinutes']) {
+        final int value when value >= 0 => value,
+        _ => null,
+      },
       startedAt: startedAt,
       endedAt: endedAt,
       lastReadingAt: lastReadingAt,

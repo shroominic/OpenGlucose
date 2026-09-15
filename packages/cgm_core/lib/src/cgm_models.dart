@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'sensor_variant.dart';
 import 'timeline.dart';
 
 /// Ephemeral connection metadata used to distinguish a user-confirmed new
@@ -86,7 +87,13 @@ class CgmCapabilities {
   final bool supportsDirectBle;
   final bool supportsVendorPairing;
   final bool supportsAdvertisementGlucose;
+
+  /// Whether the driver can request past records from the sensor. False does
+  /// not forbid retaining received readings in app or session history.
   final bool supportsHistory;
+
+  /// Explicit name for [supportsHistory]; retains the existing serialized key.
+  bool get supportsHistoryBackfill => supportsHistory;
   final bool supportsRawHistory;
   final bool supportsCalibration;
   final bool supportsDiagnostics;
@@ -343,6 +350,7 @@ class CgmSessionInfo {
     this.model = '',
     this.serial = '',
     this.firmware = '',
+    this.sensorVariant,
     this.sessionStart,
     this.sessionStartPayloadHex = '',
     this.elapsedMinutes,
@@ -355,6 +363,7 @@ class CgmSessionInfo {
   final String model;
   final String serial;
   final String firmware;
+  final CgmSensorVariant? sensorVariant;
   final DateTime? sessionStart;
   final String sessionStartPayloadHex;
   final int? elapsedMinutes;
@@ -367,6 +376,8 @@ class CgmSessionInfo {
     String? model,
     String? serial,
     String? firmware,
+    CgmSensorVariant? sensorVariant,
+    bool clearSensorVariant = false,
     DateTime? sessionStart,
     String? sessionStartPayloadHex,
     int? elapsedMinutes,
@@ -379,6 +390,9 @@ class CgmSessionInfo {
       model: model ?? this.model,
       serial: serial ?? this.serial,
       firmware: firmware ?? this.firmware,
+      sensorVariant: clearSensorVariant
+          ? null
+          : (sensorVariant ?? this.sensorVariant),
       sessionStart: sessionStart ?? this.sessionStart,
       sessionStartPayloadHex:
           sessionStartPayloadHex ?? this.sessionStartPayloadHex,

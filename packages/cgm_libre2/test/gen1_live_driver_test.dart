@@ -5,6 +5,8 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:test/test.dart';
 
+import 'support/gen1_timing_fixtures.dart';
+
 void main() {
   late _Harness harness;
   setUp(() => harness = _Harness());
@@ -13,11 +15,1337 @@ void main() {
       await harness.session?.disconnect();
     } on LibreGen1LiveException catch (error) {
       // Some tests deliberately leave quarantined physical ownership.
-      expect(error.kind, LibreGen1LiveFailure.cleanupUnconfirmed);
+      expect(
+        error.kind,
+        anyOf(
+          LibreGen1LiveFailure.cleanupUnconfirmed,
+          LibreGen1LiveFailure.observationStorageUnavailable,
+        ),
+      );
     }
     await harness.connection.packets.close();
     await harness.connection.states.close();
   });
+
+  for (final durable in [false, true]) {
+    for (final minute in [61, 75, 120, 121, 122, 137, 65534]) {
+      test(
+        'BLE sparse history uses exact slot timing at $minute (durable=$durable)',
+        () async {
+          if (durable) harness.observations = _ObservationStore();
+          final result = _packetWithHistory(minute);
+          harness.decoderProvider = _DecoderProvider()..result = result;
+          final receipt = harness.now;
+          final session = await harness.start();
+          await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+          await _receivePacket(session, harness.connection, minute: minute);
+          final expected = {
+            minute,
+            for (final sample in result.historySamples)
+              if (sample.sampleAgeMinutes >= 60) sample.sampleAgeMinutes,
+          }.toList()..sort();
+          final history = session.currentSnapshot.history;
+          expect(history.map((reading) => reading.sensorMinute), expected);
+          for (final reading in history) {
+            expect(
+              reading.recordedAt,
+              receipt.subtract(
+                Duration(minutes: minute - reading.sensorMinute!),
+              ),
+            );
+            expect(reading.source, CgmRecordSource.vendor);
+            expect(reading.isDisplayProvisional, isTrue);
+          }
+          expect(session.currentSnapshot.latestReading!.sensorMinute, minute);
+          expect(session.currentSnapshot.latestReading!.recordedAt, receipt);
+          if (minute == 121) {
+            expect(expected, [75, 90, 105, 106, 109, 114, 115, 117, 119, 121]);
+          }
+          if (durable) {
+            expect(harness.observations!.committedMinutes, [minute]);
+            expect(
+              () => harness.observations!.lastHistoricalReadings.clear(),
+              throwsUnsupportedError,
+            );
+          }
+        },
+      );
+    }
+    for (final rejection in LibreGen1GlucoseRejection.values) {
+      test(
+        'valid BLE history survives rejected current $rejection (durable=$durable)',
+        () async {
+          if (durable) harness.observations = _ObservationStore();
+          harness.decoderProvider = _DecoderProvider()
+            ..result = _packetWithHistory(121, currentRejection: rejection);
+          final session = await harness.start();
+          await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+          await _receivePacket(session, harness.connection, minute: 121);
+          expect(session.currentSnapshot.latestReading, isNull);
+          expect(session.currentSnapshot.history, hasLength(9));
+          expect(
+            session.currentSnapshot.history.map(
+              (reading) => reading.sensorMinute,
+            ),
+            [75, 90, 105, 106, 109, 114, 115, 117, 119],
+          );
+          expect(
+            session.currentSnapshot.history.any(
+              (reading) => reading.sensorMinute == 121,
+            ),
+            isFalse,
+          );
+        },
+      );
+    }
+  }
+
+  for (final rejectedTrend in [false, true]) {
+    test(
+      'same-minute BLE overlap prefers accepted trend (rejected=$rejectedTrend)',
+      () async {
+        final observations = harness.observations = _ObservationStore();
+        harness.decoderProvider = _DecoderProvider()
+          ..result = _packetWithHistory(
+            120,
+            history: [
+              _historySample(
+                105,
+                LibreGen1BleHistoryKind.history,
+                glucose: 101,
+              ),
+              _historySample(
+                105,
+                LibreGen1BleHistoryKind.trend,
+                glucose: rejectedTrend ? null : 102,
+                rejection: rejectedTrend
+                    ? LibreGen1GlucoseRejection.invalidData
+                    : null,
+              ),
+            ],
+          );
+        final session = await harness.start();
+        await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+        await _receivePacket(session, harness.connection, minute: 120);
+        expect(session.currentSnapshot.history, hasLength(2));
+        expect(
+          session.currentSnapshot.history.first.valueMgdl,
+          rejectedTrend ? 101 : 102,
+        );
+        expect(
+          observations.lastHistoricalReadings.single.kind,
+          rejectedTrend
+              ? LibreGen1BleHistoryKind.history
+              : LibreGen1BleHistoryKind.trend,
+        );
+      },
+    );
+  }
+
+  final malformedHistory = <String, List<LibreGen1GlucoseHistorySample>>{
+    'too many': [
+      for (var i = 0; i < 10; i++)
+        _historySample(119, LibreGen1BleHistoryKind.trend),
+    ],
+    'duplicate slot': [
+      _historySample(119, LibreGen1BleHistoryKind.trend),
+      _historySample(119, LibreGen1BleHistoryKind.trend),
+    ],
+    'wrong kind': [_historySample(119, LibreGen1BleHistoryKind.history)],
+    'current': [_historySample(121, LibreGen1BleHistoryKind.trend)],
+    'future': [_historySample(122, LibreGen1BleHistoryKind.trend)],
+    'wrong trend offset': [_historySample(120, LibreGen1BleHistoryKind.trend)],
+    'wrong history delay': [
+      _historySample(120, LibreGen1BleHistoryKind.history),
+    ],
+    'rejection with value': [
+      _historySample(
+        119,
+        LibreGen1BleHistoryKind.trend,
+        rejection: LibreGen1GlucoseRejection.invalidData,
+      ),
+    ],
+  };
+  for (final entry in malformedHistory.entries) {
+    test('malformed BLE historical shape is rejected: ${entry.key}', () async {
+      final observations = harness.observations = _ObservationStore();
+      harness.decoderProvider = _DecoderProvider()
+        ..result = _packetWithHistory(121, history: entry.value);
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection, minute: 121);
+      expect(session.currentSnapshot.history, isEmpty);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(
+        observations.state.observedMinute,
+        121,
+      ); // Valid CRC still consumes age.
+      expect(observations.lastHistoricalReadings, isEmpty);
+      expect(session.currentStatus.failure, isNull);
+    });
+  }
+
+  test('per-slot invalid glucose skips only that older BLE slot', () async {
+    harness.observations = _ObservationStore();
+    harness.decoderProvider = _DecoderProvider()
+      ..result = _packetWithHistory(
+        121,
+        history: [
+          _historySample(
+            119,
+            LibreGen1BleHistoryKind.trend,
+            glucose: double.nan,
+          ),
+          _historySample(117, LibreGen1BleHistoryKind.trend, glucose: 0),
+          _historySample(115, LibreGen1BleHistoryKind.trend, glucose: null),
+          _historySample(114, LibreGen1BleHistoryKind.trend, glucose: 104),
+          _historySample(
+            105,
+            LibreGen1BleHistoryKind.history,
+            glucose: null,
+            rejection: LibreGen1GlucoseRejection.invalidData,
+          ),
+        ],
+      );
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    await _receivePacket(session, harness.connection, minute: 121);
+    expect(
+      session.currentSnapshot.history.map((reading) => reading.sensorMinute),
+      [114, 121],
+    );
+  });
+
+  test('invalid packet lifetime cannot retain any BLE history', () async {
+    harness.observations = _ObservationStore();
+    harness.decoderProvider = _DecoderProvider()
+      ..result = LibreGen1GlucoseResult(
+        sensorAgeMinutes: 121,
+        sampleAgeMinutes: 121,
+        glucoseMgdl: 100,
+        expectedLifetimeMinutes: 121,
+        historySamples: _packetWithHistory(121).historySamples,
+      );
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    await _receivePacket(session, harness.connection, minute: 121);
+    expect(session.currentSnapshot.history, isEmpty);
+    expect(session.currentSnapshot.latestReading, isNull);
+  });
+
+  for (final durable in [false, true]) {
+    test(
+      'BLE duplicate packets and old slots preserve first acquisition (durable=$durable)',
+      () async {
+        if (durable) harness.observations = _ObservationStore();
+        final provider = harness.decoderProvider = _DecoderProvider()
+          ..result = _packetWithHistory(120);
+        final session = await harness.start();
+        await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+        await _receivePacket(session, harness.connection, minute: 120);
+        final original = session.currentSnapshot.history.firstWhere(
+          (reading) => reading.sensorMinute == 120,
+        );
+        final firstHistory = List<CgmReading>.of(
+          session.currentSnapshot.history,
+        );
+        harness.now = harness.now.add(const Duration(hours: 1));
+        provider.result = _packetWithHistory(120, glucose: 200);
+        await _receivePacket(session, harness.connection, minute: 120);
+        expect(session.currentSnapshot.history, firstHistory);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(provider.decodeCalls, 1);
+        provider.result = _packetWithHistory(122, glucose: 200);
+        await _receivePacket(session, harness.connection, minute: 122);
+        final retained = session.currentSnapshot.history.firstWhere(
+          (reading) => reading.sensorMinute == 120,
+        );
+        expect(retained, same(original));
+        expect(session.currentSnapshot.latestReading!.sensorMinute, 122);
+      },
+    );
+  }
+
+  test('nonpersistent BLE history stays sorted and bounded', () async {
+    harness.historyLimit = 4;
+    harness.decoderProvider = _DecoderProvider()
+      ..result = _packetWithHistory(121);
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    await _receivePacket(session, harness.connection, minute: 121);
+    expect(
+      session.currentSnapshot.history.map((reading) => reading.sensorMinute),
+      [115, 117, 119, 121],
+    );
+    harness.decoderProvider!.result = _packetWithHistory(122);
+    await _receivePacket(session, harness.connection, minute: 122);
+    expect(
+      session.currentSnapshot.history.map((reading) => reading.sensorMinute),
+      [119, 120, 121, 122],
+    );
+  });
+
+  test('BLE history batch respects an existing clear cutoff', () async {
+    final observations = harness.observations = _ObservationStore()
+      ..state = LibreGen1ObservationState(observedMinute: 95)
+      ..clearedThroughMinute = 95;
+    harness.decoderProvider = _DecoderProvider()
+      ..result = _packetWithHistory(121);
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    await _receivePacket(session, harness.connection, minute: 121);
+    expect(
+      session.currentSnapshot.history.every(
+        (reading) => reading.sensorMinute! > 95,
+      ),
+      isTrue,
+    );
+    expect(observations.state.history, hasLength(8));
+    expect(session.currentStatus.failure, isNull);
+  });
+
+  test(
+    'stale durable BLE batch remains history without current freshness',
+    () async {
+      var monotonic = Duration.zero;
+      harness.observationMonotonicNow = () => monotonic;
+      harness.timingFreshness = const Duration(seconds: 1);
+      harness.observations = _ObservationStore();
+      harness.decoderProvider = _DecoderProvider()
+        ..result = _packetWithHistory(121)
+        ..afterDecode = () => monotonic = const Duration(seconds: 2);
+      final receipt = harness.now;
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection, minute: 121);
+      expect(session.currentSnapshot.history, hasLength(10));
+      expect(session.currentSnapshot.history.last.recordedAt, receipt);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+    },
+  );
+
+  test(
+    'cancelled durable BLE batch retains history but never publishes live',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..commitGate = Completer<void>();
+      harness.decoderProvider = _DecoderProvider()
+        ..result = _packetWithHistory(121);
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, blePacketAtMinute(121));
+      await observations.commitStarted.future;
+      final later = <CgmSessionSnapshot>[];
+      session.snapshots.listen(later.add);
+      final closing = session.disconnect();
+      await Future<void>.delayed(Duration.zero);
+      observations.commitGate!.complete();
+      await closing;
+      expect(observations.state.history, hasLength(10));
+      expect(observations.committedMinutes, [121]);
+      expect(later.every((snapshot) => snapshot.latestReading == null), isTrue);
+      expect(later.any(_hasCommittedObservation), isFalse);
+    },
+  );
+
+  test(
+    'store cannot acknowledge a new BLE batch while dropping history',
+    () async {
+      harness.observations = _ObservationStore()..dropHistoricalReading = true;
+      harness.decoderProvider = _DecoderProvider()
+        ..result = _packetWithHistory(121);
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, blePacketAtMinute(121));
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.observationStorageUnavailable,
+      );
+      expect(session.currentSnapshot.latestReading, isNull);
+      await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+    },
+  );
+
+  test(
+    'a returned old-hole candidate cannot change the supplied BLE value',
+    () async {
+      harness.observations = _ObservationStore()
+        ..state = LibreGen1ObservationState(observedMinute: 120)
+        ..alterHistoricalReading = true;
+      harness.decoderProvider = _DecoderProvider()
+        ..result = _packetWithHistory(
+          122,
+          history: [_historySample(118, LibreGen1BleHistoryKind.trend)],
+        );
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, blePacketAtMinute(122));
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.observationStorageUnavailable,
+      );
+      await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+    },
+  );
+
+  test(
+    'trimmed presentation history does not lose first-acquisition ack evidence',
+    () async {
+      final old = CgmReading(
+        valueMgdl: 87,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 118,
+        recordedAt: harness.now,
+        isDisplayProvisional: true,
+      );
+      harness.historyLimit = 1;
+      harness.observations = _ObservationStore()
+        ..state = LibreGen1ObservationState(
+          observedMinute: 120,
+          history: [old, old.copyWith(sensorMinute: 120)],
+        );
+      harness.decoderProvider = _DecoderProvider()
+        ..result = _packetWithHistory(
+          122,
+          history: [_historySample(118, LibreGen1BleHistoryKind.trend)],
+        );
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection, minute: 122);
+      expect(session.currentStatus.failure, isNull);
+      expect(harness.observations!.state.history.first, same(old));
+      expect(session.currentSnapshot.history.single.sensorMinute, 122);
+    },
+  );
+
+  test('durable mode requires a store and bounded queue/deadline', () {
+    LibreGen1Driver build({
+      bool requireStore = false,
+      Duration timeout = const Duration(seconds: 5),
+      int limit = 3,
+    }) => LibreGen1Driver(
+      transport: harness.transport,
+      bootstrapProvider: harness.store,
+      counterStore: harness.store,
+      requireDurableObservations: requireStore,
+      observationTimeout: timeout,
+      observationQueueLimit: limit,
+    );
+    expect(() => build(requireStore: true), throwsArgumentError);
+    expect(() => build(timeout: Duration.zero), throwsArgumentError);
+    expect(
+      () => build(timeout: const Duration(seconds: 6)),
+      throwsArgumentError,
+    );
+    expect(() => build(limit: 0), throwsArgumentError);
+    expect(() => build(limit: 4), throwsArgumentError);
+    expect(harness.events, isEmpty);
+  });
+
+  test('durable restore finishes before any BLE operation', () async {
+    final observations = harness.observations = _ObservationStore()
+      ..loadGate = Completer<void>();
+    final starting = harness.start();
+    await observations.loadStarted.future;
+    expect(harness.events, isEmpty);
+    expect(harness.transport.scanCalls, 0);
+    observations.loadGate!.complete();
+    final session = await starting;
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    expect(observations.bindings.single.storageKey, _sensor().storageKey);
+  });
+
+  test('durable early packet keeps its pre-CCCD-ack receipt time', () async {
+    harness.observations = _ObservationStore();
+    harness.decoderProvider = _DecoderProvider();
+    final receivedAt = harness.now;
+    harness.connection.duringNotify = () {
+      _sendPacket(harness.connection, _encrypted);
+      harness.now = harness.now.add(const Duration(hours: 2));
+    };
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.validatedPacket);
+    expect(session.currentSnapshot.history.single.recordedAt, receivedAt);
+  });
+
+  for (final priorLiveMinute in [null, 50]) {
+    test(
+      'NFC replay barrier does not become live timing ($priorLiveMinute)',
+      () async {
+        final imported = CgmReading(
+          valueMgdl: 105,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 75,
+          recordedAt: harness.now.subtract(const Duration(minutes: 15)),
+          isDisplayProvisional: true,
+        );
+        final observations = harness.observations = _ObservationStore()
+          ..state = LibreGen1ObservationState(
+            observedMinute: priorLiveMinute,
+            replayBarrierMinute: 90,
+            history: [imported],
+          );
+        harness.decoderProvider = _DecoderProvider();
+        final session = await harness.start();
+        await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+        expect(session.currentSnapshot.history, [imported]);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+        expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+        for (final minute in [60, 90]) {
+          await _receivePacket(session, harness.connection, minute: minute);
+          expect(session.currentSnapshot.latestReading, isNull);
+          expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+          expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+          expect(observations.state.observedMinute, priorLiveMinute);
+          expect(harness.decoderProvider!.decodeCalls, 0);
+        }
+        harness.decoderProvider!.result = _currentSample(91, 106);
+        await _receivePacket(session, harness.connection, minute: 91);
+        expect(observations.state.observedMinute, 91);
+        expect(session.currentSnapshot.latestReading!.sensorMinute, 91);
+        expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+      },
+    );
+  }
+
+  test(
+    'NFC import ordered before BLE commit rejects stale live publication',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..state = LibreGen1ObservationState(observedMinute: 50);
+      harness.decoderProvider = _DecoderProvider();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      observations.state = LibreGen1ObservationState(
+        observedMinute: 50,
+        replayBarrierMinute: 90,
+      );
+      await _receivePacket(session, harness.connection, minute: 60);
+      expect(session.currentStatus.failure, isNull);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+      expect(observations.state.observedMinute, 50);
+      expect(observations.state.effectiveReplayBarrierMinute, 90);
+    },
+  );
+
+  test('failed durable restore cannot scan or consume a login count', () async {
+    final observations = harness.observations = _ObservationStore()
+      ..loadFails = true;
+    await expectLater(harness.start(), throwsA(_storageUnavailable));
+    await expectLater(
+      harness.driver.connect(_sensor()),
+      throwsA(
+        isA<LibreGen1LiveException>().having(
+          (error) => error.kind,
+          'kind',
+          LibreGen1LiveFailure.sessionInUse,
+        ),
+      ),
+    );
+    expect(observations.bindings, hasLength(1));
+    expect(harness.session, isNull);
+    expect(harness.events, isEmpty);
+    expect(harness.transport.scanCalls, 0);
+    expect(harness.transport.connectCalls, 0);
+    expect(harness.store.nextCount, 1);
+  });
+
+  for (final lateFailure in [false, true]) {
+    test(
+      'timed-out restore stays quarantined after late ${lateFailure ? 'failure' : 'success'}',
+      () async {
+        final observations = harness.observations = _ObservationStore()
+          ..loadGate = Completer<void>()
+          ..loadFails = lateFailure;
+        harness.observationTimeout = const Duration(seconds: 4);
+        final timers = <_ControlledTimer>[];
+        Future<void> expectBlockedWithoutRf() async {
+          await expectLater(
+            harness.driver.connect(_sensor()),
+            throwsA(
+              isA<LibreGen1LiveException>().having(
+                (error) => error.kind,
+                'kind',
+                LibreGen1LiveFailure.sessionInUse,
+              ),
+            ),
+          );
+          expect(observations.bindings, hasLength(1));
+          expect(harness.session, isNull);
+          expect(harness.events, isEmpty);
+          expect(harness.transport.scanCalls, 0);
+          expect(harness.transport.connectCalls, 0);
+          expect(harness.store.nextCount, 1);
+        }
+
+        await runZoned(
+          () async {
+            final failedStart = expectLater(
+              harness.start(),
+              throwsA(_storageUnavailable),
+            );
+            await observations.loadStarted.future;
+            timers.singleWhere((timer) => timer.isActive).fire();
+            await failedStart;
+            await expectBlockedWithoutRf();
+            observations.loadGate!.complete();
+            await Future<void>.delayed(Duration.zero);
+            await expectBlockedWithoutRf();
+          },
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, callback) {
+              if (duration == harness.observationTimeout) {
+                final timer = _ControlledTimer(() => zone.runGuarded(callback));
+                timers.add(timer);
+                return timer;
+              }
+              return parent.createTimer(zone, duration, callback);
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  test('durable reading and timing wait for atomic commit', () async {
+    final observations = harness.observations = _ObservationStore()
+      ..commitGate = Completer<void>();
+    harness.decoderProvider = _DecoderProvider();
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    final firstReceipt = harness.now;
+    final received = _receivePacket(session, harness.connection);
+    await observations.commitStarted.future;
+    expect(session.currentSnapshot.latestReading, isNull);
+    expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+    expect(session.currentSnapshot.history, isEmpty);
+    expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+    expect(observations.state.observedMinute, isNull);
+    harness.now = harness.now.add(const Duration(hours: 1));
+    observations.commitGate!.complete();
+    await received;
+    final reading = session.currentSnapshot.history.single;
+    expect(reading.recordedAt, firstReceipt);
+    expect(reading.source, CgmRecordSource.vendor);
+    expect(reading.isDisplayProvisional, isTrue);
+    expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 60);
+    expect(observations.state.history.single, same(reading));
+    expect(observations.state.observedMinute, 60);
+    expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+  });
+
+  for (final mode in ['reading', 'warmup', 'rejected', 'missingDecoder']) {
+    test('durable $mode frontier survives a new Dart driver', () async {
+      final observations = harness.observations = _ObservationStore();
+      final minute = mode == 'warmup' ? 59 : 60;
+      if (mode != 'missingDecoder') {
+        harness.decoderProvider = _DecoderProvider()
+          ..result = mode == 'rejected'
+              ? const LibreGen1GlucoseResult(
+                  sensorAgeMinutes: 60,
+                  rejection: LibreGen1GlucoseRejection.invalidData,
+                )
+              : _currentSample(minute, 100);
+      }
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection, minute: minute);
+      final firstHistory = observations.state.history;
+      expect(observations.state.observedMinute, minute);
+      expect(firstHistory.length, mode == 'reading' ? 1 : 0);
+      expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+      expect(
+        session.currentSnapshot.stage,
+        mode == 'reading' ? CgmSyncStage.ready : CgmSyncStage.syncing,
+      );
+      await session.disconnect();
+      expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+      final next = _Harness()
+        ..observations = observations
+        ..decoderProvider = (_DecoderProvider()
+          ..result = _currentSample(minute, 120))
+        ..now = harness.now.add(const Duration(days: 1));
+      addTearDown(() async {
+        await next.session?.disconnect();
+        await next.connection.packets.close();
+        await next.connection.states.close();
+      });
+      final resumed = await next.start();
+      await _waitFor(resumed, LibreGen1LivePhase.awaitingPacket);
+      expect(resumed.currentSnapshot.history, firstHistory);
+      expect(resumed.currentSnapshot.latestReading, isNull);
+      expect(resumed.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(resumed.currentSnapshot.sessionInfo.sessionStart, isNull);
+      expect(_hasCommittedObservation(resumed.currentSnapshot), isFalse);
+      await _receivePacket(resumed, next.connection, minute: minute);
+      expect(resumed.currentSnapshot.latestReading, isNull);
+      expect(resumed.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(next.decoderProvider!.decodeCalls, 0);
+      expect(_hasCommittedObservation(resumed.currentSnapshot), isFalse);
+      expect(observations.state.history, firstHistory);
+      next.decoderProvider!.result = _currentSample(61, 121);
+      await _receivePacket(resumed, next.connection, minute: 61);
+      expect(observations.state.observedMinute, 61);
+      expect(resumed.currentSnapshot.latestReading!.sensorMinute, 61);
+      expect(_hasCommittedObservation(resumed.currentSnapshot), isTrue);
+    });
+  }
+
+  test(
+    'committed selection evidence excludes replay, regression, expiry and failure',
+    () async {
+      harness.observations = _ObservationStore();
+      final timers = <_ControlledTimer>[];
+      // Keep receipt-clock arithmetic exact while advancing only the expiry.
+      harness.observationMonotonicNow = () => Duration.zero;
+      await runZoned(
+        () async {
+          final session = await harness.start();
+          await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+          expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+          await _receivePacket(session, harness.connection, minute: 59);
+          expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+          expect(session.currentSnapshot.latestReading, isNull);
+          expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+          for (final minute in [59, 58]) {
+            await _receivePacket(session, harness.connection, minute: minute);
+            expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+          }
+          await _receivePacket(session, harness.connection, minute: 60);
+          expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+          final expired = session.snapshots.firstWhere(
+            (snapshot) => snapshot.metadata['cgm.libre2.timing'] == 'stale',
+          );
+          timers.singleWhere((timer) => timer.isActive).fire();
+          final stale = await expired;
+          expect(_hasCommittedObservation(stale), isFalse);
+          expect(stale.latestReading, isNull);
+          expect(stale.sessionInfo.elapsedMinutes, isNull);
+          expect(stale.stage, CgmSyncStage.syncing);
+          await _receivePacket(session, harness.connection, minute: 61);
+          expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+          final corrupt = List<int>.of(blePacketAtMinute(62));
+          corrupt[0] ^= 1;
+          _sendPacket(harness.connection, corrupt);
+          await _waitFor(session, LibreGen1LivePhase.failed);
+          expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+          expect(
+            session.currentStatus.failure,
+            LibreGen1LiveFailure.invalidPacket,
+          );
+        },
+        zoneSpecification: ZoneSpecification(
+          createTimer: (self, parent, zone, duration, callback) {
+            if (duration == harness.timingFreshness) {
+              final timer = _ControlledTimer(() => zone.runGuarded(callback));
+              timers.add(timer);
+              return timer;
+            }
+            return parent.createTimer(zone, duration, callback);
+          },
+        ),
+      );
+    },
+  );
+
+  test(
+    'durable commit failure closes RF without publishing a reading',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..commitFails = true;
+      harness.decoderProvider = _DecoderProvider();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, _encrypted);
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.observationStorageUnavailable,
+      );
+      expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+      await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+      await expectLater(
+        harness.driver.connect(_sensor()),
+        throwsA(
+          isA<LibreGen1LiveException>().having(
+            (error) => error.kind,
+            'kind',
+            LibreGen1LiveFailure.sessionInUse,
+          ),
+        ),
+      );
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(session.currentSnapshot.history, isEmpty);
+      expect(observations.state.observedMinute, isNull);
+      expect(harness.events.where((event) => event == 'write'), hasLength(1));
+      expect(harness.events, contains('disconnect'));
+    },
+  );
+
+  test(
+    'disconnect waits for dispatched commit but never publishes it live',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..commitGate = Completer<void>();
+      harness.decoderProvider = _DecoderProvider();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, _encrypted);
+      await observations.commitStarted.future;
+      final later = <CgmSessionSnapshot>[];
+      session.snapshots.listen(later.add);
+      var closed = false;
+      final closing = session.disconnect().then((_) => closed = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(harness.events, contains('disconnect'));
+      expect(closed, isFalse);
+      _sendPacket(harness.connection, blePacketAtMinute(61));
+      observations.commitGate!.complete();
+      await closing;
+      expect(later.every((snapshot) => snapshot.latestReading == null), isTrue);
+      expect(later.any(_hasCommittedObservation), isFalse);
+      expect(session.currentSnapshot.history.single.sensorMinute, 60);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(observations.committedMinutes, [60]);
+      expect(observations.state.history.single.sensorMinute, 60);
+    },
+  );
+
+  test(
+    'durable queue is bounded and cannot silently accept overflow',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..commitGate = Completer<void>();
+      harness.decoderProvider = _DecoderProvider();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, _encrypted);
+      await observations.commitStarted.future;
+      _sendPacket(harness.connection, blePacketAtMinute(61));
+      _sendPacket(harness.connection, blePacketAtMinute(62));
+      _sendPacket(harness.connection, blePacketAtMinute(63));
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.observationQueueOverflow,
+      );
+      observations.commitGate!.complete();
+      await session.disconnect();
+      expect(observations.committedMinutes, [60]);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(session.currentSnapshot.history.single.sensorMinute, 60);
+    },
+  );
+
+  test(
+    'timed-out commit stays quarantined after its late durable reply',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..commitGate = Completer<void>();
+      harness.decoderProvider = _DecoderProvider();
+      harness.observationTimeout = const Duration(seconds: 4);
+      final timers = <_ControlledTimer>[];
+      await runZoned(
+        () async {
+          final session = await harness.start();
+          await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+          _sendPacket(harness.connection, _encrypted);
+          await observations.commitStarted.future;
+          timers.singleWhere((timer) => timer.isActive).fire();
+          await _waitFor(session, LibreGen1LivePhase.failed);
+          await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+          expect(harness.events, contains('disconnect'));
+          observations.commitGate!.complete();
+          await Future<void>.delayed(Duration.zero);
+          expect(observations.state.history.single.sensorMinute, 60);
+          expect(session.currentSnapshot.latestReading, isNull);
+          await expectLater(
+            harness.driver.connect(_sensor()),
+            throwsA(
+              isA<LibreGen1LiveException>().having(
+                (error) => error.kind,
+                'kind',
+                LibreGen1LiveFailure.sessionInUse,
+              ),
+            ),
+          );
+        },
+        zoneSpecification: ZoneSpecification(
+          createTimer: (self, parent, zone, duration, callback) {
+            if (duration == harness.observationTimeout) {
+              final timer = _ControlledTimer(() => zone.runGuarded(callback));
+              timers.add(timer);
+              return timer;
+            }
+            return parent.createTimer(zone, duration, callback);
+          },
+        ),
+      );
+    },
+  );
+
+  test(
+    'durable queue commits in receipt order with immutable snapshots',
+    () async {
+      final observations = harness.observations = _ObservationStore()
+        ..commitGate = Completer<void>();
+      final decoder = harness.decoderProvider = _DecoderProvider();
+      decoder.afterDecode = () => decoder.result = _currentSample(
+        59 + decoder.decodeCalls,
+        99 + decoder.decodeCalls.toDouble(),
+      );
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      final histories = <List<int?>>[];
+      session.snapshots.listen((snapshot) {
+        if (snapshot.latestReading != null) {
+          histories.add(
+            snapshot.history.map((reading) => reading.sensorMinute).toList(),
+          );
+        }
+      });
+      _sendPacket(harness.connection, _encrypted);
+      await observations.commitStarted.future;
+      _sendPacket(harness.connection, blePacketAtMinute(61));
+      _sendPacket(harness.connection, blePacketAtMinute(62));
+      final receivedAll = session.snapshots.firstWhere(
+        (snapshot) => snapshot.history.length == 3,
+      );
+      observations.commitGate!.complete();
+      await receivedAll.timeout(const Duration(seconds: 1));
+      expect(observations.committedMinutes, [60, 61, 62]);
+      expect(histories, [
+        [60],
+        [60, 61],
+        [60, 61, 62],
+      ]);
+    },
+  );
+
+  for (final elapsed in [
+    const Duration(minutes: 3),
+    const Duration(minutes: 11),
+  ]) {
+    test(
+      'durable freshness charges storage delay $elapsed to receipt deadline',
+      () async {
+        var monotonic = Duration.zero;
+        harness.observationMonotonicNow = () => monotonic;
+        final observations = harness.observations = _ObservationStore()
+          ..commitGate = Completer<void>();
+        harness.decoderProvider = _DecoderProvider();
+        final durations = <Duration>[];
+        await runZoned(
+          () async {
+            final session = await harness.start();
+            await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+            final received = _receivePacket(session, harness.connection);
+            await observations.commitStarted.future;
+            monotonic = elapsed;
+            harness.now = harness.now.subtract(const Duration(days: 30));
+            observations.commitGate!.complete();
+            await received;
+            expect(
+              session.currentSnapshot.history.single.recordedAt,
+              DateTime.utc(2026, 1, 1),
+            );
+            if (elapsed > harness.timingFreshness) {
+              expect(
+                _hasCommittedObservation(session.currentSnapshot),
+                isFalse,
+              );
+              expect(session.currentSnapshot.latestReading, isNull);
+              expect(
+                session.currentSnapshot.sessionInfo.elapsedMinutes,
+                isNull,
+              );
+              expect(
+                session.currentSnapshot.metadata['cgm.libre2.timing'],
+                'stale',
+              );
+              expect(
+                durations.where(
+                  (duration) => duration > const Duration(minutes: 5),
+                ),
+                isEmpty,
+              );
+            } else {
+              expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+              expect(session.currentSnapshot.latestReading, isNotNull);
+              expect(durations, contains(harness.timingFreshness - elapsed));
+              expect(durations, isNot(contains(harness.timingFreshness)));
+            }
+          },
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, callback) {
+              durations.add(duration);
+              return parent.createTimer(zone, duration, callback);
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  test(
+    'a store reply without the committed reading cannot publish glucose',
+    () async {
+      harness.observations = _ObservationStore()..dropReading = true;
+      harness.decoderProvider = _DecoderProvider();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _sendPacket(harness.connection, _encrypted);
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.observationStorageUnavailable,
+      );
+      expect(session.currentSnapshot.latestReading, isNull);
+      await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+    },
+  );
+
+  test(
+    'a malformed store reply cannot mark a repeated minute as new',
+    () async {
+      final observations = harness.observations = _ObservationStore();
+      harness.decoderProvider = _DecoderProvider();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      final firstReceipt = observations.state.history.single.recordedAt;
+      observations.advanceDuplicate = true;
+      harness.now = harness.now.add(const Duration(days: 1));
+      _sendPacket(harness.connection, _encrypted);
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.observationStorageUnavailable,
+      );
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(observations.state.history.single.recordedAt, firstReceipt);
+      expect(harness.decoderProvider!.decodeCalls, 1);
+      await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+    },
+  );
+
+  for (final hasDecoder in [false, true]) {
+    test(
+      'advanced acknowledgement cannot exclude its own minute (decoder=$hasDecoder)',
+      () async {
+        final observations = harness.observations = _ObservationStore()
+          ..advancedReplyBarrier = 61;
+        if (hasDecoder) harness.decoderProvider = _DecoderProvider();
+        final session = await harness.start();
+        await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+        _sendPacket(harness.connection, _encrypted);
+        await _waitFor(session, LibreGen1LivePhase.failed);
+        expect(
+          session.currentStatus.failure,
+          LibreGen1LiveFailure.observationStorageUnavailable,
+        );
+        expect(observations.state.observedMinute, 60);
+        expect(observations.state.effectiveReplayBarrierMinute, 61);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+        expect(_hasCommittedObservation(session.currentSnapshot), isFalse);
+        expect(session.currentSnapshot.history, isEmpty);
+        await expectLater(session.disconnect(), throwsA(_storageUnavailable));
+        await expectLater(
+          harness.driver.connect(_sensor()),
+          throwsA(
+            isA<LibreGen1LiveException>().having(
+              (error) => error.kind,
+              'kind',
+              LibreGen1LiveFailure.sessionInUse,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  test('timing freshness cannot exceed the ten-minute observation policy', () {
+    for (final freshness in [
+      Duration.zero,
+      const Duration(seconds: -1),
+      const Duration(minutes: 11),
+    ]) {
+      expect(
+        () => LibreGen1Driver(
+          transport: harness.transport,
+          bootstrapProvider: harness.store,
+          counterStore: harness.store,
+          timingFreshness: freshness,
+        ),
+        throwsArgumentError,
+      );
+    }
+  });
+
+  test(
+    'MIT timing advances without a decoder and never invents lifecycle',
+    () async {
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      for (final minute in [0, 59, 60, 20160, 20161]) {
+        await _receivePacket(session, harness.connection, minute: minute);
+        final snapshot = session.currentSnapshot;
+        expect(snapshot.sessionInfo.elapsedMinutes, minute);
+        expect(snapshot.sessionInfo.sessionStart, isNull);
+        expect(snapshot.sessionInfo.sessionStopped, isFalse);
+        expect(snapshot.sessionInfo.expectedLifetimeMinutes, 20160);
+        expect(snapshot.history, isEmpty);
+        expect(snapshot.latestReading, isNull);
+        expect(snapshot.metadata['cgm.libre2.timing'], 'observed');
+        expect(_hasCommittedObservation(snapshot), isFalse);
+        expect(
+          snapshot.statusText,
+          minute < 60
+              ? 'Sensor warming up.'
+              : 'Receiving sensor data. Glucose decoding is not ready.',
+        );
+      }
+      await session.disconnect();
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+    },
+  );
+
+  test(
+    'rejected glucose advances timing and blocks replay through recovery',
+    () async {
+      final provider = harness.decoderProvider = _DecoderProvider()
+        ..result = const LibreGen1GlucoseResult(
+          sensorAgeMinutes: 60,
+          rejection: LibreGen1GlucoseRejection.invalidData,
+        );
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 60);
+      expect(session.currentSnapshot.history, isEmpty);
+      final replacement = _replacement(harness);
+      harness.connection.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      provider.result = _currentSample(60, 110);
+      final calls = provider.decodeCalls;
+      await _receivePacket(session, replacement);
+      expect(provider.decodeCalls, calls);
+      expect(session.currentSnapshot.history, isEmpty);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      provider.result = _currentSample(61, 111);
+      await _receivePacket(session, replacement, minute: 61);
+      expect(session.currentSnapshot.history.single.sensorMinute, 61);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 61);
+    },
+  );
+
+  test(
+    'decoder cannot invent a later minute than the CRC-validated wire age',
+    () async {
+      final provider = harness.decoderProvider = _DecoderProvider()
+        ..result = _currentSample(61, 100);
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection, minute: 60);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 60);
+      provider.result = _currentSample(60, 100);
+      await _receivePacket(session, harness.connection, minute: 60);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(provider.decodeCalls, 1);
+    },
+  );
+
+  test(
+    'warmup-to-active timing remains independent of decoder preparation',
+    () async {
+      harness.decoderProvider = _DecoderProvider()..prepareFails = true;
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection, minute: 59);
+      expect(session.currentSnapshot.statusText, 'Sensor warming up.');
+      await _receivePacket(session, harness.connection, minute: 60);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 60);
+      expect(session.currentSnapshot.statusText, isNot('Sensor warming up.'));
+      expect(session.currentSnapshot.latestReading, isNull);
+    },
+  );
+
+  test(
+    'timing expires without new packets and duplicates cannot revive it',
+    () async {
+      final timers = <_ControlledTimer>[];
+      await runZoned(
+        () async {
+          final provider = harness.decoderProvider = _DecoderProvider();
+          final session = await harness.start();
+          await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+          final expired = session.snapshots.firstWhere(
+            (snapshot) => snapshot.metadata['cgm.libre2.timing'] == 'stale',
+          );
+          await _receivePacket(session, harness.connection);
+          final retained = session.currentSnapshot.history;
+          expect(timers, hasLength(1));
+          // A duplicate received before expiry cannot replace the timer.
+          await _receivePacket(session, harness.connection);
+          expect(timers, hasLength(1));
+          expect(timers.single.isActive, isTrue);
+          harness.now = harness.now.subtract(const Duration(days: 10));
+          timers.single.fire();
+          await expired.timeout(const Duration(seconds: 3));
+          expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+          expect(session.currentSnapshot.latestReading, isNull);
+          expect(session.currentSnapshot.history, retained);
+          expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+          expect(session.currentSnapshot.sessionInfo.sessionStopped, isFalse);
+          await _receivePacket(session, harness.connection);
+          expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+          expect(session.currentSnapshot.latestReading, isNull);
+          provider.result = _currentSample(61, 101);
+          await _receivePacket(session, harness.connection, minute: 61);
+          expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 61);
+          expect(session.currentSnapshot.history.length, 2);
+          expect(timers, hasLength(2));
+          await session.disconnect();
+          expect(timers.last.isActive, isFalse);
+          timers.last.fire();
+          expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+        },
+        zoneSpecification: ZoneSpecification(
+          createTimer: (self, parent, zone, duration, callback) {
+            if (duration == harness.timingFreshness) {
+              final timer = _ControlledTimer(() => zone.runGuarded(callback));
+              timers.add(timer);
+              return timer;
+            }
+            return parent.createTimer(zone, duration, callback);
+          },
+        ),
+      );
+    },
+  );
+
+  test('Libre declares receipt history without bootstrap or BLE I/O', () {
+    final CgmSensorDataProfileProvider provider = harness.driver;
+    final profile = provider.sensorDataProfile;
+    expect(profile, same(LibreGen1Driver.dataProfile));
+    expect(profile.warmupMinutes, 60);
+    expect(profile.expectedLifetimeMinutes, 20160);
+    expect(
+      profile.timestampBasis,
+      CgmReadingTimestampBasis.acquisitionRelative,
+    );
+    expect(profile.duplicatePolicy, CgmHistoryDuplicatePolicy.keepFirst);
+    expect(profile.currentReadingPolicy, CgmCurrentReadingPolicy.liveOnly);
+    expect(
+      profile.retainedLifecyclePolicy,
+      CgmRetainedLifecyclePolicy.reportedOnly,
+    );
+    expect(profile.canInferRetainedLifecycle, isFalse);
+    expect(LibreGen1Driver.capabilities.supportsHistory, isFalse);
+    expect(harness.events, isEmpty);
+    expect(harness.store.readCalls, 0);
+    expect(harness.transport.scanCalls, 0);
+    expect(harness.transport.connectCalls, 0);
+  });
+
+  test(
+    'Libre unsupported actions stay unavailable without extra I/O',
+    () async {
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      final snapshot = session.currentSnapshot;
+      final capabilities = snapshot.capabilities;
+      expect(capabilities.supportsDirectBle, isTrue);
+      expect(capabilities.supportsDiagnostics, isTrue);
+      expect(capabilities.supportsVendorPairing, isFalse);
+      expect(capabilities.supportsAdvertisementGlucose, isFalse);
+      expect(capabilities.supportsHistoryBackfill, isFalse);
+      expect(capabilities.supportsRawHistory, isFalse);
+      expect(capabilities.supportsCalibration, isFalse);
+      expect(capabilities.supportsUnsafeAdmin, isFalse);
+      expect(capabilities.supportsCommunicationInterval, isFalse);
+      expect(capabilities.supportsAutoUpdateControl, isFalse);
+      expect(session, isNot(isA<CgmBondTransferSession>()));
+      expect(session.unsafeAdmin, isNull);
+      final completedEvents = List<String>.of(harness.events);
+      final nextCount = harness.store.nextCount;
+
+      await expectLater(session.syncHistory(), throwsUnsupportedError);
+      await expectLater(
+        session.syncHistory(includeRawHistory: true, requestedStartOffset: 0),
+        throwsUnsupportedError,
+      );
+      expect(await session.fetchCalibrations(), isEmpty);
+      await expectLater(
+        session.submitCalibration(glucoseMgdl: 100, sensorMinute: 100),
+        throwsUnsupportedError,
+      );
+      await session.refresh();
+      await session.refreshLiveData();
+      expect(await session.refreshDiagnostics(), snapshot.diagnostics);
+
+      expect(session.currentSnapshot, same(snapshot));
+      expect(harness.events, completedEvents);
+      expect(harness.store.nextCount, nextCount);
+      expect(harness.transport.scanCalls, 1);
+      expect(harness.transport.connectCalls, 1);
+    },
+  );
+
+  for (final signature in ['9d0830', 'c50930', '7f0e30']) {
+    test(
+      'live snapshot reports accepted variant $signature without clocks',
+      () async {
+        harness.store.bootstrap = _bootstrap(
+          patchInfoHex: '${signature}013412',
+        );
+        final gate = Completer<void>();
+        harness.decoderProvider = _DecoderProvider()..prepareGate = gate;
+        final session = await harness.start();
+        _expectBootstrapSessionInfo(session, signature);
+        expect(harness.events, isEmpty);
+        expect(harness.transport.scanCalls, 0);
+        expect(harness.transport.connectCalls, 0);
+        expect(harness.store.nextCount, 1);
+
+        gate.complete();
+        await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+        _expectBootstrapSessionInfo(session, signature);
+        await session.disconnect();
+        _expectBootstrapSessionInfo(session, signature);
+      },
+    );
+  }
+
+  for (final signature in ['c60931', '7f0e31']) {
+    test('informational Plus variant $signature does not permit bootstrap', () {
+      expect(
+        () => _bootstrap(patchInfoHex: '${signature}013412'),
+        throwsA(
+          isA<LibreGen1LiveException>().having(
+            (error) => error.kind,
+            'kind',
+            LibreGen1LiveFailure.invalidBootstrap,
+          ),
+        ),
+      );
+      expect(harness.events, isEmpty);
+      expect(harness.store.readCalls, 0);
+      expect(harness.transport.scanCalls, 0);
+      expect(harness.transport.connectCalls, 0);
+    });
+  }
 
   test(
     'cancellation during optional preparation cannot start BLE later',
@@ -92,6 +1420,7 @@ void main() {
       final replacement = _replacement(harness);
       harness.connection.states.add(BleConnectionState.disconnected);
       await _waitFor(session, LibreGen1LivePhase.reconnecting);
+      _expectBootstrapSessionInfo(session, '9d0830');
       expect(harness.transport.scanCalls, 1);
       expect(harness.store.nextCount, 2);
       closeGate.complete();
@@ -100,6 +1429,7 @@ void main() {
       expect(harness.transport.connectCalls, 1);
       harness.transport.emit(_advertisement(harness.now));
       await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      _expectBootstrapSessionInfo(session, '9d0830');
       expect(harness.transport.connectCalls, 2);
       expect(harness.store.nextCount, 3);
       expect(replacement.lastWrite, isNot(firstLogin));
@@ -130,6 +1460,213 @@ void main() {
       expect(
         session.currentSnapshot.metadata['cgm.libre2.recoveryAttempts'],
         '1',
+      );
+      _expectBootstrapSessionInfo(session, '9d0830');
+    },
+  );
+
+  test(
+    'durable recovery waits past the setup deadline without login retries',
+    () async {
+      harness.observations = _ObservationStore();
+      harness.advertisementTimeout = const Duration(milliseconds: 25);
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      final firstLogin = harness.connection.lastWrite;
+      final replacement = _replacement(harness);
+      harness.transport.autoAdvertise = false;
+      harness.connection.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.awaitingAdvertisement);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        session.currentStatus.phase,
+        LibreGen1LivePhase.awaitingAdvertisement,
+      );
+      expect(
+        session.currentSnapshot.metadata['cgm.libre2.waitingForReturn'],
+        'true',
+      );
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(harness.transport.scanTimeout, isNull);
+      expect(harness.transport.scanCalls, 2);
+      expect(harness.transport.connectCalls, 1);
+      expect(harness.store.nextCount, 2);
+      expect(harness.store.readCalls, 2);
+
+      // Delivery of cached, wrong-target, or future observations is not return.
+      harness.now = harness.now.add(const Duration(hours: 1));
+      harness.transport.emit(
+        _advertisement(harness.now.subtract(const Duration(hours: 2))),
+      );
+      harness.transport.emit(
+        _advertisement(harness.now.add(const Duration(seconds: 1))),
+      );
+      harness.transport.emit(
+        _advertisement(harness.now, deviceId: '02:00:00:00:00:02'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(harness.transport.connectCalls, 1);
+      harness.transport.emit(_advertisement(harness.now));
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      expect(harness.transport.connectCalls, 2);
+      expect(harness.transport.scanStoppedAtConnect, isTrue);
+      expect(harness.store.nextCount, 3);
+      expect(harness.store.readCalls, 3);
+      expect(replacement.lastWrite, isNot(firstLogin));
+      expect(
+        session.currentSnapshot.metadata,
+        isNot(contains('cgm.libre2.waitingForReturn')),
+      );
+    },
+  );
+
+  for (final failure in [
+    'cancel',
+    'scanError',
+    'scanDone',
+    'cleanup',
+    'targetChanged',
+    'changedDuringCleanup',
+    'missing',
+    'readFailure',
+    'cancelDuringRead',
+  ]) {
+    test('durable return wait preserves $failure boundary', () async {
+      harness.observations = _ObservationStore();
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      harness.transport.autoAdvertise = false;
+      _replacement(harness);
+      harness.connection.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.awaitingAdvertisement);
+      expect(harness.transport.scanTimeout, isNull);
+
+      LibreGen1LiveFailure? expected;
+      switch (failure) {
+        case 'cancel':
+          await session.disconnect();
+          break;
+        case 'scanError':
+          harness.transport.advertisements!.addError(
+            BleFailure(
+              kind: BleFailureKind.bluetoothOff,
+              operation: BleOperation.scan,
+              diagnosticCode: 'synthetic.bluetoothOff',
+            ),
+          );
+          expected = LibreGen1LiveFailure.bluetoothOff;
+          break;
+        case 'scanDone':
+          await harness.transport.advertisements!.close();
+          expected = LibreGen1LiveFailure.scanFailed;
+          break;
+        case 'cleanup':
+          harness.transport.cancelFails = true;
+          harness.transport.emit(_advertisement(harness.now));
+          expected = LibreGen1LiveFailure.cleanupUnconfirmed;
+          break;
+        case 'targetChanged':
+          harness.store.bootstrap = _bootstrap(streamingBase: 0x12345679);
+          harness.transport.emit(_advertisement(harness.now));
+          expected = LibreGen1LiveFailure.targetMismatch;
+          break;
+        case 'changedDuringCleanup':
+          final gate = Completer<void>();
+          harness.transport.cancelGate = gate;
+          harness.transport.emit(_advertisement(harness.now));
+          while (harness.transport.scanCancelCalls < 2) {
+            await Future<void>.delayed(Duration.zero);
+          }
+          expect(harness.store.readCalls, 2);
+          expect(harness.transport.connectCalls, 1);
+          harness.store.bootstrap = _bootstrap(streamingBase: 0x12345679);
+          gate.complete();
+          expected = LibreGen1LiveFailure.targetMismatch;
+          break;
+        case 'missing':
+          harness.store.bootstrap = null;
+          harness.transport.emit(_advertisement(harness.now));
+          expected = LibreGen1LiveFailure.bootstrapUnavailable;
+          break;
+        case 'readFailure':
+          harness.store.readFails = true;
+          harness.transport.emit(_advertisement(harness.now));
+          expected = LibreGen1LiveFailure.bootstrapUnavailable;
+          break;
+        case 'cancelDuringRead':
+          final gate = Completer<void>();
+          harness.store.readGate = gate;
+          harness.transport.emit(_advertisement(harness.now));
+          while (harness.store.readCalls < 3) {
+            await Future<void>.delayed(Duration.zero);
+          }
+          final closing = session.disconnect();
+          gate.complete();
+          await closing;
+          break;
+      }
+      if (expected != null) {
+        await _waitFor(session, LibreGen1LivePhase.failed);
+        expect(session.currentStatus.failure, expected);
+      }
+      expect(harness.transport.connectCalls, 1);
+      expect(harness.store.nextCount, 2);
+      expect(harness.transport.scanCalls, 2);
+      if (failure != 'scanDone') {
+        harness.transport.emit(_advertisement(harness.now));
+      }
+      await Future<void>.delayed(Duration.zero);
+      expect(harness.transport.connectCalls, 1);
+    });
+  }
+
+  test(
+    'return receiver revalidation timeout cannot connect after late read',
+    () async {
+      var captureReadDeadline = false;
+      _ControlledTimer? readDeadline;
+      await runZoned(
+        () async {
+          harness.observations = _ObservationStore();
+          final session = await harness.start();
+          await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+          await _receivePacket(session, harness.connection);
+          harness.transport.autoAdvertise = false;
+          _replacement(harness);
+          harness.connection.states.add(BleConnectionState.disconnected);
+          await _waitFor(session, LibreGen1LivePhase.awaitingAdvertisement);
+          final gate = Completer<void>();
+          harness.store.readGate = gate;
+          captureReadDeadline = true;
+          harness.transport.emit(_advertisement(harness.now));
+          while (harness.store.readCalls < 3) {
+            await Future<void>.delayed(Duration.zero);
+          }
+          expect(readDeadline, isNotNull);
+          readDeadline!.fire();
+          await _waitFor(session, LibreGen1LivePhase.failed);
+          expect(
+            session.currentStatus.failure,
+            LibreGen1LiveFailure.bootstrapUnavailable,
+          );
+          gate.complete();
+          await Future<void>.delayed(Duration.zero);
+          expect(harness.transport.connectCalls, 1);
+          expect(harness.store.nextCount, 2);
+        },
+        zoneSpecification: ZoneSpecification(
+          createTimer: (self, parent, zone, duration, callback) {
+            if (captureReadDeadline &&
+                duration == const Duration(seconds: 15)) {
+              expect(readDeadline, isNull);
+              return readDeadline = _ControlledTimer(callback);
+            }
+            return parent.createTimer(zone, duration, callback);
+          },
+        ),
       );
     },
   );
@@ -176,6 +1713,182 @@ void main() {
     });
   }
 
+  test(
+    'stable committed reception earns one recovery per healthy attempt',
+    () async {
+      var monotonic = Duration.zero;
+      harness.observations = _ObservationStore();
+      harness.observationMonotonicNow = () => monotonic;
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      var current = harness.connection;
+      var minute = 61;
+      final loginPayloads = <List<int>>[current.lastWrite!];
+      for (var recovery = 1; recovery <= 3; recovery++) {
+        final next = _replacement(harness);
+        current.states.add(BleConnectionState.disconnected);
+        await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+        expect(harness.transport.connectCalls, recovery + 1);
+        expect(harness.store.nextCount, recovery + 2);
+        expect(
+          session.currentSnapshot.metadata['cgm.libre2.recoveryAttempts'],
+          '$recovery',
+        );
+        expect(loginPayloads, isNot(contains(next.lastWrite)));
+        loginPayloads.add(next.lastWrite!);
+        current = next;
+        if (recovery < 3) {
+          for (var packet = 0; packet < 3; packet++) {
+            monotonic += const Duration(minutes: 1);
+            // Wall-clock movement does not supply or remove stability evidence.
+            harness.now = harness.now.subtract(const Duration(hours: 1));
+            await _receivePacket(session, current, minute: minute++);
+            expect(_hasCommittedObservation(session.currentSnapshot), isTrue);
+          }
+        }
+      }
+      // A replacement without fresh observations has no further budget.
+      current.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(harness.transport.connectCalls, 4);
+      expect(harness.events.where((event) => event == 'reserve').length, 4);
+      expect(harness.events.where((event) => event == 'write').length, 4);
+      expect(harness.observations!.committedMinutes, [
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+      ]);
+    },
+  );
+
+  for (final evidence in [
+    'replay',
+    'tooFast',
+    'minuteGap',
+    'clockGap',
+    'clockRollback',
+    'stale',
+    'twoPackets',
+    'noStore',
+  ]) {
+    test('$evidence does not earn another automatic recovery', () async {
+      var monotonic = Duration.zero;
+      if (evidence != 'noStore') harness.observations = _ObservationStore();
+      harness.observationMonotonicNow = () => monotonic;
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      final replacement = _replacement(harness);
+      harness.connection.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      final seconds = switch (evidence) {
+        'tooFast' => [0, 59, 119],
+        'clockGap' => [0, 60, 181],
+        'clockRollback' => [60, 120, 60],
+        'twoPackets' => [0, 120],
+        _ => [0, 60, 120],
+      };
+      for (var index = 0; index < seconds.length; index++) {
+        monotonic = Duration(seconds: seconds[index]);
+        final minute = evidence == 'replay'
+            ? 61
+            : evidence == 'minuteGap' && index == 2
+            ? 66
+            : 61 + index;
+        await _receivePacket(session, replacement, minute: minute);
+      }
+      if (evidence == 'stale') monotonic += const Duration(seconds: 121);
+      replacement.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(harness.transport.scanCalls, 2);
+      expect(harness.transport.connectCalls, 2);
+      expect(harness.store.nextCount, 3);
+    });
+  }
+
+  for (final failure in [
+    'closeFailure',
+    'targetChanged',
+    'counterFailure',
+    'cancel',
+  ]) {
+    test('renewed recovery still enforces $failure', () async {
+      var monotonic = Duration.zero;
+      harness.observations = _ObservationStore();
+      harness.observationMonotonicNow = () => monotonic;
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      await _receivePacket(session, harness.connection);
+      final replacement = _replacement(harness);
+      harness.connection.states.add(BleConnectionState.disconnected);
+      await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+      for (var index = 0; index < 3; index++) {
+        monotonic = Duration(minutes: index);
+        await _receivePacket(session, replacement, minute: 61 + index);
+      }
+      _replacement(harness);
+      final closeGate = Completer<void>();
+      switch (failure) {
+        case 'closeFailure':
+          replacement.disconnectFails = true;
+        case 'targetChanged':
+          harness.store.bootstrap = _bootstrap(
+            bootstrapId: 'replacement-owner',
+          );
+        case 'counterFailure':
+          harness.store.reserveFails = true;
+        case 'cancel':
+          replacement.disconnectGate = closeGate;
+      }
+      replacement.states.add(BleConnectionState.disconnected);
+      if (failure == 'cancel') {
+        await _waitFor(session, LibreGen1LivePhase.reconnecting);
+        final closing = session.disconnect();
+        closeGate.complete();
+        await closing;
+      } else {
+        await _waitFor(session, LibreGen1LivePhase.failed);
+      }
+      expect(harness.events.where((event) => event == 'write').length, 2);
+      expect(
+        harness.transport.connectCalls,
+        failure == 'counterFailure' ? 3 : 2,
+      );
+      expect(harness.store.nextCount, 3);
+    });
+  }
+
+  test('an unacknowledged third commit does not rearm recovery', () async {
+    var monotonic = Duration.zero;
+    final observations = harness.observations = _ObservationStore();
+    harness.observationMonotonicNow = () => monotonic;
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    await _receivePacket(session, harness.connection);
+    final replacement = _replacement(harness);
+    harness.connection.states.add(BleConnectionState.disconnected);
+    await _waitFor(session, LibreGen1LivePhase.awaitingPacket);
+    await _receivePacket(session, replacement, minute: 61);
+    monotonic = const Duration(minutes: 1);
+    await _receivePacket(session, replacement, minute: 62);
+    final gate = observations.commitGate = Completer<void>();
+    monotonic = const Duration(minutes: 2);
+    _sendPacket(replacement, blePacketAtMinute(63));
+    await Future<void>.delayed(Duration.zero);
+    replacement.states.add(BleConnectionState.disconnected);
+    await _waitFor(session, LibreGen1LivePhase.failed);
+    gate.complete();
+    await session.disconnect();
+    expect(harness.transport.scanCalls, 2);
+    expect(harness.transport.connectCalls, 2);
+    expect(harness.store.nextCount, 3);
+  });
+
   for (final failure in [
     'missingBootstrap',
     'replacedBootstrap',
@@ -216,6 +1929,7 @@ void main() {
       }
       harness.connection.states.add(BleConnectionState.disconnected);
       await _waitFor(session, LibreGen1LivePhase.failed);
+      _expectBootstrapSessionInfo(session, '9d0830');
       await session.refresh();
       expect(harness.transport.connectCalls, lessThanOrEqualTo(2));
       expect(harness.transport.scanCalls, lessThanOrEqualTo(2));
@@ -289,7 +2003,7 @@ void main() {
         sampleAgeMinutes: 61,
         glucoseMgdl: 101,
       );
-      _sendPacket(replacement, _encrypted);
+      _sendPacket(replacement, blePacketAtMinute(61));
       await Future<void>.delayed(Duration.zero);
       expect(session.currentSnapshot.latestReading?.sensorMinute, 61);
       expect(
@@ -328,7 +2042,7 @@ void main() {
       // Keep the supplied receipt instant; do not invent a monotonic wall clock.
       harness.now = DateTime(2025, 12, 31, 23, 58);
       provider.result = _currentSample(65, 105);
-      await _receivePacket(session, harness.connection);
+      await _receivePacket(session, harness.connection, minute: 65);
       final history = session.currentSnapshot.history;
       expect(history.map((point) => point.sensorMinute), [60, 65]);
       expect(history.map((point) => point.valueMgdl), [100, 105]);
@@ -346,7 +2060,7 @@ void main() {
       expect(session.currentSnapshot.capabilities.supportsHistory, isFalse);
       expect(session.syncHistory(), throwsUnsupportedError);
       expect(session.currentSnapshot.sessionInfo.sessionStart, isNull);
-      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+      expect(session.currentSnapshot.sessionInfo.elapsedMinutes, 65);
     },
   );
 
@@ -360,7 +2074,7 @@ void main() {
       final snapshots = <CgmSessionSnapshot>[];
       for (final minute in [60, 61, 62]) {
         provider.result = _currentSample(minute, minute + 40);
-        await _receivePacket(session, harness.connection);
+        await _receivePacket(session, harness.connection, minute: minute);
         snapshots.add(session.currentSnapshot);
       }
       expect(snapshots.first.history.map((point) => point.sensorMinute), [60]);
@@ -371,12 +2085,12 @@ void main() {
       ]);
       for (final minute in [60, 61, 62]) {
         provider.result = _currentSample(minute, 250);
-        await _receivePacket(session, harness.connection);
+        await _receivePacket(session, harness.connection, minute: minute);
         expect(session.currentSnapshot.history, snapshots.last.history);
         expect(session.currentSnapshot.latestReading, isNull);
       }
       provider.result = _currentSample(64, 104);
-      await _receivePacket(session, harness.connection);
+      await _receivePacket(session, harness.connection, minute: 64);
       expect(
         session.currentSnapshot.history.map((point) => point.sensorMinute),
         [62, 64],
@@ -446,12 +2160,19 @@ void main() {
         await _receivePacket(session, harness.connection);
         final acceptedHistory = session.currentSnapshot.history;
         provider.result = result.$2;
-        await _receivePacket(session, harness.connection);
+        await _receivePacket(
+          session,
+          harness.connection,
+          minute: result.$2.sensorAgeMinutes,
+        );
         expect(session.currentSnapshot.history, acceptedHistory);
         expect(session.currentSnapshot.latestReading, isNull);
         expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
         expect(session.currentSnapshot.sessionInfo.sessionStart, isNull);
-        expect(session.currentSnapshot.sessionInfo.elapsedMinutes, isNull);
+        expect(
+          session.currentSnapshot.sessionInfo.elapsedMinutes,
+          result.$2.sensorAgeMinutes < 60 ? 60 : result.$2.sensorAgeMinutes,
+        );
         expect(harness.events.where((event) => event == 'disconnect'), isEmpty);
       },
     );
@@ -466,7 +2187,7 @@ void main() {
       await _receivePacket(session, harness.connection);
       final acceptedHistory = session.currentSnapshot.history;
       provider.decodeFails = true;
-      await _receivePacket(session, harness.connection);
+      await _receivePacket(session, harness.connection, minute: 61);
       expect(session.currentSnapshot.history, acceptedHistory);
       expect(session.currentSnapshot.latestReading, isNull);
       expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
@@ -540,7 +2261,7 @@ void main() {
       );
       _sendPacket(harness.connection, _encrypted);
       provider.result = _currentSample(61, 101);
-      _sendPacket(harness.connection, _encrypted);
+      _sendPacket(harness.connection, blePacketAtMinute(61));
       await received.timeout(const Duration(seconds: 1));
       expect(
         snapshots.map((snapshot) => snapshot.latestReading!.sensorMinute),
@@ -722,21 +2443,147 @@ void main() {
     }
   });
 
-  test('no advertisement times out without connection or login', () async {
-    harness.advertisementTimeout = const Duration(milliseconds: 10);
-    harness.transport.autoAdvertise = false;
-    final session = await harness.start();
-    await _waitFor(session, LibreGen1LivePhase.failed);
-    expect(
-      session.currentStatus.failure,
-      LibreGen1LiveFailure.advertisementUnavailable,
+  for (final durable in [false, true]) {
+    test(
+      'initial advertisement timeout sends no login (durable=$durable)',
+      () async {
+        if (durable) harness.observations = _ObservationStore();
+        harness.advertisementTimeout = const Duration(milliseconds: 10);
+        harness.transport.autoAdvertise = false;
+        final session = await harness.start();
+        await _waitFor(session, LibreGen1LivePhase.failed);
+        expect(
+          session.currentStatus.failure,
+          LibreGen1LiveFailure.advertisementUnavailable,
+        );
+        expect(harness.transport.scanTimeout, harness.advertisementTimeout);
+        expect(
+          session.currentSnapshot.metadata,
+          isNot(contains('cgm.libre2.waitingForReturn')),
+        );
+        expect(harness.events, isEmpty);
+        expect(harness.store.nextCount, 1);
+        expect(harness.transport.scanCancelCalls, 1);
+        await session.refresh();
+        expect(harness.transport.scanCalls, 1);
+      },
     );
-    expect(harness.events, isEmpty);
-    expect(harness.store.nextCount, 1);
-    expect(harness.transport.scanCancelCalls, 1);
-    await session.refresh();
-    expect(harness.transport.scanCalls, 1);
-  });
+  }
+
+  for (final synchronous in [false, true]) {
+    for (final operation in [BleOperation.adapter, BleOperation.scan]) {
+      for (final kind in [
+        BleFailureKind.bluetoothOff,
+        BleFailureKind.permissionRequired,
+        BleFailureKind.bluetoothUnavailable,
+      ]) {
+        test(
+          'typed $operation $kind scan failure stays closed (sync=$synchronous)',
+          () async {
+            final failure = BleFailure(
+              kind: kind,
+              operation: operation,
+              diagnosticCode: 'synthetic-private-diagnostic',
+            );
+            harness.transport.autoAdvertise = false;
+            if (synchronous) {
+              harness.transport.scanError = failure;
+            }
+            final session = await harness.start();
+            if (!synchronous) {
+              await _waitFor(session, LibreGen1LivePhase.awaitingAdvertisement);
+              harness.transport.advertisements!.addError(failure);
+            }
+            await _waitFor(session, LibreGen1LivePhase.failed);
+            expect(session.currentStatus.failure!.name, kind.name);
+            expect(session.currentSnapshot.lastError, 'libre2.${kind.name}');
+            expect(
+              session
+                  .currentSnapshot
+                  .metadata[cgmAutomaticReconnectAllowedMetadataKey],
+              'false',
+            );
+            expect(
+              session.currentSnapshot.diagnostics
+                  .map(
+                    (item) => [
+                      item.key,
+                      item.title,
+                      item.summary,
+                      item.rawHex,
+                      item.fields,
+                    ],
+                  )
+                  .toString(),
+              isNot(contains('synthetic-private-diagnostic')),
+            );
+            expect(
+              session.currentSnapshot.metadata.toString(),
+              isNot(contains('synthetic-private-diagnostic')),
+            );
+            expect(harness.transport.connectCalls, 0);
+            expect(harness.store.nextCount, 1);
+            expect(harness.events, isEmpty);
+            await session.refresh();
+            expect(harness.transport.scanCalls, 1);
+          },
+        );
+      }
+    }
+  }
+
+  for (final error in [
+    StateError('private Bluetooth off description is not a classification'),
+    BleFailure(
+      kind: BleFailureKind.unexpected,
+      operation: BleOperation.scan,
+      diagnosticCode: 'synthetic-private-diagnostic',
+    ),
+    BleFailure(
+      kind: BleFailureKind.bluetoothOff,
+      operation: BleOperation.write,
+      diagnosticCode: 'synthetic-private-diagnostic',
+    ),
+    BleFailure(
+      kind: BleFailureKind.operationTimedOut,
+      operation: BleOperation.scan,
+      diagnosticCode: 'synthetic-private-diagnostic',
+    ),
+  ].indexed) {
+    test(
+      'unclassified scanner error ${error.$1} is not sensor-not-found',
+      () async {
+        harness.transport.autoAdvertise = false;
+        final session = await harness.start();
+        await _waitFor(session, LibreGen1LivePhase.awaitingAdvertisement);
+        harness.transport.advertisements!.addError(error.$2);
+        await _waitFor(session, LibreGen1LivePhase.failed);
+        expect(session.currentStatus.failure!.name, 'scanFailed');
+        expect(session.currentSnapshot.lastError, 'libre2.scanFailed');
+        expect(
+          session.currentSnapshot.metadata.toString(),
+          isNot(contains('private')),
+        );
+        expect(harness.transport.connectCalls, 0);
+        expect(harness.store.nextCount, 1);
+        expect(harness.events, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'a scanner ending before its deadline is not a discovery timeout',
+    () async {
+      harness.transport.autoAdvertise = false;
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.awaitingAdvertisement);
+      await harness.transport.advertisements!.close();
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      expect(session.currentStatus.failure!.name, 'scanFailed');
+      expect(harness.transport.connectCalls, 0);
+      expect(harness.store.nextCount, 1);
+    },
+  );
 
   test(
     'ignores wrong target, missing service, stale and undated ads',
@@ -843,6 +2690,166 @@ void main() {
       harness.transport.emit(_advertisement(harness.now));
       await session.refresh();
       expect(harness.transport.connectCalls, 1);
+    },
+  );
+
+  for (final scenario in [
+    (
+      name: 'Android GATT 133',
+      kind: BleFailureKind.sensorPossiblyInUse,
+      operation: BleOperation.connect,
+      code: 'fbp.android.connect.133.sensorpossiblyinuse',
+      expectedCode: 'androidGatt133',
+    ),
+    (
+      name: 'unknown native code',
+      kind: BleFailureKind.sensorPossiblyInUse,
+      operation: BleOperation.connect,
+      code: 'synthetic-private-device-020000000001',
+      expectedCode: 'connectionFailed',
+    ),
+    (
+      name: 'connect timeout',
+      kind: BleFailureKind.operationTimedOut,
+      operation: BleOperation.connect,
+      code: 'dart.connect.timeout.operationtimedout',
+      expectedCode: 'connectionFailed',
+    ),
+    (
+      name: 'adapter permission',
+      kind: BleFailureKind.permissionRequired,
+      operation: BleOperation.adapter,
+      code: 'synthetic-private-device-020000000001',
+      expectedCode: 'connectionFailed',
+    ),
+    (
+      name: 'Bluetooth off',
+      kind: BleFailureKind.bluetoothOff,
+      operation: BleOperation.adapter,
+      code: 'synthetic-private-device-020000000001',
+      expectedCode: 'connectionFailed',
+    ),
+    (
+      name: '133 lookalike with different operation',
+      kind: BleFailureKind.sensorPossiblyInUse,
+      operation: BleOperation.read,
+      code: 'fbp.android.connect.133.sensorpossiblyinuse',
+      expectedCode: 'connectionFailed',
+    ),
+    (
+      name: '133 lookalike with different kind',
+      kind: BleFailureKind.unexpected,
+      operation: BleOperation.connect,
+      code: 'fbp.android.connect.133.sensorpossiblyinuse',
+      expectedCode: 'connectionFailed',
+    ),
+  ]) {
+    test('pre-login ${scenario.name} has closed diagnostics only', () async {
+      harness.transport.connectError = BleFailure(
+        kind: scenario.kind,
+        operation: scenario.operation,
+        diagnosticCode: scenario.code,
+      );
+      final session = await harness.start();
+      await _waitFor(session, LibreGen1LivePhase.failed);
+      final snapshot = session.currentSnapshot;
+      final fields = snapshot.diagnostics.single.fields;
+      expect(fields['transportFailurePhase'], 'connecting');
+      expect(fields['transportFailureKind'], scenario.kind.name);
+      expect(fields['transportOperation'], scenario.operation.name);
+      expect(fields['transportCode'], scenario.expectedCode);
+      expect(fields.toString(), isNot(contains(scenario.code)));
+      expect(
+        session.currentStatus.failure,
+        LibreGen1LiveFailure.connectionFailed,
+      );
+      expect(snapshot.lastError, 'libre2.connectionFailed');
+      expect(
+        snapshot.statusText,
+        'Sensor connection failed. Try connecting again.',
+      );
+      expect(BleFailure.fromMetadata(snapshot.metadata), isNull);
+      expect(
+        snapshot.metadata[cgmAutomaticReconnectAllowedMetadataKey],
+        'false',
+      );
+      expect(snapshot.metadata['cgm.libre2.recoveryAttempts'], '0');
+      expect(harness.transport.scanCalls, 1);
+      expect(harness.transport.connectCalls, 1);
+      expect(harness.events, ['connect']);
+      expect(harness.store.nextCount, 1);
+      expect(harness.connection.lastWrite, isNull);
+      harness.transport.emit(_advertisement(harness.now));
+      await session.refresh();
+      await session.refreshLiveData();
+      expect(harness.transport.connectCalls, 1);
+      expect(harness.events, ['connect']);
+      expect(await session.refreshDiagnostics(), snapshot.diagnostics);
+      await session.disconnect();
+      expect(session.currentSnapshot.diagnostics.single.fields, fields);
+    });
+  }
+
+  test('untyped connect errors do not expose diagnostic text', () async {
+    harness.transport.connectError = StateError(
+      'synthetic private connect error for 02:00:00:00:00:01',
+    );
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.failed);
+    final snapshot = session.currentSnapshot;
+    expect(
+      snapshot.diagnostics.single.fields.keys,
+      isNot(contains(startsWith('transport'))),
+    );
+    expect(
+      snapshot.diagnostics.single.fields.toString(),
+      isNot(contains('02:')),
+    );
+    expect(snapshot.lastError, 'libre2.connectionFailed');
+    expect(harness.events, ['connect']);
+    expect(harness.store.nextCount, 1);
+  });
+
+  test('post-connect error does not acquire pre-login diagnostics', () async {
+    harness.connection.discoverError = BleFailure(
+      kind: BleFailureKind.sensorPossiblyInUse,
+      operation: BleOperation.connect,
+      diagnosticCode: 'fbp.android.connect.133.sensorpossiblyinuse',
+    );
+    final session = await harness.start();
+    await _waitFor(session, LibreGen1LivePhase.failed);
+    await session.disconnect();
+    final snapshot = session.currentSnapshot;
+    expect(
+      snapshot.diagnostics.single.fields.keys,
+      isNot(contains(startsWith('transport'))),
+    );
+    expect(snapshot.lastError, 'libre2.topologyRejected');
+    expect(harness.events, ['connect', 'discover', 'disconnect']);
+    expect(harness.store.nextCount, 1);
+  });
+
+  test(
+    'explicit new connect does not retain prior failure diagnostics',
+    () async {
+      harness.transport.connectError = BleFailure(
+        kind: BleFailureKind.sensorPossiblyInUse,
+        operation: BleOperation.connect,
+        diagnosticCode: 'fbp.android.connect.133.sensorpossiblyinuse',
+      );
+      final failed = await harness.start();
+      await _waitFor(failed, LibreGen1LivePhase.failed);
+      await failed.disconnect();
+      harness.transport.connectError = null;
+      final connected = await harness.start();
+      await _waitFor(connected, LibreGen1LivePhase.awaitingPacket);
+      expect(
+        connected.currentSnapshot.diagnostics.single.fields.keys,
+        isNot(contains(startsWith('transport'))),
+      );
+      expect(connected.currentSnapshot.lastError, isNull);
+      expect(harness.transport.connectCalls, 2);
+      expect(harness.store.nextCount, 2);
     },
   );
 
@@ -997,7 +3004,9 @@ void main() {
         );
         expect(snapshot.stage, CgmSyncStage.syncing);
         expect(snapshot.sessionInfo.sessionStart, isNull);
-        expect(snapshot.sessionInfo.elapsedMinutes, isNull);
+        // The fresh BLE packet supplies age; the saved NFC lifecycle does not.
+        expect(snapshot.sessionInfo.elapsedMinutes, 60);
+        expect(snapshot.sessionInfo.sessionStopped, isFalse);
         expect(snapshot.latestReading, isNull);
         expect(snapshot.lastAdvertisement, isNull);
         expect(snapshot.history, isEmpty);
@@ -1370,14 +3379,30 @@ LibreGen1StreamingBootstrap _bootstrap({
   String bootstrapId = 'synthetic',
   int streamingBase = 0x12345678,
   LibreGen1LifecycleState lifecycle = LibreGen1LifecycleState.warmingUp,
+  String patchInfoHex = '9d0830013412',
 }) => LibreGen1StreamingBootstrap(
   bootstrapId: bootstrapId,
   deviceId: '02:00:00:00:00:01',
   uid: LibreGen1Uid.algorithmOrder(_hex('0011223344556677')),
-  initialPatchInfo: LibreGen1PatchInfo(_hex('9d0830013412')),
+  initialPatchInfo: LibreGen1PatchInfo(_hex(patchInfoHex)),
   streamingBase: streamingBase,
   lifecycle: lifecycle,
 );
+
+void _expectBootstrapSessionInfo(LibreGen1Session session, String signature) {
+  final info = session.currentSnapshot.sessionInfo;
+  expect(info.warmupMinutes, 60);
+  expect(info.expectedLifetimeMinutes, 14 * 24 * 60);
+  expect(info.sessionStart, isNull);
+  expect(info.elapsedMinutes, isNull);
+  final variant = info.sensorVariant!;
+  expect(variant.source, CgmSensorVariantSource.nfcPatchInfo);
+  expect(variant.protocolFamily, 'abbott-sas');
+  expect(variant.model, 'FreeStyle Libre 2');
+  expect(variant.variantCode, signature);
+  expect(variant.securityGeneration, 'gen1');
+  expect(variant.region, isNull);
+}
 
 DiscoveredSensor _sensor() => const DiscoveredSensor(
   driverId: LibreGen1Driver.driverIdentifier,
@@ -1388,10 +3413,37 @@ DiscoveredSensor _sensor() => const DiscoveredSensor(
   capabilities: LibreGen1Driver.capabilities,
 );
 
+bool _hasCommittedObservation(CgmSessionSnapshot snapshot) =>
+    snapshot.metadata['cgm.libre2.observationCommitted'] == 'true';
+
+class _ControlledTimer implements Timer {
+  _ControlledTimer(this._callback);
+  final void Function() _callback;
+  bool _active = true;
+  int _tick = 0;
+  void fire() {
+    if (!_active) return;
+    _active = false;
+    _tick = 1;
+    _callback();
+  }
+
+  @override
+  bool get isActive => _active;
+  @override
+  int get tick => _tick;
+  @override
+  void cancel() => _active = false;
+}
+
 class _Harness {
   final events = <String>[];
   DateTime now = DateTime.utc(2026, 1, 1);
   Duration advertisementTimeout = const Duration(seconds: 150);
+  Duration timingFreshness = const Duration(minutes: 10);
+  Duration observationTimeout = const Duration(seconds: 5);
+  _ObservationStore? observations;
+  Duration Function()? observationMonotonicNow;
   int historyLimit = 0x10000;
   _DecoderProvider? decoderProvider;
   late final store = _Store(events);
@@ -1402,8 +3454,13 @@ class _Harness {
     bootstrapProvider: store,
     counterStore: store,
     glucoseDecoderProvider: decoderProvider,
+    observationStore: observations,
+    observationTimeout: observationTimeout,
+    observationMonotonicNow: observationMonotonicNow,
+    requireDurableObservations: observations != null,
     historyLimit: historyLimit,
     advertisementTimeout: advertisementTimeout,
+    timingFreshness: timingFreshness,
     utcNow: () => now,
   );
   LibreGen1Session? session;
@@ -1452,6 +3509,86 @@ class _Store
   }
 }
 
+class _ObservationStore implements LibreGen1ObservationStore {
+  LibreGen1ObservationState state = LibreGen1ObservationState();
+  final bindings = <LibreGen1ObservationBinding>[];
+  final committedMinutes = <int>[];
+  final loadStarted = Completer<void>();
+  final commitStarted = Completer<void>();
+  Completer<void>? loadGate;
+  Completer<void>? commitGate;
+  bool loadFails = false;
+  bool commitFails = false;
+  bool dropReading = false;
+  bool dropHistoricalReading = false;
+  bool alterHistoricalReading = false;
+  int? clearedThroughMinute;
+  List<LibreGen1HistoricalReading> lastHistoricalReadings = const [];
+  bool advanceDuplicate = false;
+  int? advancedReplyBarrier;
+  @override
+  Future<LibreGen1ObservationState> load(
+    LibreGen1ObservationBinding binding,
+  ) async {
+    bindings.add(binding);
+    if (!loadStarted.isCompleted) loadStarted.complete();
+    await loadGate?.future;
+    if (loadFails) throw StateError('synthetic store load');
+    return state;
+  }
+
+  @override
+  Future<LibreGen1ObservationCommit> commit(
+    LibreGen1ObservationBinding binding, {
+    required int sensorMinute,
+    required DateTime receivedAt,
+    CgmReading? reading,
+    List<LibreGen1HistoricalReading> historicalReadings = const [],
+  }) async {
+    lastHistoricalReadings = historicalReadings;
+    if (!commitStarted.isCompleted) commitStarted.complete();
+    await commitGate?.future;
+    if (commitFails) throw StateError('synthetic store commit');
+    final barrier = state.effectiveReplayBarrierMinute;
+    if (barrier != null && sensorMinute <= barrier) {
+      return LibreGen1ObservationCommit(
+        advanced: advanceDuplicate,
+        state: state,
+      );
+    }
+    final retained = <int, CgmReading>{
+      for (final item in state.history) item.sensorMinute!: item,
+    };
+    if (!dropHistoricalReading) {
+      for (final item in historicalReadings) {
+        final minute = item.reading.sensorMinute!;
+        if (clearedThroughMinute == null || minute > clearedThroughMinute!) {
+          retained.putIfAbsent(
+            minute,
+            () => alterHistoricalReading
+                ? item.reading.copyWith(valueMgdl: item.reading.valueMgdl + 1)
+                : item.reading,
+          );
+        }
+      }
+    }
+    if (reading != null && !dropReading) {
+      retained.putIfAbsent(reading.sensorMinute!, () => reading);
+    }
+    final ordered = retained.values.toList()
+      ..sort(
+        (left, right) => left.sensorMinute!.compareTo(right.sensorMinute!),
+      );
+    state = LibreGen1ObservationState(
+      observedMinute: sensorMinute,
+      replayBarrierMinute: advancedReplyBarrier,
+      history: ordered,
+    );
+    committedMinutes.add(sensorMinute);
+    return LibreGen1ObservationCommit(advanced: true, state: state);
+  }
+}
+
 class _Transport implements BleTransport, BleSingleAttemptTransport {
   _Transport(this.connection, this.events, this.now);
   _Connection connection;
@@ -1460,6 +3597,8 @@ class _Transport implements BleTransport, BleSingleAttemptTransport {
   bool autoAdvertise = true;
   bool cancelFails = false;
   bool connectFails = false;
+  Object? connectError;
+  Object? scanError;
   @override
   bool supportsSingleAttemptConnect = true;
   Completer<void>? cancelGate;
@@ -1484,6 +3623,7 @@ class _Transport implements BleTransport, BleSingleAttemptTransport {
     connectCalls += 1;
     scanStoppedAtConnect = scanStopped;
     events.add('connect');
+    if (connectError case final error?) throw error;
     if (connectFails) throw TimeoutException('synthetic connect failure');
     return connection;
   }
@@ -1498,6 +3638,7 @@ class _Transport implements BleTransport, BleSingleAttemptTransport {
     scanTimeout = timeout;
     expect(allowDuplicates, isTrue);
     expect(withServices, [LibreUuids.sasService]);
+    if (scanError case final error?) throw error;
     advertisements = StreamController<BleScanResult>(
       onListen: () {
         if (autoAdvertise) scheduleMicrotask(() => emit(_advertisement(now())));
@@ -1536,6 +3677,7 @@ class _Connection implements BleConnection {
   final states = StreamController<BleConnectionState>.broadcast(sync: true);
   String actualDeviceId = '02:00:00:00:00:01';
   String? invalidTopology;
+  Object? discoverError;
   bool writeFails = false;
   bool disconnectFails = false;
   bool? withoutResponse;
@@ -1552,6 +3694,7 @@ class _Connection implements BleConnection {
   @override
   Future<List<BleService>> discoverServices() async {
     events.add('discover');
+    if (discoverError case final error?) throw error;
     final sas = BleService(
       uuid: 'fde3',
       characteristics: [
@@ -1685,10 +3828,7 @@ class _DecoderProvider
   }
 }
 
-final _encrypted = _hex(
-  '1234471336ff3b472ad9beded5f439d8ac2321e91148671898c6d9a87115'
-  '374fe9548541dfbb9084271c356f1acf',
-);
+final _encrypted = blePacketAtMinute(60);
 void _sendPacket(_Connection connection, List<int> bytes) {
   connection.packets.add(bytes.sublist(0, 20));
   connection.packets.add(bytes.sublist(20, 38));
@@ -1697,15 +3837,57 @@ void _sendPacket(_Connection connection, List<int> bytes) {
 
 Future<void> _receivePacket(
   LibreGen1Session session,
-  _Connection connection,
-) async {
+  _Connection connection, {
+  int minute = 60,
+}) async {
   final previousCount = session.currentStatus.validatedPacketCount;
   final received = session.statuses
       .firstWhere((status) => status.validatedPacketCount > previousCount)
       .timeout(const Duration(seconds: 1));
-  _sendPacket(connection, _encrypted);
+  _sendPacket(connection, blePacketAtMinute(minute));
   await received;
 }
+
+LibreGen1GlucoseHistorySample _historySample(
+  int minute,
+  LibreGen1BleHistoryKind kind, {
+  double? glucose = 100,
+  LibreGen1GlucoseRejection? rejection,
+}) => LibreGen1GlucoseHistorySample(
+  sampleAgeMinutes: minute,
+  kind: kind,
+  glucoseMgdl: glucose,
+  rejection: rejection,
+);
+
+LibreGen1GlucoseResult _packetWithHistory(
+  int age, {
+  double glucose = 100,
+  LibreGen1GlucoseRejection? currentRejection,
+  List<LibreGen1GlucoseHistorySample>? history,
+}) => LibreGen1GlucoseResult(
+  sensorAgeMinutes: age,
+  sampleAgeMinutes: age,
+  glucoseMgdl: currentRejection == null ? glucose : null,
+  rejection: currentRejection,
+  expectedLifetimeMinutes: 65535,
+  historySamples:
+      history ??
+      [
+        for (final offset in [2, 4, 6, 7, 12, 15])
+          _historySample(
+            age - offset,
+            LibreGen1BleHistoryKind.trend,
+            glucose: glucose,
+          ),
+        for (final offset in [0, 15, 30])
+          _historySample(
+            ((age - 2) ~/ 15) * 15 - offset,
+            LibreGen1BleHistoryKind.history,
+            glucose: glucose,
+          ),
+      ],
+);
 
 LibreGen1GlucoseResult _currentSample(int minute, double glucose) =>
     LibreGen1GlucoseResult(
@@ -1723,4 +3905,10 @@ final _cleanupUnconfirmed = isA<LibreGen1LiveException>().having(
   (error) => error.kind,
   'kind',
   LibreGen1LiveFailure.cleanupUnconfirmed,
+);
+
+final _storageUnavailable = isA<LibreGen1LiveException>().having(
+  (error) => error.kind,
+  'kind',
+  LibreGen1LiveFailure.observationStorageUnavailable,
 );

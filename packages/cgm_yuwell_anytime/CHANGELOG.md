@@ -1,3 +1,11 @@
+## Unreleased
+
+- Declare the optional sensor-neutral data profile: 45-minute warmup,
+  23,085-minute expected lifetime, session-timed replaceable history, and
+  reported-only lifecycle. Engineering timestamps contain a protocol clock
+  offset and must not reconstruct the protected activation instant. No
+  protocol, output-policy, or storage behavior changes.
+
 ## 0.1.0
 
 - Add target-unverified CT5 GATT and device-name classification constants.

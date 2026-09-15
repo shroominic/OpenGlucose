@@ -759,6 +759,52 @@ void main() {
     await platformEvents.close();
   });
 
+  test(
+    'unknown start failure needs confirmed matching stop before retry',
+    () async {
+      for (final stopFails in [false, true]) {
+        final events = StreamController<Object?>.broadcast(sync: true);
+        final calls = <String>[];
+        final states = <Libre2NfcSetupState>[];
+        var attempt = 0;
+        final session = PlatformLibre2NfcSetupSession(
+          platformEvents: events.stream,
+          attemptIdFactory: () => 'synthetic_read_${++attempt}',
+          invokeMethod: (method, args) async {
+            calls.add('$method:${args['attemptId']}');
+            if (method == 'startLibre2NfcSetup') {
+              throw PlatformException(code: 'capture_not_ready');
+            }
+            if (stopFails) throw PlatformException(code: 'private-diagnostic');
+            return null;
+          },
+        );
+        final subscription = session.states.listen(states.add);
+        if (stopFails) {
+          await expectLater(session.start(), throwsStateError);
+          await session.retry();
+          expect(states.last.failure, Libre2NfcFailureKind.cleanupUnconfirmed);
+        } else {
+          await session.start();
+          await session.retry();
+          expect(states.last.failure, Libre2NfcFailureKind.readFailed);
+        }
+        expect(calls, [
+          'startLibre2NfcSetup:synthetic_read_1',
+          'stopLibre2NfcSetup:synthetic_read_1',
+          if (!stopFails) ...[
+            'startLibre2NfcSetup:synthetic_read_2',
+            'stopLibre2NfcSetup:synthetic_read_2',
+          ],
+        ]);
+        expect(session.completedReadAttemptId, isNull);
+        await session.dispose();
+        await subscription.cancel();
+        await events.close();
+      }
+    },
+  );
+
   test('platform method failures expose only a closed failure kind', () async {
     final platformEvents = StreamController<Object?>.broadcast(sync: true);
     final session = PlatformLibre2NfcSetupSession(

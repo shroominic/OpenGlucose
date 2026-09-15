@@ -94,6 +94,12 @@ class DisplayPreferences {
 
 extension CgmReadingPresentation on CgmReading {
   double displayValue(DisplayPreferences preferences) {
-    return preferences.unit.convertFromMgdl(preferences.calibrate(valueMgdl));
+    // A previous sensor's local display correction is not calibration evidence
+    // for an experimental/raw sample. Preserve that sample's reported value;
+    // units may still change, and the saved user preferences remain untouched.
+    final adjusted = isDisplayProvisional || source == CgmRecordSource.raw
+        ? valueMgdl
+        : preferences.calibrate(valueMgdl);
+    return preferences.unit.convertFromMgdl(adjusted);
   }
 }

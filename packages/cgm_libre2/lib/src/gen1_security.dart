@@ -1,3 +1,5 @@
+import 'package:cgm_core/cgm_core.dart';
+
 import 'errors.dart';
 import 'events.dart';
 import 'model.dart';
@@ -73,6 +75,25 @@ final class LibreGen1PatchInfo {
 
   final LibreOpaqueBytes value;
   final LibreGen1Model model;
+
+  /// Informational identity from the already accepted patch signature.
+  ///
+  /// This contains no UID, region inference, key bytes, lifecycle evidence, or
+  /// grant to use this reference variant with a live sensor. In particular,
+  /// identifying Libre 2 Plus does not enable its live setup or receiver.
+  CgmSensorVariant get sensorVariant => CgmSensorVariant(
+    protocolFamily: 'abbott-sas',
+    source: CgmSensorVariantSource.nfcPatchInfo,
+    model: switch (model) {
+      LibreGen1Model.libre2 => 'FreeStyle Libre 2',
+      LibreGen1Model.libre2Plus => 'FreeStyle Libre 2 Plus',
+    },
+    variantCode: value.bytes
+        .take(3)
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join(),
+    securityGeneration: 'gen1',
+  );
 
   @override
   String toString() =>

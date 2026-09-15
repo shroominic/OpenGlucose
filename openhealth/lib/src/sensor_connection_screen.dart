@@ -6,9 +6,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'app_controller.dart';
+import 'bluetooth_enable_prompt.dart';
 import 'driver_factory.dart';
 import 'libre2_nfc_setup.dart';
+import 'libre2_platform.dart';
 import 'libre_gen1_streaming_setup.dart';
+import 'sensor_connection_policy.dart';
 import 'session_presentation.dart';
 
 /// Opens the sensor-neutral setup journey.
@@ -18,6 +21,7 @@ Future<void> showSensorConnectionFlow(
   Libre2NfcSetupSession? libre2NfcSetupSession,
   LibreGen1StreamingSession? libreGen1StreamingSession,
   bool? libreGen1StreamingEnabled,
+  bool? libreGen1ReceiverRestoreEnabled,
   Future<DiscoveredSensor?> Function()? prepareLibreGen1Connection,
 }) {
   return showModalBottomSheet<void>(
@@ -33,6 +37,7 @@ Future<void> showSensorConnectionFlow(
         libre2NfcSetupSession: libre2NfcSetupSession,
         libreGen1StreamingSession: libreGen1StreamingSession,
         libreGen1StreamingEnabled: libreGen1StreamingEnabled,
+        libreGen1ReceiverRestoreEnabled: libreGen1ReceiverRestoreEnabled,
         prepareLibreGen1Connection: prepareLibreGen1Connection,
       ),
     ),
@@ -51,6 +56,7 @@ class SensorConnectionScreen extends StatefulWidget {
     this.libre2NfcSetupSession,
     this.libreGen1StreamingSession,
     this.libreGen1StreamingEnabled,
+    this.libreGen1ReceiverRestoreEnabled,
     this.prepareLibreGen1Connection,
     this.inline = false,
     this.onClose,
@@ -62,6 +68,7 @@ class SensorConnectionScreen extends StatefulWidget {
   final Libre2NfcSetupSession? libre2NfcSetupSession;
   final LibreGen1StreamingSession? libreGen1StreamingSession;
   final bool? libreGen1StreamingEnabled;
+  final bool? libreGen1ReceiverRestoreEnabled;
   final Future<DiscoveredSensor?> Function()? prepareLibreGen1Connection;
   final bool inline;
   final VoidCallback? onClose;
@@ -82,11 +89,13 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   DiscoveredSensor? _savedLibreReceiver;
   bool _savedLibreRestoreFailed = false;
   DiscoveredSensor? _connectingSensor;
-  DiscoveredSensor? _yuwellActivationConfirmationSensor;
-  bool _waitingForYuwellActivationRequirement = false;
+  DiscoveredSensor? _activationConfirmationSensor;
+  bool _waitingForActivationRequirement = false;
   bool _connectionRoutePopScheduled = false;
   bool _actionInProgress = false;
   late final Libre2NfcSetupSession _libre2NfcSetupSession;
+  late final Libre2Platform _libre2Platform;
+  bool _libreReadAvailable = false;
   StreamSubscription<Libre2NfcSetupState>? _libre2NfcSubscription;
   Libre2NfcSetupState _libre2NfcState = const Libre2NfcSetupState.idle();
   bool _libre2NfcActionInProgress = false;
@@ -104,6 +113,9 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   CgmAppController get _controller => widget.controller;
   bool get _streamingEnabled =>
       widget.libreGen1StreamingEnabled ?? isPlatformLibreGen1StreamingEnabled;
+  bool get _receiverRestoreEnabled =>
+      widget.libreGen1ReceiverRestoreEnabled ??
+      (_streamingEnabled || isPlatformLibreGen1ReceiverRestoreEnabled);
   bool get _canStartLibreStreaming =>
       _streamingEnabled &&
       !_libreStreamingUsed &&
@@ -122,11 +134,10 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   void initState() {
     super.initState();
     _controller.addListener(_handleControllerChange);
+    _libre2Platform = Libre2Platform(useDebugCapture: _libreCaptureMode);
+    _libreReadAvailable = _libreCaptureMode;
     _libre2NfcSetupSession =
-        widget.libre2NfcSetupSession ??
-        (_libreCaptureMode
-            ? PlatformLibre2NfcSetupSession()
-            : ListeningOnlyLibre2NfcSetupSession());
+        widget.libre2NfcSetupSession ?? _libre2Platform.createReadSession();
     _libre2NfcSubscription = _libre2NfcSetupSession.states.listen(
       _handleLibre2NfcState,
       onError: (Object _, StackTrace _) {
@@ -140,8 +151,16 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         unawaited(_startScan());
+        unawaited(_checkLibreReadAvailability());
       }
     });
+  }
+
+  Future<void> _checkLibreReadAvailability() async {
+    final available = await _libre2Platform.readAvailable();
+    if (mounted && available != _libreReadAvailable) {
+      setState(() => _libreReadAvailable = available);
+    }
   }
 
   @override
@@ -152,7 +171,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
         _maybeCloseAfterConnection();
         final navigationLocked =
             _connectingSensor != null ||
-            _yuwellActivationConfirmationSensor != null ||
+            _activationConfirmationSensor != null ||
             _actionInProgress ||
             _libre2Closing ||
             _libreStreamingTransition;
@@ -237,15 +256,37 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   }
 
   Widget _buildConnectionContent(BuildContext context) {
-    if (_yuwellActivationConfirmationSensor != null) {
-      return _YuwellActivationConfirmation(
+    if (_activationConfirmationSensor != null) {
+      return _SensorActivationConfirmation(
         actionInProgress: _actionInProgress,
         onConfirm: _actionInProgress
             ? null
-            : () => unawaited(_confirmYuwellActivation()),
+            : () => unawaited(_confirmSensorActivation()),
         onChooseAnother: _actionInProgress
             ? null
             : () => unawaited(_chooseAnother()),
+      );
+    }
+    final connectionSnapshot = _controller.snapshot;
+    final connectingSensor = _connectingSensor;
+    if ((_connectionStage == CgmSyncStage.error ||
+            _connectionStage == CgmSyncStage.disconnected) &&
+        connectionSnapshot != null &&
+        snapshotNeedsBluetoothEnabled(connectionSnapshot) &&
+        !_controller.sensorConnectionCleanupUnconfirmed) {
+      return _BluetoothConnectionAction(
+        key: ValueKey('bluetoothSetup-${connectingSensor?.storageKey}'),
+        onEnabled: connectingSensor == null || _actionInProgress
+            ? null
+            : () async {
+                if (!mounted ||
+                    _connectingSensor != connectingSensor ||
+                    _actionInProgress ||
+                    _controller.sensorConnectionCleanupUnconfirmed) {
+                  return;
+                }
+                await _connect(connectingSensor);
+              },
       );
     }
     return switch (_connectionStage) {
@@ -258,15 +299,12 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
         onRetry: _connectingSensor == null || _actionInProgress
             ? null
             : () => unawaited(_connect(_connectingSensor!)),
-        onChooseAnother: _actionInProgress
-            ? null
-            : () => unawaited(_chooseAnother()),
         actionInProgress: _actionInProgress,
+        requiresRestart: _controller.sensorConnectionCleanupUnconfirmed,
       ),
       final stage? => _ConnectionProgress(
         stage: stage,
-        librePhase: _controller.snapshot?.metadata['cgm.libre2.phase'],
-        libreDecoder: _controller.snapshot?.metadata['cgm.libre2.decoder'],
+        snapshot: _controller.snapshot,
       ),
       null =>
         widget.inline ? _buildInlineChooser(context) : _buildChooser(context),
@@ -278,6 +316,12 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       final snapshot = _controller.snapshot;
       if (snapshot != null && libreConnectionWasLost(snapshot)) {
         return userMessageForLibreConnectionLoss(snapshot.lastError);
+      }
+      if (snapshot?.lastError == null &&
+          _controller.hasLibreReceptionSetupFailureFor(_connectingSensor!)) {
+        return 'Sensor setup could not finish. Check phone storage and app '
+            'permissions, then try again. Your saved readings have not been '
+            'cleared.';
       }
       return userMessageForLibreConnectionFailure(
         _controller.snapshot?.lastError,
@@ -301,6 +345,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
 
   @override
   void dispose() {
+    _libre2Platform.dispose();
     _scanAttempt += 1;
     _savedLibreRestoreGeneration += 1;
     _libreStreamingGeneration += 1;
@@ -343,20 +388,52 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   }
 
   CgmSyncStage? get _connectionStage {
-    if (_connectingSensor == null) {
+    final connectingSensor = _connectingSensor;
+    if (connectingSensor == null) {
       return null;
     }
-    return _controller.snapshot?.stage ?? CgmSyncStage.connecting;
+    final activationRequired = _controller.activationRequiredSensor;
+    if (_controller.snapshot == null &&
+        activationRequired != null &&
+        _sameSensorIdentity(connectingSensor, activationRequired)) {
+      // Probe cleanup has finished. If the trusted policy does not expose a
+      // confirmation, or an explicit attempt still needs setup, this remains
+      // a failed connection rather than an endless progress animation.
+      return CgmSyncStage.error;
+    }
+    if (_connectionComplete) return CgmSyncStage.ready;
+    final stage = _controller.snapshot?.stage;
+    if (stage != CgmSyncStage.error &&
+        stage != CgmSyncStage.disconnected &&
+        _controller.hasLibreReceptionSetupFailureFor(connectingSensor)) {
+      return CgmSyncStage.error;
+    }
+    // A ready-looking cached or wrong-target Libre snapshot cannot complete
+    // this explicit connection. Keep the transport state separate from setup
+    // completion and from the availability of a current glucose sample.
+    if (connectingSensor.driverId == 'libre2-gen1' &&
+        stage == CgmSyncStage.ready) {
+      return CgmSyncStage.syncing;
+    }
+    return stage ?? CgmSyncStage.connecting;
+  }
+
+  bool get _connectionComplete {
+    // Re-evaluate on each notification and again before the route is closed.
+    final sensor = _connectingSensor;
+    if (sensor == null) return false;
+    if (sensor.driverId == 'libre2-gen1') {
+      return _controller.hasVerifiedLibreReceptionFor(sensor);
+    }
+    return _controller.snapshot?.stage == CgmSyncStage.ready;
   }
 
   void _maybeCloseAfterConnection() {
     if (widget.inline) {
-      if (_connectingSensor != null &&
-          _controller.snapshot?.stage == CgmSyncStage.ready &&
-          !_connectionRoutePopScheduled) {
+      if (_connectionComplete && !_connectionRoutePopScheduled) {
         _connectionRoutePopScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _controller.snapshot?.stage == CgmSyncStage.ready) {
+          if (mounted && _connectionComplete) {
             widget.onConnected?.call();
           } else {
             _connectionRoutePopScheduled = false;
@@ -365,8 +442,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       }
       return;
     }
-    if (_connectingSensor == null ||
-        _controller.snapshot?.stage != CgmSyncStage.ready ||
+    if (!_connectionComplete ||
         _connectionRoutePopScheduled ||
         ModalRoute.of(context)?.isCurrent != true) {
       return;
@@ -376,7 +452,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       if (!mounted) {
         return;
       }
-      if (_controller.snapshot?.stage == CgmSyncStage.ready &&
+      if (_connectionComplete &&
           ModalRoute.of(context)?.isCurrent == true &&
           Navigator.of(context).canPop()) {
         Navigator.of(context).pop<void>();
@@ -491,7 +567,8 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
               : null,
         ),
         null => _Libre2Guide(
-          captureMode: _libreCaptureMode,
+          captureMode: _libreReadAvailable,
+          streamingAvailable: _streamingEnabled,
           state: _libre2NfcState,
           actionInProgress: _libre2NfcActionInProgress,
           onStart: _startLibre2NfcSetup,
@@ -668,7 +745,8 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       _savedLibreReceiver = null;
       _savedLibreRestoreFailed = false;
     });
-    if (!_streamingEnabled || !_controller.supportsDriver('libre2-gen1')) {
+    if (!_receiverRestoreEnabled ||
+        !_controller.supportsDriver('libre2-gen1')) {
       return;
     }
     DiscoveredSensor? restored;
@@ -721,17 +799,21 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
         _controller.sensorHasInterruptedTransfer(sensor)) {
       return;
     }
+    final policy = _controller.connectionPolicyFor(sensor);
     setState(() {
       _actionInProgress = true;
       _connectingSensor = sensor;
-      _yuwellActivationConfirmationSensor = null;
-      _waitingForYuwellActivationRequirement =
-          sensor.driverId == 'yuwell-anytime';
+      _activationConfirmationSensor = null;
+      _waitingForActivationRequirement =
+          policy == SensorConnectionPolicy.separateConfirmation;
     });
     try {
       await _controller.connect(
         sensor,
-        allowSessionActivation: sensor.driverId != 'yuwell-anytime',
+        // The trusted registration chooses activation policy. A sensor's
+        // advertised or saved metadata cannot turn selection into activation.
+        allowSessionActivation:
+            policy == SensorConnectionPolicy.explicitConnect,
       );
     } finally {
       if (mounted) {
@@ -756,8 +838,8 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       }
       setState(() {
         _connectingSensor = null;
-        _yuwellActivationConfirmationSensor = null;
-        _waitingForYuwellActivationRequirement = false;
+        _activationConfirmationSensor = null;
+        _waitingForActivationRequirement = false;
         _libre2Expanded = false;
         _scanRequested = false;
         _scanComplete = false;
@@ -771,40 +853,47 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   }
 
   void _handleControllerChange() {
-    if (!mounted || !_waitingForYuwellActivationRequirement) {
+    if (!mounted || !_waitingForActivationRequirement) {
       return;
     }
     final connectingSensor = _connectingSensor;
     if (connectingSensor == null ||
-        connectingSensor.driverId != 'yuwell-anytime') {
+        _controller.connectionPolicyFor(connectingSensor) !=
+            SensorConnectionPolicy.separateConfirmation) {
       return;
     }
     final activationRequiredSensor = _controller.activationRequiredSensor;
     if (activationRequiredSensor != null &&
         _sameSensorIdentity(connectingSensor, activationRequiredSensor)) {
-      if (_yuwellActivationConfirmationSensor == null) {
+      if (_activationConfirmationSensor == null) {
         setState(() {
-          _waitingForYuwellActivationRequirement = false;
-          _yuwellActivationConfirmationSensor = connectingSensor;
+          _waitingForActivationRequirement = false;
+          _activationConfirmationSensor = connectingSensor;
           _actionInProgress = false;
         });
       }
       return;
     }
     if (_controller.snapshot?.stage == CgmSyncStage.ready) {
-      _waitingForYuwellActivationRequirement = false;
+      _waitingForActivationRequirement = false;
     }
   }
 
-  Future<void> _confirmYuwellActivation() async {
-    final sensor = _yuwellActivationConfirmationSensor;
-    if (_actionInProgress || sensor == null) {
+  Future<void> _confirmSensorActivation() async {
+    final sensor = _activationConfirmationSensor;
+    final activationRequiredSensor = _controller.activationRequiredSensor;
+    if (_actionInProgress ||
+        sensor == null ||
+        activationRequiredSensor == null ||
+        !_sameSensorIdentity(sensor, activationRequiredSensor) ||
+        _controller.connectionPolicyFor(sensor) !=
+            SensorConnectionPolicy.separateConfirmation) {
       return;
     }
     setState(() {
       _actionInProgress = true;
-      _yuwellActivationConfirmationSensor = null;
-      _waitingForYuwellActivationRequirement = false;
+      _activationConfirmationSensor = null;
+      _waitingForActivationRequirement = false;
     });
     try {
       await _controller.connect(sensor, allowSessionActivation: true);
@@ -868,7 +957,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       _libre2NfcState = const Libre2NfcSetupState.idle();
       _libreStreamingState = _libreStreamingBlockedState;
     });
-    if (_libreCaptureMode &&
+    if (_libreReadAvailable &&
         _libreStreamingState == null &&
         !_libreStreamingCleanupUncertain) {
       unawaited(_startLibre2NfcSetup());
@@ -892,7 +981,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
 
   Future<void> _runLibre2NfcAction(Future<void> Function() action) async {
     if (_libre2NfcActionInProgress ||
-        !_libreCaptureMode ||
+        !_libreReadAvailable ||
         _libreStreamingState != null ||
         _libreStreamingCleanupUncertain) {
       return;
@@ -1181,6 +1270,9 @@ class _NearbySensorPanel extends StatelessWidget {
         child: const _ScanningCard(),
       );
     }
+    if (scanFailure?.kind == BleFailureKind.bluetoothOff) {
+      return BluetoothEnablePrompt(onEnabled: onScan);
+    }
     if (scanFailed && sensors.isEmpty) {
       return _ScanFailureCard(
         failure: scanFailure,
@@ -1234,6 +1326,21 @@ class _NearbySensorPanel extends StatelessWidget {
       ],
     );
   }
+}
+
+class _BluetoothConnectionAction extends StatelessWidget {
+  const _BluetoothConnectionAction({super.key, required this.onEnabled});
+  final Future<void> Function()? onEnabled;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: BluetoothEnablePrompt(
+        onEnabled: onEnabled ?? () async {},
+      ),
+    ),
+  );
 }
 
 class _ScanningCard extends StatelessWidget {
@@ -1559,6 +1666,7 @@ class _DiscoveredSensorCard extends StatelessWidget {
 class _Libre2Guide extends StatelessWidget {
   const _Libre2Guide({
     required this.captureMode,
+    required this.streamingAvailable,
     required this.state,
     required this.actionInProgress,
     required this.onStart,
@@ -1568,6 +1676,7 @@ class _Libre2Guide extends StatelessWidget {
   });
 
   final bool captureMode;
+  final bool streamingAvailable;
   final Libre2NfcSetupState state;
   final bool actionInProgress;
   final Future<void> Function() onStart;
@@ -1578,7 +1687,11 @@ class _Libre2Guide extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final presentation = _nfcPresentation(state, captureMode: captureMode);
+    final presentation = _nfcPresentation(
+      state,
+      captureMode: captureMode,
+      streamingAvailable: streamingAvailable,
+    );
     return Card(
       key: const ValueKey<String>('libre2NfcGuide'),
       margin: EdgeInsets.zero,
@@ -1998,7 +2111,8 @@ class _Libre2NfcAction extends StatelessWidget {
           key: const ValueKey<String>('libre2NfcRetryButton'),
           onPressed:
               actionInProgress ||
-                  state.failure == Libre2NfcFailureKind.cleanupUnconfirmed
+                  state.failure == Libre2NfcFailureKind.cleanupUnconfirmed ||
+                  state.failure == Libre2NfcFailureKind.setupBlocked
               ? null
               : () => unawaited(onRetry()),
           icon: const Icon(Icons.refresh_rounded),
@@ -2055,6 +2169,7 @@ class _NfcActionWrap extends StatelessWidget {
 _NfcPresentation _nfcPresentation(
   Libre2NfcSetupState state, {
   required bool captureMode,
+  required bool streamingAvailable,
 }) => switch (state.phase) {
   Libre2NfcSetupPhase.idle => _NfcPresentation(
     title: 'Ready to check sensor',
@@ -2079,11 +2194,16 @@ _NfcPresentation _nfcPresentation(
     body: 'Keep the phone still while OpenGlucose checks the sensor state.',
     background: Color(0xFFE2F0EC),
   ),
-  Libre2NfcSetupPhase.metadataRead => _verifiedNfcPresentation(state),
+  Libre2NfcSetupPhase.metadataRead => _verifiedNfcPresentation(
+    state,
+    streamingAvailable: streamingAvailable,
+  ),
   Libre2NfcSetupPhase.failed => _NfcPresentation(
-    title: state.failure == Libre2NfcFailureKind.cleanupUnconfirmed
-        ? 'NFC needs a check'
-        : 'Try the NFC tap again',
+    title: switch (state.failure) {
+      Libre2NfcFailureKind.cleanupUnconfirmed => 'NFC needs a check',
+      Libre2NfcFailureKind.setupBlocked => 'Sensor setup needs review',
+      _ => 'Try the NFC tap again',
+    },
     body: _nfcFailureText(state.failure),
     background: const Color(0xFFFFF3E8),
   ),
@@ -2096,12 +2216,25 @@ String _nfcFailureText(Libre2NfcFailureKind? failure) => switch (failure) {
     'Hold the phone against the sensor until the check completes.',
   Libre2NfcFailureKind.cleanupUnconfirmed =>
     'NFC could not be stopped safely. Close and reopen OpenGlucose before another check.',
+  Libre2NfcFailureKind.setupBlocked =>
+    'Saved sensor setup needs review. No sensor changes were made.',
   Libre2NfcFailureKind.readFailed ||
   null => 'Move the phone back to the sensor and keep it still.',
 };
 
-_NfcPresentation _verifiedNfcPresentation(Libre2NfcSetupState state) {
+_NfcPresentation _verifiedNfcPresentation(
+  Libre2NfcSetupState state, {
+  required bool streamingAvailable,
+}) {
   if (state.isReadExpired) {
+    if (!streamingAvailable) {
+      return const _NfcPresentation(
+        title: 'Scan again to check sensor',
+        body:
+            'This check is no longer recent. Scan again to check the sensor state.',
+        background: Color(0xFFFFF3E8),
+      );
+    }
     return const _NfcPresentation(
       title: 'Scan again to connect',
       body:
@@ -2221,35 +2354,34 @@ class _SensorFamilySupport {
 class _ConnectionProgress extends StatelessWidget {
   const _ConnectionProgress({
     required this.stage,
-    this.librePhase,
-    this.libreDecoder,
+    this.snapshot,
   });
 
   final CgmSyncStage stage;
-  final String? librePhase;
-  final String? libreDecoder;
+  final CgmSessionSnapshot? snapshot;
 
   @override
   Widget build(BuildContext context) {
-    final text = switch (librePhase) {
-      'reconnecting' => 'Connection lost. Reconnecting once to your sensor.',
-      'awaitingAdvertisement' => 'Looking for your Libre 2 sensor',
-      'connecting' => 'Connecting to FreeStyle Libre 2',
-      'discovering' => 'Checking the sensor connection',
-      'reservingLogin' || 'loggingIn' => 'Signing in to the sensor',
-      'subscribing' => 'Starting sensor updates',
-      'awaitingPacket' => 'Connected. Waiting for sensor data.',
-      'validatedPacket' => libreGlucoseWaitingDetail(libreDecoder),
-      _ => _connectionStageText(stage),
-    };
+    final current = snapshot;
+    final isLibreProgress =
+        current != null &&
+        current.stage == stage &&
+        isLibreGen1Snapshot(current);
+    final text =
+        (isLibreProgress ? libreConnectionDetailForSnapshot(current) : null) ??
+        _connectionStageText(stage);
     final receiving =
-        librePhase == 'awaitingPacket' || librePhase == 'validatedPacket';
+        isLibreProgress &&
+        stage == CgmSyncStage.syncing &&
+        const {'awaitingPacket', 'validatedPacket'}.contains(
+          current.metadata['cgm.libre2.phase'],
+        );
     return Semantics(
       liveRegion: true,
       label: text,
       excludeSemantics: true,
       child: Center(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
           child: Card(
             child: Padding(
@@ -2290,8 +2422,8 @@ class _ConnectionProgress extends StatelessWidget {
   }
 }
 
-class _YuwellActivationConfirmation extends StatelessWidget {
-  const _YuwellActivationConfirmation({
+class _SensorActivationConfirmation extends StatelessWidget {
+  const _SensorActivationConfirmation({
     required this.onConfirm,
     required this.onChooseAnother,
     required this.actionInProgress,
@@ -2310,7 +2442,7 @@ class _YuwellActivationConfirmation extends StatelessWidget {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
           child: Card(
-            key: const ValueKey<String>('yuwellActivationConfirmation'),
+            key: const ValueKey<String>('sensorActivationConfirmation'),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
@@ -2323,7 +2455,7 @@ class _YuwellActivationConfirmation extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Start this Yuwell sensor?',
+                    'Start this sensor?',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.w900,
                     ),
@@ -2331,10 +2463,9 @@ class _YuwellActivationConfirmation extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'OpenGlucose found a sensor that has not been started for '
-                    'this app installation. Continuing will activate the '
-                    'sensor and bind its connection credentials to this '
-                    'installation.',
+                    'This sensor needs activation before it can connect. '
+                    'Continuing will activate the sensor and may bind its '
+                    'connection credentials to this app installation.',
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 10),
@@ -2349,7 +2480,7 @@ class _YuwellActivationConfirmation extends StatelessWidget {
                     width: double.infinity,
                     child: FilledButton(
                       key: const ValueKey<String>(
-                        'confirmYuwellActivationButton',
+                        'confirmSensorActivationButton',
                       ),
                       onPressed: onConfirm,
                       child: const Text('Activate and connect'),
@@ -2364,10 +2495,10 @@ class _YuwellActivationConfirmation extends StatelessWidget {
                     width: double.infinity,
                     child: OutlinedButton(
                       key: const ValueKey<String>(
-                        'cancelYuwellActivationButton',
+                        'cancelSensorActivationButton',
                       ),
                       onPressed: onChooseAnother,
-                      child: const Text('Choose another sensor'),
+                      child: const Text('Cancel'),
                     ),
                   ),
                 ],
@@ -2385,15 +2516,15 @@ class _ConnectionFailure extends StatelessWidget {
     required this.title,
     required this.message,
     required this.onRetry,
-    required this.onChooseAnother,
     required this.actionInProgress,
+    this.requiresRestart = false,
   });
 
   final String title;
   final String message;
   final VoidCallback? onRetry;
-  final VoidCallback? onChooseAnother;
   final bool actionInProgress;
+  final bool requiresRestart;
 
   @override
   Widget build(BuildContext context) {
@@ -2424,33 +2555,32 @@ class _ConnectionFailure extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(message, textAlign: TextAlign.center),
                   const SizedBox(height: 18),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      key: const ValueKey<String>('connectionRetryButton'),
-                      onPressed: onRetry,
-                      child: const Text('Try again'),
-                    ),
-                  ),
-                  if (actionInProgress)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Semantics(
-                        liveRegion: true,
-                        label: 'Connection action in progress',
-                        child: const LinearProgressIndicator(),
+                  if (requiresRestart)
+                    const Text(
+                      'Close and reopen OpenGlucose before connecting again. '
+                      'Do not reset the sensor.',
+                      key: ValueKey<String>('connectionRestartRequired'),
+                      textAlign: TextAlign.center,
+                    )
+                  else ...<Widget>[
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        key: const ValueKey<String>('connectionRetryButton'),
+                        onPressed: onRetry,
+                        child: const Text('Try again'),
                       ),
                     ),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton(
-                      key: const ValueKey<String>(
-                        'chooseAnotherSensorButton',
+                    if (actionInProgress)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Semantics(
+                          liveRegion: true,
+                          label: 'Connection action in progress',
+                          child: const LinearProgressIndicator(),
+                        ),
                       ),
-                      onPressed: onChooseAnother,
-                      child: const Text('Choose another sensor'),
-                    ),
-                  ),
+                  ],
                 ],
               ),
             ),

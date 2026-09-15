@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -22,6 +23,115 @@ final class LibreGen1ReceiverReuseProof {
       "observedAtUtc", "observedAtMonotonicElapsedNanos"));
 
   private LibreGen1ReceiverReuseProof() {}
+
+  interface Delivery { void accept(Map<String, Object> value) throws Exception; }
+
+  /** Owned restricted bytes. Delivery is single-use and wipes its borrowed map buffers. */
+  static final class FreshHistoryEvidence implements AutoCloseable {
+    private final String attemptId;
+    private final String bootstrapId;
+    private final String observedAtUtc;
+    private final long observedAtNanos;
+    private final byte[] uid;
+    private final byte[] receiverPatch;
+    private final byte[] currentPatch;
+    private final byte[] fram;
+    private boolean closed;
+
+    private FreshHistoryEvidence(String attemptId, String bootstrapId,
+        String observedAtUtc, long observedAtNanos, byte[] uid, byte[] receiverPatch,
+        byte[] currentPatch, byte[] fram) {
+      this.attemptId = attemptId;
+      this.bootstrapId = bootstrapId;
+      this.observedAtUtc = observedAtUtc;
+      this.observedAtNanos = observedAtNanos;
+      this.uid = uid.clone();
+      this.receiverPatch = receiverPatch.clone();
+      this.currentPatch = currentPatch.clone();
+      this.fram = fram.clone();
+    }
+
+    /**
+     * Recheck the exact current receiver and original receipt at point of delivery.
+     * The caller separately holds/rechecks its epoch, generation and idle RF owner.
+     * The consumer must synchronously encode/copy the map; no mutable buffer is
+     * retained after it returns. The method channel uses synchronous encoding.
+     */
+    void deliver(LibreGen1StreamingJournal.Record receiver, long nowMillis,
+        long nowNanos, Delivery delivery) throws IOException {
+      final Map<String, Object> value = new HashMap<>();
+      try {
+        if (closed || receiver == null || !"confirmed".equals(receiver.state)
+            || !bootstrapId.equals(receiver.bootstrapId)
+            || !Arrays.equals(uid, receiver.uid)
+            || !Arrays.equals(receiverPatch, receiver.initialPatchInfo)) {
+          throw new IllegalArgumentException();
+        }
+        requireFresh(observedAtUtc, observedAtNanos, nowMillis, nowNanos);
+        // Consume before calling external code. A nested/repeated delivery must fail.
+        closed = true;
+        value.put("attemptId", attemptId);
+        value.put("bootstrapId", bootstrapId);
+        value.put("uid", uid);
+        value.put("receiverInitialPatchInfo", receiverPatch);
+        value.put("currentPatchInfo", currentPatch);
+        value.put("encryptedFram", fram);
+        value.put("observedAtUtc", observedAtUtc);
+        delivery.accept(Collections.unmodifiableMap(value));
+      } catch (Exception unavailable) {
+        throw unavailable();
+      } finally {
+        close();
+        value.clear();
+      }
+    }
+
+    @Override public void close() {
+      closed = true;
+      Arrays.fill(uid, (byte) 0);
+      Arrays.fill(receiverPatch, (byte) 0);
+      Arrays.fill(currentPatch, (byte) 0);
+      Arrays.fill(fram, (byte) 0);
+    }
+
+    @Override public String toString() {
+      return "LibreGen1FreshHistoryEvidence(data: <redacted>)";
+    }
+  }
+
+  /**
+   * Validates with the existing strict reuse proof, then extracts from that SAME
+   * immutable JSON string. It never rereads a file, searches captures, or uses
+   * calibration cache state as fresh evidence. An absent receiver is an error.
+   */
+  static FreshHistoryEvidence readFreshHistory(String sourceJson,
+      LibreGen1StreamingJournal.Record receiver, String attemptId, String bootstrapId,
+      String nativeSession, String processSession, long versionCode, long lastUpdateTime,
+      long nowMillis, long nowNanos) throws IOException {
+    byte[] uid = null, patch = null, fram = null;
+    try {
+      if (receiver == null || !safeToken(bootstrapId)
+          || !bootstrapId.equals(receiver.bootstrapId)) throw new IllegalArgumentException();
+      if (read(sourceJson, receiver, attemptId, nativeSession, processSession,
+          versionCode, lastUpdateTime, nowMillis, nowNanos) == null) {
+        throw new IllegalArgumentException();
+      }
+      final Map<String, Object> source = Libre2ActivationUiProof.parse(sourceJson);
+      uid = bytes(source.get("algorithmOrderUidHex"), 8);
+      patch = bytes(source.get("patchInfoHex"), 6);
+      fram = bytes(source.get("encryptedFramHex"), 344);
+      return new FreshHistoryEvidence(attemptId, bootstrapId,
+          (String) source.get("observedAtUtc"),
+          (Long) source.get("observedAtMonotonicElapsedNanos"),
+          uid, receiver.initialPatchInfo, patch, fram);
+    } catch (Exception unavailable) {
+      throw unavailable();
+    } finally {
+      if (uid != null) Arrays.fill(uid, (byte) 0);
+      if (patch != null) Arrays.fill(patch, (byte) 0);
+      if (fram != null) Arrays.fill(fram, (byte) 0);
+    }
+  }
 
   /** Null means only a proven fresh eligible read and an absent receiver, never a failed check. */
   static Map<String, Object> read(String sourceJson, LibreGen1StreamingJournal.Record receiver,
@@ -45,17 +155,8 @@ final class LibreGen1ReceiverReuseProof {
           || !"e007".equals(source.get("iso15693ManufacturerPrefix"))) {
         throw new IllegalArgumentException();
       }
-      final Object observed = source.get("observedAtMonotonicElapsedNanos");
-      if (!(observed instanceof Long) || (Long) observed <= 0 || (Long) observed > nowNanos
-          || nowNanos - (Long) observed > MAX_AGE_NANOS
-          || !(source.get("observedAtUtc") instanceof String)) throw new IllegalArgumentException();
-      final long observedMillis = Instant.parse((String) source.get("observedAtUtc")).toEpochMilli();
-      // Positive instants bound subtraction and reject wall-clock rollback beyond the existing skew.
-      if (observedMillis <= 0
-          || (observedMillis > nowMillis && observedMillis - nowMillis > CLOCK_SKEW_MILLIS)
-          || (observedMillis <= nowMillis && nowMillis - observedMillis > MAX_AGE_MILLIS)) {
-        throw new IllegalArgumentException();
-      }
+      requireFresh(source.get("observedAtUtc"), source.get("observedAtMonotonicElapsedNanos"),
+          nowMillis, nowNanos);
       uid = bytes(source.get("algorithmOrderUidHex"), 8);
       patch = bytes(source.get("patchInfoHex"), 6);
       fram = bytes(source.get("encryptedFramHex"), 344);
@@ -84,6 +185,25 @@ final class LibreGen1ReceiverReuseProof {
       if (patch != null) Arrays.fill(patch, (byte) 0);
       if (fram != null) Arrays.fill(fram, (byte) 0);
     }
+  }
+
+  private static void requireFresh(Object observedUtc, Object observedNanos,
+      long nowMillis, long nowNanos) {
+    if (nowMillis <= 0 || nowNanos <= 0 || !(observedNanos instanceof Long)
+        || (Long) observedNanos <= 0 || (Long) observedNanos > nowNanos
+        || nowNanos - (Long) observedNanos > MAX_AGE_NANOS
+        || !(observedUtc instanceof String)) throw new IllegalArgumentException();
+    final long observedMillis = Instant.parse((String) observedUtc).toEpochMilli();
+    // Positive instants bound subtraction and preserve the existing skew policy.
+    if (observedMillis <= 0
+        || (observedMillis > nowMillis && observedMillis - nowMillis > CLOCK_SKEW_MILLIS)
+        || (observedMillis <= nowMillis && nowMillis - observedMillis > MAX_AGE_MILLIS)) {
+      throw new IllegalArgumentException();
+    }
+  }
+
+  private static IOException unavailable() {
+    return new IOException("Saved receiver verification is unavailable.");
   }
 
   private static boolean safeToken(String value) {

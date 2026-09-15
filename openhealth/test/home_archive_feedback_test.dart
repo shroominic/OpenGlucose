@@ -1,7 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
@@ -9,10 +13,27 @@ import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/sensor_archive.dart';
+import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.openglucose/libre2'),
+          (call) async => null,
+        );
+  });
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('com.openglucose/libre2'),
+          null,
+        );
+  });
+
   testWidgets(
     'home connects inline and offers model help after empty Bluetooth search',
     (tester) async {
@@ -172,6 +193,75 @@ void main() {
     },
   );
 
+  for (final raw in [false, true]) {
+    testWidgets(
+      'archive shows data quality in details without a banner (raw: $raw)',
+      (
+        tester,
+      ) async {
+        SharedPreferences.setMockInitialValues(<String, Object>{
+          'openHealth.onboarding.completed': true,
+        });
+        final preferences = await SharedPreferences.getInstance();
+        final fixture = _archivedHistoryFixture(
+          provisional: !raw,
+          source: raw ? CgmRecordSource.raw : CgmRecordSource.vendor,
+        );
+        final store = _MemoryHealthStateStore(fixture.values);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: _NoSensorDriver(),
+          healthStateStore: store,
+        );
+        await controller.initialize();
+        await tester.pumpWidget(
+          OpenGlucoseApp(
+            controller: controller,
+            healthExport: HealthExportController(
+              preferences: preferences,
+              healthStateStore: store,
+              writesAllowed: false,
+            )..initialize(),
+            preferences: preferences,
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Settings'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Sensor archive'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(fixture.session.serial));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const ValueKey('historyQualityNotice')),
+          findsNothing,
+        );
+        expect(
+          find.textContaining('Not validated for body glucose'),
+          findsNothing,
+        );
+        expect(find.byKey(const ValueKey('sensorDataQuality')), findsOneWidget);
+        expect(find.text('Data quality'), findsOneWidget);
+        expect(
+          find.text(raw ? 'Raw sensor data' : 'Provisional readings'),
+          findsOneWidget,
+        );
+        expect(find.text('Recap this sensor'), findsNothing);
+        await tester.drag(find.byType(ListView), const Offset(0, -500));
+        await tester.pumpAndSettle();
+        expect(find.text('Export data'), findsOneWidget);
+        expect(controller.allHistoricalReadings, isEmpty);
+        expect(
+          controller.readingsForArchivedSensor(fixture.session),
+          hasLength(2),
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+      },
+    );
+  }
+
   testWidgets('archive export offers CSV TXT and XLSX choices', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'openHealth.onboarding.completed': true,
@@ -205,6 +295,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text(fixture.session.serial));
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('sensorDataQuality')), findsNothing);
+    expect(find.text('Data quality'), findsNothing);
     await tester.drag(find.byType(ListView), const Offset(0, -500));
     await tester.pumpAndSettle();
 
@@ -263,6 +355,178 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
   });
+
+  for (final format in ArchivedSensorExportFormat.values) {
+    testWidgets(
+      'actual ${format.name} share retains NFC acquisition evidence',
+      (
+        tester,
+      ) async {
+        final fixture = _libreArchivedHistoryFixture();
+        final harness = await _openArchiveExportHarness(tester, fixture);
+        await _openArchiveDetail(tester, fixture.session);
+        await _scrollToArchiveExport(tester);
+        await tester.tap(find.text('Export data'));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('archivedExportAcquisitionDisclosure')),
+          findsOneWidget,
+        );
+        final formatKey = switch (format) {
+          ArchivedSensorExportFormat.csv => 'exportFormatCsv',
+          ArchivedSensorExportFormat.txt => 'exportFormatTxt',
+          ArchivedSensorExportFormat.xlsx => 'exportFormatXlsx',
+        };
+        await tester.tap(find.byKey(ValueKey(formatKey)));
+        await tester.pumpAndSettle();
+        await _confirmAndWaitForArchiveShare(tester, harness);
+        expect(harness.shareCalls, 1);
+        expect(harness.temporaryDirectoryCalls, 1);
+        final String contents;
+        if (format == ArchivedSensorExportFormat.xlsx) {
+          final zip = ZipDecoder().decodeBytes(harness.bytes!);
+          contents = utf8.decode(
+            zip.find('xl/worksheets/sheet1.xml')!.readBytes()!,
+          );
+          expect(contents, contains('A1:Q5'));
+          for (var row = 2; row <= 5; row++) {
+            expect(
+              contents,
+              contains(
+                '<c r="M$row" t="inlineStr"><is><t xml:space="preserve">true</t></is></c>',
+              ),
+            );
+          }
+        } else {
+          contents = utf8.decode(harness.bytes!);
+          final separator = format == ArchivedSensorExportFormat.csv
+              ? ','
+              : '\t';
+          expect(contents.split('\r\n').first.split(separator), hasLength(17));
+          final rows = contents
+              .split('\r\n')
+              .skip(1)
+              .where((row) => row.isNotEmpty);
+          expect(
+            rows.map((row) => row.split(separator)[14]),
+            ['legacyUnknown', 'nfcHistory', 'nfcTrend', 'bleLive'],
+          );
+          expect(rows.first.split(separator)[15], isEmpty);
+          expect(
+            rows.map((row) => row.split(separator)[12]),
+            everyElement('true'),
+          );
+        }
+        for (final field in [
+          'export_schema_version',
+          'acquisition_origin',
+          'first_received_at_utc',
+          'timestamp_basis',
+          'legacyUnknown',
+          'nfcHistory',
+          'nfcTrend',
+          'bleLive',
+          'sensorRelative',
+          'phoneReceipt',
+          '2026-09-01T12:00:00.000Z',
+          'vendor',
+        ]) {
+          expect(contents, contains(field));
+        }
+        for (final identity in [
+          fixture.session.id,
+          fixture.session.historyKey,
+          fixture.session.storageKey,
+          fixture.session.deviceId,
+          fixture.session.serial,
+        ]) {
+          expect(contents, isNot(contains(identity)));
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        harness.controller.dispose();
+      },
+    );
+  }
+
+  testWidgets('actual legacy share keeps the original 13 columns', (
+    tester,
+  ) async {
+    final fixture = _archivedHistoryFixture();
+    final harness = await _openArchiveExportHarness(tester, fixture);
+    await _openArchiveDetail(tester, fixture.session);
+    await _scrollToArchiveExport(tester);
+    await tester.tap(find.text('Export data'));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('archivedExportAcquisitionDisclosure')),
+      findsNothing,
+    );
+    await _confirmAndWaitForArchiveShare(tester, harness);
+    final csv = utf8.decode(harness.bytes!);
+    expect(csv.split('\r\n').first, archivedSensorCsvColumns.join(','));
+    expect(csv, isNot(contains('acquisition_origin')));
+    expect(harness.shareCalls, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    harness.controller.dispose();
+  });
+
+  for (final phase in ['list', 'detail', 'confirmation']) {
+    testWidgets('corrupt archive at $phase cannot create or share a file', (
+      tester,
+    ) async {
+      final fixture = _libreArchivedHistoryFixture();
+      final harness = await _openArchiveExportHarness(tester, fixture);
+      Future<void> corrupt() async {
+        final value =
+            jsonDecode(harness.store.getString(fixture.session.historyKey)!)
+                as Map<String, dynamic>;
+        value['schemaVersion'] = 900;
+        await harness.store.setString(
+          fixture.session.historyKey,
+          jsonEncode(value),
+        );
+      }
+
+      if (phase == 'list') await corrupt();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sensor archive'));
+      await tester.pumpAndSettle();
+      if (phase == 'list') {
+        expect(find.textContaining('History unavailable'), findsOneWidget);
+      }
+      if (phase == 'detail') await corrupt();
+      await tester.tap(find.text(fixture.session.serial));
+      await tester.pumpAndSettle();
+      if (phase == 'confirmation') {
+        await _scrollToArchiveExport(tester);
+        await tester.tap(find.text('Export data'));
+        await tester.pumpAndSettle();
+        await corrupt();
+        await tester.tap(
+          find.byKey(const ValueKey('confirmArchivedSensorExport')),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.text('The archived sensor data could not be exported.'),
+          findsOneWidget,
+        );
+      } else {
+        expect(
+          find.byKey(const ValueKey('archivedSensorDataUnavailable')),
+          findsOneWidget,
+        );
+        expect(find.text('Export data'), findsNothing);
+      }
+      expect(tester.takeException(), isNull);
+      expect(harness.temporaryDirectoryCalls, 0);
+      expect(harness.shareCalls, 0);
+      expect(harness.directory.listSync(), isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      harness.controller.dispose();
+    });
+  }
 
   testWidgets(
     'sample data stays out of the home and is available from Settings',
@@ -413,21 +677,27 @@ Finder _compactExpiryText() => find.byWidgetPredicate((widget) {
 });
 
 ({ArchivedSensorSession session, Map<String, String> values})
-_archivedHistoryFixture({bool includePostWarmup = true}) {
+_archivedHistoryFixture({
+  bool includePostWarmup = true,
+  bool provisional = false,
+  CgmRecordSource source = CgmRecordSource.vendor,
+}) {
   final startedAt = DateTime(2026, 7, 1, 8);
   final endedAt = startedAt.add(const Duration(days: 15));
   const historyKey = 'openHealth.history.archive.feedback-session';
   final readings = <CgmReading>[
     CgmReading(
       valueMgdl: 171,
-      source: CgmRecordSource.vendor,
+      source: source,
+      isDisplayProvisional: provisional,
       sensorMinute: 59,
       recordedAt: startedAt.add(const Duration(minutes: 59)),
     ),
     if (includePostWarmup)
       CgmReading(
         valueMgdl: 112,
-        source: CgmRecordSource.vendor,
+        source: source,
+        isDisplayProvisional: provisional,
         sensorMinute: 60,
         recordedAt: startedAt.add(const Duration(hours: 1)),
       ),
@@ -456,6 +726,196 @@ _archivedHistoryFixture({bool includePostWarmup = true}) {
       ),
     },
   );
+}
+
+({ArchivedSensorSession session, Map<String, String> values})
+_libreArchivedHistoryFixture() {
+  const storageKey = 'libre2-gen1:synthetic-export-bootstrap';
+  final id = base64Url
+      .encode(utf8.encode('libre2-gen1|$storageKey|1'))
+      .replaceAll('=', '');
+  final key = 'openHealth.history.archive.$id';
+  final receipt = DateTime.utc(2026, 9, 1, 12);
+  Map<String, Object?> entry(String origin, int minute, int offset) {
+    final at = receipt.add(Duration(minutes: offset));
+    return {
+      'reading': CgmReading(
+        valueMgdl: 100 + minute / 10,
+        source: CgmRecordSource.vendor,
+        sensorMinute: minute,
+        recordedAt: at,
+        isDisplayProvisional: true,
+      ).toJson(),
+      'origin': origin,
+      'firstReceivedAt': origin == 'legacyUnknown'
+          ? null
+          : (origin == 'bleLive' ? at : receipt).toIso8601String(),
+      'timestampBasis': switch (origin) {
+        'legacyUnknown' => 'legacyUnknown',
+        'bleLive' => 'phoneReceipt',
+        _ => 'sensorRelative',
+      },
+    };
+  }
+
+  final session = ArchivedSensorSession(
+    id: id,
+    historyKey: key,
+    storageKey: storageKey,
+    driverId: 'libre2-gen1',
+    deviceId: 'synthetic-export-device',
+    displayName: 'Synthetic Libre archive',
+    serial: 'SYNTHETIC-EXPORT-SERIAL',
+    model: 'Libre 2',
+    reason: SensorArchiveReason.disconnected,
+    readingCount: 4,
+    endedAt: receipt.add(const Duration(minutes: 31)),
+    lastReadingAt: receipt.add(const Duration(minutes: 30)),
+  );
+  return (
+    session: session,
+    values: {
+      'openHealth.sensorArchive': jsonEncode([session.toJson()]),
+      key: jsonEncode({
+        'schemaVersion': 2,
+        'kind': 'libreHistoryArchive',
+        'driverId': session.driverId,
+        'storageKey': storageKey,
+        'sensorBindingDigest': 'a' * 64,
+        'readings': [
+          entry('nfcHistory', 75, -15),
+          entry('bleLive', 120, 30),
+          entry('legacyUnknown', 60, -30),
+          entry('nfcTrend', 89, -1),
+        ],
+      }),
+    },
+  );
+}
+
+Future<_ArchiveExportHarness> _openArchiveExportHarness(
+  WidgetTester tester,
+  ({ArchivedSensorSession session, Map<String, String> values}) fixture,
+) async {
+  SharedPreferences.setMockInitialValues({
+    'openHealth.onboarding.completed': true,
+  });
+  final preferences = await SharedPreferences.getInstance();
+  final store = _MemoryHealthStateStore(fixture.values);
+  final controller = CgmAppController(
+    preferences: preferences,
+    driver: _NoSensorDriver(),
+    healthStateStore: store,
+  );
+  await controller.initialize();
+  final harness = _ArchiveExportHarness(
+    store: store,
+    controller: controller,
+    directory: Directory.systemTemp.createTempSync(
+      'openglucose-export-ui-test-',
+    ),
+  );
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  const channel = MethodChannel('plugins.flutter.io/path_provider');
+  messenger.setMockMethodCallHandler(channel, (call) async {
+    if (call.method != 'getTemporaryDirectory') {
+      throw StateError('Unexpected directory request.');
+    }
+    harness.temporaryDirectoryCalls++;
+    return harness.directory.path;
+  });
+  addTearDown(() async {
+    messenger.setMockMethodCallHandler(channel, null);
+    await harness.directory.delete(recursive: true);
+  });
+  await tester.pumpWidget(
+    OpenGlucoseApp(
+      controller: controller,
+      healthExport: HealthExportController(
+        preferences: preferences,
+        healthStateStore: store,
+        writesAllowed: false,
+      )..initialize(),
+      preferences: preferences,
+      archivedSensorShareAction: harness.share,
+    ),
+  );
+  await tester.pumpAndSettle();
+  return harness;
+}
+
+Future<void> _openArchiveDetail(
+  WidgetTester tester,
+  ArchivedSensorSession session,
+) async {
+  await tester.tap(find.byTooltip('Settings'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Sensor archive'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(session.serial));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _scrollToArchiveExport(WidgetTester tester) async {
+  await tester.scrollUntilVisible(
+    find.byKey(const ValueKey('exportArchivedSensorData')),
+    300,
+    scrollable: find.byType(Scrollable).last,
+  );
+  await tester.pumpAndSettle();
+}
+
+Future<void> _confirmAndWaitForArchiveShare(
+  WidgetTester tester,
+  _ArchiveExportHarness harness,
+) async {
+  await tester.tap(find.byKey(const ValueKey('confirmArchivedSensorExport')));
+  await tester.pumpAndSettle();
+  final deadline = DateTime.now().add(const Duration(seconds: 10));
+  // Pump both schedulers: real isolate/file I/O and the widget fake clock.
+  // Waiting only in runAsync prevents the dialog continuation from draining.
+  while (!harness.shared.isCompleted && DateTime.now().isBefore(deadline)) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
+    await tester.pump();
+    expect(
+      find.text('The archived sensor data could not be exported.'),
+      findsNothing,
+    );
+  }
+  expect(
+    harness.shared.isCompleted,
+    isTrue,
+    reason: 'The real share callback must complete.',
+  );
+  await tester.pumpAndSettle();
+}
+
+class _ArchiveExportHarness {
+  _ArchiveExportHarness({
+    required this.store,
+    required this.controller,
+    required this.directory,
+  });
+  final _MemoryHealthStateStore store;
+  final CgmAppController controller;
+  final Directory directory;
+  final shared = Completer<void>();
+  int temporaryDirectoryCalls = 0;
+  int shareCalls = 0;
+  List<int>? bytes;
+
+  Future<void> share(ShareParams params) async {
+    shareCalls++;
+    expect(params.files, hasLength(1));
+    expect(params.text, isNull);
+    // Read inside the callback: normal export cleanup removes this file after
+    // the platform share future completes.
+    bytes = await params.files!.single.readAsBytes();
+    shared.complete();
+  }
 }
 
 class _NoSensorDriver implements CgmDriver {

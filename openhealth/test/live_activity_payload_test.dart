@@ -140,11 +140,7 @@ void main() {
     );
     for (final reading in <CgmReading?>[
       null,
-      CgmReading(
-        valueMgdl: 123,
-        source: CgmRecordSource.raw,
-        recordedAt: now,
-      ),
+      CgmReading(valueMgdl: 123, source: CgmRecordSource.raw, recordedAt: now),
     ]) {
       final snapshot = CgmSessionSnapshot(
         stage: CgmSyncStage.ready,
@@ -287,6 +283,60 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('provisional early samples do not hide the warmup countdown', () {
+    final now = DateTime.utc(2026, 9, 9, 8);
+    const sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'synthetic-warmup',
+      displayName: 'AiDEX sensor',
+      storageKey: 'synthetic-warmup',
+      rssi: -40,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    for (final source in [CgmRecordSource.vendor, CgmRecordSource.raw]) {
+      final reading = CgmReading(
+        valueMgdl: 123,
+        source: source,
+        recordedAt: now,
+        sensorMinute: 3,
+        isDisplayProvisional: true,
+      );
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'Warming up',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        latestReading: reading,
+        history: [reading],
+        sessionInfo: CgmSessionInfo(
+          sessionStart: now.subtract(const Duration(minutes: 3)),
+          warmupMinutes: 60,
+        ),
+      );
+      expect(
+        shouldPublishLiveActivity(
+          snapshot: snapshot,
+          latestReading: reading,
+          now: now,
+        ),
+        isTrue,
+      );
+      final payload = buildLiveActivityPayload(
+        snapshot: snapshot,
+        latestReading: reading,
+        preferences: const DisplayPreferences(),
+        now: now,
+      );
+      expect(payload.stageLabel, 'WARMUP');
+      expect(payload.valueText, '57');
+      expect(payload.unitText, 'min');
+      expect(payload.recordedAtIso8601, isNull);
+      expect(payload.trendSymbol, isEmpty);
+      expect(payload.deltaText, isEmpty);
+      expect(payload.lastReadingText, '--');
+    }
   });
 
   test('live activity still requires a recent reading outside warmup', () {

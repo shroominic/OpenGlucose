@@ -5,6 +5,156 @@ import 'package:flutter_test/flutter_test.dart';
 String _read(String path) => File(path).readAsStringSync();
 
 void main() {
+  test('optional NFC reader is default-off and excludes the debug recorder', () {
+    final mainManifest = _read('android/app/src/main/AndroidManifest.xml');
+    final gradle = _read('android/app/build.gradle.kts');
+    final mainActivity = _read(
+      'android/app/src/main/java/com/aidex/aidex_flutter/MainActivity.java',
+    );
+
+    expect(mainManifest, contains('android.permission.NFC'));
+    expect(
+      RegExp(
+        r'<uses-feature\s+android:name="android.hardware.nfc"\s+'
+        r'android:required="false"\s*/>',
+      ).hasMatch(mainManifest),
+      isTrue,
+      reason: 'NFC must not exclude phones that use Bluetooth-only sensors',
+    );
+    expect(
+      RegExp(
+        r'<meta-data\s+android:name="com.openglucose.libre_nfc.read_only"\s+'
+        r'android:value="\$\{openGlucoseLibreNfcReadOnly\}"\s*/>',
+      ).hasMatch(mainManifest),
+      isTrue,
+    );
+    expect(
+      mainManifest,
+      isNot(contains('com.openglucose.protocol_capture.available')),
+    );
+    expect(
+      gradle,
+      contains('providers.gradleProperty("openGlucoseLibreNfcReadOnly")'),
+    );
+    expect(gradle, contains('require(value == "true" || value == "false")'));
+    expect(gradle, contains('}.getOrElse("false")'));
+    expect(
+      gradle,
+      contains(
+        'manifestPlaceholders["openGlucoseLibreNfcReadOnly"] = libreNfcReadOnly',
+      ),
+    );
+
+    expect(
+      RegExp(r'\.getApplicationInfo\(').allMatches(mainActivity),
+      hasLength(1),
+      reason: 'both backends must use the same metadata snapshot',
+    );
+    expect(
+      mainActivity,
+      contains(
+        '!(readerBackendInfo.metaData.get(LIBRE_READ_ONLY_METADATA) '
+        'instanceof Boolean)',
+      ),
+    );
+    expect(
+      mainActivity,
+      contains(
+        'catch (PackageManager.NameNotFoundException | RuntimeException ignored) '
+        '{\n      readerBackendInfo = null;',
+      ),
+    );
+    expect(
+      RegExp(
+        r'if \(libreReadOnlyAvailable\(\)\) \{\s+'
+        r'libre2NfcBridge = new Libre2NfcBridge\(this\);\s+'
+        r'libre2NfcBridge.register\('
+        r'flutterEngine.getDartExecutor\(\).getBinaryMessenger\(\)\);\s+'
+        r'if \(libreReceiverValidationAvailable\(\)\) \{\s+'
+        r'libreGen1ReceiverBridge = new LibreGen1ReceiverBridge\(\s+'
+        r'this, this::libreReceiverValidationAvailable\);\s+'
+        r'libreGen1ReceiverBridge.register\('
+        r'flutterEngine.getDartExecutor\(\).getBinaryMessenger\(\)\);\s+\}\s+'
+        r'\} else if \(protocolCaptureAvailable\(\)\) \{\s+'
+        r'protocolCaptureBridge = new DebugProtocolCaptureBridge\(this\);',
+      ).hasMatch(mainActivity),
+      isTrue,
+      reason:
+          'the read-only reader and private recorder cannot register together',
+    );
+    expect(
+      RegExp(r'new Libre2NfcBridge\(').allMatches(mainActivity),
+      hasLength(1),
+    );
+    expect(
+      RegExp(r'new DebugProtocolCaptureBridge\(').allMatches(mainActivity),
+      hasLength(1),
+    );
+    expect(
+      mainActivity,
+      contains('info.metaData.getBoolean(LIBRE_READ_ONLY_METADATA, false)'),
+    );
+    expect(
+      mainActivity,
+      contains('info.metaData.getBoolean(PROTOCOL_CAPTURE_METADATA, false)'),
+    );
+    expect(
+      mainActivity,
+      contains('&& (info.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0'),
+    );
+  });
+
+  test(
+    'recorder-free receiver registration is private and detach retains ownership',
+    () {
+      final mainActivity = _read(
+        'android/app/src/main/java/com/aidex/aidex_flutter/MainActivity.java',
+      );
+      final bridge = _read(
+        'android/app/src/main/java/com/aidex/aidex_flutter/LibreGen1ReceiverBridge.java',
+      );
+      final policy = _read(
+        'android/app/src/main/java/com/aidex/aidex_flutter/LibreGen1ReceiverBackendPolicy.java',
+      );
+      expect(mainActivity, contains('LibreGen1ReceiverBackendPolicy.allows('));
+      expect(mainActivity, contains('libreReadOnlyAvailable(),'));
+      expect(
+        mainActivity,
+        contains(
+          'info != null && (info.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0,',
+        ),
+      );
+      expect(mainActivity, contains('libre2NfcBridge != null,'));
+      expect(mainActivity, contains('protocolCaptureBridge != null)'));
+      expect(
+        policy,
+        contains(
+          'readOnlySelected && debuggable && readOnlyRegistered && !recorderRegistered',
+        ),
+      );
+      expect(
+        RegExp(r'new LibreGen1ReceiverBridge\(').allMatches(mainActivity),
+        hasLength(1),
+      );
+      expect(
+        RegExp(
+          r'libreGen1ReceiverBridge.destroy\(\);',
+        ).allMatches(mainActivity),
+        hasLength(2),
+      );
+      final destroy = bridge.substring(
+        bridge.indexOf('void destroy()'),
+        bridge.indexOf('private boolean allowed()'),
+      );
+      expect(destroy, contains('destroyed = true'));
+      expect(destroy, contains('setMethodCallHandler(null)'));
+      expect(destroy, isNot(contains('release(')));
+      expect(destroy, isNot(contains('transportClosed')));
+      expect(bridge, contains('value.put("enrollmentAvailable", false)'));
+      expect(bridge, contains('value.put("rawCapture", false)'));
+    },
+  );
+
   test('protocol capture is debug-only, private, and explicitly gated', () {
     final mainManifest = _read('android/app/src/main/AndroidManifest.xml');
     final debugManifest = _read('android/app/src/debug/AndroidManifest.xml');
@@ -49,7 +199,10 @@ void main() {
       'lib/src/protocol_capture_observation_driver.dart',
     );
 
-    expect(mainManifest, isNot(contains('android.permission.NFC')));
+    expect(
+      mainManifest,
+      isNot(contains('com.openglucose.protocol_capture.available')),
+    );
     expect(profileManifest, isNot(contains('android.permission.NFC')));
     expect(
       profileManifest,
@@ -84,7 +237,7 @@ void main() {
       contains("'OG_PROTOCOL_CAPTURE_LIVE_YUWELL'"),
     );
     final platformRegistryStart = driverFactory.indexOf(
-      'CgmDriver _buildPlatformRegistry',
+      'CgmDriverRegistry buildHardwareDriverRegistry',
     );
     final captureRegistryStart = driverFactory.indexOf(
       'CgmDriver _buildCaptureRegistry',

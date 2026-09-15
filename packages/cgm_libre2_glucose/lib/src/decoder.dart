@@ -50,11 +50,12 @@ final class Libre2Gen1GlucoseSample {
   final int? glucoseMgDl;
   final Libre2Gen1GlucoseRejection? rejection;
 
-  /// The full encoded 12-bit temperature/error field when raw glucose is zero.
+  /// BLE: the full 12-bit temperature/error field when raw glucose is zero.
+  /// NFC: the nine-bit FRAM quality code, even when raw glucose is nonzero.
   /// Unknown bits are retained, not treated as an OK sample.
   final int qualityCode;
 
-  /// Bits 9..10 of the encoded error field, following the pinned BLE parser.
+  /// The two encoded quality flags from the corresponding BLE or NFC layout.
   final int qualityFlags;
 
   @override
@@ -78,6 +79,108 @@ final class Libre2Gen1GlucosePacket {
   String toString() => 'Libre2Gen1GlucosePacket(data: <redacted>)';
 }
 
+/// Factory estimates from the trend/history rings of one verified NFC read.
+///
+/// Both lists are immutable, newest-first, and retain rejected slots without
+/// substituting glucose. Age/minute are counters, not dates. This pure value
+/// does not prove when the read occurred or that it belongs to a live receiver.
+final class Libre2Gen1GlucoseNfcScan {
+  Libre2Gen1GlucoseNfcScan._({
+    required this.sensorAgeMinutes,
+    required this.maxLifeMinutes,
+    required this.lifecycleAtScan,
+    required Iterable<Libre2Gen1GlucoseSample> trend,
+    required Iterable<Libre2Gen1GlucoseSample> history,
+  }) : trend = List.unmodifiable(trend),
+       history = List.unmodifiable(history);
+
+  final int sensorAgeMinutes;
+  final int maxLifeMinutes;
+  final LibreGen1LifecycleState lifecycleAtScan;
+  final List<Libre2Gen1GlucoseSample> trend;
+  final List<Libre2Gen1GlucoseSample> history;
+
+  @override
+  String toString() => 'Libre2Gen1GlucoseNfcScan(data: <redacted>)';
+}
+
+/// Decode one encrypted NFC snapshot with its own factory evidence.
+///
+/// The caller must bind UID/current patch/FRAM to the same fresh exact-target
+/// NFC read. This function cannot prove freshness, authenticity, or a receiver
+/// binding. In particular, cached FRAM must not be relabelled as a new scan.
+/// There is no existing decoder/calibration argument: ring values, lifecycle,
+/// lifetime, age, and factory coefficients all come from this one CRC-verified
+/// snapshot using its current patch seed, not the frozen BLE login patch.
+Libre2Gen1GlucoseNfcScan decodeLibre2Gen1EncryptedNfcFram({
+  required Iterable<int> uid,
+  required Iterable<int> currentPatchInfo,
+  required Iterable<int> encryptedFram,
+}) {
+  final (core, verified) = _decryptFactoryFram(
+    uid: uid,
+    patchInfo: currentPatchInfo,
+    encryptedFram: encryptedFram,
+  );
+  final decoder = Libre2Gen1GlucoseDecoder._fromVerifiedFram(core, verified);
+  final rings = parseLibreGen1FramHistory(verified);
+  Libre2Gen1GlucoseSample convert(LibreGen1FramRawSample sample) {
+    var (glucose, rejection) = decoder._decodeSample(
+      age: rings.sensorAgeMinutes,
+      minute: sample.sensorMinute,
+      raw: sample.rawValue,
+      temperature: sample.rawTemperature,
+      adjustment: sample.temperatureAdjustment,
+      sensorError:
+          sample.rawValue == 0 ||
+          sample.hasError ||
+          sample.qualityCode != 0 ||
+          sample.qualityFlags != 0,
+    );
+    // Unlike cached BLE calibration evidence, this is the sensor's current
+    // lifecycle. A contradictory age must not override fresh warm-up state.
+    if (decoder.lifecycleAtFram == LibreGen1LifecycleState.warmingUp &&
+        glucose != null) {
+      glucose = null;
+      rejection = Libre2Gen1GlucoseRejection.warmingUp;
+    }
+    return Libre2Gen1GlucoseSample._(
+      sensorMinute: sample.sensorMinute,
+      isHistory: sample.kind == LibreGen1FramSampleKind.history,
+      glucoseMgDl: glucose,
+      rejection: rejection,
+      qualityCode: sample.qualityCode,
+      qualityFlags: sample.qualityFlags,
+    );
+  }
+
+  return Libre2Gen1GlucoseNfcScan._(
+    sensorAgeMinutes: rings.sensorAgeMinutes,
+    maxLifeMinutes: decoder.maxLifeMinutes,
+    lifecycleAtScan: decoder.lifecycleAtFram,
+    trend: rings.trend.map(convert),
+    history: rings.history.map(convert),
+  );
+}
+
+(LibreGen1OfflineCore, LibreGen1DecryptedFram) _decryptFactoryFram({
+  required Iterable<int> uid,
+  required Iterable<int> patchInfo,
+  required Iterable<int> encryptedFram,
+}) {
+  final identity = LibreGen1Uid.algorithmOrder(uid);
+  final patch = LibreGen1PatchInfo(patchInfo);
+  if (identity.value.bytes[6] != 0x07 ||
+      identity.value.bytes[7] != 0xe0 ||
+      patch.model != LibreGen1Model.libre2) {
+    throw const Libre2Gen1GlucoseError(
+      Libre2Gen1GlucoseErrorKind.unsupportedSensor,
+    );
+  }
+  final core = LibreGen1OfflineCore(uid: identity, patchInfo: patch);
+  return (core, core.decryptFram(encryptedFram));
+}
+
 /// A pure decoder bound to one UID and its initial patch information/FRAM.
 ///
 /// The caller must prove that all three inputs came from the SAME protected
@@ -91,17 +194,18 @@ final class Libre2Gen1GlucoseDecoder {
     required Iterable<int> initialPatchInfo,
     required Iterable<int> encryptedFram,
   }) {
-    final identity = LibreGen1Uid.algorithmOrder(uid);
-    final patch = LibreGen1PatchInfo(initialPatchInfo);
-    if (identity.value.bytes[6] != 0x07 ||
-        identity.value.bytes[7] != 0xe0 ||
-        patch.model != LibreGen1Model.libre2) {
-      throw const Libre2Gen1GlucoseError(
-        Libre2Gen1GlucoseErrorKind.unsupportedSensor,
-      );
-    }
-    final core = LibreGen1OfflineCore(uid: identity, patchInfo: patch);
-    final verified = core.decryptFram(encryptedFram);
+    final (core, verified) = _decryptFactoryFram(
+      uid: uid,
+      patchInfo: initialPatchInfo,
+      encryptedFram: encryptedFram,
+    );
+    return Libre2Gen1GlucoseDecoder._fromVerifiedFram(core, verified);
+  }
+
+  factory Libre2Gen1GlucoseDecoder._fromVerifiedFram(
+    LibreGen1OfflineCore core,
+    LibreGen1DecryptedFram verified,
+  ) {
     final lifecycle = parseLibreGen1Lifecycle(verified).state;
     if (lifecycle != LibreGen1LifecycleState.warmingUp &&
         lifecycle != LibreGen1LifecycleState.active) {
@@ -187,21 +291,14 @@ final class Libre2Gen1GlucoseDecoder {
       final temperature = encodedTemperature << 2;
       var adjustment = _bits(data, i * 4, 26, 5) << 2;
       if (_bits(data, i * 4, 31, 1) != 0) adjustment = -adjustment;
-      Libre2Gen1GlucoseRejection? rejection;
-      int? glucose;
-      if (raw == 0) {
-        rejection = Libre2Gen1GlucoseRejection.sensorError;
-      } else if (minute < 0) {
-        rejection = Libre2Gen1GlucoseRejection.beforeStart;
-      } else if (minute < 60) {
-        rejection = Libre2Gen1GlucoseRejection.warmingUp;
-      } else if (age >= maxLifeMinutes || minute >= maxLifeMinutes) {
-        rejection = Libre2Gen1GlucoseRejection.outsideSensorLifetime;
-      } else {
-        final result = _convert(raw, temperature, adjustment);
-        glucose = result.$1;
-        rejection = result.$2;
-      }
+      final (glucose, rejection) = _decodeSample(
+        age: age,
+        minute: minute,
+        raw: raw,
+        temperature: temperature,
+        adjustment: adjustment,
+        sensorError: raw == 0,
+      );
       samples.add(
         Libre2Gen1GlucoseSample._(
           sensorMinute: minute,
@@ -214,6 +311,23 @@ final class Libre2Gen1GlucoseDecoder {
       );
     }
     return Libre2Gen1GlucosePacket._(age, samples);
+  }
+
+  (int?, Libre2Gen1GlucoseRejection?) _decodeSample({
+    required int age,
+    required int minute,
+    required int raw,
+    required int temperature,
+    required int adjustment,
+    required bool sensorError,
+  }) {
+    if (sensorError) return (null, Libre2Gen1GlucoseRejection.sensorError);
+    if (minute < 0) return (null, Libre2Gen1GlucoseRejection.beforeStart);
+    if (minute < 60) return (null, Libre2Gen1GlucoseRejection.warmingUp);
+    if (age >= maxLifeMinutes || minute >= maxLifeMinutes) {
+      return (null, Libre2Gen1GlucoseRejection.outsideSensorLifetime);
+    }
+    return _convert(raw, temperature, adjustment);
   }
 
   (int?, Libre2Gen1GlucoseRejection?) _convert(

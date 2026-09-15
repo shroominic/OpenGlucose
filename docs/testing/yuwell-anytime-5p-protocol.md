@@ -1,9 +1,10 @@
 # Yuwell Anytime 5P protocol evidence boundary
 
 This document separates verified reference evidence from facts observed on a
-physical Anytime 5P. No physical 5P observation has been completed yet. The
-current work is an interoperability investigation, not a compatibility or
-clinical-accuracy claim.
+physical Anytime 5P. A first physical observation now exists — see
+"First physical observation" below — but it stops at the version handshake.
+The current work remains an interoperability investigation, not a
+compatibility or clinical-accuracy claim.
 
 OpenGlucose must not use this work for diagnosis, dosing, treatment, or
 emergency monitoring. Raw captures can contain health data, device identities,
@@ -21,6 +22,40 @@ storage. Commit only synthetic fixtures and redacted evidence.
   transmitter firmware, phone, and operating-system combination.
 - **HARD UNKNOWN**: evidence is not sufficient. Do not guess or send a write
   that depends on it.
+
+## First physical observation
+
+**2026-09-09, macOS Mac-BLE debug harness (`yuwell_macos_debug_main.dart`),
+target: an Anytime 5P.** A bounded scan/connect/observe session ran to a
+clean, safe stop. This is **TARGET-DEVICE-CONFIRMED** for exactly these
+facts, nothing more:
+
+- The device advertised as an exact `Anytime` plus ten-digit candidate and
+  was reachable over GATT.
+- The connected topology matched the reference primary service
+  `00001000-1212-efde-1523-785feabcd123`, notify characteristic
+  `00001001-...`, and write characteristic `00001002-...` **exactly**.
+- Notify-before-write ordering held: notifications subscribed cleanly before
+  any write.
+- The one-byte version request (`[0x01]`) was written and produced a real,
+  decodable response.
+- The driver read that response and correctly, safely stopped: this unit's
+  firmware branch is not `V1150`, so the driver failed closed at
+  `YuwellSessionFailureKind.unsupportedFirmware` before sending any
+  state-changing command (no date/communication-ID/configure/initialize/
+  low-power write was ever attempted). Disconnect was clean.
+
+No sensor identifier, address, or raw payload from this session is recorded
+anywhere in this repository, per the private-storage rule below.
+
+This promotes discovery, GATT topology, and the version handshake from
+**OFFICIAL-APP-STATIC** to **TARGET-DEVICE-CONFIRMED** on this one unit. It
+does not change any `HARD UNKNOWN` below: the final glucose algorithm is
+still not implemented, and this unit's own firmware branch (being non-V1150)
+means a live glucose read is not available from it under the current,
+deliberately narrow `V1150`-only admission gate — extending that gate to
+another branch still requires the independent specification and synthetic
+validation described under "Differential-validation plan".
 
 ## Application identity correction
 
@@ -431,8 +466,9 @@ local final-value provider.
 | index-zero reset and strict contiguous indexes | high | static path and synthetic differential checks |
 | zero-based output boundary at record 14 | high for the reference build | synthetic differential checks |
 | exact CT5 glucose mathematics | incomplete | multiple unresolved stateful stages |
-| target retail 5P firmware branch | unknown | no physical capture yet |
-| `V1150` packed value equals published glucose | unknown | requires target differential capture |
+| CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
+| target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
+| `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
 
 ## Required physical evidence
 
@@ -466,7 +502,10 @@ the capture harness only observes and records it.
   the application publishes after its native algorithm.
 - Meaning/check digits of QR fields beyond the proved format, lifetime branch,
   and name matching.
-- Exact 5P advertisement and GATT behavior on the target firmware.
+- Exact 5P advertisement and GATT *topology* is now confirmed on one unit
+  (see "First physical observation"); behavior beyond the version handshake
+  (live/history/configure/initialize) on any target firmware remains
+  unobserved.
 - All status, warning, calibration, and error bits.
 - Whether Android bonding is required or created.
 - Persistence, replay, and retry behavior after interrupted writes.

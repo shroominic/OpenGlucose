@@ -324,17 +324,215 @@ void main() {
     );
     delegate.reportPhysicalStateError(failure);
     await expected.timeout(const Duration(seconds: 1));
-    await expectLater(
-      transport.scan(),
-      emitsInOrder([
-        emitsError(same(failure)),
-        emitsDone,
-      ]),
-    );
     await expectLater(transport.start(), throwsA(same(failure)));
     expect(delegate.scanCalls, 1);
     await transport.stop();
   });
+
+  test(
+    'new scan rearms Bluetooth-off only after cleanup and a fresh ack',
+    () async {
+      final delegate = _FakePhysicalTransport()
+        ..autoAcknowledgeScanStart = false;
+      final transport = _transport(delegate, retryBackoff: const []);
+      await transport.start();
+      final oldResults = <BleScanResult>[];
+      final oldErrors = <Object>[];
+      final oldDone = Completer<void>();
+      transport.scan().listen(
+        oldResults.add,
+        onError: oldErrors.add,
+        onDone: oldDone.complete,
+      );
+      final failure = _bluetoothOff();
+      delegate.reportPhysicalStateError(failure);
+      await oldDone.future.timeout(const Duration(seconds: 1));
+      expect(oldErrors, [same(failure)]);
+      expect(delegate.cancelCalls, 1);
+      expect(delegate.active, isFalse);
+      await expectLater(transport.start(), throwsA(same(failure)));
+
+      final firstResults = <BleScanResult>[];
+      final secondResults = <BleScanResult>[];
+      final first = transport
+          .scan(withServices: const [fde3])
+          .listen(firstResults.add);
+      final second = transport
+          .scan(withServices: const [fde3])
+          .listen(secondResults.add);
+      await pumpEventQueue(times: 20);
+      expect(delegate.scanCalls, 2);
+      expect(delegate.connectCalls, 0);
+      expect(transport.state, DebugSharedScanState.starting);
+      delegate.acknowledgeScanAttempt(1);
+      expect(transport.state, DebugSharedScanState.starting);
+      delegate.acknowledgeCurrentScanStart();
+      expect(transport.state, DebugSharedScanState.running);
+      final result = _result('synthetic-new-advertisement', const [
+        fde3,
+      ], rssi: -50);
+      delegate.emit(result);
+      expect(firstResults, [result]);
+      expect(secondResults, [result]);
+      expect(oldResults, isEmpty);
+      expect(oldErrors, hasLength(1));
+      await first.cancel();
+      await second.cancel();
+      await transport.stop();
+    },
+  );
+
+  test('each fresh Bluetooth-off attempt remains bounded', () async {
+    final delegate = _FakePhysicalTransport()..autoAcknowledgeScanStart = false;
+    final transport = _transport(delegate, retryBackoff: const []);
+    await transport.start();
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      final failure = _bluetoothOff();
+      final done = expectLater(
+        transport.scan(),
+        emitsInOrder([emitsError(same(failure)), emitsDone]),
+      );
+      await pumpEventQueue(times: 20);
+      expect(delegate.scanCalls, attempt);
+      delegate.reportPhysicalStateError(failure);
+      await done.timeout(const Duration(seconds: 1));
+      await pumpEventQueue(times: 20);
+      expect(delegate.scanCalls, attempt);
+      expect(delegate.cancelCalls, attempt);
+      expect(transport.state, DebugSharedScanState.error);
+      await expectLater(transport.start(), throwsA(same(failure)));
+    }
+    expect(delegate.connectCalls, 0);
+    await transport.stop();
+  });
+
+  test(
+    'invalid services and external activity cannot rearm exhausted scan',
+    () async {
+      final delegate = _FakePhysicalTransport()
+        ..autoAcknowledgeScanStart = false;
+      final transport = _transport(delegate, retryBackoff: const []);
+      await transport.start();
+      final failure = _bluetoothOff();
+      final done = expectLater(
+        transport.scan(),
+        emitsInOrder([emitsError(same(failure)), emitsDone]),
+      );
+      delegate.reportPhysicalStateError(failure);
+      await done;
+      await expectLater(
+        transport.scan(withServices: const ['180D']),
+        emitsError(isArgumentError),
+      );
+      await expectLater(transport.start(), throwsA(same(failure)));
+      delegate.reportPhysicalScanStarted();
+      await expectLater(transport.scan(), emitsError(same(failure)));
+      expect(delegate.scanCalls, 1);
+      delegate.reportPhysicalScanStopped();
+      final subscription = transport.scan().listen((_) {});
+      await pumpEventQueue(times: 20);
+      expect(delegate.scanCalls, 2);
+      await subscription.cancel();
+      await transport.stop();
+    },
+  );
+
+  for (final newerFailure in [
+    'untyped',
+    'typed',
+    'done',
+    'synchronous',
+    'delay',
+  ]) {
+    test(
+      'newer $newerFailure failure cannot inherit Bluetooth-off recovery',
+      () async {
+        final retryGate = Completer<void>();
+        final delegate = _FakePhysicalTransport()
+          ..autoAcknowledgeScanStart = false;
+        final transport = _transport(
+          delegate,
+          retryBackoff: const [Duration.zero],
+          retryDelay: (_) => retryGate.future,
+        );
+        await transport.start();
+        final errors = <Object>[];
+        final done = Completer<void>();
+        transport.scan().listen(
+          (_) {},
+          onError: errors.add,
+          onDone: done.complete,
+        );
+        delegate.reportPhysicalStateError(_bluetoothOff());
+        await pumpEventQueue(times: 20);
+        if (newerFailure == 'synchronous') {
+          delegate.scanError = StateError('synthetic scan start failure');
+        }
+        if (newerFailure == 'delay') {
+          retryGate.completeError(StateError('synthetic delay failure'));
+        } else {
+          retryGate.complete();
+        }
+        await pumpEventQueue(times: 20);
+        if (newerFailure == 'untyped') {
+          delegate.reportPhysicalStateError(
+            StateError('synthetic unknown failure'),
+          );
+        } else if (newerFailure == 'typed') {
+          delegate.reportPhysicalStateError(
+            BleFailure(
+              kind: BleFailureKind.unexpected,
+              operation: BleOperation.scan,
+              diagnosticCode: 'synthetic.scan.failure',
+            ),
+          );
+        } else if (newerFailure == 'done') {
+          await delegate.completeCurrentScan();
+        }
+        await done.future.timeout(const Duration(seconds: 1));
+        final terminal = isA<BleFailure>().having(
+          (failure) => failure.kind,
+          'kind',
+          BleFailureKind.unexpected,
+        );
+        expect(errors.last, terminal);
+        final previousScanCalls = delegate.scanCalls;
+        await expectLater(transport.scan(), emitsError(terminal));
+        await expectLater(transport.start(), throwsA(terminal));
+        expect(delegate.scanCalls, previousScanCalls);
+        await transport.stop();
+      },
+    );
+  }
+
+  test(
+    'Bluetooth-off cancellation failure cannot rearm through a new scan',
+    () async {
+      final gate = Completer<void>();
+      final delegate = _FakePhysicalTransport()
+        ..autoAcknowledgeScanStart = false
+        ..cancelGate = gate
+        ..cancelError = StateError('synthetic cleanup failure');
+      final transport = _transport(delegate, retryBackoff: const []);
+      await transport.start();
+      delegate.reportPhysicalStateError(_bluetoothOff());
+      await pumpEventQueue(times: 20);
+      final pending = transport.scan().listen((_) {});
+      await pumpEventQueue(times: 20);
+      expect(delegate.scanCalls, 1);
+      gate.complete();
+      await pumpEventQueue(times: 20);
+      await expectLater(transport.scan(), emitsError(isStateError));
+      await expectLater(
+        transport.connectOnce('synthetic-target'),
+        throwsStateError,
+      );
+      expect(delegate.scanCalls, 1);
+      expect(delegate.connectCalls, 0);
+      await pending.cancel();
+      await expectLater(transport.stop(), throwsStateError);
+    },
+  );
 
   test('a pending final retry is not mistaken for exhaustion', () async {
     final retryGate = Completer<void>();
@@ -727,6 +925,12 @@ DebugSharedScanTransport _transport(
   );
 }
 
+BleFailure _bluetoothOff() => BleFailure(
+  kind: BleFailureKind.bluetoothOff,
+  operation: BleOperation.adapter,
+  diagnosticCode: 'synthetic.adapter.bluetooth_off',
+);
+
 BleScanResult _result(
   String deviceId,
   List<String> serviceUuids, {
@@ -756,6 +960,7 @@ final class _FakePhysicalTransport implements BleSingleAttemptTransport {
   bool autoAcknowledgeScanStart = true;
   bool? scanWasActiveAtConnect;
   Error? connectError;
+  Error? scanError;
   Error? cancelError;
   Completer<void>? cancelGate;
   int cancelCalls = 0;
@@ -781,6 +986,7 @@ final class _FakePhysicalTransport implements BleSingleAttemptTransport {
   }) {
     scanCalls += 1;
     latestScanAttempt += 1;
+    if (scanError != null) throw scanError!;
     requestedServices.add(List<String>.of(withServices ?? const <String>[]));
     late final StreamController<BleScanResult> controller;
     controller = StreamController<BleScanResult>(
@@ -837,6 +1043,10 @@ final class _FakePhysicalTransport implements BleSingleAttemptTransport {
 
   void acknowledgeCurrentScanStart() {
     _scanStartAcknowledgements.add(latestScanAttempt);
+  }
+
+  void acknowledgeScanAttempt(int attempt) {
+    _scanStartAcknowledgements.add(attempt);
   }
 
   @override

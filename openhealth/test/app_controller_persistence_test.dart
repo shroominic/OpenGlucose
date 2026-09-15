@@ -13,11 +13,2151 @@ import 'package:openglucose/src/cgm_driver_registry.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/libre_nfc_history.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
 import 'package:openglucose/src/sensor_archive.dart';
+import 'package:openglucose/src/sensor_history_repository.dart';
+import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'BLE-only backfill reaches controller archive without current glucose',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final fixture = _LibreArchiveFixture();
+      await fixture.prepare();
+      addTearDown(fixture.dispose);
+      final receivedAt = DateTime.now().toUtc();
+      final historical = _reading(
+        valueMgdl: 105,
+        sensorMinute: 165,
+        recordedAt: receivedAt.subtract(const Duration(minutes: 15)),
+      ).copyWith(isDisplayProvisional: true);
+      final committed = await fixture.repository.commitLibre(
+        fixture.binding,
+        sensorMinute: 180,
+        receivedAt: receivedAt,
+        historicalReadings: [
+          LibreGen1HistoricalReading(
+            reading: historical,
+            kind: LibreGen1BleHistoryKind.history,
+          ),
+        ],
+      );
+      final controller = await fixture.controller([committed.state.history]);
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      expect(controller.snapshot!.history, hasLength(33));
+      expect(controller.latestReading, isNull);
+      expect(controller.displayLatestReading, isNull);
+      expect(
+        controller.allHistoricalReadings.any(
+          (entry) => entry.sensorMinute == 165,
+        ),
+        isFalse,
+      );
+      expect(
+        fixture.repository.confirmedLibreLiveReading(
+          sensorHistoryKey(fixture.sensor),
+          historical,
+        ),
+        isNull,
+      );
+      await controller.disconnect();
+      expect(controller.archivedReadingCount, 33);
+      expect(controller.archivedSensors, hasLength(4));
+      final archive = controller.archivedSensors.singleWhere(
+        (entry) => !fixture.archiveBytes.containsKey(entry.historyKey),
+      );
+      final exported = controller.archivedSensorExportData(archive);
+      expect(exported.hasAcquisitionEvidence, isTrue);
+      final entry = exported.acquisitionEntries!.single;
+      expect(entry.origin, LibreHistoryOrigin.bleHistory);
+      expect(entry.timestampBasis, LibreHistoryTimestampBasis.sensorRelative);
+      expect(entry.firstReceivedAt, receivedAt);
+      expect(entry.reading.toJson(), historical.toJson());
+      fixture.expectArchiveBytes(fixture.archiveBytes);
+    },
+  );
+
+  test(
+    'uncertain NFC import keeps confirmed controller history readable',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final store = _LostAcknowledgementHistoryStore();
+      final fixture = _LibreArchiveFixture(store: store);
+      await fixture.prepare();
+      addTearDown(fixture.dispose);
+      final controller = await fixture.controller([fixture.readings]);
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      final scope = await controller.pauseForLibreHistoryRead(fixture.sensor);
+      final ticket = await fixture.repository.beginNfcHistoryImport(
+        fixture.binding,
+        connectionOwner: scope,
+      );
+      final receipt = DateTime.now().toUtc();
+      final key = sensorHistoryKey(fixture.sensor);
+      final before = store.getString(key);
+      store.loseNextWriteFor = key;
+      await expectLater(
+        fixture.repository.importNfcHistory(
+          ticket,
+          connectionOwner: scope,
+          scanMinute: 180,
+          scanReceivedAt: receipt,
+          samples: [
+            LibreNfcHistorySample(
+              reading: _reading(
+                valueMgdl: 150,
+                sensorMinute: 165,
+                recordedAt: receipt.subtract(const Duration(minutes: 15)),
+              ).copyWith(isDisplayProvisional: true),
+              firstReceivedAt: receipt,
+              origin: LibreHistoryOrigin.nfcHistory,
+            ),
+          ],
+        ),
+        throwsStateError,
+      );
+      expect(
+        store.getString(key),
+        isNot(before),
+        reason: 'The dispatched write lost its acknowledgement',
+      );
+      expect(fixture.repository.isQuarantined(key), isTrue);
+      expect(
+        () => fixture.repository.retainOnDisconnect(key),
+        throwsStateError,
+        reason: 'The display predicate cannot grant mutation authority',
+      );
+      expect(
+        controller.snapshot!.history.map((r) => r.toJson()),
+        fixture.readings.map((r) => r.toJson()),
+      );
+      expect(controller.latestReading, isNull);
+      expect(controller.displayLatestReading, isNull);
+      controller.refreshImportedLibreHistory(fixture.sensor);
+      expect(controller.snapshot!.history, hasLength(32));
+      expect(
+        controller.snapshot!.history.any((r) => r.sensorMinute == 165),
+        isFalse,
+      );
+      expect(controller.archivedReadingCount, 32);
+      fixture.expectArchiveBytes(fixture.archiveBytes);
+      scope.release(cleanupConfirmed: true);
+    },
+  );
+
+  test(
+    'NFC outage history is archived with provenance, never as live glucose',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final fixture = _LibreArchiveFixture();
+      await fixture.prepare();
+      addTearDown(fixture.dispose);
+      final owner = Object();
+      final ticket = await fixture.repository.beginNfcHistoryImport(
+        fixture.binding,
+        connectionOwner: owner,
+      );
+      final receivedAt = DateTime.now().toUtc();
+      final historical = _reading(
+        valueMgdl: 105,
+        sensorMinute: 165,
+        recordedAt: receivedAt.subtract(const Duration(minutes: 15)),
+      ).copyWith(isDisplayProvisional: true);
+      await fixture.repository.importNfcHistory(
+        ticket,
+        connectionOwner: owner,
+        scanMinute: 180,
+        scanReceivedAt: receivedAt,
+        samples: [
+          LibreNfcHistorySample(
+            reading: historical,
+            firstReceivedAt: receivedAt,
+            origin: LibreHistoryOrigin.nfcHistory,
+          ),
+        ],
+      );
+      final all = fixture.repository.readCommittedHistory(
+        sensorHistoryKey(fixture.sensor),
+      );
+      final controller = await fixture.controller([all]);
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      controller.refreshImportedLibreHistory(fixture.sensor);
+      expect(controller.snapshot!.history, hasLength(33));
+      expect(controller.latestReading, isNull);
+      expect(controller.displayLatestReading, isNull);
+      await controller.disconnect();
+      expect(controller.archivedReadingCount, 33);
+      expect(controller.archivedSensors, hasLength(4));
+      final newArchive = controller.archivedSensors.singleWhere(
+        (archive) => !fixture.archiveBytes.containsKey(archive.historyKey),
+      );
+      final entries = fixture.repository.readLibreHistoryEntries(
+        newArchive.historyKey,
+      );
+      expect(entries, hasLength(1));
+      expect(entries.single.origin, LibreHistoryOrigin.nfcHistory);
+      expect(
+        entries.single.timestampBasis,
+        LibreHistoryTimestampBasis.sensorRelative,
+      );
+      expect(entries.single.firstReceivedAt, receivedAt);
+      expect(entries.single.reading.toJson(), historical.toJson());
+      fixture.expectArchiveBytes(fixture.archiveBytes);
+    },
+  );
+
+  test(
+    'clear cannot succeed while a Libre archive delta is being saved',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final store = _GatedArchiveHealthStateStore();
+      final fixture = _LibreArchiveFixture(store: store);
+      await fixture.prepare();
+      final reading = _reading(
+        valueMgdl: 111,
+        sensorMinute: 132,
+        recordedAt: fixture.readings.last.recordedAt!.add(
+          const Duration(minutes: 1),
+        ),
+      );
+      await fixture.commit(reading);
+      final controller = await fixture.controller([
+        [...fixture.readings, reading],
+      ]);
+      addTearDown(() async {
+        if (!store.release.isCompleted) store.release.complete();
+        await fixture.dispose();
+      });
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      store.gateNextArchiveWrite = true;
+      final disconnect = controller.disconnect();
+      await store.started.future.timeout(const Duration(seconds: 1));
+      expect(await controller.clearPersistedHistory(), isFalse);
+      expect(
+        fixture.repository.readCommittedHistory(
+          sensorHistoryKey(fixture.sensor),
+        ),
+        hasLength(33),
+      );
+      store.release.complete();
+      await disconnect.timeout(const Duration(seconds: 1));
+      expect(controller.archivedReadingCount, 33);
+      expect(controller.snapshot, isNull);
+      fixture.expectArchiveBytes(fixture.archiveBytes);
+    },
+  );
+
+  for (final nestedVariant in [false, true]) {
+    test(
+      'AiDEX disconnect preserves malformed Libre manifest (variant=$nestedVariant)',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final id = base64Url
+            .encode(utf8.encode('libre2-gen1|libre2-gen1:unknown|1'))
+            .replaceAll('=', '');
+        final raw = jsonEncode([
+          {
+            'driverId': 'libre2-gen1',
+            'storageKey': 'libre2-gen1:unknown',
+            'historyKey': nestedVariant
+                ? 'openHealth.history.archive.$id'
+                : 'openHealth.history.archive.unresolved',
+            'readingCount': nestedVariant ? 0 : 1,
+            if (nestedVariant) ...{
+              'id': id,
+              'sensorVariant': {
+                'model': 42,
+                'unknownField': 'must remain unchanged',
+              },
+            },
+          },
+        ]);
+        final store = _ControllableHealthStateStore(
+          initialValues: {
+            'openHealth.sensorArchive': raw,
+            'openHealth.history.archive.unresolved':
+                'unresolved synthetic bytes',
+          },
+        );
+        final sensor = _multiDriverSensor(
+          driverId: 'aidex',
+          storageKey: 'synthetic-aidex',
+        );
+        final driver = _ControlledDriver([
+          _ControlledSession(_testSnapshot(sensor, stage: CgmSyncStage.ready)),
+        ], driverId: 'aidex');
+        final controller = CgmAppController(
+          preferences: await SharedPreferences.getInstance(),
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        expect(controller.archiveManifestUnavailable, isTrue);
+        await controller.connect(sensor, allowSessionActivation: false);
+        await controller.disconnect();
+        expect(controller.snapshot!.sensor.storageKey, sensor.storageKey);
+        expect(controller.lastError, isNotNull);
+        expect(controller.archivedReadingCount, isNull);
+        expect(store.getString('openHealth.lastSensor'), isNotNull);
+        expect(store.getString('openHealth.sensorArchive'), raw);
+        expect(
+          store.getString('openHealth.history.archive.unresolved'),
+          'unresolved synthetic bytes',
+        );
+        expect(
+          store.setAttempts.where(
+            (key) => key.startsWith('openHealth.history.archive.'),
+          ),
+          isEmpty,
+        );
+      },
+    );
+  }
+
+  for (final initial in [true, false]) {
+    test(
+      'fresh durable Libre timing saves selection ${initial ? 'initially' : 'from stream'} without glucose',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final store = _ControllableHealthStateStore();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'libre2-gen1:verified-timing',
+        );
+        final verified = _committedTimingSnapshot(
+          sensor,
+          elapsed: initial ? 20 : 80,
+        );
+        final session = _ControlledSession(
+          initial
+              ? verified
+              : _testSnapshot(sensor, stage: CgmSyncStage.syncing),
+        );
+        final driver = _ControlledDriver([session], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: await SharedPreferences.getInstance(),
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+        await controller.connect(sensor, allowSessionActivation: false);
+        if (!initial) {
+          expect(store.getString('openHealth.lastSensor'), isNull);
+          expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+          session.emit(verified);
+          await _drainEventQueue();
+        }
+        expect(store.getString('openHealth.lastSensor'), isNotNull);
+        expect(controller.snapshot!.stage, CgmSyncStage.syncing);
+        expect(controller.snapshot!.latestReading, isNull);
+        expect(controller.snapshot!.history, isEmpty);
+        expect(controller.allHistoricalReadings, isEmpty);
+        expect(controller.hasVerifiedLibreReceptionFor(sensor), isTrue);
+        expect(
+          controller.hasVerifiedLibreReceptionFor(
+            _multiDriverSensor(
+              driverId: sensor.driverId,
+              storageKey: 'libre2-gen1:wrong-receiver',
+            ),
+          ),
+          isFalse,
+        );
+      },
+    );
+  }
+
+  test(
+    'incomplete stale and unrelated timing cannot verify selection',
+    () async {
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'libre2-gen1:verified-timing',
+      );
+      final valid = _committedTimingSnapshot(sensor);
+      final ordinary = _multiDriverSensor(
+        driverId: 'aidex',
+        storageKey: 'synthetic-aidex',
+      );
+      final cases = <CgmSessionSnapshot>[
+        valid.copyWith(
+          metadata: {...valid.metadata}
+            ..remove('cgm.libre2.observationCommitted'),
+        ),
+        valid.copyWith(
+          stage: CgmSyncStage.ready,
+          metadata: {...valid.metadata}
+            ..remove('cgm.libre2.observationCommitted'),
+        ),
+        valid.copyWith(
+          metadata: {
+            ...valid.metadata,
+            'cgm.libre2.observationCommitted': 'false',
+          },
+        ),
+        for (final phase in ['awaitingPacket', 'subscribing', 'failed'])
+          valid.copyWith(
+            metadata: {...valid.metadata, 'cgm.libre2.phase': phase},
+          ),
+        for (final timing in ['stale', 'repeatedOrRegressed', 'unavailable'])
+          valid.copyWith(
+            metadata: {...valid.metadata, 'cgm.libre2.timing': timing},
+          ),
+        valid.copyWith(stage: CgmSyncStage.error),
+        valid.copyWith(sessionInfo: const CgmSessionInfo()),
+        _committedTimingSnapshot(sensor, elapsed: -1),
+        _committedTimingSnapshot(sensor, elapsed: 65536),
+        valid.copyWith(lastError: 'libre2.observationStorageUnavailable'),
+        _committedTimingSnapshot(ordinary),
+        _committedTimingSnapshot(
+          _multiDriverSensor(
+            driverId: sensor.driverId,
+            storageKey: 'libre2-gen1:another-target',
+          ),
+        ),
+        _committedTimingSnapshot(
+          _multiDriverSensor(
+            driverId: sensor.driverId,
+            storageKey: 'libre2-gen1:another-target',
+          ),
+        ).copyWith(stage: CgmSyncStage.ready),
+      ];
+      for (final candidate in cases) {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final store = _ControllableHealthStateStore();
+        final selected = candidate.sensor.driverId == 'aidex'
+            ? ordinary
+            : sensor;
+        final session = _ControlledSession(candidate);
+        final driver = _ControlledDriver([
+          session,
+        ], driverId: selected.driverId);
+        final controller = CgmAppController(
+          preferences: await SharedPreferences.getInstance(),
+          driver: driver,
+          healthStateStore: store,
+        );
+        await controller.initialize();
+        await controller.connect(selected, allowSessionActivation: false);
+        await _drainEventQueue();
+        expect(controller.hasVerifiedLibreReceptionFor(selected), isFalse);
+        expect(
+          store.getString('openHealth.lastSensor'),
+          isNull,
+          reason: '${candidate.stage}: ${candidate.metadata}',
+        );
+        controller.dispose();
+        await driver.close();
+      }
+    },
+  );
+
+  test(
+    'Disconnect removes a gated durable timing promotion and rejects late evidence',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final store = _GatedSelectionHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'libre2-gen1:cancel-timing',
+      );
+      final verified = _committedTimingSnapshot(sensor);
+      final session = _ControlledSession(verified);
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: await SharedPreferences.getInstance(),
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        if (!store.release.isCompleted) store.release.complete();
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      final connect = controller.connect(sensor, allowSessionActivation: false);
+      await store.started.future.timeout(const Duration(seconds: 1));
+      expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+      var finished = false;
+      final disconnect = controller.disconnect().then((_) => finished = true);
+      expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+      await _drainEventQueue();
+      expect(finished, isFalse);
+      store.release.complete();
+      await Future.wait([
+        connect,
+        disconnect,
+      ]).timeout(const Duration(seconds: 1));
+      session.emit(verified);
+      await _drainEventQueue();
+      expect(controller.snapshot, isNull);
+      expect(store.getString('openHealth.lastSensor'), isNull);
+      expect(controller.archivedSensors, isEmpty);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+    },
+  );
+
+  test('Libre reception completion is revoked during history pause', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final sensor = _multiDriverSensor(
+      driverId: 'libre2-gen1',
+      storageKey: 'libre2-gen1:pause-reception',
+    );
+    final session = _ControlledSession(_committedTimingSnapshot(sensor));
+    final driver = _ControlledDriver([session], driverId: sensor.driverId);
+    final controller = CgmAppController(
+      preferences: await SharedPreferences.getInstance(),
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+    );
+    addTearDown(() async {
+      controller.dispose();
+      await driver.close();
+    });
+    await controller.initialize();
+    await controller.connect(sensor, allowSessionActivation: false);
+    expect(controller.hasVerifiedLibreReceptionFor(sensor), isTrue);
+    final pendingPause = controller.pauseForLibreHistoryRead(sensor);
+    expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+    final pause = await pendingPause;
+    expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+    pause.release(cleanupConfirmed: true);
+    expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+    session.emit(_committedTimingSnapshot(sensor, elapsed: 21));
+    await _drainEventQueue();
+    expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+  });
+
+  test('Libre selection persistence failure cannot finish setup', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final sensor = _multiDriverSensor(
+      driverId: 'libre2-gen1',
+      storageKey: 'libre2-gen1:failed-reception-selection',
+    );
+    final session = _ControlledSession(_committedTimingSnapshot(sensor));
+    final driver = _ControlledDriver([session], driverId: sensor.driverId);
+    final controller = CgmAppController(
+      preferences: await SharedPreferences.getInstance(),
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(
+        failSetPrefix: 'openHealth.lastSensor',
+      ),
+    );
+    addTearDown(() async {
+      controller.dispose();
+      await driver.close();
+    });
+    await controller.initialize();
+    await controller.connect(sensor, allowSessionActivation: false);
+    expect(controller.lastError, isNotNull);
+    expect(controller.hasVerifiedLibreReceptionFor(sensor), isFalse);
+    expect(controller.hasLibreReceptionSetupFailureFor(sensor), isTrue);
+    expect(controller.snapshot!.stage, CgmSyncStage.syncing);
+    expect(controller.snapshot!.latestReading, isNull);
+  });
+
+  test('Libre archives only new points after migrated disconnects', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final fixture = _LibreArchiveFixture();
+    await fixture.prepare();
+    final original = Map<String, String>.of(fixture.archiveBytes);
+    final repeatedReceipt = fixture.readings.last.recordedAt!;
+    final newReading = _reading(
+      valueMgdl: 111,
+      sensorMinute: 132,
+      recordedAt: repeatedReceipt,
+    );
+    final rollbackReading = _reading(
+      valueMgdl: 112,
+      sensorMinute: 133,
+      recordedAt: fixture.readings.first.recordedAt!.subtract(
+        const Duration(hours: 1),
+      ),
+    );
+    final histories = [
+      fixture.readings,
+      [...fixture.readings, newReading],
+      [...fixture.readings, newReading],
+      [...fixture.readings, newReading, rollbackReading],
+    ];
+    final controller = await fixture.controller(histories);
+    addTearDown(fixture.dispose);
+    expect(
+      fixture.repository.readCommittedHistory(sensorHistoryKey(fixture.sensor)),
+      hasLength(32),
+    );
+
+    await controller.connect(fixture.sensor, allowSessionActivation: false);
+    await _drainEventQueue();
+    await controller.disconnect();
+    expect(controller.archivedSensors, hasLength(3));
+    expect(controller.archivedReadingCount, 32);
+    fixture.expectArchiveBytes(original);
+
+    await fixture.commit(newReading);
+    final orphanId = base64Url
+        .encode(
+          utf8.encode(
+            '${fixture.binding.driverId}|${fixture.binding.storageKey}|'
+            '${repeatedReceipt.millisecondsSinceEpoch + 1}',
+          ),
+        )
+        .replaceAll('=', '');
+    final orphanKey = 'openHealth.history.archive.$orphanId';
+    await fixture.store.setString(orphanKey, 'unresolved synthetic orphan');
+    await controller.connect(fixture.sensor, allowSessionActivation: false);
+    await _drainEventQueue();
+    await controller.disconnect();
+    expect(controller.archivedSensors, hasLength(4));
+    expect(controller.archivedReadingCount, 33);
+    fixture.expectArchiveBytes(original);
+    expect(fixture.store.getString(orphanKey), 'unresolved synthetic orphan');
+    final delta = controller.archivedSensors.singleWhere(
+      (entry) => !original.containsKey(entry.historyKey),
+    );
+    expect(
+      controller.readingsForArchivedSensor(delta).single.sensorMinute,
+      132,
+    );
+    expect(
+      controller.readingsForArchivedSensor(delta).single.recordedAt,
+      repeatedReceipt,
+    );
+    expect(delta.startedAt, isNull);
+    final afterFirstDelta = {
+      for (final entry in controller.archivedSensors)
+        entry.historyKey: fixture.store.getString(entry.historyKey)!,
+    };
+
+    await controller.connect(fixture.sensor, allowSessionActivation: false);
+    await _drainEventQueue();
+    await controller.disconnect();
+    expect(controller.archivedSensors, hasLength(4));
+    expect(controller.archivedReadingCount, 33);
+    fixture.expectArchiveBytes(afterFirstDelta);
+
+    await fixture.commit(rollbackReading);
+    await controller.connect(fixture.sensor, allowSessionActivation: false);
+    await _drainEventQueue();
+    await controller.disconnect();
+    expect(controller.archivedSensors, hasLength(5));
+    expect(controller.archivedReadingCount, 34);
+    fixture.expectArchiveBytes(afterFirstDelta);
+    final retained = await fixture.repository.loadLibre(fixture.binding);
+    expect(retained.observedMinute, 133);
+    expect(retained.history, hasLength(34));
+    expect(fixture.store.getString('openHealth.lastSensor'), isNull);
+  });
+
+  test(
+    'Libre archive delta preserves clear tombstone and prior archives',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final fixture = _LibreArchiveFixture();
+      await fixture.prepare();
+      final newReading = _reading(
+        valueMgdl: 111,
+        sensorMinute: 132,
+        recordedAt: fixture.readings.last.recordedAt!.add(
+          const Duration(minutes: 1),
+        ),
+      );
+      final controller = await fixture.controller([
+        fixture.readings,
+        [newReading],
+      ]);
+      addTearDown(fixture.dispose);
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      expect(await controller.clearPersistedHistory(), isTrue);
+      expect(controller.snapshot!.history, isEmpty);
+      await controller.disconnect();
+      expect(controller.archivedSensors, hasLength(3));
+      expect(controller.archivedReadingCount, 32);
+      fixture.expectArchiveBytes(fixture.archiveBytes);
+      final cleared = await fixture.repository.loadLibre(fixture.binding);
+      expect(cleared.history, isEmpty);
+      expect(cleared.observedMinute, 131);
+      final replay = await fixture.repository.commitLibre(
+        fixture.binding,
+        sensorMinute: 131,
+        receivedAt: newReading.recordedAt!,
+      );
+      expect(replay.advanced, isFalse);
+      await fixture.commit(newReading);
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      await controller.disconnect();
+      expect(controller.archivedReadingCount, 33);
+      expect(
+        (await fixture.repository.loadLibre(
+          fixture.binding,
+        )).history.single.sensorMinute,
+        132,
+      );
+      fixture.expectArchiveBytes(fixture.archiveBytes);
+    },
+  );
+
+  test(
+    'malformed related Libre archive keeps selection and all bytes',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final fixture = _LibreArchiveFixture();
+      await fixture.prepare();
+      final controller = await fixture.controller([fixture.readings]);
+      addTearDown(fixture.dispose);
+      await controller.connect(fixture.sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      final badKey = fixture.archiveBytes.keys.first;
+      await fixture.store.setString(badKey, '{"unknown":true}');
+      final before = Map<String, String>.of(fixture.store._values);
+      await controller.disconnect();
+      expect(controller.snapshot!.sensor.storageKey, fixture.sensor.storageKey);
+      expect(controller.snapshot!.stage, CgmSyncStage.disconnected);
+      expect(controller.lastError, isNotNull);
+      expect(controller.archivedReadingCount, isNull);
+      expect(controller.allHistoricalReadings, isEmpty);
+      expect(fixture.store.getString('openHealth.lastSensor'), isNotNull);
+      expect(
+        fixture.store.getString('openHealth.sensorArchive'),
+        before['openHealth.sensorArchive'],
+      );
+      for (final key in fixture.archiveBytes.keys) {
+        expect(fixture.store.getString(key), before[key]);
+      }
+      expect(
+        (await fixture.repository.loadLibre(fixture.binding)).observedMinute,
+        131,
+      );
+    },
+  );
+
+  test(
+    'Libre observation load failure keeps its closed code and blocks retry',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-load-failure',
+      );
+      final driver = _ControlledDriver(
+        [],
+        driverId: sensor.driverId,
+        connectError: const LibreGen1LiveException(
+          LibreGen1LiveFailure.observationStorageUnavailable,
+        ),
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(
+        controller.snapshot!.lastError,
+        'libre2.observationStorageUnavailable',
+      );
+      expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
+      expect(snapshotAllowsAutomaticReconnect(controller.snapshot!), isFalse);
+      expect(
+        primaryErrorTextForSnapshot(controller.snapshot!),
+        startsWith(
+          'Sensor updates stopped because readings could not be saved.',
+        ),
+      );
+      await controller.disconnect();
+      expect(controller.snapshot!.sensor.storageKey, sensor.storageKey);
+      expect(controller.archivedSensors, isEmpty);
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(store.getString('openHealth.lastSensor'), isNull);
+    },
+  );
+
+  test(
+    'uncertain Libre storage keeps selection and blocks reconnect',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final repository = SensorHistoryRepository(store);
+      final binding = LibreGen1ObservationBinding(
+        bootstrapId: 'synthetic-uncertain',
+        sensorBindingDigest: 'd' * 64,
+      );
+      final sensor = DiscoveredSensor(
+        driverId: binding.driverId,
+        deviceId: 'synthetic-device',
+        displayName: 'Libre 2',
+        storageKey: binding.storageKey,
+        rssi: -45,
+        capabilities: const CgmCapabilities(),
+      );
+      final reading = _reading(
+        valueMgdl: 110,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 10),
+      );
+      await repository.commitLibre(
+        binding,
+        sensorMinute: 100,
+        receivedAt: reading.recordedAt!,
+        reading: reading,
+      );
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [reading],
+          verifiedLibreReception: true,
+        ),
+        disconnectError: const LibreGen1LiveException(
+          LibreGen1LiveFailure.observationStorageUnavailable,
+        ),
+      );
+      final driver = _ControlledDriver([session], driverId: binding.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+        historyRepository: repository,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      expect(store.getString('openHealth.lastSensor'), isNotNull);
+      await controller.disconnect();
+      expect(controller.snapshot!.sensor.storageKey, sensor.storageKey);
+      expect(
+        controller.snapshot!.lastError,
+        'libre2.observationStorageUnavailable',
+      );
+      expect(controller.snapshot!.history, hasLength(1));
+      expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
+      expect(controller.archivedSensors, isEmpty);
+      expect(store.getString('openHealth.lastSensor'), isNotNull);
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(driver.connectedSensors, hasLength(1));
+    },
+  );
+
+  test(
+    'Libre disconnect archives readings but keeps the durable frontier',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final repository = SensorHistoryRepository(store);
+      final binding = LibreGen1ObservationBinding(
+        bootstrapId: 'synthetic-receiver',
+        sensorBindingDigest: 'a' * 64,
+      );
+      final sensor = DiscoveredSensor(
+        driverId: binding.driverId,
+        deviceId: 'synthetic-device',
+        displayName: 'Libre 2',
+        storageKey: binding.storageKey,
+        rssi: -45,
+        capabilities: const CgmCapabilities(),
+      );
+      final reading = _reading(
+        valueMgdl: 110,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 10),
+      );
+      await repository.commitLibre(
+        binding,
+        sensorMinute: 100,
+        receivedAt: reading.recordedAt!,
+        reading: reading,
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+      );
+      final driver = _ControlledDriver([session], driverId: binding.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+        historyRepository: repository,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      expect(controller.snapshot, isNull);
+      await controller.connect(sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      await controller.disconnect();
+      expect(controller.snapshot, isNull);
+      expect(store.getString('openHealth.lastSensor'), isNull);
+      expect(controller.archivedSensors, hasLength(1));
+      expect(
+        repository
+            .readCommittedHistory(sensorHistoryKey(sensor))
+            .single
+            .recordedAt,
+        reading.recordedAt,
+      );
+      final restartedRepository = SensorHistoryRepository(store);
+      final retained = await restartedRepository.loadLibre(binding);
+      expect(retained.observedMinute, 100);
+      expect(retained.history, hasLength(1));
+      final replay = await restartedRepository.commitLibre(
+        binding,
+        sensorMinute: 100,
+        receivedAt: reading.recordedAt!.add(const Duration(minutes: 1)),
+      );
+      expect(replay.advanced, isFalse);
+      expect(replay.state.history.single.recordedAt, reading.recordedAt);
+    },
+  );
+
+  test(
+    'Libre clear cannot redisplay or persist a stale driver snapshot',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final repository = SensorHistoryRepository(store);
+      final binding = LibreGen1ObservationBinding(
+        bootstrapId: 'synthetic-clear',
+        sensorBindingDigest: 'b' * 64,
+      );
+      final sensor = DiscoveredSensor(
+        driverId: binding.driverId,
+        deviceId: 'synthetic-device',
+        displayName: 'Libre 2',
+        storageKey: binding.storageKey,
+        rssi: -45,
+        capabilities: const CgmCapabilities(),
+      );
+      final reading = _reading(
+        valueMgdl: 110,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 10),
+      );
+      await repository.commitLibre(
+        binding,
+        sensorMinute: 100,
+        receivedAt: reading.recordedAt!,
+        reading: reading,
+      );
+      final stale = _testSnapshot(
+        sensor,
+        stage: CgmSyncStage.ready,
+        history: [reading],
+      );
+      final session = _ControlledSession(stale);
+      final driver = _ControlledDriver([session], driverId: binding.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+        historyRepository: repository,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      expect(await controller.clearPersistedHistory(), isTrue);
+      session.emit(stale);
+      await _drainEventQueue();
+      expect(controller.snapshot!.history, isEmpty);
+      expect(controller.latestReading, isNull);
+      await controller.disconnect();
+      final retained = await SensorHistoryRepository(store).loadLibre(binding);
+      expect(retained.observedMinute, 100);
+      expect(retained.history, isEmpty);
+    },
+  );
+
+  test(
+    'unselected durable Libre history is visible only after explicit connect',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final repository = SensorHistoryRepository(store);
+      final binding = LibreGen1ObservationBinding(
+        bootstrapId: 'synthetic-unpromoted',
+        sensorBindingDigest: 'c' * 64,
+      );
+      final sensor = DiscoveredSensor(
+        driverId: binding.driverId,
+        deviceId: 'synthetic-device',
+        displayName: 'Libre 2',
+        storageKey: binding.storageKey,
+        rssi: -45,
+        capabilities: const CgmCapabilities(),
+      );
+      final reading = _reading(
+        valueMgdl: 110,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 10),
+      );
+      await repository.commitLibre(
+        binding,
+        sensorMinute: 100,
+        receivedAt: reading.recordedAt!,
+        reading: reading,
+      );
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.error,
+          lastError: 'libre2.advertisementUnavailable',
+        ),
+      );
+      final driver = _ControlledDriver([session], driverId: binding.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+        historyRepository: repository,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await _drainEventQueue();
+      expect(controller.snapshot, isNull);
+      expect(driver.connectedSensors, isEmpty);
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(controller.snapshot!.history, hasLength(1));
+      expect(controller.latestReading, isNull);
+      expect(store.getString('openHealth.lastSensor'), isNull);
+    },
+  );
+
+  test(
+    'disposed controller closes a late driver result without attaching',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _testSensor();
+      final started = Completer<void>();
+      final release = Completer<void>();
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready),
+      );
+      final driver = _ControlledDriver(
+        [session],
+        connectStarted: started,
+        connectGate: release.future,
+      );
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+      await controller.initialize();
+      final connecting = controller.connect(
+        sensor,
+        allowSessionActivation: false,
+      );
+      await started.future.timeout(const Duration(seconds: 1));
+      final beforeDispose = notifications;
+      controller.dispose();
+      release.complete();
+      await connecting.timeout(const Duration(seconds: 1));
+      await _drainEventQueue();
+      expect(session.disconnectCalls, 1);
+      expect(session.hasSnapshotListener, isFalse);
+      expect(controller.snapshot?.stage, isNot(CgmSyncStage.ready));
+      expect(store.getString('openHealth.lastSensor'), isNull);
+      expect(notifications, beforeDispose);
+      await driver.close();
+    },
+  );
+
+  test(
+    'manual sync cannot request history after its session disconnects',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final started = Completer<void>();
+      final release = Completer<void>();
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready),
+        refreshLiveDataStarted: started,
+        refreshLiveDataGate: release.future,
+      );
+      final driver = _ControlledDriver([session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+      addTearDown(() async {
+        if (!release.isCompleted) release.complete();
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      final sync = controller.sync();
+      await started.future.timeout(const Duration(seconds: 1));
+      await controller.disconnect(clearSelection: false);
+      release.complete();
+      await sync.timeout(const Duration(seconds: 1));
+      expect(session.syncHistoryCalls, 0);
+      expect(session.disconnectCalls, 1);
+      expect(controller.lastError, isNull);
+    },
+  );
+
+  test(
+    'Disconnect cancels activation notice while read-only probe closes',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final started = Completer<void>();
+      final release = Completer<void>();
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.error,
+          metadata: {'activationRequired': 'true'},
+        ),
+        disconnectStarted: started,
+        disconnectGate: release.future,
+      );
+      final driver = _ControlledDriver([session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+      addTearDown(() async {
+        if (!release.isCompleted) release.complete();
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      final connect = controller.connect(sensor, allowSessionActivation: false);
+      await started.future.timeout(const Duration(seconds: 1));
+      expect(controller.activationRequiredSensor, isNull);
+      final disconnect = controller.disconnect();
+      release.complete();
+      await connect.timeout(const Duration(seconds: 1));
+      await disconnect.timeout(const Duration(seconds: 1));
+      expect(controller.activationRequiredSensor, isNull);
+      expect(controller.snapshot, isNull);
+      expect(session.disconnectCalls, 1);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(
+        driver
+            .connectedSensors
+            .single
+            .metadata[cgmAllowSessionActivationMetadataKey],
+        'false',
+      );
+    },
+  );
+
+  test(
+    'foreground refresh cannot reconnect during explicit disconnect',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'libre2-gen1:synthetic-disconnect-refresh-race',
+      );
+      final reading = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 9, 8),
+      );
+      final closeStarted = Completer<void>();
+      final closeRelease = Completer<void>();
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+        disconnectStarted: closeStarted,
+        disconnectGate: closeRelease.future,
+      );
+      final driver = _ControlledDriver([
+        session,
+        _ControlledSession(_testSnapshot(sensor, stage: CgmSyncStage.ready)),
+      ], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        if (!closeRelease.isCompleted) closeRelease.complete();
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      final disconnect = controller.disconnect();
+      await closeStarted.future.timeout(const Duration(seconds: 1));
+      await controller.ensureFreshData(force: true);
+      await controller.retryConnection();
+      expect(driver.connectedSensors, hasLength(1));
+      closeRelease.complete();
+      await disconnect.timeout(const Duration(seconds: 1));
+      await controller.ensureFreshData(force: true);
+      await _drainEventQueue();
+      expect(controller.snapshot, isNull);
+      expect(store.getString('openHealth.lastSensor'), isNull);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(
+        controller
+            .readingsForArchivedSensor(controller.archivedSensors.single)
+            .map((value) => value.toJson()),
+        [reading.toJson()],
+      );
+      expect(session.disconnectCalls, 1);
+    },
+  );
+
+  for (final cleanupFails in [false, true]) {
+    test(
+      'explicit disconnect owns late connection cleanup (fails=$cleanupFails)',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final store = _ControllableHealthStateStore();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'libre2-gen1:synthetic-late-connect',
+        );
+        final connectStarted = Completer<void>();
+        final connectRelease = Completer<void>();
+        final closeStarted = Completer<void>();
+        final closeRelease = Completer<void>();
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready),
+          disconnectStarted: closeStarted,
+          disconnectGate: closeRelease.future,
+          disconnectError: cleanupFails
+              ? const LibreGen1LiveException(
+                  LibreGen1LiveFailure.cleanupUnconfirmed,
+                )
+              : null,
+        );
+        final driver = _ControlledDriver(
+          [session],
+          driverId: sensor.driverId,
+          connectStarted: connectStarted,
+          connectGate: connectRelease.future,
+        );
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          if (!connectRelease.isCompleted) connectRelease.complete();
+          if (!closeRelease.isCompleted) closeRelease.complete();
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        final connect = controller.connect(
+          sensor,
+          allowSessionActivation: false,
+        );
+        await connectStarted.future.timeout(const Duration(seconds: 1));
+        var disconnected = false;
+        final disconnect = controller.disconnect().then(
+          (_) => disconnected = true,
+        );
+        await _drainEventQueue();
+        expect(disconnected, isFalse);
+        connectRelease.complete();
+        await closeStarted.future.timeout(const Duration(seconds: 1));
+        await connect.timeout(const Duration(seconds: 1));
+        expect(disconnected, isFalse);
+        expect(controller.snapshot?.stage, isNot(CgmSyncStage.ready));
+        expect(store.getString('openHealth.lastSensor'), isNull);
+        await controller.ensureFreshData(force: true);
+        expect(driver.connectedSensors, hasLength(1));
+        closeRelease.complete();
+        await disconnect.timeout(const Duration(seconds: 1));
+        expect(session.disconnectCalls, 1);
+        expect(controller.sensorConnectionCleanupUnconfirmed, cleanupFails);
+        if (cleanupFails) {
+          expect(controller.snapshot?.lastError, 'libre2.cleanupUnconfirmed');
+          expect(controller.archivedSensors, isEmpty);
+          await controller.connect(sensor, allowSessionActivation: false);
+        } else {
+          expect(controller.snapshot, isNull);
+          expect(controller.archivedSensors, isEmpty);
+        }
+        await controller.ensureFreshData(force: true);
+        expect(driver.connectedSensors, hasLength(1));
+        expect(store.getString('openHealth.lastSensor'), isNull);
+      },
+    );
+  }
+
+  for (final outcome in ['timeout', 'throws']) {
+    test(
+      'unresolved driver $outcome retains cleanup authority after Disconnect',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'synthetic-unresolved-connect',
+        );
+        final reading = _reading(
+          valueMgdl: 100,
+          sensorMinute: 100,
+          recordedAt: DateTime.utc(2026, 9, 9, 8),
+        );
+        final savedSelection = jsonEncode(sensor.toJson());
+        final savedHistory = jsonEncode([reading.toJson()]);
+        final store = _ControllableHealthStateStore(
+          initialValues: {
+            'openHealth.lastSensor': savedSelection,
+            _historyStateKey(sensor): savedHistory,
+          },
+        );
+        final started = Completer<void>();
+        final release = Completer<void>();
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready),
+        );
+        final driver = _ControlledDriver(
+          [session],
+          driverId: sensor.driverId,
+          connectStarted: started,
+          connectGate: release.future,
+        );
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+          pendingConnectionCleanupTimeout: const Duration(milliseconds: 10),
+        );
+        addTearDown(() async {
+          if (!release.isCompleted) release.complete();
+          await _drainEventQueue();
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        final connect = controller.connect(
+          sensor,
+          allowSessionActivation: false,
+        );
+        await started.future.timeout(const Duration(seconds: 1));
+        final disconnect = controller.disconnect();
+        if (outcome == 'throws') {
+          release.completeError(StateError('synthetic connect failure'));
+        }
+        await disconnect.timeout(const Duration(seconds: 1));
+        expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
+        expect(controller.snapshot?.lastError, 'libre2.cleanupUnconfirmed');
+        expect(controller.snapshot?.history.map((value) => value.toJson()), [
+          reading.toJson(),
+        ]);
+        expect(controller.archivedSensors, isEmpty);
+        expect(store.getString('openHealth.lastSensor'), savedSelection);
+        expect(store.getString(_historyStateKey(sensor)), savedHistory);
+        expect(session.disconnectCalls, 0);
+        await controller.connect(sensor, allowSessionActivation: false);
+        expect(driver.connectedSensors, hasLength(1));
+        if (outcome == 'timeout') release.complete();
+        await connect.timeout(const Duration(seconds: 1));
+        await _drainEventQueue();
+        expect(session.disconnectCalls, outcome == 'timeout' ? 1 : 0);
+        expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
+        expect(controller.snapshot?.stage, CgmSyncStage.error);
+        expect(controller.archivedSensors, isEmpty);
+        expect(store.getString('openHealth.lastSensor'), savedSelection);
+        await controller.ensureFreshData(force: true);
+        expect(driver.connectedSensors, hasLength(1));
+      },
+    );
+  }
+
+  test(
+    'explicit disconnect cancels reconnect during its old-session close',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final closeStarted = Completer<void>();
+      final closeRelease = Completer<void>();
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready),
+        disconnectStarted: closeStarted,
+        disconnectGate: closeRelease.future,
+      );
+      final driver = _ControlledDriver([session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+      addTearDown(() async {
+        if (!closeRelease.isCompleted) closeRelease.complete();
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor);
+      final reconnect = controller.retryConnection();
+      await closeStarted.future.timeout(const Duration(seconds: 1));
+      final disconnect = controller.disconnect();
+      closeRelease.complete();
+      await reconnect.timeout(const Duration(seconds: 1));
+      await disconnect.timeout(const Duration(seconds: 1));
+      expect(controller.snapshot, isNull);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(session.disconnectCalls, 1);
+      expect(controller.archivedSensors, hasLength(1));
+      await controller.ensureFreshData(force: true);
+      expect(driver.connectedSensors, hasLength(1));
+    },
+  );
+
+  testWidgets('Current sensor Disconnect ends the inline connection intent', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final store = _ControllableHealthStateStore();
+    final sensor = _multiDriverSensor(
+      driverId: 'libre2-gen1',
+      storageKey: 'libre2-gen1:synthetic-inline-disconnect',
+    );
+    final session = _ControlledSession(
+      _testSnapshot(
+        sensor,
+        stage: CgmSyncStage.connecting,
+        metadata: {'cgm.libre2.phase': 'awaitingAdvertisement'},
+      ),
+    );
+    final driver = _ScannableControlledDriver(sensor, session);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: store,
+    );
+    await controller.initialize();
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('connectSensorButton')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('connectButton-1')));
+    for (var index = 0; index < 20; index++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    expect(find.text('Looking for your Libre 2 sensor'), findsOneWidget);
+    await tester.tap(find.byTooltip('Settings'));
+    for (var index = 0; index < 20; index++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    await tester.tap(find.text('Current sensor'));
+    for (var index = 0; index < 20; index++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    final button = find.byKey(const ValueKey('disconnectSensorButton'));
+    await tester.ensureVisible(button);
+    await tester.pump();
+    await tester.tap(button);
+    for (var index = 0; index < 20; index++) {
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(session.disconnectCalls, 1);
+    expect(controller.archivedSensors, isEmpty);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pageBack();
+    for (var index = 0; index < 20; index++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(controller.snapshot, isNull);
+    expect(controller.archivedSensors, isEmpty);
+    expect(find.byKey(const ValueKey('connectSensorButton')), findsOneWidget);
+    expect(find.byKey(const ValueKey('sensorConnectionScreen')), findsNothing);
+    expect(driver.connectedSensors, hasLength(1));
+    expect(driver.scanCalls, 1);
+    await tester.pump(const Duration(seconds: 46));
+    expect(driver.connectedSensors, hasLength(1));
+    expect(driver.scanCalls, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await driver.close();
+  });
+
+  for (final clearSelection in [false, true]) {
+    test(
+      'disconnect retains final closed-session history (clear=$clearSelection)',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final store = _ControllableHealthStateStore();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'libre2-gen1:synthetic-final-history',
+        );
+        final original = _reading(
+          valueMgdl: 100,
+          sensorMinute: 100,
+          recordedAt: DateTime.utc(2026, 9, 9, 8),
+        ).copyWith(isDisplayProvisional: true);
+        final duplicate = original.copyWith(
+          valueMgdl: 105,
+          recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+        );
+        final finalReading = original.copyWith(
+          sensorMinute: 101,
+          valueMgdl: 101,
+          recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [original]),
+          snapshotOnDisconnect: _testSnapshot(
+            sensor,
+            stage: CgmSyncStage.disconnected,
+            history: [duplicate, finalReading],
+          ),
+        );
+        final driver = _ControlledDriver([session], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        await controller.connect(sensor, allowSessionActivation: false);
+        await controller.disconnect(clearSelection: clearSelection);
+        final retained = clearSelection
+            ? controller.readingsForArchivedSensor(
+                controller.archivedSensors.single,
+              )
+            : controller.snapshot!.history;
+        expect(retained.map((item) => item.toJson()), [
+          original.toJson(),
+          finalReading.toJson(),
+        ]);
+        if (!clearSelection) {
+          expect(jsonDecode(store.getString(_historyStateKey(sensor))!), [
+            original.toJson(),
+            finalReading.toJson(),
+          ]);
+          expect(controller.snapshot?.latestReading, isNull);
+        }
+      },
+    );
+  }
+
+  test(
+    'reconnect flushes a pending post-promotion reading before reload',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-debounced-history',
+      );
+      final original = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 9, 8),
+      ).copyWith(isDisplayProvisional: true);
+      final next = original.copyWith(
+        sensorMinute: 101,
+        valueMgdl: 101,
+        recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+      );
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [original],
+          verifiedLibreReception: true,
+        ),
+      );
+      final replacement = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+      );
+      final driver = _ControlledDriver([
+        session,
+        replacement,
+      ], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [original, next],
+          verifiedLibreReception: true,
+        ),
+      );
+      expect(
+        jsonDecode(store.getString(_historyStateKey(sensor))!) as List,
+        hasLength(1),
+      );
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(controller.snapshot!.history.map((item) => item.toJson()), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+      expect(jsonDecode(store.getString(_historyStateKey(sensor))!), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+    },
+  );
+
+  test(
+    'ordinary history flush retains memory and blocks reconnect until saved',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'controlled',
+        storageKey: 'synthetic-flush-failure',
+      );
+      final original = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 9, 8),
+      ).copyWith(isDisplayProvisional: true);
+      final next = original.copyWith(
+        sensorMinute: 101,
+        valueMgdl: 101,
+        recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [original]),
+      );
+      final replacement = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+      );
+      final driver = _ControlledDriver([
+        session,
+        replacement,
+      ], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [original, next],
+        ),
+      );
+      store.failSetPrefix = _historyStateKey(sensor);
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(controller.snapshot!.history.map((item) => item.toJson()), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+      expect(controller.lastError, contains('Saving history failed'));
+      expect(controller.archivedSensors, isEmpty);
+      expect(store.removeAttempts, isEmpty);
+      store.failSetPrefix = null;
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(driver.connectedSensors, hasLength(2));
+      expect(controller.snapshot!.history.map((item) => item.toJson()), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+      expect(jsonDecode(store.getString(_historyStateKey(sensor))!), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+    },
+  );
+
+  test(
+    'ordinary cache clear resets a failed flush before reconnect',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'controlled',
+        storageKey: 'synthetic-clear-after-flush-failure',
+      );
+      final reading = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 9, 8),
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+      );
+      final replacement = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+      );
+      final driver = _ControlledDriver([
+        session,
+        replacement,
+      ], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      store.failSetPrefix = _historyStateKey(sensor);
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(driver.connectedSensors, hasLength(1));
+      expect(controller.lastError, contains('Saving history failed'));
+      store.failSetPrefix = null;
+      expect(await controller.clearPersistedHistory(), isTrue);
+      expect(store.getString(_historyStateKey(sensor)), isNull);
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(driver.connectedSensors, hasLength(2));
+      expect(controller.snapshot!.history, isEmpty);
+      expect(store.getString(_historyStateKey(sensor)), isNull);
+    },
+  );
+
+  test(
+    'disconnect waits for an older in-flight history write before final flush',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _GatedHistoryHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-ordered-writes',
+      );
+      final original = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 9, 8),
+      ).copyWith(isDisplayProvisional: true);
+      final second = original.copyWith(
+        sensorMinute: 101,
+        recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+      );
+      final finalReading = original.copyWith(
+        sensorMinute: 102,
+        recordedAt: original.recordedAt!.add(const Duration(minutes: 2)),
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [original]),
+      );
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        if (!store.release.isCompleted) store.release.complete();
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      store.gateNextHistoryWrite = true;
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [original, second],
+        ),
+      );
+      await store.started.future.timeout(const Duration(seconds: 2));
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [original, second, finalReading],
+        ),
+      );
+      var completed = false;
+      final disconnect = controller.disconnect(clearSelection: false).then((_) {
+        completed = true;
+      });
+      await _drainEventQueue();
+      expect(completed, isFalse);
+      store.release.complete();
+      await disconnect.timeout(const Duration(seconds: 1));
+      expect(jsonDecode(store.getString(_historyStateKey(sensor))!), [
+        original.toJson(),
+        second.toJson(),
+        finalReading.toJson(),
+      ]);
+    },
+  );
+
+  for (final clearSelection in [false, true]) {
+    test(
+      'ordinary history deletion waits for queued writes (clear=$clearSelection)',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final store = _GatedHistoryHealthStateStore();
+        final sensor = _multiDriverSensor(
+          driverId: 'controlled',
+          storageKey: 'synthetic-queued-deletion',
+        );
+        final original = _reading(
+          valueMgdl: 100,
+          sensorMinute: 100,
+          recordedAt: DateTime.utc(2026, 9, 9, 8),
+        ).copyWith(isDisplayProvisional: true);
+        final next = original.copyWith(
+          sensorMinute: 101,
+          recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [original]),
+        );
+        final driver = _ControlledDriver([session], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          if (!store.release.isCompleted) store.release.complete();
+          await _drainEventQueue();
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        await controller.connect(sensor, allowSessionActivation: false);
+        store.gateNextHistoryWrite = true;
+        session.emit(
+          _testSnapshot(
+            sensor,
+            stage: CgmSyncStage.ready,
+            history: [original, next],
+          ),
+        );
+        await store.started.future.timeout(const Duration(seconds: 2));
+        var completed = false;
+        final deletion =
+            (clearSelection
+                    ? controller.disconnect(archiveWhenClearing: false)
+                    : controller.clearPersistedHistory().then((cleared) {
+                        expect(cleared, isTrue);
+                      }))
+                .then((_) => completed = true);
+        await _drainEventQueue();
+        expect(completed, isFalse);
+        expect(store.removeAttempts, isNot(contains(_historyStateKey(sensor))));
+        store.release.complete();
+        await deletion.timeout(const Duration(seconds: 1));
+        await _drainEventQueue();
+        expect(store.getString(_historyStateKey(sensor)), isNull);
+        expect(controller.archivedSensors, isEmpty);
+        expect(
+          store.getString('openHealth.lastSensor'),
+          clearSelection ? isNull : isNotNull,
+        );
+      },
+    );
+  }
+
+  for (final mismatch in ['driver', 'device', 'storage']) {
+    test(
+      'uncertain cleanup rejects final history with wrong $mismatch',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final store = _ControllableHealthStateStore();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'synthetic-uncertain-target',
+        );
+        final foreign = DiscoveredSensor(
+          driverId: mismatch == 'driver' ? 'other' : sensor.driverId,
+          deviceId: mismatch == 'device' ? 'other-device' : sensor.deviceId,
+          storageKey: mismatch == 'storage'
+              ? 'other-storage'
+              : sensor.storageKey,
+          displayName: 'Other synthetic sensor',
+          rssi: -42,
+          capabilities: sensor.capabilities,
+        );
+        final reading = _reading(
+          valueMgdl: 100,
+          sensorMinute: 100,
+          recordedAt: DateTime.utc(2026, 9, 9, 8),
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+          snapshotOnDisconnect: _testSnapshot(
+            foreign,
+            stage: CgmSyncStage.error,
+            history: [reading.copyWith(sensorMinute: 101)],
+          ),
+          disconnectError: const LibreGen1LiveException(
+            LibreGen1LiveFailure.cleanupUnconfirmed,
+          ),
+        );
+        final driver = _ControlledDriver([session], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        await controller.connect(sensor, allowSessionActivation: false);
+        await controller.disconnect();
+        expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
+        expect(controller.snapshot?.lastError, 'libre2.cleanupUnconfirmed');
+        expect(controller.snapshot!.sensor, sensor);
+        expect(controller.snapshot!.history.map((item) => item.toJson()), [
+          reading.toJson(),
+        ]);
+        expect(jsonDecode(store.getString(_historyStateKey(sensor))!), [
+          reading.toJson(),
+        ]);
+        expect(controller.archivedSensors, isEmpty);
+        expect(store.removeAttempts, isEmpty);
+      },
+    );
+
+    test(
+      'disconnect does not merge final history with wrong $mismatch',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'libre2-gen1:synthetic-target',
+        );
+        final foreign = DiscoveredSensor(
+          driverId: mismatch == 'driver' ? 'other' : sensor.driverId,
+          deviceId: mismatch == 'device' ? 'other-device' : sensor.deviceId,
+          storageKey: mismatch == 'storage'
+              ? 'other-storage'
+              : sensor.storageKey,
+          displayName: 'Other synthetic sensor',
+          rssi: -42,
+          capabilities: sensor.capabilities,
+        );
+        final reading = _reading(
+          valueMgdl: 100,
+          sensorMinute: 100,
+          recordedAt: DateTime.utc(2026, 9, 9, 8),
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+          snapshotOnDisconnect: _testSnapshot(
+            foreign,
+            stage: CgmSyncStage.disconnected,
+            history: [reading.copyWith(sensorMinute: 101)],
+          ),
+        );
+        final driver = _ControlledDriver([session], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: _ControllableHealthStateStore(),
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        await controller.connect(sensor, allowSessionActivation: false);
+        await controller.disconnect();
+        expect(
+          controller
+              .readingsForArchivedSensor(controller.archivedSensors.single)
+              .map((item) => item.toJson()),
+          [reading.toJson()],
+        );
+      },
+    );
+  }
+
+  test(
+    'elapsed-only nominal expiry does not retire the selected receiver',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final store = _ControllableHealthStateStore();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-elapsed-only',
+      );
+      final reading = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.utc(2026, 9, 9, 8),
+      );
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [reading],
+          sessionInfo: const CgmSessionInfo(
+            elapsedMinutes: 20160,
+            expectedLifetimeMinutes: 20160,
+          ),
+          verifiedLibreReception: true,
+        ),
+      );
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      expect(controller.snapshot, isNotNull);
+      expect(controller.archivedSensors, isEmpty);
+      expect(store.getString('openHealth.lastSensor'), isNotNull);
+      expect(store.removeAttempts, isEmpty);
+    },
+  );
+
+  for (final stopped in [false, true]) {
+    test(
+      'reported terminal lifecycle still archives (stopped=$stopped)',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final store = _ControllableHealthStateStore();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'libre2-gen1:synthetic-reported-terminal',
+        );
+        final reading = _reading(
+          valueMgdl: 100,
+          sensorMinute: 100,
+          recordedAt: DateTime.utc(2026, 9, 9, 8),
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+        );
+        final driver = _ControlledDriver([session], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+        await controller.initialize();
+        await controller.connect(sensor, allowSessionActivation: false);
+        session.emit(
+          _testSnapshot(
+            sensor,
+            stage: CgmSyncStage.ready,
+            history: [reading],
+            sessionInfo: CgmSessionInfo(sessionStopped: stopped),
+          ).copyWith(health: CgmHealthSnapshot(expired: !stopped)),
+        );
+        await _drainEventQueue();
+        expect(controller.snapshot, isNull);
+        expect(
+          controller.archivedSensors.single.reason,
+          SensorArchiveReason.expired,
+        );
+        expect(
+          controller
+              .readingsForArchivedSensor(controller.archivedSensors.single)
+              .map((item) => item.toJson()),
+          [reading.toJson()],
+        );
+        expect(store.getString('openHealth.lastSensor'), isNull);
+      },
+    );
+  }
+
   test(
     'unconfirmed Libre disconnect retains state and blocks new connections',
     () async {
@@ -34,7 +2174,12 @@ void main() {
         recordedAt: DateTime.now(),
       ).copyWith(isDisplayProvisional: true);
       final session = _ControlledSession(
-        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [reading],
+          verifiedLibreReception: true,
+        ),
         disconnectError: const LibreGen1LiveException(
           LibreGen1LiveFailure.cleanupUnconfirmed,
         ),
@@ -82,7 +2227,12 @@ void main() {
         recordedAt: DateTime.utc(2026, 9, 6, 8),
       ).copyWith(isDisplayProvisional: true);
       final session = _ControlledSession(
-        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [reading],
+          verifiedLibreReception: true,
+        ),
         disconnectError: const LibreGen1LiveException(
           LibreGen1LiveFailure.cleanupUnconfirmed,
         ),
@@ -143,7 +2293,7 @@ void main() {
       final store = _ControllableHealthStateStore();
       final sensor = _multiDriverSensor(
         driverId: 'libre2-gen1',
-        storageKey: 'synthetic-receiver',
+        storageKey: 'libre2-gen1:synthetic-receiver',
       );
       final readings = List.generate(
         3,
@@ -198,6 +2348,7 @@ void main() {
         healthStateStore: store,
       );
       await restored.initialize();
+      expect(restored.snapshot?.sessionInfo.sessionStart, isNull);
       await restored.connect(sensor, allowSessionActivation: false);
       expect(restored.visibleHistory, hasLength(3));
       expect(
@@ -213,6 +2364,7 @@ void main() {
       expect(restored.allHistoricalReadings, isEmpty);
       await restored.disconnect(clearSelection: true);
       final archive = restored.archivedSensors.single;
+      expect(archive.startedAt, isNull);
       expect(restored.readingsForArchivedSensor(archive), hasLength(3));
       expect(
         restored
@@ -223,6 +2375,283 @@ void main() {
       expect(restored.allHistoricalReadings, isEmpty);
       restored.dispose();
       await restoredDriver.close();
+    },
+  );
+
+  for (final scenario in <({String name, int sensorMinute, Duration age})>[
+    (
+      name: 'recent receipt and old sensor counter',
+      sensorMinute: 15 * 24 * 60 - 1,
+      age: const Duration(minutes: 2),
+    ),
+    (
+      name: 'old receipt and recent sensor counter',
+      sensorMinute: 100,
+      age: const Duration(days: 20),
+    ),
+    (
+      name: 'recent receipt and recent sensor counter',
+      sensorMinute: 100,
+      age: const Duration(minutes: 2),
+    ),
+  ]) {
+    test(
+      'Libre restore retains ${scenario.name} without inferred expiry',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'synthetic-unknown-lifecycle',
+        );
+        final reading = _reading(
+          valueMgdl: 100,
+          sensorMinute: scenario.sensorMinute,
+          recordedAt: DateTime.now().toUtc().subtract(scenario.age),
+        ).copyWith(isDisplayProvisional: true);
+        final store = _ControllableHealthStateStore(
+          initialValues: {
+            'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+            _historyStateKey(sensor): jsonEncode([reading.toJson()]),
+          },
+        );
+        final driver = _ControlledDriver([], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+
+        await controller.initialize();
+
+        expect(controller.snapshot?.stage, CgmSyncStage.connecting);
+        expect(controller.snapshot?.sessionInfo.sessionStart, isNull);
+        expect(controller.snapshot?.sessionInfo.elapsedMinutes, isNull);
+        expect(
+          computeSensorLifecycle(controller.snapshot!).phase,
+          SensorLifecyclePhase.unknown,
+        );
+        expect(controller.visibleHistory.map((item) => item.toJson()), [
+          reading.toJson(),
+        ]);
+        expect(controller.archivedSensors, isEmpty);
+        expect(store.getString('openHealth.lastSensor'), isNotNull);
+        expect(store.removeAttempts, isEmpty);
+        expect(controller.allHistoricalReadings, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'Libre reconnect preserves the first receipt of a retained minute',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-repeated-minute',
+      );
+      final original = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 2)),
+      ).copyWith(isDisplayProvisional: true);
+      final duplicate = original.copyWith(
+        valueMgdl: 101,
+        recordedAt: original.recordedAt!.add(const Duration(seconds: 30)),
+      );
+      final next = original.copyWith(
+        valueMgdl: 102,
+        sensorMinute: 101,
+        recordedAt: original.recordedAt!.add(const Duration(minutes: 1)),
+      );
+      final store = _ControllableHealthStateStore(
+        initialValues: {
+          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+          _historyStateKey(sensor): jsonEncode([original.toJson()]),
+        },
+      );
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [duplicate, next],
+        ),
+      );
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      expect(controller.visibleHistory.map((item) => item.toJson()), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+      session.emit(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: [duplicate, next],
+        ),
+      );
+      expect(controller.visibleHistory.map((item) => item.toJson()), [
+        original.toJson(),
+        next.toJson(),
+      ]);
+      await controller.disconnect(clearSelection: false);
+      final stored =
+          jsonDecode(store.getString(_historyStateKey(sensor))!) as List;
+      expect(stored, [original.toJson(), next.toJson()]);
+      expect(controller.allHistoricalReadings, isEmpty);
+    },
+  );
+
+  test(
+    'Libre duplicate latest does not renew retained reading freshness',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-current-duplicate',
+      );
+      final reference = DateTime.now().toUtc();
+      final original = _reading(
+        valueMgdl: 100,
+        sensorMinute: 100,
+        recordedAt: reference.subtract(const Duration(minutes: 20)),
+      ).copyWith(isDisplayProvisional: true);
+      final duplicate = original.copyWith(
+        valueMgdl: 105,
+        recordedAt: reference,
+      );
+      CgmSessionSnapshot snapshot(CgmReading? reading, CgmSyncStage stage) =>
+          CgmSessionSnapshot(
+            stage: stage,
+            statusText: stage.name,
+            sensor: sensor,
+            capabilities: sensor.capabilities,
+            latestReading: reading,
+            history: [if (reading != null) reading],
+            metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+          );
+      final store = _ControllableHealthStateStore(
+        initialValues: {
+          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+          _historyStateKey(sensor): jsonEncode([original.toJson()]),
+        },
+      );
+      final session = _ControlledSession(
+        snapshot(duplicate, CgmSyncStage.ready),
+      );
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+
+      await controller.initialize();
+      expect(controller.latestReading, isNull);
+      expect(controller.displayLatestReading, isNull);
+      await controller.connect(sensor, allowSessionActivation: false);
+      await _drainEventQueue();
+      expect(controller.snapshot?.latestReading?.toJson(), original.toJson());
+      expect(controller.latestReading?.toJson(), original.toJson());
+      expect(controller.displayLatestReading?.toJson(), original.toJson());
+      expect(
+        reference.difference(controller.latestReading!.recordedAt!),
+        const Duration(minutes: 20),
+      );
+      session.emit(snapshot(duplicate, CgmSyncStage.ready));
+      expect(controller.latestReading?.toJson(), original.toJson());
+
+      for (final state in [
+        snapshot(null, CgmSyncStage.ready),
+        snapshot(
+          duplicate.copyWith(source: CgmRecordSource.raw),
+          CgmSyncStage.ready,
+        ),
+        snapshot(duplicate.copyWith(valueMgdl: -1), CgmSyncStage.ready),
+        snapshot(duplicate, CgmSyncStage.syncing),
+        snapshot(duplicate, CgmSyncStage.disconnected),
+        snapshot(duplicate, CgmSyncStage.error),
+      ]) {
+        session.emit(state);
+        expect(controller.snapshot?.latestReading, isNull);
+        expect(controller.latestReading, isNull);
+        expect(controller.displayLatestReading, isNull);
+        expect(controller.snapshot!.history.first.toJson(), original.toJson());
+      }
+      await controller.disconnect(clearSelection: false);
+    },
+  );
+
+  test(
+    'invalid retained Libre history blocks restore without rewriting data',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-invalid-retained',
+      );
+      final invalid = _reading(
+        valueMgdl: -1,
+        sensorMinute: 100,
+        recordedAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
+      ).copyWith(isDisplayProvisional: true);
+      final incoming = invalid.copyWith(
+        valueMgdl: 100,
+        recordedAt: DateTime.now(),
+      );
+      final store = _ControllableHealthStateStore(
+        initialValues: {
+          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+          _historyStateKey(sensor): jsonEncode([invalid.toJson()]),
+        },
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [incoming]),
+      );
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await expectLater(controller.initialize(), throwsStateError);
+      expect(driver.connectedSensors, isEmpty);
+      expect(
+        store.getString(_historyStateKey(sensor)),
+        jsonEncode([invalid.toJson()]),
+      );
+      expect(
+        store.getString('openHealth.lastSensor'),
+        jsonEncode(sensor.toJson()),
+      );
+      expect(store.removeAttempts, isEmpty);
     },
   );
 
@@ -666,6 +3095,126 @@ void main() {
     await driver.close();
   });
 
+  for (final stage in [CgmSyncStage.error, CgmSyncStage.disconnected]) {
+    test(
+      'restored Libre $stage offers explicit saved-sensor recovery',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = _multiDriverSensor(
+          driverId: 'libre2-gen1',
+          storageKey: 'synthetic-manual-recovery',
+        );
+        final store = _ControllableHealthStateStore(
+          initialValues: {'openHealth.lastSensor': jsonEncode(sensor.toJson())},
+        );
+        final failed = _ControlledSession(
+          _testSnapshot(
+            sensor,
+            stage: stage,
+            lastError: 'libre2.advertisementUnavailable',
+            metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'},
+          ),
+        );
+        final retry = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+        );
+        final driver = _ControlledDriver([
+          failed,
+          retry,
+        ], driverId: sensor.driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+          reconnectDelay: Duration.zero,
+        );
+        addTearDown(() async {
+          controller.dispose();
+          await driver.close();
+        });
+
+        await controller.initialize();
+        expect(controller.connectionRequiresUserAction, isFalse);
+        await controller.connect(sensor, allowSessionActivation: false);
+        await _drainEventQueue();
+        expect(controller.connectionRequiresUserAction, isTrue);
+        expect(controller.sensorConnectionCleanupUnconfirmed, isFalse);
+        expect(driver.connectedSensors, hasLength(1));
+        await controller.retryConnection();
+        expect(driver.connectedSensors, hasLength(2));
+        expect(
+          driver
+              .connectedSensors
+              .last
+              .metadata[cgmAllowSessionActivationMetadataKey],
+          'false',
+        );
+        expect(controller.connectionRequiresUserAction, isFalse);
+        await controller.disconnect(clearSelection: false);
+      },
+    );
+  }
+
+  test(
+    'Libre manual recovery requires terminal policy and known cleanup',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'libre2-gen1',
+        storageKey: 'synthetic-manual-policy',
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
+      );
+      final driver = _ControlledDriver([session], driverId: sensor.driverId);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await driver.close();
+      });
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      for (final scenario in [
+        (
+          stage: CgmSyncStage.connecting,
+          code: 'libre2.advertisementUnavailable',
+          policy: 'false',
+        ),
+        (
+          stage: CgmSyncStage.error,
+          code: 'libre2.advertisementUnavailable',
+          policy: 'true',
+        ),
+        (stage: CgmSyncStage.error, code: '', policy: 'false'),
+        (
+          stage: CgmSyncStage.error,
+          code: 'libre2.cleanupUnconfirmed',
+          policy: 'false',
+        ),
+      ]) {
+        session.emit(
+          _testSnapshot(
+            sensor,
+            stage: scenario.stage,
+            lastError: scenario.code,
+            metadata: {
+              cgmAutomaticReconnectAllowedMetadataKey: scenario.policy,
+            },
+          ),
+        );
+        expect(controller.connectionRequiresUserAction, isFalse);
+      }
+      expect(controller.sensorConnectionCleanupUnconfirmed, isTrue);
+      expect(driver.connectedSensors, hasLength(1));
+    },
+  );
+
   test('unclassified initial BLE setup failure does not auto-retry', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -754,7 +3303,7 @@ void main() {
     );
     expect(
       find.byKey(const ValueKey<String>('chooseAnotherSensorButton')),
-      findsOneWidget,
+      findsNothing,
     );
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -2821,6 +5370,121 @@ class _DisconnectFailingSession implements CgmSession {
   }
 }
 
+class _LibreArchiveFixture {
+  _LibreArchiveFixture({_ControllableHealthStateStore? store})
+    : store = store ?? _ControllableHealthStateStore();
+
+  final binding = LibreGen1ObservationBinding(
+    bootstrapId: 'synthetic-delta-receiver',
+    sensorBindingDigest: 'b' * 64,
+  );
+  late final sensor = DiscoveredSensor(
+    driverId: binding.driverId,
+    deviceId: 'synthetic-delta-device',
+    displayName: 'Libre 2',
+    storageKey: binding.storageKey,
+    rssi: -45,
+    capabilities: const CgmCapabilities(),
+  );
+  final _ControllableHealthStateStore store;
+  late final repository = SensorHistoryRepository(store);
+  final readings = List<CgmReading>.generate(
+    32,
+    (index) => _reading(
+      valueMgdl: 110,
+      sensorMinute: 100 + index,
+      recordedAt: DateTime.utc(2026, 9, 1, 12).add(Duration(minutes: index)),
+    ),
+  );
+  final archiveBytes = <String, String>{};
+  CgmAppController? _controller;
+  _ControlledDriver? _driver;
+
+  Future<void> prepare() async {
+    final archives = <ArchivedSensorSession>[];
+    for (final range in [(0, 10), (10, 20), (20, 32)]) {
+      final segment = readings.sublist(range.$1, range.$2);
+      final receipt = segment.last.recordedAt!;
+      final id = base64Url
+          .encode(
+            utf8.encode(
+              '${binding.driverId}|${binding.storageKey}|${receipt.millisecondsSinceEpoch}',
+            ),
+          )
+          .replaceAll('=', '');
+      final key = 'openHealth.history.archive.$id';
+      final archive = ArchivedSensorSession(
+        id: id,
+        historyKey: key,
+        storageKey: binding.storageKey,
+        driverId: binding.driverId,
+        deviceId: sensor.deviceId,
+        displayName: sensor.displayName,
+        reason: SensorArchiveReason.disconnected,
+        readingCount: segment.length,
+        endedAt: receipt,
+        lastReadingAt: receipt,
+      );
+      final raw = jsonEncode(segment.map((entry) => entry.toJson()).toList());
+      archiveBytes[key] = raw;
+      await store.setString(key, raw);
+      archives.add(archive);
+    }
+    await store.setString(
+      'openHealth.sensorArchive',
+      jsonEncode(archives.map((entry) => entry.toJson()).toList()),
+    );
+    await repository.loadLibre(binding);
+  }
+
+  Future<CgmAppController> controller(List<List<CgmReading>> histories) async {
+    final driver = _ControlledDriver(
+      [
+        for (final history in histories)
+          _ControlledSession(
+            _testSnapshot(
+              sensor,
+              stage: CgmSyncStage.ready,
+              history: history,
+              verifiedLibreReception: true,
+            ),
+          ),
+      ],
+      driverId: binding.driverId,
+    );
+    _driver = driver;
+    final controller = CgmAppController(
+      preferences: await SharedPreferences.getInstance(),
+      driver: driver,
+      healthStateStore: store,
+      historyRepository: repository,
+    );
+    _controller = controller;
+    await controller.initialize();
+    return controller;
+  }
+
+  Future<void> commit(CgmReading reading) async {
+    await repository.commitLibre(
+      binding,
+      sensorMinute: reading.sensorMinute!,
+      receivedAt: reading.recordedAt!,
+      reading: reading,
+    );
+  }
+
+  void expectArchiveBytes(Map<String, String> expected) {
+    for (final entry in expected.entries) {
+      expect(store.getString(entry.key), entry.value);
+    }
+  }
+
+  Future<void> dispose() async {
+    _controller?.dispose();
+    await _driver?.close();
+  }
+}
+
 class _ControllableHealthStateStore implements HealthStateStore {
   _ControllableHealthStateStore({
     this.failSetPrefix,
@@ -2861,6 +5525,19 @@ class _ControllableHealthStateStore implements HealthStateStore {
   }
 }
 
+class _LostAcknowledgementHistoryStore extends _ControllableHealthStateStore {
+  String? loseNextWriteFor;
+
+  @override
+  Future<void> setString(String key, String value) async {
+    await super.setString(key, value);
+    if (key == loseNextWriteFor) {
+      loseNextWriteFor = null;
+      throw StateError('Synthetic write acknowledgement lost');
+    }
+  }
+}
+
 class _GatedSelectionHealthStateStore extends _ControllableHealthStateStore {
   final started = Completer<void>();
   final release = Completer<void>();
@@ -2874,6 +5551,52 @@ class _GatedSelectionHealthStateStore extends _ControllableHealthStateStore {
     await super.setString(key, value);
   }
 }
+
+class _GatedHistoryHealthStateStore extends _ControllableHealthStateStore {
+  bool gateNextHistoryWrite = false;
+  final started = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<void> setString(String key, String value) async {
+    if (gateNextHistoryWrite && key.startsWith('openHealth.history.')) {
+      gateNextHistoryWrite = false;
+      started.complete();
+      await release.future;
+    }
+    await super.setString(key, value);
+  }
+}
+
+class _GatedArchiveHealthStateStore extends _ControllableHealthStateStore {
+  bool gateNextArchiveWrite = false;
+  final started = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<void> setString(String key, String value) async {
+    if (gateNextArchiveWrite && key.startsWith('openHealth.history.archive.')) {
+      gateNextArchiveWrite = false;
+      started.complete();
+      await release.future;
+    }
+    await super.setString(key, value);
+  }
+}
+
+CgmSessionSnapshot _committedTimingSnapshot(
+  DiscoveredSensor sensor, {
+  int elapsed = 20,
+}) => _testSnapshot(
+  sensor,
+  stage: CgmSyncStage.syncing,
+  sessionInfo: CgmSessionInfo(elapsedMinutes: elapsed),
+  metadata: const {
+    'cgm.libre2.phase': 'validatedPacket',
+    'cgm.libre2.timing': 'observed',
+    'cgm.libre2.observationCommitted': 'true',
+  },
+);
 
 String _historyStateKey(DiscoveredSensor sensor) => sensor.driverId == 'aidex'
     ? 'openHealth.history.${sensor.storageKey}'
@@ -2924,7 +5647,12 @@ CgmSessionSnapshot _testSnapshot(
   CgmSessionInfo sessionInfo = const CgmSessionInfo(),
   Map<String, String> metadata = const <String, String>{},
   String? lastError,
+  bool verifiedLibreReception = false,
 }) {
+  assert(
+    !verifiedLibreReception || sensor.driverId == 'libre2-gen1',
+    'Only a Libre fixture may claim verified Libre reception.',
+  );
   return CgmSessionSnapshot(
     stage: stage,
     statusText: stage.name,
@@ -2932,8 +5660,21 @@ CgmSessionSnapshot _testSnapshot(
     capabilities: sensor.capabilities,
     history: history,
     latestReading: history.isEmpty ? null : history.last,
-    sessionInfo: sessionInfo,
-    metadata: metadata,
+    sessionInfo: verifiedLibreReception
+        ? sessionInfo.copyWith(
+            elapsedMinutes:
+                sessionInfo.elapsedMinutes ??
+                (history.isEmpty ? 100 : history.last.sensorMinute ?? 100),
+          )
+        : sessionInfo,
+    metadata: {
+      if (verifiedLibreReception) ...{
+        'cgm.libre2.observationCommitted': 'true',
+        'cgm.libre2.phase': 'validatedPacket',
+        'cgm.libre2.timing': 'observed',
+      },
+      ...metadata,
+    },
     lastError: lastError,
   );
 }
@@ -2945,11 +5686,20 @@ Future<void> _drainEventQueue() async {
 }
 
 class _ControlledDriver implements CgmDriver {
-  _ControlledDriver(this._sessions, {this.driverId = 'controlled'});
+  _ControlledDriver(
+    this._sessions, {
+    this.driverId = 'controlled',
+    this.connectStarted,
+    this.connectGate,
+    this.connectError,
+  });
 
   final List<_ControlledSession> _sessions;
   final List<DiscoveredSensor> connectedSensors = <DiscoveredSensor>[];
   int _nextSession = 0;
+  final Completer<void>? connectStarted;
+  final Future<void>? connectGate;
+  final Exception? connectError;
 
   @override
   final String driverId;
@@ -2963,6 +5713,9 @@ class _ControlledDriver implements CgmDriver {
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async {
     connectedSensors.add(sensor);
+    if (connectStarted?.isCompleted == false) connectStarted!.complete();
+    if (connectGate != null) await connectGate;
+    if (connectError case final error?) throw error;
     return _sessions[_nextSession++];
   }
 
@@ -2970,6 +5723,23 @@ class _ControlledDriver implements CgmDriver {
     for (final session in _sessions) {
       await session.close();
     }
+  }
+}
+
+final class _ScannableControlledDriver extends _ControlledDriver {
+  _ScannableControlledDriver(this.sensor, _ControlledSession session)
+    : super([session], driverId: sensor.driverId);
+
+  final DiscoveredSensor sensor;
+  int scanCalls = 0;
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) async* {
+    scanCalls++;
+    yield sensor;
   }
 }
 
@@ -3044,21 +5814,35 @@ class _ControlledSession implements CgmSession {
   _ControlledSession(
     this._current, {
     this.disconnectError,
+    this.disconnectStarted,
+    this.disconnectGate,
+    this.refreshLiveDataStarted,
+    this.refreshLiveDataGate,
     CgmSessionSnapshot? snapshotOnSnapshotsAccess,
     CgmSessionSnapshot? snapshotOnRefreshLiveData,
+    CgmSessionSnapshot? snapshotOnDisconnect,
   }) : _snapshotOnSnapshotsAccess = snapshotOnSnapshotsAccess,
-       _snapshotOnRefreshLiveData = snapshotOnRefreshLiveData;
+       _snapshotOnRefreshLiveData = snapshotOnRefreshLiveData,
+       _snapshotOnDisconnect = snapshotOnDisconnect;
 
   CgmSessionSnapshot _current;
   final Exception? disconnectError;
+  final Completer<void>? disconnectStarted;
+  final Future<void>? disconnectGate;
+  final Completer<void>? refreshLiveDataStarted;
+  final Future<void>? refreshLiveDataGate;
+  int disconnectCalls = 0;
   CgmSessionSnapshot? _snapshotOnSnapshotsAccess;
   CgmSessionSnapshot? _snapshotOnRefreshLiveData;
+  CgmSessionSnapshot? _snapshotOnDisconnect;
   int refreshLiveDataCalls = 0;
   int syncHistoryCalls = 0;
   int refreshDiagnosticsCalls = 0;
   int fetchCalibrationsCalls = 0;
   final StreamController<CgmSessionSnapshot> _snapshots =
       StreamController<CgmSessionSnapshot>.broadcast(sync: true);
+
+  bool get hasSnapshotListener => _snapshots.hasListener;
 
   void emit(CgmSessionSnapshot snapshot) {
     _current = snapshot;
@@ -3091,6 +5875,14 @@ class _ControlledSession implements CgmSession {
 
   @override
   Future<void> disconnect() async {
+    disconnectCalls++;
+    if (disconnectStarted?.isCompleted == false) disconnectStarted!.complete();
+    if (disconnectGate != null) await disconnectGate;
+    final finalSnapshot = _snapshotOnDisconnect;
+    if (finalSnapshot != null) {
+      _snapshotOnDisconnect = null;
+      _current = finalSnapshot;
+    }
     final error = disconnectError;
     if (error != null) throw error;
   }
@@ -3113,6 +5905,10 @@ class _ControlledSession implements CgmSession {
   @override
   Future<void> refreshLiveData() async {
     refreshLiveDataCalls += 1;
+    if (refreshLiveDataStarted?.isCompleted == false) {
+      refreshLiveDataStarted!.complete();
+    }
+    if (refreshLiveDataGate != null) await refreshLiveDataGate;
     final refreshedSnapshot = _snapshotOnRefreshLiveData;
     if (refreshedSnapshot != null) {
       _snapshotOnRefreshLiveData = null;

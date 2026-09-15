@@ -15,6 +15,13 @@ val releaseSigningConfigured = listOf(
     releaseKeyPassword,
 ).all { it.isPresent && it.get().isNotBlank() }
 
+// Explicit read-only integration lane. No activation/streaming or raw capture.
+val libreNfcReadOnly = providers.gradleProperty("openGlucoseLibreNfcReadOnly")
+    .map { value ->
+        require(value == "true" || value == "false") { "openGlucoseLibreNfcReadOnly must be true or false" }
+        value
+    }.getOrElse("false")
+
 gradle.taskGraph.whenReady {
     val requestsReleaseArtifact = allTasks.any { task ->
         task.project == project && task.name.contains("release", ignoreCase = true)
@@ -59,6 +66,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["openGlucoseLibreNfcReadOnly"] = libreNfcReadOnly
     }
 
     buildTypes {

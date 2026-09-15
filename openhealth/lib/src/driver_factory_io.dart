@@ -12,14 +12,22 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'debug_shared_scan_transport.dart';
+import 'app_controller.dart';
 import 'cgm_driver_registry.dart';
 import 'demo_driver.dart';
 import 'local_ble_trace_sink.dart';
+import 'libre_gen1_receiver_composition.dart';
 import 'libre_gen1_secure_store.dart';
+import 'libre_gen1_fresh_nfc_history.dart';
+import 'libre2_nfc_setup.dart';
+import 'libre_nfc_history_sync.dart';
+import 'libre_nfc_history_tools.dart';
 import 'mock_scenarios.dart';
 import 'protocol_capture_observation_driver.dart';
 import 'protocol_capture_profile.dart';
 import 'protocol_capture_status.dart';
+import 'sensor_connection_policy.dart';
+import 'sensor_history_repository.dart';
 import 'yuwell_secure_session_store.dart';
 
 /// When built with `--dart-define=OG_DEMO=true`, native/simulator builds use the
@@ -82,6 +90,11 @@ bool _protocolCaptureActive = false;
 String? _protocolCaptureProcessSessionId;
 LibreGen1Driver? _protocolLibreDriver;
 LibreGen1GlucoseDecoderProvider? _protocolLibreGlucoseDecoderProvider;
+LibreGen1ReceiverComposition? _recorderFreeLibreReceiver;
+LibreGen1ObservationStore? _libreObservationStore;
+final _privateRecorderFreeDecoder =
+    PrivateRecorderFreeLibreDecoderConfiguration();
+bool _platformConfigurationStarted = false;
 
 /// Optional private-bench injection. Normal main imports no decoder adapter.
 /// This does not start capture, read calibration, or touch a sensor.
@@ -94,6 +107,51 @@ void configurePrivateLibreGlucoseDecoder(
   _protocolLibreGlucoseDecoderProvider = provider;
 }
 
+/// Private entry only. No GPL adapter is imported through this provider seam.
+/// Native capability is still required when the driver is later composed.
+void configurePrivateRecorderFreeLibreGlucoseDecoder(
+  LibreGen1GlucoseDecoderProvider provider,
+) {
+  _privateRecorderFreeDecoder.configure(
+    provider,
+    supported: kDebugMode && !kIsWeb && Platform.isAndroid,
+    incompatibleMode:
+        kOgDemo ||
+        kOgProtocolTrace ||
+        kOgProtocolCaptureLiveAidex ||
+        kOgProtocolCaptureLiveYuwell ||
+        kOgProtocolCaptureLiveLibre ||
+        _protocolCaptureActive ||
+        _protocolLibreGlucoseDecoderProvider != null,
+    configurationStarted: _platformConfigurationStarted,
+  );
+}
+
+/// Small per-process configuration state, separately testable without native
+/// code or mutable platform overrides. It never starts a driver or reads data.
+@visibleForTesting
+final class PrivateRecorderFreeLibreDecoderConfiguration {
+  LibreGen1GlucoseDecoderProvider? _provider;
+  LibreGen1GlucoseDecoderProvider? get provider => _provider;
+
+  void configure(
+    LibreGen1GlucoseDecoderProvider provider, {
+    required bool supported,
+    required bool incompatibleMode,
+    required bool configurationStarted,
+  }) {
+    if (!supported ||
+        incompatibleMode ||
+        configurationStarted ||
+        _provider != null) {
+      throw StateError(
+        'Private Libre decoder requires pre-start recorder-free Android debug.',
+      );
+    }
+    _provider = provider;
+  }
+}
+
 bool get platformProtocolCaptureEnabled =>
     kOgProtocolTrace && kDebugMode && Platform.isAndroid;
 
@@ -102,10 +160,55 @@ bool get platformLibreGen1StreamingEnabled =>
     kOgProtocolCaptureLiveLibre &&
     selectedProtocolCaptureProfile() == ProtocolCaptureProfile.libre;
 
+/// Saved-receiver restoration is not NFC streaming/enrollment authority.
+bool get platformLibreGen1ReceiverRestoreEnabled =>
+    platformLibreGen1StreamingEnabled || _recorderFreeLibreReceiver != null;
+
+/// Only the explicit private entry can supply a fresh-history decoder. Normal
+/// main supplies none; recorder-free history never falls back to captured files.
+LibreNfcHistoryTools? createPlatformLibreNfcHistoryTools({
+  required CgmAppController controller,
+  required SensorHistoryRepository repository,
+}) {
+  final receiver = _recorderFreeLibreReceiver;
+  if (!kOgProtocolTrace && receiver != null) {
+    return receiver.createHistoryTools(
+      controller: controller,
+      repository: repository,
+    );
+  }
+  final decoder = _protocolLibreGlucoseDecoderProvider;
+  if (!platformLibreGen1StreamingEnabled ||
+      !_protocolCaptureActive ||
+      _protocolLibreDriver == null ||
+      decoder == null ||
+      decoder is! LibreGen1NfcHistoryDecoder) {
+    return null;
+  }
+  return LibreNfcHistoryTools(
+    readBootstrap: LibreGen1SecureStore().readBootstrap,
+    resumeConnection: controller.resumeLibreHistoryConnection,
+    createSync: () => LibreNfcHistorySync(
+      controller: controller,
+      repository: repository,
+      session: PlatformLibre2NfcSetupSession(
+        allowActivationProof: false,
+        allowTerminalReadRevocation: true,
+      ),
+      reader: LibreGen1FreshNfcHistoryReader(),
+      decoder: decoder as LibreGen1NfcHistoryDecoder,
+    ),
+  );
+}
+
 /// Select only the receiver returned by the completed NFC bootstrap. This
 /// does not connect or write; the normal controller handles the explicit
 /// connection and the driver reserves a durable login count before writing.
 Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() async {
+  final receiver = _recorderFreeLibreReceiver;
+  if (receiver != null && !kOgProtocolTrace) {
+    return receiver.prepareConnection();
+  }
   final driver = _protocolLibreDriver;
   if (!platformLibreGen1StreamingEnabled || driver == null) return null;
   if (!await driver.reloadBootstrap()) return null;
@@ -125,9 +228,7 @@ Future<void> configurePlatformPrivacyDefaults() async {
     await disableFlutterBluePlusLogs();
   }
   _rejectIncompatibleDebugModes();
-  if (!kOgProtocolTrace) {
-    return;
-  }
+  if (!kOgProtocolTrace) return;
   if (!kDebugMode) {
     throw UnsupportedError('OG_PROTOCOL_TRACE requires a debug build.');
   }
@@ -171,8 +272,42 @@ Future<void> configurePlatformPrivacyDefaults() async {
   }
 }
 
+/// Bind the same restricted history owner used by the controller before any
+/// Libre driver is exposed. Privacy setup never creates a volatile receiver.
+Future<void> configurePlatformSensorHistory(
+  LibreGen1ObservationStore observationStore,
+) async {
+  _platformConfigurationStarted = true;
+  if (_protocolLibreDriver != null || _recorderFreeLibreReceiver != null) {
+    if (!identical(_libreObservationStore, observationStore)) {
+      throw StateError('Sensor history is already bound to a driver.');
+    }
+    return;
+  }
+  _libreObservationStore = observationStore;
+  if (!kOgProtocolTrace) {
+    final receiver = await LibreGen1ReceiverComposition.tryCreate(
+      transport: const FlutterBluePlusTransport(),
+      validationEnabled: kDebugMode && Platform.isAndroid && !kOgDemo,
+      observationStore: observationStore,
+      decoderProvider: _privateRecorderFreeDecoder.provider,
+      requireAvailable: _privateRecorderFreeDecoder.provider != null,
+    );
+    if (receiver != null) {
+      // Suppress native logging before publishing a recorder-free RF path.
+      await disableFlutterBluePlusLogs();
+      _recorderFreeLibreReceiver = receiver;
+    }
+  }
+}
+
 CgmDriver buildPlatformDriver() {
+  _platformConfigurationStarted = true;
   _rejectIncompatibleDebugModes();
+  if (_privateRecorderFreeDecoder.provider != null &&
+      _recorderFreeLibreReceiver == null) {
+    throw StateError('Private Libre receiver must be configured before use.');
+  }
   if (kOgDemo && kReleaseMode) {
     throw UnsupportedError('OG_DEMO is disabled in release builds.');
   }
@@ -195,10 +330,18 @@ CgmDriver buildPlatformDriver() {
     }
     return _buildCaptureRegistry(_sharedProtocolTransport());
   }
-  return _buildPlatformRegistry(const FlutterBluePlusTransport());
+  return buildHardwareDriverRegistry(
+    const FlutterBluePlusTransport(),
+    libreReceiver: _recorderFreeLibreReceiver,
+  );
 }
 
-CgmDriver _buildPlatformRegistry(BleTransport transport) {
+/// One shared scan, with the optional separately gated receiver using its own
+/// lifetime lease transport. This does not start NFC or enable a decoder.
+CgmDriverRegistry buildHardwareDriverRegistry(
+  BleTransport transport, {
+  LibreGen1ReceiverComposition? libreReceiver,
+}) {
   const aidexDiscovery = AidexDiscovery();
   return CgmDriverRegistry(
     transport: transport,
@@ -207,7 +350,9 @@ CgmDriver _buildPlatformRegistry(BleTransport transport) {
         driver: AidexSensorDriver(transport, discovery: aidexDiscovery),
         scanServiceUuids: AidexDiscovery.scanServiceUuids,
         discover: aidexDiscovery.mapScanResult,
+        connectionPolicy: SensorConnectionPolicy.explicitConnect,
       ),
+      if (libreReceiver != null) libreReceiver.registration,
     ],
   );
 }
@@ -222,6 +367,8 @@ CgmDriver _buildCaptureRegistry(BleTransport transport) {
       bootstrapProvider: store,
       counterStore: store,
       glucoseDecoderProvider: _protocolLibreGlucoseDecoderProvider,
+      observationStore: _libreObservationStore,
+      requireDurableObservations: true,
     );
     _protocolLibreDriver = driver;
     registrations.add(
@@ -229,6 +376,7 @@ CgmDriver _buildCaptureRegistry(BleTransport transport) {
         driver: driver,
         scanServiceUuids: LibreGen1Driver.scanServiceUuids,
         discover: driver.mapScanResult,
+        connectionPolicy: SensorConnectionPolicy.externalSetupOnly,
         prepareDiscovery: () async {
           await driver.reloadBootstrap();
         },
@@ -242,6 +390,7 @@ CgmDriver _buildCaptureRegistry(BleTransport transport) {
         driver: AidexSensorDriver(transport, discovery: discovery),
         scanServiceUuids: AidexDiscovery.scanServiceUuids,
         discover: discovery.mapScanResult,
+        connectionPolicy: SensorConnectionPolicy.explicitConnect,
       ),
     );
   }
@@ -261,6 +410,7 @@ CgmDriver _buildCaptureRegistry(BleTransport transport) {
         scanServiceUuids: const <String>[yuwellCt5ServiceUuid],
         discover: discovery.mapScanResult,
         requiresUnfilteredScan: true,
+        connectionPolicy: SensorConnectionPolicy.separateConfirmation,
       ),
     );
   }

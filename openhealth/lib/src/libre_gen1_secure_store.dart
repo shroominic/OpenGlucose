@@ -2,6 +2,9 @@ import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+typedef LibreGen1StoreInvoker =
+    Future<Object?> Function(String method, Map<String, Object?>? arguments);
+
 /// Restricted historical factory evidence, not current sensor state or a
 /// glucose reading. Only the calibrated decoder may interpret these bytes.
 final class LibreGen1CalibrationEvidence {
@@ -40,11 +43,20 @@ final class LibreGen1SecureStore
     MethodChannel channel = const MethodChannel(channelName),
     @visibleForTesting bool? supported,
   }) : _channel = channel,
+       _invokeMethod = null,
        _supported =
            supported ??
            (!kIsWeb &&
                kDebugMode &&
                defaultTargetPlatform == TargetPlatform.android);
+
+  /// Parser shared with the recorder-free native receiver owner. This does not
+  /// select a backend or grant RF access; [invokeMethod] must enforce native
+  /// capability and exact live ownership for every counter operation.
+  LibreGen1SecureStore.receiver({required LibreGen1StoreInvoker invokeMethod})
+    : _channel = null,
+      _invokeMethod = invokeMethod,
+      _supported = true;
 
   static const channelName = 'com.openglucose/protocol_capture';
   static const _bootstrapKeys = <String>{
@@ -62,7 +74,8 @@ final class LibreGen1SecureStore
     'calibrationPatchInfo',
     'encryptedFram',
   };
-  final MethodChannel _channel;
+  final MethodChannel? _channel;
+  final LibreGen1StoreInvoker? _invokeMethod;
   final bool _supported;
 
   @override
@@ -202,9 +215,11 @@ final class LibreGen1SecureStore
       );
     }
     try {
-      return await _channel
-          .invokeMethod<Object?>(method, arguments)
-          .timeout(const Duration(seconds: 15));
+      final invoke = _invokeMethod;
+      final result = invoke != null
+          ? invoke(method, arguments)
+          : _channel!.invokeMethod<Object?>(method, arguments);
+      return await result.timeout(const Duration(seconds: 15));
     } catch (_) {
       throw const LibreGen1LiveException(
         LibreGen1LiveFailure.bootstrapUnavailable,

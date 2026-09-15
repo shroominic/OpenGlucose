@@ -24,7 +24,9 @@ enum DebugSharedScanState {
 /// Single-attempt connections keep the scanner paused until their connection
 /// cleanup is confirmed. Uncertain cleanup permanently quarantines ownership.
 /// Exhausting physical scan recovery fails all logical scans. This transport
-/// instance cannot restart that exhausted scanner or hide it behind a timeout.
+/// instance stays exhausted except when a new logical scan explicitly retries
+/// a Bluetooth-off failure after confirmed cleanup. Unknown failures and
+/// uncertain ownership cannot use that recovery path.
 ///
 /// [unfilteredPhysicalScan] is an explicit debug-only escape hatch for a
 /// passive target whose advertisements cannot be selected reliably by an
@@ -197,9 +199,6 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
         StateError('The debug shared scanner is closed.'),
       );
     }
-    if (_scanRecoveryExhausted) {
-      return Stream<BleScanResult>.error(_scanRecoveryFailure());
-    }
     final requestedServices = withServices == null
         ? null
         : List<String>.unmodifiable(_deduplicateServices(withServices));
@@ -220,6 +219,27 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
       }
     }
 
+    var rearmed = false;
+    if (_scanRecoveryExhausted) {
+      // A new logical scan starts a bounded attempt with new listeners.
+      // Radio-off is recoverable; inactivity alone is never proof
+      // that this transport has released its scanner or connection owner.
+      if (_lastPhysicalFailure?.kind != BleFailureKind.bluetoothOff ||
+          _physicalSubscription != null ||
+          _physicalCancellation != null ||
+          _pausedConnection != null ||
+          _connectDepth != 0 ||
+          _retryTimer != null ||
+          _retryDelayActive ||
+          _physicalScanIsActive()) {
+        return Stream<BleScanResult>.error(_scanRecoveryFailure());
+      }
+      _scanRecoveryExhausted = false;
+      _lastPhysicalFailure = null;
+      _consecutiveFailures = 0;
+      rearmed = true;
+    }
+
     late final _LogicalScan logical;
     final controller = StreamController<BleScanResult>(sync: true);
     logical = _LogicalScan(
@@ -235,7 +255,7 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
         unawaited(logical.close());
       });
     }
-    if (!_desired) {
+    if (!_desired || rearmed) {
       unawaited(start());
     }
     return controller.stream;
@@ -420,7 +440,7 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
       _maybeMarkPhysicalScanRunning();
     } catch (error) {
       _physicalSubscription = null;
-      if (error is BleFailure) _lastPhysicalFailure = error;
+      _lastPhysicalFailure = error is BleFailure ? error : null;
       _handlePhysicalFailure();
     }
   }
@@ -512,6 +532,9 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
     _expectedScanAttempt = null;
     _acknowledgedScanAttempt = null;
     if (_desired && !_closed && _connectDepth == 0) {
+      // A stream ending without a classified error must not inherit an older
+      // Bluetooth-off failure from a previous physical attempt.
+      _lastPhysicalFailure = null;
       _handlePhysicalFailure();
     }
   }
@@ -525,7 +548,7 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
         _physicalCancellation != null) {
       return;
     }
-    if (error is BleFailure) _lastPhysicalFailure = error;
+    _lastPhysicalFailure = error is BleFailure ? error : null;
     _setState(DebugSharedScanState.error);
     unawaited(
       _serialize(() async {
@@ -584,6 +607,7 @@ final class DebugSharedScanTransport implements BleSingleAttemptTransport {
           } catch (_) {
             await _serialize(() async {
               _retryDelayActive = false;
+              _lastPhysicalFailure = null;
               _handlePhysicalFailure();
             });
           }

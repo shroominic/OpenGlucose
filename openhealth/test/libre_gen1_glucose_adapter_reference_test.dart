@@ -69,6 +69,120 @@ void main() {
       expect(result.expectedLifetimeMinutes, 20160);
       expect(result.rejection, isNull);
       expect(result.toString(), isNot(contains('2123')));
+      expect(result.historySamples, hasLength(9));
+      expect(
+        result.historySamples.map((entry) => entry.sampleAgeMinutes),
+        [118, 116, 114, 113, 108, 105, 105, 90, 75],
+      );
+      expect(
+        result.historySamples.take(6).map((entry) => entry.kind),
+        everyElement(LibreGen1BleHistoryKind.trend),
+      );
+      expect(
+        result.historySamples.skip(6).map((entry) => entry.kind),
+        everyElement(LibreGen1BleHistoryKind.history),
+      );
+      expect(
+        result.historySamples.map((entry) => entry.glucoseMgdl),
+        everyElement(2123.0),
+      );
+      expect(
+        result.historySamples.map((entry) => entry.rejection),
+        everyElement(isNull),
+      );
+      expect(result.historySamples.clear, throwsUnsupportedError);
+    },
+  );
+
+  test(
+    'older BLE slots retain independent rejection and do not replace current',
+    () async {
+      respond(evidence(clearFram(age: 0, state: 2)));
+      final decoder = (await provider.prepare(bootstrap))!;
+      final packet = clearBle(age: 64);
+      putBits(packet, 4, 0, 14, 0); // Older trend: sensor error.
+      putBits(packet, 8, 14, 12, 0); // Older trend: invalid temperature.
+      final result = decoder.decode(
+        encryptedPacket: encryptedBle(packet),
+        receivedAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(result.sampleAgeMinutes, 64);
+      expect(result.glucoseMgdl, isNotNull);
+      expect(result.rejection, isNull);
+      expect(
+        result.historySamples.map((entry) => entry.sampleAgeMinutes),
+        [62, 60, 58, 57, 52, 49, 60, 45, 30],
+      );
+      expect(
+        result.historySamples.map((entry) => entry.rejection),
+        [
+          LibreGen1GlucoseRejection.noCurrentSample,
+          LibreGen1GlucoseRejection.invalidData,
+          for (var i = 0; i < 4; i++) LibreGen1GlucoseRejection.warmingUp,
+          null,
+          LibreGen1GlucoseRejection.warmingUp,
+          LibreGen1GlucoseRejection.warmingUp,
+        ],
+      );
+      for (final sample in result.historySamples) {
+        expect(sample.glucoseMgdl == null, sample.rejection != null);
+      }
+    },
+  );
+
+  test('rejected current does not hide valid older slots', () async {
+    respond(evidence());
+    final decoder = (await provider.prepare(bootstrap))!;
+    final packet = clearBle();
+    putBits(packet, 0, 0, 14, 0);
+    final result = decoder.decode(
+      encryptedPacket: encryptedBle(packet),
+      receivedAt: DateTime.utc(2026, 1, 1),
+    );
+    expect(result.glucoseMgdl, isNull);
+    expect(result.rejection, LibreGen1GlucoseRejection.noCurrentSample);
+    expect(result.historySamples, hasLength(9));
+    expect(
+      result.historySamples.map((entry) => entry.glucoseMgdl),
+      everyElement(isNotNull),
+    );
+  });
+
+  test(
+    'before-start and expired slots remain present without glucose',
+    () async {
+      respond(evidence(clearFram(age: 0, state: 2)));
+      final decoder = (await provider.prepare(bootstrap))!;
+      final beforeStart = decoder.decode(
+        encryptedPacket: encryptedBle(clearBle(age: 0)),
+        receivedAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(beforeStart.historySamples, hasLength(9));
+      expect(
+        beforeStart.historySamples.map((entry) => entry.sampleAgeMinutes),
+        [-2, -4, -6, -7, -12, -15, 0, -15, -30],
+      );
+      expect(
+        beforeStart.historySamples.map((entry) => entry.glucoseMgdl),
+        everyElement(isNull),
+      );
+      expect(
+        beforeStart.historySamples.first.rejection,
+        LibreGen1GlucoseRejection.invalidData,
+      );
+      final expired = decoder.decode(
+        encryptedPacket: encryptedBle(clearBle(age: 20160)),
+        receivedAt: DateTime.utc(2026, 1, 1),
+      );
+      expect(expired.historySamples, hasLength(9));
+      expect(
+        expired.historySamples.map((entry) => entry.rejection),
+        everyElement(LibreGen1GlucoseRejection.invalidData),
+      );
+      expect(
+        expired.historySamples.map((entry) => entry.glucoseMgdl),
+        everyElement(isNull),
+      );
     },
   );
 

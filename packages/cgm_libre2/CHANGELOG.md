@@ -1,5 +1,80 @@
 ## Unreleased
 
+- Keep one cancellable filtered advertisement scan for an earned durable
+  recovery when its sensor is absent. Revalidate the exact receiver after
+  return and confirmed scan cleanup, before any connection or counter use.
+  Initial/no-store setup stays bounded; native failures and cancellation stop
+  the wait. No repeated login, NFC command, or schema change is added.
+- Allow durable sessions to earn a further bounded link recovery after three
+  fresh committed observations over two monotonic minutes on the replacement
+  connection. Require recent, contiguous evidence; never use replay, imported
+  history, wall-clock changes, or a pending commit. Preserve all exact-owner,
+  cleanup, fresh-advertisement, and new-counter gates. No-store callers keep
+  the one-recovery limit; the diagnostic attempt count is now cumulative.
+- Extend the optional decoder result with separately typed sparse BLE history
+  and the observation store with an atomic historical-reading batch. Validate
+  exact packet positions and preserve receipt-relative timestamps, first
+  acquisitions, and provisional vendor quality. Historical samples cannot
+  become current data; rejected current values can still retain valid older
+  slots. Store implementations must accept the new `historicalReadings` named
+  argument. No new RF command or bundled glucose algorithm is added.
+- Add an optional observation-state replay barrier separate from the live BLE
+  observed minute. Hosts can import newer NFC history without creating live
+  freshness; restored or concurrently imported history excludes older packets.
+  Reject inconsistent advanced commit acknowledgements before publication.
+- Parse bounded Gen1 NFC FRAM trend/history rings from the all-three-CRC-verified
+  type. Preserve raw quality/error/temperature fields and sensor-relative
+  minutes, omit unfilled slots, and reject uncertain age/index timing rather
+  than shift a historical identity. This MIT-only parser performs no glucose
+  conversion, timestamp inference, persistence, NFC operation or live update;
+  app backfill integration and physical qualification remain separate work.
+- Publish a closed committed-observation marker for a fresh, newly persisted
+  Libre packet, independent of glucose acceptance. Hosts can retain a verified
+  warmup/decoder-free connection without promoting it to numeric readiness.
+  Restored history, replayed minutes, stale timing, failed commits, and the
+  no-store compatibility path do not supply this evidence.
+- Add an app-injected `LibreGen1ObservationStore` for atomic observed-minute
+  and normalized-reading retention. Durable mode requires the store; existing
+  no-store private/test callers remain in-process only. Completed atomic
+  commits protect the same saved bootstrap across restart, including warmup
+  and rejected glucose. Legacy accepted history supplies only a lower bound,
+  not complete pre-upgrade replay coverage or continuity across re-enrollment.
+  Restore history without current freshness; bound the observation queue and
+  storage deadline, preserve first receipt, and prohibit late live publication
+  after close. Any uncertain commit blocks reuse of that driver instance while
+  physical cleanup is still attempted. No raw capture, GPL decoder code,
+  receiver/counter format, sensor command, or production enablement changes.
+- Append closed `bluetoothOff`, `permissionRequired`, `bluetoothUnavailable`,
+  and `scanFailed` failures. Preserve typed scan/adapter errors and distinguish
+  early scan termination from the actual advertisement deadline. Do not copy
+  arbitrary native messages or change connection retry authority.
+- Parse sensor-relative BLE age and FRAM age/lifetime from the CRC-validated
+  Gen1 types, independently of optional glucose conversion. FRAM lifecycle
+  remains an observation at read time; zero lifetime is unknown. No UTC
+  activation timestamp, sensor stop, or state-changing authority is inferred.
+- Publish observed BLE age in live session information even without a decoder
+  or after glucose rejection. Require decoder age to match the wire age, and
+  consume each observed minute before conversion so rejected/warmup packets
+  cannot be replayed as new readings through the bounded recovery. Clear live
+  timing/current data after ten minutes without a newer observed minute and
+  on disconnected/control snapshots. Timing freshness can only be shortened.
+  Same-bootstrap restart protection now requires the observation-store contract
+  above. Fresh FRAM integration and physical timing validation remain separate
+  release work; no receiver storage format changes.
+- Retain closed pre-login transport diagnostics, including the exact known
+  Android GATT 133 classification, without copying native error text or
+  arbitrary codes. Retry policy, user-facing failure text, and login/counter
+  behavior are unchanged; status 133 does not establish a bond problem.
+- Expose read-only `LibreGen1PatchInfo.sensorVariant` from existing accepted
+  model signatures. Live snapshots retain the identified variant; no region or
+  revision is inferred. Plus/offline identification does not grant live support.
+- Correct every live/control snapshot to use the declared 14-day lifetime and
+  60-minute warmup; no session start or elapsed time is inferred.
+
+- Declare the optional sensor-neutral data profile: 60-minute warmup, 14-day
+  nominal lifetime, receipt-timed first-accepted history, live-only current
+  readings, and reported-only lifecycle. This adds no lifecycle evidence,
+  backfill, NFC command, or production sensor-support claim.
 - Return a closed `cleanupUnconfirmed` error from explicit disconnect when
   physical scan/connection cleanup fails or times out. Preserve the terminal
   snapshot/history and quarantined lease; repeated calls do not retry or clear
@@ -12,7 +87,8 @@
 - Permit one guarded replacement after a previously validated stream is
   physically disconnected: await confirmed cleanup, reread the exact bootstrap,
   require a fresh advertisement, and reserve a new counter. Never retry an
-  uncertain login or replenish the recovery budget after a packet.
+  uncertain login. The durable stable-reception renewal above supersedes the
+  original one-recovery lifetime bound; a lone packet still cannot renew it.
 - Add an optional independently supplied current-sample decoder contract, with
   no bundled algorithm. Reject warmup, invalid age/lifetime, mismatched sample
   age, non-finite values, and duplicate minutes across recovery. Accepted

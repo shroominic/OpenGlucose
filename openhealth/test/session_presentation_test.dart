@@ -5,6 +5,300 @@ import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('dashboard freshness uses the existing ten-minute boundary', () {
+    final now = DateTime.utc(2030, 1, 1, 12);
+    CgmReading reading(DateTime? at, {double value = 100}) => CgmReading(
+      valueMgdl: value,
+      source: CgmRecordSource.vendor,
+      recordedAt: at,
+      isDisplayProvisional: true,
+    );
+    final boundary = reading(now.subtract(const Duration(minutes: 10)));
+    expect(dashboardReadingIsRecent(boundary, now: now), isTrue);
+    expect(
+      dashboardReadingIsRecent(
+        boundary,
+        now: now.add(const Duration(microseconds: 1)),
+      ),
+      isFalse,
+    );
+    expect(dashboardReadingIsRecent(null, now: now), isFalse);
+    expect(dashboardReadingIsRecent(reading(null), now: now), isFalse);
+    expect(
+      dashboardReadingIsRecent(
+        reading(now.add(const Duration(minutes: 2))),
+        now: now,
+      ),
+      isTrue,
+    );
+    expect(
+      dashboardReadingIsRecent(
+        reading(now.add(const Duration(minutes: 2, microseconds: 1))),
+        now: now,
+      ),
+      isFalse,
+    );
+    for (final value in [double.nan, double.infinity, 0.0, -1.0]) {
+      expect(
+        dashboardReadingIsRecent(reading(now, value: value), now: now),
+        isFalse,
+      );
+    }
+    expect(
+      dashboardReadingIsRecent(
+        CgmReading(
+          valueMgdl: 100,
+          source: CgmRecordSource.raw,
+          recordedAt: now,
+        ),
+        now: now,
+      ),
+      isFalse,
+    );
+    expect(boundary.isDisplayProvisional, isTrue);
+    expect(boundary.recordedAt, now.subtract(const Duration(minutes: 10)));
+    expect(readingsForWellness([boundary]), isEmpty);
+  });
+
+  group('Libre NFC history prompt', () {
+    final now = DateTime.utc(2030, 1, 1, 12);
+    final sensor = DiscoveredSensor(
+      driverId: 'libre2-gen1',
+      deviceId: 'synthetic-libre',
+      displayName: 'FreeStyle Libre 2',
+      storageKey: 'synthetic-libre',
+      rssi: -40,
+      capabilities: const CgmCapabilities(supportsDirectBle: true),
+    );
+
+    CgmSessionSnapshot snapshot({
+      CgmSyncStage stage = CgmSyncStage.disconnected,
+      DateTime? recordedAt,
+      bool inProgress = false,
+    }) {
+      final reading = recordedAt == null
+          ? null
+          : CgmReading(
+              valueMgdl: 100,
+              source: CgmRecordSource.vendor,
+              recordedAt: recordedAt,
+            );
+      return CgmSessionSnapshot(
+        stage: stage,
+        statusText: '',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        history: reading == null ? const [] : [reading],
+        latestReading: reading,
+        historySync: CgmHistorySyncState(inProgress: inProgress),
+      );
+    }
+
+    test('offers a prompt after a meaningful retained-data gap', () {
+      expect(
+        shouldOfferLibreNfcHistorySync(
+          snapshot(
+            recordedAt: now.subtract(const Duration(minutes: 11)),
+          ),
+          now: now,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not prompt for fresh data or a setup transition', () {
+      expect(
+        shouldOfferLibreNfcHistorySync(
+          snapshot(recordedAt: now.subtract(const Duration(minutes: 9))),
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldOfferLibreNfcHistorySync(
+          snapshot(
+            stage: CgmSyncStage.connecting,
+            recordedAt: now.subtract(const Duration(minutes: 30)),
+          ),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not prompt while another history sync is active', () {
+      expect(
+        shouldOfferLibreNfcHistorySync(
+          snapshot(
+            recordedAt: now.subtract(const Duration(minutes: 30)),
+            inProgress: true,
+          ),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not prompt when the receiver state is uncertain', () {
+      for (final code in const [
+        'libre2.cleanupUnconfirmed',
+        'libre2.loginOutcomeUnknown',
+        'libre2.observationStorageUnavailable',
+      ]) {
+        expect(
+          shouldOfferLibreNfcHistorySync(
+            snapshot(
+              recordedAt: now.subtract(const Duration(minutes: 30)),
+            ).copyWith(lastError: code),
+            now: now,
+          ),
+          isFalse,
+          reason: code,
+        );
+      }
+    });
+
+    CgmSessionSnapshot withAges(List<int> ages) =>
+        snapshot(
+          stage: CgmSyncStage.ready,
+        ).copyWith(
+          history: ages
+              .map(
+                (age) => CgmReading(
+                  valueMgdl: 100,
+                  source: CgmRecordSource.vendor,
+                  recordedAt: now.subtract(Duration(minutes: age)),
+                ),
+              )
+              .toList(),
+        );
+
+    test('new live readings do not conceal a recoverable history gap', () {
+      expect(
+        shouldOfferLibreNfcHistorySync(withAges([120, 119, 2, 1]), now: now),
+        isTrue,
+      );
+    });
+
+    test('15-minute history and two-minute jitter do not prompt', () {
+      expect(
+        shouldOfferLibreNfcHistorySync(withAges([61, 44, 30, 15, 0]), now: now),
+        isFalse,
+      );
+      expect(
+        shouldOfferLibreNfcHistorySync(withAges([61, 43, 30, 15, 0]), now: now),
+        isTrue,
+      );
+    });
+
+    test('old gaps outside the eight-hour window do not prompt', () {
+      final recent = List.generate(33, (index) => index * 15);
+      expect(
+        shouldOfferLibreNfcHistorySync(
+          withAges([900, 800, ...recent]),
+          now: now,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldOfferLibreNfcHistorySync(withAges([900, 800, 1]), now: now),
+        isTrue,
+      );
+    });
+
+    test(
+      'unsorted duplicates and future dates cannot hide missing history',
+      () {
+        expect(
+          shouldOfferLibreNfcHistorySync(
+            withAges([-60, 1, 120, 1, 119]),
+            now: now,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldOfferLibreNfcHistorySync(withAges([-60, 30]), now: now),
+          isTrue,
+        );
+        expect(
+          shouldOfferLibreNfcHistorySync(withAges([-60]), now: now),
+          isFalse,
+        );
+      },
+    );
+
+    test('history action stays available while waiting for sensor return', () {
+      expect(
+        shouldOfferLibreNfcHistorySync(
+          withAges([120, 1]).copyWith(
+            stage: CgmSyncStage.connecting,
+            metadata: {'cgm.libre2.phase': 'awaitingAdvertisement'},
+          ),
+          now: now,
+        ),
+        isTrue,
+      );
+    });
+
+    test('Bluetooth-off prompt preserves history sync for Libre only', () {
+      final off = withAges([
+        120,
+        1,
+      ]).copyWith(stage: CgmSyncStage.error, lastError: 'libre2.bluetoothOff');
+      expect(snapshotNeedsBluetoothEnabled(off), isTrue);
+      expect(primaryErrorTextForSnapshot(off), isNull);
+      expect(shouldOfferLibreNfcHistorySync(off, now: now), isTrue);
+      expect(
+        snapshotNeedsBluetoothEnabled(off.copyWith(stage: CgmSyncStage.ready)),
+        isFalse,
+      );
+      expect(
+        snapshotNeedsBluetoothEnabled(
+          off.copyWith(lastError: 'libre2.cleanupUnconfirmed'),
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  test(
+    'data quality labels describe readings without changing their flags',
+    () {
+      const stable = CgmReading(
+        valueMgdl: 100,
+        source: CgmRecordSource.standard,
+      );
+      const provisional = CgmReading(
+        valueMgdl: 101,
+        source: CgmRecordSource.vendor,
+        isDisplayProvisional: true,
+      );
+      const raw = CgmReading(valueMgdl: 102, source: CgmRecordSource.raw);
+      const provisionalRaw = CgmReading(
+        valueMgdl: 103,
+        source: CgmRecordSource.raw,
+        isDisplayProvisional: true,
+      );
+      expect(readingQualityLabelFor(const []), isNull);
+      expect(readingQualityLabelFor(const [stable]), isNull);
+      expect(
+        readingQualityLabelFor(const [stable, provisional]),
+        'Provisional readings',
+      );
+      expect(readingQualityLabelFor(const [stable, raw]), 'Raw sensor data');
+      final mixed = List<CgmReading>.unmodifiable([stable, provisional, raw]);
+      expect(readingQualityLabelFor(mixed), 'Provisional and raw readings');
+      expect(
+        readingQualityLabelFor(const [provisionalRaw]),
+        'Provisional and raw readings',
+      );
+      expect(mixed, [stable, provisional, raw]);
+      expect(provisional.isDisplayProvisional, isTrue);
+      expect(raw.source, CgmRecordSource.raw);
+      expect(readingsForWellness(mixed), [stable]);
+    },
+  );
+
   test(
     'wellness inputs exclude provisional and raw values without mutation',
     () {
@@ -69,6 +363,166 @@ void main() {
         fields: {'phase': phase, 'validatedPackets': value},
       );
 
+  group('durable Libre reception', () {
+    CgmSessionSnapshot observed({
+      DiscoveredSensor sensor = libreSensor,
+      CgmSyncStage stage = CgmSyncStage.syncing,
+      int? elapsed = 600,
+      String? error,
+      Map<String, String> metadata = const {
+        'cgm.libre2.observationCommitted': 'true',
+        'cgm.libre2.phase': 'validatedPacket',
+        'cgm.libre2.timing': 'observed',
+      },
+    }) => CgmSessionSnapshot(
+      stage: stage,
+      statusText: 'Synthetic status',
+      sensor: sensor,
+      capabilities: sensor.capabilities,
+      sessionInfo: CgmSessionInfo(elapsedMinutes: elapsed),
+      history: const [
+        CgmReading(
+          valueMgdl: 101,
+          source: CgmRecordSource.vendor,
+          sensorMinute: 585,
+          isDisplayProvisional: true,
+        ),
+      ],
+      metadata: metadata,
+      lastError: error,
+    );
+
+    test('verified reception does not require or create current glucose', () {
+      for (final elapsed in [0, 59, 60, 600, 65535]) {
+        final snapshot = observed(elapsed: elapsed);
+        expect(
+          hasVerifiedLibreReception(snapshot, expectedSensor: libreSensor),
+          isTrue,
+        );
+        expect(snapshot.stage, CgmSyncStage.syncing);
+        expect(snapshot.latestReading, isNull);
+        expect(
+          currentReadingForSnapshot(snapshot, snapshot.history.single),
+          isNull,
+        );
+        expect(readingsForWellness(snapshot.history), isEmpty);
+      }
+    });
+
+    test(
+      'retained, pending, replayed, stale, failed or untimed data is not reception',
+      () {
+        final baseline = observed();
+        for (final snapshot in [
+          observed(metadata: const {}),
+          for (final committed in ['false', 'pending', 'TRUE'])
+            observed(
+              metadata: {
+                ...baseline.metadata,
+                'cgm.libre2.observationCommitted': committed,
+              },
+            ),
+          for (final timing in ['stale', 'repeatedOrRegressed', 'unavailable'])
+            observed(
+              metadata: {...baseline.metadata, 'cgm.libre2.timing': timing},
+            ),
+          observed(
+            metadata: {
+              ...baseline.metadata,
+              'cgm.libre2.phase': 'awaitingPacket',
+            },
+          ),
+          for (final stage in CgmSyncStage.values)
+            if (stage != CgmSyncStage.syncing && stage != CgmSyncStage.ready)
+              observed(stage: stage),
+          for (final age in <int?>[null, -1, 65536]) observed(elapsed: age),
+          observed(error: 'libre2.observationStorageUnavailable'),
+          observed(error: ''),
+        ]) {
+          expect(
+            hasVerifiedLibreReception(snapshot, expectedSensor: libreSensor),
+            isFalse,
+          );
+        }
+      },
+    );
+
+    test('all three target identity fields must match', () {
+      for (final sensor in [
+        const DiscoveredSensor(
+          driverId: 'aidex',
+          deviceId: 'synthetic-libre',
+          displayName: 'Same name',
+          storageKey: 'synthetic-libre',
+          rssi: -50,
+          capabilities: CgmCapabilities(),
+        ),
+        const DiscoveredSensor(
+          driverId: 'libre2-gen1',
+          deviceId: 'other-device',
+          displayName: 'Same name',
+          storageKey: 'synthetic-libre',
+          rssi: -50,
+          capabilities: CgmCapabilities(),
+        ),
+        const DiscoveredSensor(
+          driverId: 'libre2-gen1',
+          deviceId: 'synthetic-libre',
+          displayName: 'Same name',
+          storageKey: 'other-storage',
+          rssi: -50,
+          capabilities: CgmCapabilities(),
+        ),
+      ]) {
+        expect(
+          hasVerifiedLibreReception(
+            observed(sensor: sensor),
+            expectedSensor: libreSensor,
+          ),
+          isFalse,
+        );
+        expect(
+          hasVerifiedLibreReception(observed(), expectedSensor: sensor),
+          isFalse,
+        );
+      }
+    });
+
+    test('post-warmup missing current is not first-reading warmup', () {
+      for (final age in [60, 600, 14000]) {
+        final snapshot = observed(elapsed: age);
+        expect(computeWarmupStatus(snapshot), isNull);
+        expect(stageLabelForSnapshot(snapshot), 'No current reading');
+        expect(stageCodeForSnapshot(snapshot), 'progress');
+        expect(snapshot.latestReading, isNull);
+      }
+      final warming = computeWarmupStatus(observed(elapsed: 59));
+      expect(warming?.phase, WarmupPhase.warming);
+      expect(warming?.remainingMinutes, 1);
+    });
+
+    test(
+      'stale and replayed reception use closed status, not decoder readiness',
+      () {
+        for (final entry in [
+          ('stale', 'No recent sensor update. Waiting for new data.'),
+          ('repeatedOrRegressed', 'Waiting for a new sensor reading.'),
+        ]) {
+          final snapshot = observed(
+            metadata: {
+              ...observed().metadata,
+              'cgm.libre2.timing': entry.$1,
+              'cgm.libre2.decoder': 'synthetic-private-decoder-detail',
+            },
+          );
+          expect(libreConnectionDetailForSnapshot(snapshot), entry.$2);
+          expect(computeWarmupStatus(snapshot), isNull);
+          expect(snapshot.latestReading, isNull);
+        }
+      },
+    );
+  });
+
   test('verified packets distinguish connection loss from initial failure', () {
     final snapshot = libreSnapshot(
       stage: CgmSyncStage.error,
@@ -120,7 +574,7 @@ void main() {
       libreConnectionDetailForSnapshot(recovering),
       'Connection lost. Reconnecting once to your sensor.',
     );
-    final bench = libreSnapshot(
+    final provisional = libreSnapshot(
       stage: CgmSyncStage.ready,
       reading: const CgmReading(
         valueMgdl: 100,
@@ -129,12 +583,12 @@ void main() {
       ),
     );
     expect(
-      libreConnectionDetailForSnapshot(bench),
-      'Bench estimate. Not validated for body glucose.',
+      libreConnectionDetailForSnapshot(provisional),
+      isNull,
     );
     expect(
       libreConnectionDetailForSnapshot(
-        bench.copyWith(stage: CgmSyncStage.disconnected),
+        provisional.copyWith(stage: CgmSyncStage.disconnected),
       ),
       'Sensor disconnected. Connect again to receive data.',
     );
@@ -235,6 +689,55 @@ void main() {
     }
   });
 
+  test(
+    'Libre return wait is distinct from initial search and stale metadata',
+    () {
+      final waiting =
+          libreSnapshot(
+            stage: CgmSyncStage.connecting,
+            phase: 'awaitingAdvertisement',
+          ).copyWith(
+            metadata: {
+              'cgm.libre2.phase': 'awaitingAdvertisement',
+              'cgm.libre2.waitingForReturn': 'true',
+            },
+          );
+      expect(stageLabelForSnapshot(waiting), 'Waiting');
+      expect(
+        libreConnectionDetailForSnapshot(waiting),
+        'Waiting for your sensor to return. Keep it close to the phone.',
+      );
+      for (final value in ['false', 'TRUE', 'synthetic-private-text']) {
+        final initial = waiting.copyWith(
+          metadata: {
+            'cgm.libre2.phase': 'awaitingAdvertisement',
+            'cgm.libre2.waitingForReturn': value,
+          },
+        );
+        expect(stageLabelForSnapshot(initial), 'Searching');
+        expect(
+          libreConnectionDetailForSnapshot(initial),
+          'Looking for your Libre 2 sensor',
+        );
+      }
+      final disconnected = waiting.copyWith(stage: CgmSyncStage.disconnected);
+      expect(stageLabelForSnapshot(disconnected), 'Disconnected');
+      expect(
+        libreConnectionDetailForSnapshot(disconnected),
+        'Sensor disconnected. Connect again to receive data.',
+      );
+      final failed = waiting.copyWith(
+        stage: CgmSyncStage.error,
+        lastError: 'libre2.bluetoothOff',
+      );
+      expect(stageLabelForSnapshot(failed), 'Bluetooth off');
+      expect(
+        libreConnectionDetailForSnapshot(failed),
+        startsWith('Bluetooth is off.'),
+      );
+    },
+  );
+
   test('Libre raw or missing readings cannot make ready mean live glucose', () {
     for (final reading in <CgmReading?>[
       null,
@@ -287,15 +790,28 @@ void main() {
       'loginOutcomeUnknown',
       'subscriptionFailed',
       'invalidPacket',
+      'observationStorageUnavailable',
+      'observationQueueOverflow',
       'disconnected',
       'cancelled',
       'cleanupUnconfirmed',
+      'bluetoothOff',
+      'permissionRequired',
+      'bluetoothUnavailable',
+      'scanFailed',
     ]) {
       final snapshot = libreSnapshot(
         stage: CgmSyncStage.error,
         error: 'libre2.$code',
       );
       final message = primaryErrorTextForSnapshot(snapshot);
+      if (code == 'bluetoothOff') {
+        expect(message, isNull);
+        expect(stageLabelForSnapshot(snapshot), 'Bluetooth off');
+        expect(stageCodeForSnapshot(snapshot), 'progress');
+        expect(shouldOfferPrivateBleSupportCode(snapshot), isFalse);
+        continue;
+      }
       expect(message, isNotNull);
       expect(message, isNot(contains('libre2.')));
       expect(libreConnectionDetailForSnapshot(snapshot), message);
@@ -316,6 +832,47 @@ void main() {
         libreSnapshot(stage: CgmSyncStage.syncing, error: 'libre2.cancelled'),
       ),
       isNull,
+    );
+  });
+
+  test('Libre scan failures show the adapter action, not sensor-not-found', () {
+    for (final failure in {
+      'bluetoothOff': 'Bluetooth is off.',
+      'permissionRequired': 'OpenGlucose needs Bluetooth access.',
+      'bluetoothUnavailable': 'Bluetooth is not available',
+      'scanFailed': 'The Bluetooth search could not finish.',
+    }.entries) {
+      final snapshot = libreSnapshot(
+        stage: CgmSyncStage.error,
+        error: 'libre2.${failure.key}',
+      ).copyWith(metadata: {cgmAutomaticReconnectAllowedMetadataKey: 'false'});
+      expect(
+        libreConnectionDetailForSnapshot(snapshot),
+        startsWith(failure.value),
+      );
+      if (failure.key == 'bluetoothOff') {
+        expect(primaryErrorTextForSnapshot(snapshot), isNull);
+      } else {
+        expect(
+          primaryErrorTextForSnapshot(snapshot),
+          startsWith(failure.value),
+        );
+      }
+      expect(
+        primaryErrorTextForSnapshot(snapshot),
+        isNot(contains('sensor was not found')),
+      );
+      expect(snapshotAllowsAutomaticReconnect(snapshot), isFalse);
+    }
+    expect(
+      userMessageForLibreConnectionFailure('libre2.advertisementUnavailable'),
+      startsWith('Your Libre 2 sensor was not found.'),
+    );
+    expect(
+      userMessageForLibreConnectionFailure(
+        'libre2.bluetoothOff private-details',
+      ),
+      'OpenGlucose could not connect to your Libre 2 sensor.',
     );
   });
 
@@ -825,6 +1382,7 @@ void main() {
 
     CgmSessionSnapshot snapshotWith({
       DateTime? sessionStart,
+      int? elapsedMinutes,
       bool sessionStopped = false,
       bool expired = false,
       DateTime? lastSyncAt,
@@ -838,6 +1396,7 @@ void main() {
         capabilities: sensor.capabilities,
         sessionInfo: CgmSessionInfo(
           sessionStart: sessionStart,
+          elapsedMinutes: elapsedMinutes,
           sessionStopped: sessionStopped,
           warmupMinutes: warmupMinutes,
           expectedLifetimeMinutes: expectedLifetimeMinutes,
@@ -850,6 +1409,65 @@ void main() {
     test('unknown when there is no session start', () {
       final lifecycle = computeSensorLifecycle(snapshotWith(), now: now);
       expect(lifecycle.phase, SensorLifecyclePhase.unknown);
+    });
+
+    test('sensor-relative age displays life without inventing UTC start', () {
+      final snapshot = snapshotWith(
+        elapsedMinutes: 6 * 24 * 60,
+        expectedLifetimeMinutes: 14 * 24 * 60,
+      );
+      for (final clock in [now, now.add(const Duration(days: 30))]) {
+        final lifecycle = computeSensorLifecycle(snapshot, now: clock);
+        expect(lifecycle.phase, SensorLifecyclePhase.active);
+        expect(lifecycle.sessionStart, isNull);
+        expect(lifecycle.age, const Duration(days: 6));
+        expect(lifecycle.remaining, const Duration(days: 8));
+        expect(
+          sensorLifeText(
+            null,
+            elapsedMinutes: snapshot.sessionInfo.elapsedMinutes,
+            totalLife: const Duration(days: 14),
+            now: clock,
+          ),
+          '8 days left',
+        );
+      }
+      expect(snapshot.sessionInfo.sessionStart, isNull);
+      expect(snapshot.health.expired, isFalse);
+      expect(snapshot.sessionInfo.sessionStopped, isFalse);
+    });
+
+    test('reported age gives warmup and nominal lifetime boundaries', () {
+      final warming = computeSensorLifecycle(
+        snapshotWith(elapsedMinutes: 17),
+        now: now,
+      );
+      expect(warming.phase, SensorLifecyclePhase.warmup);
+      expect(warming.warmup?.remainingMinutes, 43);
+      final atEnd = snapshotWith(
+        elapsedMinutes: 14 * 24 * 60,
+        expectedLifetimeMinutes: 14 * 24 * 60,
+      );
+      final ended = computeSensorLifecycle(atEnd, now: now);
+      expect(ended.phase, SensorLifecyclePhase.expired);
+      expect(ended.remaining, Duration.zero);
+      expect(atEnd.health.expired, isFalse);
+      expect(atEnd.sessionInfo.sessionStopped, isFalse);
+    });
+
+    test('withdrawn or negative relative age cannot infer life', () {
+      for (final elapsed in <int?>[null, -1]) {
+        final result = computeSensorLifecycle(
+          snapshotWith(elapsedMinutes: elapsed),
+          now: now,
+        );
+        expect(result.phase, SensorLifecyclePhase.unknown);
+        expect(result.sessionStart, isNull);
+        expect(
+          sensorLifeText(null, elapsedMinutes: elapsed, now: now),
+          'Life remaining unavailable',
+        );
+      }
     });
 
     test('warmup phase inside the first hour', () {

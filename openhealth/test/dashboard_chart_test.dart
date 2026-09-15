@@ -5,6 +5,199 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'chart breaks long gaps and clock discontinuities, not normal cadence',
+    () {
+      final anchor = DateTime.utc(2026, 9, 10);
+      bool gap(int delta, {Duration? clockDelta}) => dashboardChartHasGap(
+        previousMinute: 60,
+        minute: 60 + delta,
+        previousRecordedAt: anchor,
+        recordedAt: anchor.add(clockDelta ?? Duration(minutes: delta)),
+      );
+      for (final delta in [1, 5, 15]) {
+        expect(gap(delta), isFalse);
+      }
+      for (final delta in [-1, 0, 16, 120]) {
+        expect(gap(delta), isTrue);
+      }
+      expect(gap(1, clockDelta: const Duration(minutes: 30)), isTrue);
+      expect(gap(1, clockDelta: const Duration(seconds: -1)), isTrue);
+      expect(gap(1, clockDelta: Duration.zero), isTrue);
+      expect(
+        gap(1, clockDelta: const Duration(minutes: 15, seconds: 1)),
+        isTrue,
+      );
+    },
+  );
+
+  test('unknown receipt time uses sensor gaps without inventing wall time', () {
+    for (final previous in [null, DateTime.utc(2026)]) {
+      expect(
+        dashboardChartHasGap(
+          previousMinute: 60,
+          minute: 75,
+          previousRecordedAt: previous,
+          recordedAt: null,
+        ),
+        isFalse,
+      );
+      expect(
+        dashboardChartHasGap(
+          previousMinute: 60,
+          minute: 76,
+          previousRecordedAt: previous,
+          recordedAt: null,
+        ),
+        isTrue,
+      );
+    }
+  });
+
+  test(
+    'axis label layout reserves latest time and omits overlapping labels',
+    () {
+      expect(dashboardChartVisibleLabelIndices(const []), isEmpty);
+      expect(
+        dashboardChartVisibleLabelIndices(const [Rect.fromLTWH(10, 0, 40, 12)]),
+        [0],
+      );
+      expect(
+        dashboardChartVisibleLabelIndices(const [
+          Rect.fromLTWH(0, 0, 40, 12),
+          Rect.fromLTWH(65, 0, 40, 12),
+          Rect.fromLTWH(80, 0, 40, 12),
+          Rect.fromLTWH(200, 0, 40, 12),
+        ]),
+        [0, 1, 3],
+      );
+      expect(
+        dashboardChartVisibleLabelIndices(const [
+          Rect.fromLTWH(0, 0, 40, 12),
+          Rect.fromLTWH(5, 0, 40, 12),
+        ]),
+        [1],
+      );
+      expect(
+        dashboardChartVisibleLabelIndices(const [
+          Rect.fromLTWH(0, 0, 40, 12),
+          Rect.fromLTWH(45, 0, 40, 12),
+        ]),
+        [1],
+      );
+    },
+  );
+
+  testWidgets('aggregation never puts both sides of a data gap in one bucket', (
+    tester,
+  ) async {
+    final anchor = DateTime.utc(2026, 9, 10);
+    final readings = [
+      for (var minute = 0; minute <= 60; minute++)
+        CgmReading(
+          valueMgdl: 80,
+          source: CgmRecordSource.vendor,
+          sensorMinute: minute,
+          recordedAt: anchor.add(Duration(minutes: minute)),
+        ),
+      for (var minute = 120; minute <= 180; minute++)
+        CgmReading(
+          valueMgdl: 180,
+          source: CgmRecordSource.vendor,
+          sensorMinute: minute,
+          recordedAt: anchor.add(Duration(minutes: minute)),
+        ),
+    ];
+    await tester.pumpWidget(
+      _chartHarness(
+        readings: readings,
+        historySync: CgmHistorySyncState(storedCount: readings.length),
+      ),
+    );
+    await tester.tap(find.text('ALL'));
+    await tester.pump(const Duration(milliseconds: 200));
+    final points = tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .expand((widget) => dashboardChartPlottedData(widget.painter))
+        .toList();
+    expect(points.length, lessThan(readings.length));
+    expect(points.map((point) => point.segment).toSet(), {0, 1});
+    expect(
+      points.fold<int>(
+        0,
+        (count, point) => count + point.count,
+      ),
+      readings.length,
+    );
+    for (final point in points) {
+      expect(point.low, point.high);
+      expect(point.value, point.segment == 0 ? 80 : 180);
+      expect(
+        point.minute,
+        point.segment == 0 ? lessThanOrEqualTo(60) : greaterThanOrEqualTo(120),
+      );
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  test('short ALL history uses clock labels, not repeated dates', () {
+    final first = DateTime(2026, 9, 10, 18, 5);
+    final last = first.add(const Duration(minutes: 7));
+    expect(
+      dashboardChartAxisLabel(
+        recordedAt: first,
+        sensorMinute: 6000,
+        visibleSpanMinutes: 7,
+      ),
+      '18:05',
+    );
+    expect(
+      dashboardChartAxisLabel(
+        recordedAt: last,
+        sensorMinute: 6007,
+        visibleSpanMinutes: 7,
+      ),
+      '18:12',
+    );
+  });
+
+  test('chart labels use local time without changing the stored instant', () {
+    final local = DateTime(2026, 9, 10, 23, 58);
+    final utc = local.toUtc();
+    expect(
+      dashboardChartAxisLabel(
+        recordedAt: utc,
+        sensorMinute: 60,
+        visibleSpanMinutes: 0,
+      ),
+      '23:58',
+    );
+    expect(utc.isUtc, isTrue);
+    expect(utc, local.toUtc());
+  });
+
+  test(
+    'long history uses dates and unknown receipt times stay sensor-relative',
+    () {
+      expect(
+        dashboardChartAxisLabel(
+          recordedAt: DateTime(2026, 9, 10, 18, 5),
+          sensorMinute: 6000,
+          visibleSpanMinutes: 4320,
+        ),
+        'Sep 10',
+      );
+      expect(
+        dashboardChartAxisLabel(
+          recordedAt: null,
+          sensorMinute: 6000,
+          visibleSpanMinutes: 7,
+        ),
+        'm6000',
+      );
+    },
+  );
+
   testWidgets('shows multi-day timeframe controls for long history', (
     tester,
   ) async {

@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 
+import 'sensor_connection_policy.dart';
+
 typedef CgmDiscoveryMapper = DiscoveredSensor? Function(BleScanResult result);
 
 /// One vendor driver and its pure advertisement classifier.
@@ -14,6 +16,7 @@ final class CgmDriverRegistration {
     required this.discover,
     this.prepareDiscovery,
     this.requiresUnfilteredScan = false,
+    this.connectionPolicy = SensorConnectionPolicy.externalSetupOnly,
   }) : scanServiceUuids = List<String>.unmodifiable(
          _normalizeServices(scanServiceUuids),
        ) {
@@ -47,6 +50,9 @@ final class CgmDriverRegistration {
   /// registration still applies its strict in-memory classifier before a
   /// device is shown or routed to a writable driver.
   final bool requiresUnfilteredScan;
+
+  /// Trusted app composition, never a grant taken from an advertisement.
+  final SensorConnectionPolicy connectionPolicy;
 }
 
 /// Routes one physical BLE scan to independent vendor drivers.
@@ -124,6 +130,23 @@ final class CgmDriverRegistry implements CgmDriver {
 
   CgmDriver? driverFor(String candidateDriverId) =>
       _driversById[candidateDriverId];
+
+  SensorConnectionPolicy connectionPolicyFor(String candidateDriverId) {
+    for (final registration in _registrations) {
+      if (registration.driver.driverId == candidateDriverId) {
+        return registration.connectionPolicy;
+      }
+    }
+    return SensorConnectionPolicy.externalSetupOnly;
+  }
+
+  /// Data behavior is independent of whether this driver can start a sensor.
+  CgmSensorDataProfile? sensorDataProfileFor(String candidateDriverId) {
+    return switch (driverFor(candidateDriverId)) {
+      final CgmSensorDataProfileProvider provider => provider.sensorDataProfile,
+      _ => null,
+    };
+  }
 
   @override
   Stream<DiscoveredSensor> scan({

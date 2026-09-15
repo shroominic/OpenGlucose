@@ -25,8 +25,29 @@ enum LibreGen1GlucoseRejection {
   unsupported,
 }
 
-/// Current sample only. Sensor age and sample age use sensor-relative minutes,
-/// not wall-clock timestamps. A value alone does not establish freshness.
+/// Historical slot type within the existing ten-sample BLE packet.
+enum LibreGen1BleHistoryKind { trend, history }
+
+/// One older BLE slot, including rejection. Never a current-reading claim.
+final class LibreGen1GlucoseHistorySample {
+  const LibreGen1GlucoseHistorySample({
+    required this.sampleAgeMinutes,
+    required this.kind,
+    this.glucoseMgdl,
+    this.rejection,
+  });
+
+  final int sampleAgeMinutes;
+  final LibreGen1BleHistoryKind kind;
+  final double? glucoseMgdl;
+  final LibreGen1GlucoseRejection? rejection;
+
+  @override
+  String toString() => 'LibreGen1GlucoseHistorySample(data: <redacted>)';
+}
+
+/// Current sample and separate older slots. Ages are sensor-relative minutes,
+/// not wall-clock timestamps. Historical values never establish freshness.
 final class LibreGen1GlucoseResult {
   const LibreGen1GlucoseResult({
     required this.sensorAgeMinutes,
@@ -34,12 +55,14 @@ final class LibreGen1GlucoseResult {
     this.glucoseMgdl,
     this.rejection,
     this.expectedLifetimeMinutes,
+    this.historySamples = const [],
   });
   final int sensorAgeMinutes;
   final int? sampleAgeMinutes;
   final double? glucoseMgdl;
   final LibreGen1GlucoseRejection? rejection;
   final int? expectedLifetimeMinutes;
+  final List<LibreGen1GlucoseHistorySample> historySamples;
   @override
   String toString() => 'LibreGen1GlucoseResult(data: <redacted>)';
 }

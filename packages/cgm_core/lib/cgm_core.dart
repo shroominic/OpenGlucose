@@ -9,5 +9,7 @@ export 'src/health_event.dart';
 export 'src/health_repository.dart';
 export 'src/health_samples.dart';
 export 'src/in_memory_health_repository.dart';
+export 'src/sensor_data_profile.dart';
+export 'src/sensor_variant.dart';
 export 'src/timeline.dart';
 export 'src/weekly_recap.dart';
