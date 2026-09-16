@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_localizations_extension.dart';
+import 'theme/og_theme.dart';
 
 bool shouldShowMacosPreviewNotice({
   required TargetPlatform platform,
@@ -29,7 +30,7 @@ class MacosPreviewNotice extends StatelessWidget {
       label: l10n.macosPreviewLimitations,
       child: Card(
         key: const ValueKey<String>('macosPreviewNotice'),
-        color: const Color(0xFFFFF3D6),
+        color: OgColors.fog,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -38,15 +39,15 @@ class MacosPreviewNotice extends StatelessWidget {
               Text(
                 l10n.macosTransportPreview,
                 style: theme.textTheme.titleMedium?.copyWith(
-                  color: const Color(0xFF704C00),
-                  fontWeight: FontWeight.w800,
+                  color: OgColors.ink,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 6),
               Text(
                 l10n.macosTransportPreviewDescription,
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF704C00),
+                  color: OgColors.ink,
                   height: 1.35,
                 ),
               ),
@@ -72,7 +73,7 @@ class MacosPreviewUnavailableAiPane extends StatelessWidget {
         Text(
           l10n.aiUnavailableInMacosPreview,
           style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w900,
+            fontWeight: FontWeight.w700,
           ),
         ),
         const SizedBox(height: 12),

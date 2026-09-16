@@ -4,11 +4,12 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:openglucose/src/app_localizations_extension.dart';
 
+import '../theme/og_theme.dart';
 import 'onboarding_store.dart';
 
-const Color _kAccent = Color(0xFF0B6E69);
-const Color _kInk = Color(0xFF103B3C);
-const Color _kMuted = Color(0xFF5B6E6A);
+const Color _kAccent = OgColors.ink;
+const Color _kInk = OgColors.ink;
+const Color _kMuted = OgColors.ash;
 
 /// Light, skippable first-run onboarding.
 ///
@@ -87,18 +88,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: <Color>[
-              Color(0xFFF7F0E4),
-              Color(0xFFE9F3EF),
-              Color(0xFFF7F5EE),
-            ],
-          ),
-        ),
+      body: ColoredBox(
+        color: OgColors.paper,
         child: SafeArea(
           child: Column(
             children: <Widget>[
@@ -196,18 +187,15 @@ class _Footer extends StatelessWidget {
           const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
-            height: 54,
+            height: 56,
             child: FilledButton(
               key: const ValueKey<String>('onboardingPrimaryButton'),
               onPressed: onNext,
               style: FilledButton.styleFrom(
                 backgroundColor: accent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
                 textStyle: const TextStyle(
                   fontSize: 16,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               child: finishing
@@ -215,7 +203,7 @@ class _Footer extends StatelessWidget {
                       dimension: 20,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white,
+                        color: OgColors.paper,
                       ),
                     )
                   : Text(
@@ -254,7 +242,7 @@ class _Dots extends StatelessWidget {
             height: 8,
             width: i == active ? 24 : 8,
             decoration: BoxDecoration(
-              color: i == active ? accent : accent.withValues(alpha: 0.22),
+              color: i == active ? accent : OgColors.mist,
               borderRadius: BorderRadius.circular(999),
             ),
           ),
@@ -289,20 +277,12 @@ class _StepScaffold extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           const SizedBox(height: 12),
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: _kAccent.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Icon(icon, size: 36, color: _kAccent),
-          ),
+          _Medallion(icon: icon),
           const SizedBox(height: 28),
           Text(
             title,
             style: theme.textTheme.headlineMedium?.copyWith(
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w700,
               color: _kInk,
               height: 1.1,
             ),
@@ -339,6 +319,26 @@ class _StepScaffold extends StatelessWidget {
   }
 }
 
+/// Ink disc with a paper glyph: the brand mark's silhouette as the step icon.
+class _Medallion extends StatelessWidget {
+  const _Medallion({required this.icon});
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 72,
+      height: 72,
+      decoration: const BoxDecoration(
+        color: OgColors.ink,
+        shape: BoxShape.circle,
+      ),
+      child: Icon(icon, size: 32, color: OgColors.paper),
+    );
+  }
+}
+
 class _Bullet {
   const _Bullet({required this.icon, required this.title, required this.body});
 
@@ -362,9 +362,8 @@ class _BulletRow extends StatelessWidget {
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFDCE7E2)),
+            color: OgColors.fog,
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Icon(bullet.icon, size: 20, color: _kAccent),
         ),
@@ -376,7 +375,7 @@ class _BulletRow extends StatelessWidget {
               Text(
                 bullet.title,
                 style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w600,
                   color: _kInk,
                 ),
               ),
@@ -488,20 +487,12 @@ class _TargetRangeStep extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           const SizedBox(height: 12),
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: _kAccent.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Icon(Icons.tune_rounded, size: 36, color: _kAccent),
-          ),
+          const _Medallion(icon: Icons.tune_rounded),
           const SizedBox(height: 28),
           Text(
             l10n.targetRangeTitle,
             style: theme.textTheme.headlineMedium?.copyWith(
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w700,
               color: _kInk,
               height: 1.1,
             ),
@@ -518,9 +509,8 @@ class _TargetRangeStep extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFFDCE7E2)),
+              color: OgColors.fog,
+              borderRadius: BorderRadius.circular(OgRadius.card),
             ),
             child: Column(
               children: <Widget>[
@@ -533,7 +523,7 @@ class _TargetRangeStep extends StatelessWidget {
                       _format(rangeMgdl.start),
                       key: const ValueKey<String>('onboardingRangeLow'),
                       style: theme.textTheme.displaySmall?.copyWith(
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w700,
                         color: _kInk,
                       ),
                     ),
@@ -550,7 +540,7 @@ class _TargetRangeStep extends StatelessWidget {
                       _format(rangeMgdl.end),
                       key: const ValueKey<String>('onboardingRangeHigh'),
                       style: theme.textTheme.displaySmall?.copyWith(
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w700,
                         color: _kInk,
                       ),
                     ),
@@ -575,7 +565,7 @@ class _TargetRangeStep extends StatelessWidget {
                   max: _maxMgdl,
                   divisions: divisions,
                   activeColor: _kAccent,
-                  inactiveColor: _kAccent.withValues(alpha: 0.18),
+                  inactiveColor: OgColors.mist,
                   labels: RangeLabels(
                     _format(rangeMgdl.start),
                     _format(rangeMgdl.end),

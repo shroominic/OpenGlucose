@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import 'app_localizations_extension.dart';
 import 'session_presentation.dart';
+import 'theme/og_theme.dart';
 
 /// Self-contained sensor lifecycle details card for Current sensor settings.
 ///
@@ -62,7 +63,7 @@ class SensorLifecycleCard extends StatelessWidget {
             padding: EdgeInsets.all(16),
             child: Row(
               children: <Widget>[
-                const Icon(Icons.schedule_rounded, color: Color(0xFF0B6E69)),
+                const Icon(Icons.schedule_rounded, color: OgColors.ink),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -72,7 +73,7 @@ class SensorLifecycleCard extends StatelessWidget {
                         l10n.sensorLifecycle,
                         style: const TextStyle(
                           fontSize: 18,
-                          fontWeight: FontWeight.w900,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -130,11 +131,12 @@ class _ActiveLifecycle extends StatelessWidget {
     final warmup = lifecycle.warmup;
     final isWarming = lifecycle.isWarmingUp && warmup != null;
 
-    final accent = lifecycle.isExpiringSoon
-        ? const Color(0xFFF2A65A)
-        : isWarming
-        ? const Color(0xFFF2A65A)
-        : const Color(0xFF0B6E69);
+    const accent = OgColors.ink;
+    final tone = isWarming
+        ? OgTone.soft
+        : lifecycle.isExpiringSoon
+        ? OgTone.outline
+        : OgTone.solid;
 
     final remainingText = compactDurationText(
       lifecycle.remaining,
@@ -150,17 +152,18 @@ class _ActiveLifecycle extends StatelessWidget {
             Text(
               l10n.sensorLifecycle,
               style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w700,
               ),
             ),
             const Spacer(),
-            _LifecyclePill(
+            OgPill(
               label: isWarming
                   ? l10n.warmingUp
                   : lifecycle.isExpiringSoon
                   ? l10n.expiringSoon
                   : l10n.active,
-              color: accent,
+              tone: tone,
+              dense: true,
             ),
           ],
         ),
@@ -211,14 +214,12 @@ class _ActiveLifecycle extends StatelessWidget {
         if (isWarming) ...<Widget>[
           const SizedBox(height: 14),
           _InfoBanner(
-            color: const Color(0xFFF2A65A),
             icon: Icons.hourglass_top_rounded,
             text: l10n.sensorWarmupLifecycleBanner,
           ),
         ] else if (lifecycle.isExpiringSoon) ...<Widget>[
           const SizedBox(height: 14),
           _InfoBanner(
-            color: const Color(0xFFF2A65A),
             icon: Icons.notifications_active_rounded,
             text: l10n.sensorExpiringSoonBanner(remainingText),
           ),
@@ -245,38 +246,35 @@ class _ExpiredOffboarding extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = context.l10n;
-    const expiredColor = Color(0xFFC25A3B);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Row(
           children: <Widget>[
-            const Icon(Icons.event_busy_rounded, color: expiredColor, size: 22),
+            const Icon(Icons.event_busy_rounded, color: OgColors.ink, size: 22),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 l10n.sensorExpired,
                 style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  color: expiredColor,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ),
-            _LifecyclePill(label: l10n.expired, color: expiredColor),
+            OgPill(label: l10n.expired, tone: OgTone.outline, dense: true),
           ],
         ),
         const SizedBox(height: 12),
         Text(
           l10n.sensorExpiredDetails,
           style: theme.textTheme.bodyMedium?.copyWith(
-            color: const Color(0xFF5B6E6A),
+            color: OgColors.ash,
             height: 1.4,
           ),
         ),
         const SizedBox(height: 14),
         _InfoBanner(
-          color: expiredColor,
           icon: Icons.history_toggle_off_rounded,
           text: lastReadingAt == null
               ? l10n.lastReadingPreservedBelow
@@ -288,7 +286,7 @@ class _ExpiredOffboarding extends StatelessWidget {
         Text(
           l10n.nextSteps,
           style: theme.textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w800,
+            fontWeight: FontWeight.w600,
           ),
         ),
         const SizedBox(height: 8),
@@ -302,7 +300,6 @@ class _ExpiredOffboarding extends StatelessWidget {
             child: FilledButton.icon(
               key: const ValueKey<String>('replaceSensorButton'),
               onPressed: onReplaceSensor,
-              style: FilledButton.styleFrom(backgroundColor: expiredColor),
               icon: const Icon(Icons.add_circle_outline_rounded),
               label: Text(l10n.replaceSensor),
             ),
@@ -332,15 +329,15 @@ class _OffboardingStep extends StatelessWidget {
             height: 22,
             alignment: Alignment.center,
             decoration: const BoxDecoration(
-              color: Color(0xFFEDE2DA),
+              color: OgColors.ink,
               shape: BoxShape.circle,
             ),
             child: Text(
               '$index',
               style: const TextStyle(
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w700,
                 fontSize: 12,
-                color: Color(0xFFC25A3B),
+                color: OgColors.paper,
               ),
             ),
           ),
@@ -383,8 +380,9 @@ class _LifeRing extends StatelessWidget {
             height: 84,
             child: CircularProgressIndicator(
               value: fraction.clamp(0.0, 1.0),
-              strokeWidth: 8,
-              backgroundColor: const Color(0xFFE6EFEA),
+              strokeWidth: 7,
+              strokeCap: StrokeCap.round,
+              backgroundColor: OgColors.mist,
               valueColor: AlwaysStoppedAnimation<Color>(accent),
             ),
           ),
@@ -394,16 +392,20 @@ class _LifeRing extends StatelessWidget {
               Text(
                 centerTop,
                 style: TextStyle(
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w700,
                   fontSize: 20,
+                  letterSpacing: -0.5,
                   color: accent,
+                  fontFeatures: const <FontFeature>[
+                    FontFeature.tabularFigures(),
+                  ],
                 ),
               ),
               Text(
                 centerBottom,
                 style: const TextStyle(
                   fontSize: 11,
-                  color: Color(0xFF5B6E6A),
+                  color: OgColors.ash,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -435,14 +437,15 @@ class _LifeStatRow extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(color: Color(0xFF5B6E6A)),
+              style: const TextStyle(color: OgColors.ash),
             ),
           ),
           Text(
             value,
             style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: emphasize ? const Color(0xFFC25A3B) : null,
+              fontWeight: emphasize ? FontWeight.w700 : FontWeight.w600,
+              decoration: emphasize ? TextDecoration.underline : null,
+              decorationThickness: 1.5,
             ),
           ),
         ],
@@ -451,42 +454,9 @@ class _LifeStatRow extends StatelessWidget {
   }
 }
 
-class _LifecyclePill extends StatelessWidget {
-  const _LifecyclePill({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w800,
-            fontSize: 12,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _InfoBanner extends StatelessWidget {
-  const _InfoBanner({
-    required this.color,
-    required this.icon,
-    required this.text,
-  });
+  const _InfoBanner({required this.icon, required this.text});
 
-  final Color color;
   final IconData icon;
   final String text;
 
@@ -495,21 +465,21 @@ class _InfoBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
+        color: OgColors.paper,
+        borderRadius: BorderRadius.circular(OgRadius.inset),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Icon(icon, size: 18, color: color),
+          Icon(icon, size: 18, color: OgColors.ink),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               text,
-              style: TextStyle(
-                color: const Color(0xFF3A4744),
+              style: const TextStyle(
+                color: OgColors.graphite,
                 height: 1.35,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),

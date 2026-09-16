@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'app_localizations_extension.dart';
 import 'app_controller.dart';
 import 'healthkit_export.dart';
+import 'theme/og_theme.dart';
 
 /// Integrations tab of the settings sheet (TASK-016).
 ///
@@ -37,14 +38,14 @@ class IntegrationsSettingsPane extends StatelessWidget {
             Text(
               l10n.integrations,
               style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 8),
             Text(
               l10n.integrationsIntro,
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFF5B6E6A),
+                color: OgColors.ash,
               ),
             ),
             const SizedBox(height: 16),
@@ -96,13 +97,13 @@ class _AppleHealthCard extends StatelessWidget {
           children: <Widget>[
             Row(
               children: <Widget>[
-                const Icon(Icons.favorite_rounded, color: Color(0xFFE0537A)),
+                const Icon(Icons.favorite_rounded, color: OgColors.ink),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     l10n.appleHealth,
                     style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
@@ -112,7 +113,7 @@ class _AppleHealthCard extends StatelessWidget {
             Text(
               l10n.appleHealthExportDescription,
               style: theme.textTheme.bodySmall?.copyWith(
-                color: const Color(0xFF5B6E6A),
+                color: OgColors.ash,
               ),
             ),
             const SizedBox(height: 8),
@@ -122,7 +123,7 @@ class _AppleHealthCard extends StatelessWidget {
                 child: Text(
                   l10n.appleHealthOnlyOnIos,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF8A6D3B),
+                    color: OgColors.ink,
                   ),
                 ),
               )
@@ -131,7 +132,7 @@ class _AppleHealthCard extends StatelessWidget {
                 Text(
                   l10n.appleHealthDisabledWithSimulatedData,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF8A6D3B),
+                    color: OgColors.ink,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -168,7 +169,7 @@ class _AppleHealthCard extends StatelessWidget {
                   Text(
                     l10n.readingCount(readingsCount),
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: const Color(0xFF5B6E6A),
+                      color: OgColors.ash,
                     ),
                   ),
                 ],
@@ -181,7 +182,7 @@ class _AppleHealthCard extends StatelessWidget {
                     healthExport.statusMessage!,
                   ),
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF0B6E69),
+                    color: OgColors.ink,
                   ),
                 ),
               ],

@@ -7,6 +7,7 @@ import 'app_localizations_extension.dart';
 import 'dashboard_chart.dart';
 import 'display_preferences.dart';
 import 'metrics_section.dart';
+import 'theme/og_theme.dart';
 import 'weekly_recap/weekly_recap_screen.dart';
 
 /// Read-only product preview for people who do not have a sensor connected.
@@ -30,32 +31,9 @@ class SampleDashboardScreen extends StatelessWidget {
       appBar: AppBar(title: Text(l10n.sampleDashboard)),
       body: Column(
         children: <Widget>[
-          Material(
-            color: Color(0xFFFFD166),
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 11),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: <Widget>[
-                    Icon(Icons.visibility_outlined, size: 19),
-                    SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        l10n.sampleDataNotSensor,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Color(0xFF4A2B00),
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 0.35,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          OgNoticeBar(
+            label: l10n.sampleDataNotSensor,
+            icon: Icons.visibility_outlined,
           ),
           Expanded(
             child: CustomScrollView(
@@ -65,24 +43,26 @@ class SampleDashboardScreen extends StatelessWidget {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
                     child: Card(
-                      color: const Color(0xFF103B3C),
+                      color: OgColors.ink,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(OgRadius.hero),
+                      ),
                       child: Padding(
-                        padding: const EdgeInsets.all(20),
+                        padding: const EdgeInsets.all(24),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: <Widget>[
                             Text(
                               l10n.samplePreviewTitle,
                               style: theme.textTheme.headlineSmall?.copyWith(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w900,
+                                color: OgColors.paper,
                               ),
                             ),
                             const SizedBox(height: 7),
                             Text(
                               l10n.samplePreviewDescription,
                               style: theme.textTheme.bodyLarge?.copyWith(
-                                color: const Color(0xFFD8EEE8),
+                                color: OgColors.inkMuted,
                                 height: 1.35,
                               ),
                             ),
@@ -107,30 +87,14 @@ class SampleDashboardScreen extends StatelessWidget {
                                   child: Text(
                                     l10n.glucoseHistory,
                                     style: theme.textTheme.titleLarge?.copyWith(
-                                      fontWeight: FontWeight.w900,
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
                                 ),
-                                DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    color: Color(0xFFFFE8A3),
-                                    borderRadius: BorderRadius.all(
-                                      Radius.circular(999),
-                                    ),
-                                  ),
-                                  child: Padding(
-                                    padding: EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 6,
-                                    ),
-                                    child: Text(
-                                      l10n.sampleBadge,
-                                      style: TextStyle(
-                                        color: Color(0xFF6B4300),
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                    ),
-                                  ),
+                                OgPill(
+                                  label: l10n.sampleBadge,
+                                  tone: OgTone.outline,
+                                  dense: true,
                                 ),
                               ],
                             ),
