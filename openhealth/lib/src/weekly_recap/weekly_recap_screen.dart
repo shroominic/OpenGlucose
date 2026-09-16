@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../app_localizations_extension.dart';
 import '../display_preferences.dart';
+import '../theme/og_theme.dart';
 
 /// Weekly recap / trends screen.
 ///
@@ -26,10 +27,10 @@ class WeeklyRecapScreen extends StatelessWidget {
   /// Injectable clock for deterministic tests; defaults to [DateTime.now].
   final DateTime? now;
 
-  static const Color _muted = Color(0xFF5B6E6A);
-  static const Color _accent = Color(0xFF24443F);
-  static const Color _up = Color(0xFF1C7C54);
-  static const Color _down = Color(0xFFB23A48);
+  static const Color _muted = OgColors.ash;
+  static const Color _accent = OgColors.ink;
+  static const Color _up = OgColors.ink;
+  static const Color _down = OgColors.ash;
 
   String _formatGlucose(double mgdl, {bool withUnit = true}) {
     final value = preferences.unit.convertFromMgdl(mgdl);
@@ -77,7 +78,7 @@ class WeeklyRecapScreen extends StatelessWidget {
                 Text(
                   dateRange,
                   style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                     color: _accent,
                   ),
                 ),
@@ -131,33 +132,10 @@ class _SampleDataBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      key: ValueKey<String>('sampleWeeklyRecapBanner'),
-      color: Color(0xFFFFD166),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 11),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              Icon(Icons.visibility_outlined, size: 19),
-              SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  context.l10n.sampleDataNotSensor,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Color(0xFF4A2B00),
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.35,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return OgNoticeBar(
+      key: const ValueKey<String>('sampleWeeklyRecapBanner'),
+      label: context.l10n.sampleDataNotSensor,
+      icon: Icons.visibility_outlined,
     );
   }
 }
@@ -185,7 +163,7 @@ class _SectionCard extends StatelessWidget {
             Text(
               title,
               style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
+                fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 2),
@@ -561,13 +539,13 @@ class _DayBar extends StatelessWidget {
           ),
           Expanded(
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(999),
               child: LinearProgressIndicator(
                 value: fraction,
-                minHeight: 12,
-                backgroundColor: const Color(0xFFE7EDEB),
+                minHeight: 10,
+                backgroundColor: OgColors.mist,
                 valueColor: const AlwaysStoppedAnimation<Color>(
-                  Color(0xFF3E7C70),
+                  OgColors.ink,
                 ),
               ),
             ),
@@ -579,7 +557,7 @@ class _DayBar extends StatelessWidget {
               valueText,
               textAlign: TextAlign.right,
               style: theme.textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 color: averageMgdl == null
                     ? WeeklyRecapScreen._muted
                     : WeeklyRecapScreen._accent,
@@ -628,7 +606,7 @@ class _StatRow extends StatelessWidget {
               Text(
                 value,
                 style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w700,
                   color: WeeklyRecapScreen._accent,
                 ),
               ),
@@ -699,17 +677,30 @@ class _DeltaRow extends StatelessWidget {
               Text(
                 current == null ? '—' : format(current),
                 style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w700,
                   color: WeeklyRecapScreen._accent,
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                changeText,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  if (change != null && !delta.isFlat()) ...<Widget>[
+                    OgMark(
+                      size: 7,
+                      filled: color == WeeklyRecapScreen._up,
+                      color: color,
+                    ),
+                    const SizedBox(width: 5),
+                  ],
+                  Text(
+                    changeText,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -743,7 +734,7 @@ class _EmptyState extends StatelessWidget {
             Text(
               l10n.notEnoughReadingsYet,
               style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 6),
@@ -775,8 +766,8 @@ class _DisclaimerCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFF1F5F4),
-        borderRadius: BorderRadius.circular(12),
+        color: OgColors.fog,
+        borderRadius: BorderRadius.circular(OgRadius.inset),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,

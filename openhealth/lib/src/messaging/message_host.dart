@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../theme/og_theme.dart';
 import 'app_message.dart';
 import 'message_controller.dart';
 
@@ -94,7 +95,7 @@ class _MessageCard extends StatelessWidget {
       key: ValueKey<String>('messageCard-${message.id}'),
       decoration: BoxDecoration(
         color: palette.background,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(OgRadius.inset),
         border: Border.all(color: palette.border),
       ),
       child: Padding(
@@ -113,7 +114,7 @@ class _MessageCard extends StatelessWidget {
                   Text(
                     text.title,
                     style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       color: palette.foreground,
                     ),
                   ),
@@ -165,25 +166,27 @@ class _MessagePalette {
 
 _MessagePalette _paletteFor(AppMessageKind kind) {
   return switch (kind) {
+    // Three tones, one hue: a tip is a soft fill, information sits on paper
+    // behind a hairline, and an alert inverts to ink so it cannot be missed.
     AppMessageKind.tip => const _MessagePalette(
-      background: Color(0xFFEFF5F2),
-      border: Color(0xFFD8E3DE),
-      foreground: Color(0xFF24443F),
-      accent: Color(0xFF0B6E69),
+      background: OgColors.fog,
+      border: OgColors.fog,
+      foreground: OgColors.ink,
+      accent: OgColors.ink,
       icon: Icons.lightbulb_outline_rounded,
     ),
     AppMessageKind.info => const _MessagePalette(
-      background: Color(0xFFEAF1FB),
-      border: Color(0xFFC9DBF3),
-      foreground: Color(0xFF1F3A57),
-      accent: Color(0xFF2C5F94),
+      background: OgColors.paper,
+      border: Color(0xFFD2D2D2),
+      foreground: OgColors.ink,
+      accent: OgColors.ink,
       icon: Icons.info_outline_rounded,
     ),
     AppMessageKind.alert => const _MessagePalette(
-      background: Color(0xFFFCEDE9),
-      border: Color(0xFFF4C9BD),
-      foreground: Color(0xFF7A2E1E),
-      accent: Color(0xFFC2502F),
+      background: OgColors.ink,
+      border: OgColors.ink,
+      foreground: OgColors.paper,
+      accent: OgColors.paper,
       icon: Icons.warning_amber_rounded,
     ),
   };
