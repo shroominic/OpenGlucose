@@ -917,9 +917,30 @@ class _DashboardView extends StatelessWidget {
                         if (history.any(
                           (reading) => reading.isDisplayProvisional,
                         )) ...<Widget>[
-                          const Text(
-                            'Includes provisional readings. Not validated for body glucose.',
+                          Text(
+                            historyProvisionalNoticeForSnapshot(snapshot),
                             key: ValueKey<String>('historyQualityNotice'),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        if (snapshot.historySync.inProgress) ...<Widget>[
+                          Text(
+                            historySyncProgressText(snapshot.historySync),
+                            key: const ValueKey<String>('historySyncProgress'),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF5B6E6A),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ] else if (snapshot.historySync.lastSyncAt != null &&
+                            history.isNotEmpty) ...<Widget>[
+                          Text(
+                            'Sensor history complete. '
+                            '${snapshot.historySync.storedCount} records.',
+                            key: const ValueKey<String>('historySyncComplete'),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF5B6E6A),
+                            ),
                           ),
                           const SizedBox(height: 8),
                         ],
@@ -1055,6 +1076,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
       subtitle = warmupSubtext(warmup);
       stageLabel = warmupStageLabel(warmup);
     } else {
+      final cbioSnapshot = isCbioSnapshot(snapshot);
       final fallbackValue = isLibreGen1Snapshot(snapshot)
           ? null
           : snapshot.lastAdvertisement?.displayValueMgdl;
@@ -1063,17 +1085,26 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           (fallbackValue == null
               ? null
               : preferences.unit.convertFromMgdl(fallbackValue));
-      bigValue = displayedValue == null
-          ? '--'
-          : displayedValue.toStringAsFixed(
-              preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
-            );
-      unitLabel = preferences.unit.label;
+      if (cbioSnapshot) {
+        // The protocol's raw field is shown as-is: no glucose unit is claimed
+        // until a reference measurement settles the scale.
+        bigValue = cbioProvisionalValueText(latest) ?? '--';
+        unitLabel = '';
+      } else {
+        bigValue = displayedValue == null
+            ? '--'
+            : displayedValue.toStringAsFixed(
+                preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
+              );
+        unitLabel = preferences.unit.label;
+      }
       subtitle = primaryError == null
-          ? (latest?.isDisplayProvisional == true
+          ? (cbioSnapshot
+                ? 'Sensor raw value · index ${latest?.sensorMinute ?? '--'}'
+                : (latest?.isDisplayProvisional == true
                     ? null
                     : libreConnectionDetailForSnapshot(snapshot)) ??
-                'Latest reading at ${readingTimeText(latest)}'
+                'Latest reading at ${readingTimeText(latest)}')
           : 'Latest reading at ${readingTimeText(latest)}';
       stageLabel = stageLabelForSnapshot(snapshot);
     }
@@ -1081,6 +1112,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Card(
+        key: const ValueKey<String>('glucoseHeroCard'),
         color: const Color(0xFF113437),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
@@ -1108,16 +1140,17 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                           ),
                         ),
                         const SizedBox(width: 10),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Text(
-                            unitLabel,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: const Color(0xFFC7E4DD),
-                              fontWeight: FontWeight.w700,
+                        if (unitLabel.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Text(
+                              unitLabel,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: const Color(0xFFC7E4DD),
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                           ),
-                        ),
                       ],
                     ),
                   ),
@@ -1135,10 +1168,20 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   color: const Color(0xFFD6ECE7),
                 ),
               ),
+              if (isCbioSnapshot(snapshot)) ...<Widget>[
+                const SizedBox(height: 6),
+                Text(
+                  cbioStoredRangeText(snapshot.history),
+                  key: const ValueKey<String>('cbioStoredRange'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFC7E4DD),
+                  ),
+                ),
+              ],
               if (latest?.isDisplayProvisional == true) ...<Widget>[
                 const SizedBox(height: 6),
                 Text(
-                  libreConnectionDetailForSnapshot(snapshot) ??
+                  provisionalReadingNoticeForSnapshot(snapshot) ??
                       'Provisional reading. Not yet verified.',
                   key: const ValueKey<String>('provisionalReadingNotice'),
                   style: theme.textTheme.bodySmall?.copyWith(

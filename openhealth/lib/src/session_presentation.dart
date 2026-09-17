@@ -1,5 +1,6 @@
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:intl/intl.dart';
 
@@ -386,12 +387,27 @@ String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
       return 'Searching';
     }
     if (snapshot.stage == CgmSyncStage.syncing &&
-        const {'awaitingPacket', 'validatedPacket'}.contains(
-          snapshot.metadata['cgm.libre2.phase'],
-        )) {
+        const {
+          'awaitingPacket',
+          'validatedPacket',
+        }.contains(snapshot.metadata['cgm.libre2.phase'])) {
       return 'Waiting';
     }
     return 'Connecting';
+  }
+  if (isCbioSnapshot(snapshot)) {
+    if (snapshot.stage == CgmSyncStage.error) {
+      return 'Error';
+    }
+    if (snapshot.stage == CgmSyncStage.disconnected) {
+      return snapshot.latestReading != null || snapshot.history.isNotEmpty
+          ? 'Reconnecting'
+          : 'Disconnected';
+    }
+    if (snapshot.stage == CgmSyncStage.syncing) {
+      return 'Fetching history';
+    }
+    return snapshot.stage == CgmSyncStage.ready ? 'Live' : 'Connecting';
   }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
@@ -469,6 +485,68 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
 
 bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
     snapshot.sensor.driverId == 'libre2-gen1';
+
+bool isCbioSnapshot(CgmSessionSnapshot snapshot) =>
+    snapshot.sensor.driverId == 'cbio';
+
+/// The provisional marker every CBio surface shows.
+///
+/// The GS1 raw field is divided by ten by two independent clients of the
+/// protocol, but no reference measurement has confirmed that scale, so the
+/// derived number stays visible with its unit explicitly unsettled.
+String? provisionalReadingNoticeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot)) {
+    return cbioProvisionalUnitNotice;
+  }
+  return libreConnectionDetailForSnapshot(snapshot);
+}
+
+/// The history-card quality notice for a provisional reading set.
+String historyProvisionalNoticeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot)) {
+    return cbioProvisionalUnitNotice;
+  }
+  return 'Includes provisional readings. Not validated for body glucose.';
+}
+
+/// Progress or completion wording for a fetched sensor history.
+String historySyncProgressText(CgmHistorySyncState state) {
+  final stored = state.storedCount;
+  final target = state.totalAvailable;
+  if (target > 0 && stored < target) {
+    return 'Fetching sensor history: $stored of $target records';
+  }
+  return 'Fetching sensor history: $stored records';
+}
+
+/// The CBio dashboard value: the sensor's raw field divided by ten.
+///
+/// No glucose unit is attached, because the protocol's scale is unverified.
+/// The number the harness reads out of the same `0x08` field is the same
+/// number this renders, so the app and the capture tooling agree.
+String? cbioProvisionalValueText(CgmReading? reading) {
+  final raw = reading?.rawValue;
+  if (raw == null) {
+    return null;
+  }
+  return (raw / 10).toStringAsFixed(1);
+}
+
+/// What the app actually stored for this sensor: how many records and which
+/// sensor positions they cover. Positions are the protocol's own `index`
+/// counter, which advances one per stored minute; it is never a wall clock.
+String cbioStoredRangeText(Iterable<CgmReading> readings) {
+  final positions = <int>[
+    for (final reading in readings)
+      if (reading.sensorMinute != null) reading.sensorMinute!,
+  ];
+  if (positions.isEmpty) {
+    return '${readings.length} readings stored';
+  }
+  positions.sort();
+  return '${readings.length} readings stored · '
+      'sensor minutes ${positions.first}–${positions.last}';
+}
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter
 /// on each snapshot. Retained glucose history or a saved NFC state is not proof
