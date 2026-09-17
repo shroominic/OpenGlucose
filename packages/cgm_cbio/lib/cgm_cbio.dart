@@ -8,3 +8,4 @@ export 'src/cbio_vendor_frames.dart';
 export 'src/cbio_crypto.dart';
 export 'src/cbio_glucose_sync.dart';
 export 'src/cbio_queries.dart';
+export 'src/cbio_reply_inspection.dart';

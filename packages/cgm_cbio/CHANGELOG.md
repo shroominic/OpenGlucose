@@ -6,6 +6,10 @@
   and a bounded `CbioGlucoseSyncSession` for live polling and history paging
   with explicit fail-closed states. Records expose raw fields only and are
   never labelled with a unit.
+- Add `inspectCbioReply`, a read-only structural inspection of one raw `FF31`
+  notification. It reports the plaintext invariants, orientation and constant-mask
+  searches, and returns `unresolved` with a null frame for the captured five-byte
+  payload. It does not decrypt or reassemble.
 
 ## 0.0.1
 

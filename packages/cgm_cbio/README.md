@@ -62,6 +62,15 @@ streams a contiguous raw archive up to the present; the `0A` packed field is
 zero throughout, so only `08` carries usable content. See the
 [live record](../../docs/testing/cbio-gs1-glucose-live.md).
 
+`inspectCbioReply` reports what a raw `FF31` notification proves under the
+plaintext contract: declared length, additive checksum, acknowledgement marker,
+mapped opcode, whether any rotation or reversal fits, and whether one constant
+byte mask would expose a frame. It returns `unresolved` with a null frame for
+the live five-byte payload `23 F7 6F D9 F4`, which no plaintext reading fits.
+The inspection does not decrypt, reassemble, or hold a key; a keyed stream
+cipher stays untestable here. See the
+[reply framing record](../../docs/testing/cbio-gs1-reply-decode.md).
+
 Run package checks from this directory with the pinned Dart SDK:
 
 ```sh
