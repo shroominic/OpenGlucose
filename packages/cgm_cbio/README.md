@@ -46,6 +46,18 @@ and preserves its raw byte without an active/inactive enum.
 clock-update ACK and retains unknown result/status values. These inspect bytes
 only. The package contains no activation/clock builder or live write path.
 
+`buildCbioGlucoseQuery` and `buildCbioInformationQuery` reproduce the vendor's
+recovered V120 read frames (`06 0A LE16(index) 00 00 C` and `03 F0 selector C`).
+`parseCbioGlucoseBatch` decodes only the plaintext `0A` batch layout and refuses
+the `08` raw-data layout. `CbioGlucoseSyncSession` adds bounded live polling at
+the newest index and bounded history paging from the oldest record, with
+explicit `noRecords`, `decodeFailed`, `queryFailed`, `budgetReached`, and
+`historyNotFullyAvailable` states. `CbioGlucoseRecord.isUnitVerified` is always
+false: the 10-bit field has no established unit or scale. On the live sensor
+every read, including the vendor glucose queries, currently returns the same
+undecodable five-byte frame, so all of these paths fail closed. See the
+[live attempt record](../../docs/testing/cbio-gs1-glucose-live.md).
+
 Run package checks from this directory with the pinned Dart SDK:
 
 ```sh

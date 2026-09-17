@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add the vendor V120 read-query builders, a strict `0A` glucose batch decoder,
+  and a bounded `CbioGlucoseSyncSession` for live polling and history paging
+  with explicit fail-closed states. Records expose raw fields only and are
+  never labelled with a unit.
+
 ## 0.0.1
 
 - Reserve the `cbio` driver contract for offline GS1 research.
