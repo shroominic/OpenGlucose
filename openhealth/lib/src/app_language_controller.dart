@@ -10,8 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 enum AppLanguagePreference {
   system,
   english,
-  simplifiedChinese
-  ;
+  simplifiedChinese;
 
   String get storageValue => switch (this) {
     AppLanguagePreference.system => 'system',
@@ -31,8 +30,7 @@ enum AppLanguagePreference {
 /// A supported rendered language, distinct from the user's preference.
 enum AppLanguage {
   english,
-  simplifiedChinese
-  ;
+  simplifiedChinese;
 
   Locale get locale => switch (this) {
     AppLanguage.english => const Locale('en'),

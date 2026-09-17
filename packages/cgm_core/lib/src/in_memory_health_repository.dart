@@ -65,7 +65,13 @@ class InMemoryHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertActivitySamples(Iterable<ActivitySample> samples) async {
-    _activity.addAll(samples);
+    for (final sample in samples) {
+      _replaceByIdentity(
+        _activity,
+        sample,
+        (value) => value.metadata?.identityKey(value.source),
+      );
+    }
   }
 
   @override
@@ -91,7 +97,13 @@ class InMemoryHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertSleepSamples(Iterable<SleepSample> samples) async {
-    _sleep.addAll(samples);
+    for (final sample in samples) {
+      _replaceByIdentity(
+        _sleep,
+        sample,
+        (value) => value.metadata?.identityKey(value.source),
+      );
+    }
   }
 
   @override
@@ -113,7 +125,13 @@ class InMemoryHealthRepository implements HealthRepository {
 
   @override
   Future<void> upsertHeartRateSamples(Iterable<HeartRateSample> samples) async {
-    _heartRate.addAll(samples);
+    for (final sample in samples) {
+      _replaceByIdentity(
+        _heartRate,
+        sample,
+        (value) => value.metadata?.identityKey(value.source),
+      );
+    }
   }
 
   @override
@@ -170,5 +188,17 @@ class InMemoryHealthRepository implements HealthRepository {
     final before = list.length;
     list.removeWhere(test);
     return before - list.length;
+  }
+
+  static void _replaceByIdentity<T>(
+    List<T> list,
+    T value,
+    String? Function(T) identity,
+  ) {
+    final key = identity(value);
+    if (key != null) {
+      list.removeWhere((existing) => identity(existing) == key);
+    }
+    list.add(value);
   }
 }
