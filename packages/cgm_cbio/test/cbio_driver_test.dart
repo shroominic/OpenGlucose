@@ -190,6 +190,40 @@ void main() {
     );
   });
 
+  test('locates FF31 when the platform reports short-form UUIDs', () async {
+    // Android hands the app short-form UUIDs (`FF30`/`FF31`/`FF32`) rather
+    // than the full 128-bit base form the driver declares.
+    final connection = _FakeBleConnection(
+      'synthetic-device',
+      services: <BleService>[
+        BleService(
+          uuid: 'FF30',
+          characteristics: const <BleCharacteristicRef>[
+            BleCharacteristicRef(
+              serviceUuid: 'FF30',
+              characteristicUuid: 'FF31',
+              properties: BleCharacteristicProperties(notify: true),
+            ),
+            BleCharacteristicRef(
+              serviceUuid: 'FF30',
+              characteristicUuid: 'FF32',
+              properties: BleCharacteristicProperties(write: true),
+            ),
+          ],
+        ),
+      ],
+    );
+    final transport = _FakeBleTransport(connection: connection);
+    final driver = CbioSensorDriver(
+      transport,
+      passiveWindow: const Duration(days: 1),
+    );
+    final session = await driver.connect(candidate()) as CbioSession;
+    await session.initialize();
+    expect(connection.notifyEnabled, isTrue);
+    expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+  });
+
   test('scan surfaces one FF30 candidate', () async {
     final transport = _FakeBleTransport(
       scanResults: <BleScanResult>[

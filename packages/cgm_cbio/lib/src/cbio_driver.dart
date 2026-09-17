@@ -11,6 +11,21 @@ abstract final class CbioUuids {
   static const String service = '0000ff30-0000-1000-8000-00805f9b34fb';
   static const String receive = '0000ff31-0000-1000-8000-00805f9b34fb';
   static const String command = '0000ff32-0000-1000-8000-00805f9b34fb';
+
+  /// Canonicalises a UUID for comparison.
+  ///
+  /// Android reports 16-bit and 32-bit UUIDs in their short form (`FF30`)
+  /// while the constants above are written in the full Bluetooth base form,
+  /// so both sides are expanded onto that base before they are compared.
+  /// A UUID that is already fully qualified is only case-folded.
+  static String canonical(String uuid) {
+    final normalized = uuid.trim().toLowerCase();
+    return switch (normalized.length) {
+      4 => '0000$normalized-0000-1000-8000-00805f9b34fb',
+      8 => '$normalized-0000-1000-8000-00805f9b34fb',
+      _ => normalized,
+    };
+  }
 }
 
 /// Pure candidate mapping; performs no Bluetooth operations.
@@ -20,12 +35,10 @@ final class CbioDiscovery {
   static const List<String> scanServiceUuids = <String>[CbioUuids.service];
 
   DiscoveredSensor? mapScanResult(BleScanResult result) {
-    final matches = result.serviceUuids.any((uuid) {
-      final normalized = uuid.trim().toLowerCase();
-      return normalized == CbioUuids.service ||
-          normalized == 'ff30' ||
-          normalized == '0000ff30';
-    });
+    final matches = result.serviceUuids.any(
+      (uuid) =>
+          CbioUuids.canonical(uuid) == CbioUuids.canonical(CbioUuids.service),
+    );
     if (!matches || result.deviceId.trim().isEmpty) return null;
     return DiscoveredSensor(
       driverId: 'cbio',
@@ -395,7 +408,7 @@ final class CbioSession implements CgmSession {
     );
   }
 
-  String _normalizeUuid(String uuid) => uuid.trim().toLowerCase();
+  String _normalizeUuid(String uuid) => CbioUuids.canonical(uuid);
 }
 
 enum CbioProtocolFailure { missingNotifyCharacteristic, notifyUnavailable }
