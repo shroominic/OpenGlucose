@@ -116,9 +116,19 @@ for_project() {
   done
 }
 
+# Host lane: directory-marked tests under test/integration plus any test file
+# tagged with the `integration` tag. A single `flutter test` invocation rejects
+# a mix of this lane and the device-backed integration_test/ root, so the two
+# are discovered and run separately.
 integration_test_files() {
   project_path=$1
-  for test_root in test integration_test; do
+  project_dir=$2
+  test_roots="test"
+  # For Flutter projects the integration_test/ root is device-backed and runs
+  # in its own lane; for plain Dart packages it stays an ordinary test root.
+  uses_flutter "$project_dir" || test_roots="test integration_test"
+
+  for test_root in $test_roots; do
     [ ! -d "$project_path/$test_root" ] ||
       find "$project_path/$test_root" -type f -name '*_test.dart' -print
   done | sort -u | while IFS= read -r test_file; do
@@ -134,6 +144,19 @@ integration_test_files() {
         ;;
     esac
   done
+}
+
+# Device lane: integration_test/ holds device-backed harnesses that
+# `flutter test` can only run against hardware named by FLUTTER_TEST_DEVICE_ID.
+device_integration_files() {
+  project_path=$1
+  project_dir=$2
+  uses_flutter "$project_dir" || return 0
+  [ -d "$project_path/integration_test" ] || return 0
+  find "$project_path/integration_test" -type f -name '*_test.dart' -print | sort |
+    while IFS= read -r test_file; do
+      printf '%s\n' "${test_file#"$project_path/"}"
+    done
 }
 
 run_project_tests() {
@@ -161,7 +184,7 @@ run_integration_tests() {
 
   for project_dir in $project_dirs; do
     project_path="$repo_root/$project_dir"
-    discovered_files=$(integration_test_files "$project_path")
+    discovered_files=$(integration_test_files "$project_path" "$project_dir")
     if [ -n "$discovered_files" ]; then
       set --
       previous_ifs=$IFS
@@ -176,6 +199,27 @@ run_integration_tests() {
       printf '  %s\n' "$@"
       found=true
       run_project_tests "$project_dir" "$@"
+    fi
+
+    device_files=$(device_integration_files "$project_path" "$project_dir")
+    if [ -n "$device_files" ]; then
+      set --
+      previous_ifs=$IFS
+      IFS='
+'
+      for test_file in $device_files; do
+        set -- "$@" "$test_file"
+      done
+      IFS=$previous_ifs
+
+      found=true
+      printf '\n==> %s: device-backed integration tests\n' "$project_dir"
+      printf '  %s\n' "$@"
+      if [ -n "${FLUTTER_TEST_DEVICE_ID:-}" ]; then
+        run_project_tests "$project_dir" --device-id "$FLUTTER_TEST_DEVICE_ID" "$@"
+      else
+        printf '  deferred: no device named; set FLUTTER_TEST_DEVICE_ID=<device-id> to run these on hardware.\n'
+      fi
     fi
   done
 
