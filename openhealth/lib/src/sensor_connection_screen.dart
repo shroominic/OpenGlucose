@@ -251,9 +251,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
     return switch (_connectionStage) {
       CgmSyncStage.ready => const SizedBox.shrink(),
       CgmSyncStage.error || CgmSyncStage.disconnected => _ConnectionFailure(
-        title: libreConnectionWasLost(_controller.snapshot)
-            ? 'Connection lost'
-            : 'Could not connect',
+        title: _connectionFailureTitle,
         message: _connectionFailureMessage,
         onRetry: _connectingSensor == null || _actionInProgress
             ? null
@@ -285,6 +283,17 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
     }
     return _controller.lastError ??
         'OpenGlucose could not connect to this sensor.';
+  }
+
+  String get _connectionFailureTitle {
+    final snapshot = _controller.snapshot;
+    if (snapshot != null && snapshotHasSyncStalled(snapshot)) {
+      // The link came up, but the sensor never returned a readable reading.
+      return 'No reading from this sensor';
+    }
+    return libreConnectionWasLost(snapshot)
+        ? 'Connection lost'
+        : 'Could not connect';
   }
 
   void _backFromInlineSetup() {

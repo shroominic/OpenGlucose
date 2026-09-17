@@ -717,6 +717,20 @@ bool snapshotAllowsAutomaticReconnect(CgmSessionSnapshot snapshot) {
       true;
 }
 
+/// Closed session metadata set by the host when a connected session stopped
+/// making progress inside its bounded sync deadline. The host writes `true`.
+const cgmSessionSyncStalledMetadataKey = 'cgm.session.syncStalled';
+
+/// Product copy for a sensor that connected but never produced a readable
+/// reading inside that deadline. It names a next action without promising
+/// compatibility with sensor models this build cannot decode.
+const String sensorSyncStalledMessage =
+    "This sensor didn't return a readable reading. Try again, or choose "
+    'another sensor. Some sensor models are not supported yet.';
+
+bool snapshotHasSyncStalled(CgmSessionSnapshot snapshot) =>
+    snapshot.metadata[cgmSessionSyncStalledMetadataKey] == 'true';
+
 class GlucoseTrendSummary {
   const GlucoseTrendSummary({this.symbol = '', this.deltaText = ''});
 

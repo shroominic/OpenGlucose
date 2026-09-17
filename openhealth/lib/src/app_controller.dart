@@ -58,6 +58,11 @@ class CgmAppController extends ChangeNotifier {
   static const _scanTimeout = Duration(seconds: 6);
   static const _historyPersistDebounce = Duration(milliseconds: 900);
   static const _restoredConnectDelay = Duration(milliseconds: 700);
+  // A live session that reaches the syncing stage can stop making progress
+  // when the sensor's frames never decode into a reading. Bound that wait so
+  // setup fails closed with a next action instead of spinning forever.
+  static const _syncStageDeadline = Duration(seconds: 45);
+  static const _syncStalledStatusText = 'Sensor sent no readable reading';
   static const _liveRefreshThreshold = Duration(minutes: 2);
   static const _historyCatchUpThreshold = Duration(minutes: 5);
   static const _resumeOffsetMetadataKey = 'resumeOffset';
@@ -85,6 +90,8 @@ class CgmAppController extends ChangeNotifier {
   StreamSubscription<CgmLogEntry>? _logSubscription;
   Timer? _historyPersistTimer;
   Timer? _reconnectTimer;
+  Timer? _syncStageTimer;
+  bool _syncStageStalled = false;
   CgmSessionSnapshot? _snapshot;
   DiscoveredSensor? _selectedSensor;
   List<CgmReading> _persistedHistory = const <CgmReading>[];
@@ -586,6 +593,8 @@ class CgmAppController extends ChangeNotifier {
       );
       _logs.clear();
       _lastError = null;
+      _cancelSyncStageDeadline();
+      _syncStageStalled = false;
       _startPlatformTask(
         _pushLiveActivity(),
         'Updating private lock-screen state',
@@ -601,6 +610,15 @@ class CgmAppController extends ChangeNotifier {
       );
       _session = session;
       _snapshotSubscription = session.snapshots.listen((nextSnapshot) {
+        if (_syncStageStalled) {
+          if (nextSnapshot.stage == CgmSyncStage.syncing) {
+            // The bounded failure already replaced this stage. Keep the
+            // terminal state until the driver reports data, an error, or a
+            // disconnect.
+            return;
+          }
+          _syncStageStalled = false;
+        }
         final isErrorSnapshot = nextSnapshot.stage == CgmSyncStage.error;
         if (isErrorSnapshot) {
           _debugAppSessionTrace('error-snapshot-received');
@@ -673,6 +691,7 @@ class CgmAppController extends ChangeNotifier {
         } else {
           _cancelReconnect();
         }
+        _trackSyncStageDeadline();
         _startPlatformTask(
           _pushLiveActivity(),
           'Updating private lock-screen state',
@@ -750,6 +769,7 @@ class CgmAppController extends ChangeNotifier {
           initialSnapshot?.stage == CgmSyncStage.ready) {
         await initialSelectionPromotion;
       }
+      _trackSyncStageDeadline();
       notifyListeners();
     } catch (error) {
       final safeError = _safeError('Connection', error);
@@ -1147,6 +1167,8 @@ class CgmAppController extends ChangeNotifier {
     _clearInspectedBondTransfer();
     await _invalidateScan();
     _cancelReconnect();
+    _cancelSyncStageDeadline();
+    _syncStageStalled = false;
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     final sensorToArchive = clearSelection ? _selectedSensor : null;
@@ -1322,6 +1344,7 @@ class CgmAppController extends ChangeNotifier {
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     _cancelReconnect();
+    _cancelSyncStageDeadline();
     unawaited(_snapshotSubscription?.cancel());
     unawaited(_logSubscription?.cancel());
     super.dispose();
@@ -2218,6 +2241,67 @@ class CgmAppController extends ChangeNotifier {
   void _cancelReconnect() {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+  }
+
+  /// Arms the bounded wait for the first readable result of a live session.
+  ///
+  /// The wait is skipped when the driver owns its own terminal outcome or the
+  /// stage is expected to run long, so a healthy session is never failed for
+  /// merely taking its time.
+  void _trackSyncStageDeadline() {
+    final snapshot = _snapshot;
+    if (_disposed ||
+        isMockDriver ||
+        snapshot == null ||
+        snapshot.stage != CgmSyncStage.syncing ||
+        _syncStageWaitsAreDriverOwned(snapshot)) {
+      _cancelSyncStageDeadline();
+      return;
+    }
+    _syncStageTimer ??= Timer(_syncStageDeadline, _failSyncStage);
+  }
+
+  bool _syncStageWaitsAreDriverOwned(CgmSessionSnapshot snapshot) {
+    // Libre 2 publishes its own phase and terminal failure, and an in-progress
+    // history sync is a bounded, driver-owned exchange with its own progress.
+    return snapshot.metadata['cgm.libre2.phase'] != null ||
+        snapshot.historySync.inProgress ||
+        snapshot.metadata.containsKey(cgmBondTransferStateMetadataKey);
+  }
+
+  /// Fails the stalled session closed so setup shows a next action instead of
+  /// an endless "Syncing sensor history" card.
+  void _failSyncStage() {
+    _syncStageTimer = null;
+    final snapshot = _snapshot;
+    if (_disposed ||
+        snapshot == null ||
+        snapshot.stage != CgmSyncStage.syncing) {
+      return;
+    }
+    _syncStageStalled = true;
+    _lastError = sensorSyncStalledMessage;
+    _cancelReconnect();
+    _snapshot = snapshot.copyWith(
+      stage: CgmSyncStage.error,
+      statusText: _syncStalledStatusText,
+      lastError: sensorSyncStalledMessage,
+      metadata: <String, String>{
+        ...snapshot.metadata,
+        cgmAutomaticReconnectAllowedMetadataKey: 'false',
+        cgmSessionSyncStalledMetadataKey: 'true',
+      },
+    );
+    _startPlatformTask(
+      _pushLiveActivity(),
+      'Updating private lock-screen state',
+    );
+    notifyListeners();
+  }
+
+  void _cancelSyncStageDeadline() {
+    _syncStageTimer?.cancel();
+    _syncStageTimer = null;
   }
 
   bool _canAutomaticallyReconnect(CgmSessionSnapshot currentSnapshot) {
