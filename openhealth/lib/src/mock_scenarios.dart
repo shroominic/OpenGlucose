@@ -46,8 +46,7 @@ enum MockScenario {
   multiSensorHistory,
 
   /// Hard error state with no usable data.
-  error
-  ;
+  error;
 
   /// Stable identifier used for `--dart-define=OG_SCENARIO=<id>` and as the
   /// persisted runtime selection.

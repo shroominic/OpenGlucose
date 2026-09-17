@@ -26,9 +26,7 @@ void main() {
   test('support code normalizes untrusted platform codes', () {
     final code = archivedSensorExportSupportCode(
       stage: ArchivedSensorExportStage.storing,
-      error: PlatformException(
-        code: '../../CACHE/SENSOR 42/WRITE FAILED',
-      ),
+      error: PlatformException(code: '../../CACHE/SENSOR 42/WRITE FAILED'),
     );
 
     expect(code, contains('phase=P02'));
