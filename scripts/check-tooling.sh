@@ -48,5 +48,6 @@ if [ -f "$repo_root/openhealth/fastlane/Fastfile" ]; then
   ruby "$repo_root/scripts/test-external-testflight-release-contract.rb"
   ruby "$repo_root/scripts/test-notification-receipt.rb"
   ruby "$repo_root/scripts/test-internal-testflight-policy.rb"
+  ruby "$repo_root/scripts/test-workspace-integration-runner.rb"
   ruby "$repo_root/openhealth/scripts/test-testflight-signing-contract.rb"
 fi
