@@ -19,6 +19,7 @@ import 'package:openglucose/src/ios_export_share.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_context.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
 import 'package:openglucose/src/messaging/message_controller.dart';
 import 'package:openglucose/src/messaging/message_host.dart';
@@ -330,6 +331,7 @@ class OpenGlucoseApp extends StatefulWidget {
     this.languageController,
     this.messageController,
     this.archivedSensorShareAction,
+    this.clock,
   });
 
   final CgmAppController controller;
@@ -343,6 +345,9 @@ class OpenGlucoseApp extends StatefulWidget {
 
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
+
+  /// Injectable clock for time-bounded dashboard surfaces.
+  final DateTime Function()? clock;
 
   @override
   State<OpenGlucoseApp> createState() => _OpenGlucoseAppState();
@@ -440,6 +445,7 @@ class _OpenGlucoseAppState extends State<OpenGlucoseApp> {
                 home: CgmHomePage(
                   controller: widget.controller,
                   messageController: widget.messageController,
+                  clock: widget.clock,
                 ),
               ),
               // --- end TASK-007 onboarding gate ---
@@ -501,10 +507,12 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.clock,
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
+  final DateTime Function()? clock;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -512,8 +520,10 @@ class CgmHomePage extends StatefulWidget {
 
 class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   static const _foregroundFreshnessInterval = Duration(seconds: 45);
+  static const _signalExpiryRebuildInterval = Duration(seconds: 15);
 
   Timer? _freshnessTimer;
+  Timer? _signalExpiryTimer;
 
   @override
   void initState() {
@@ -522,11 +532,17 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
       unawaited(widget.controller.ensureFreshData());
     });
+    _signalExpiryTimer = Timer.periodic(_signalExpiryRebuildInterval, (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
   }
 
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _signalExpiryTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -544,6 +560,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     return AnimatedBuilder(
       animation: widget.controller,
       builder: (context, _) {
+        final now = widget.clock?.call() ?? DateTime.now();
         final snapshot = widget.controller.snapshot;
         // Contextual-messaging bridge: recompute which messages are relevant
         // from the latest app state on every controller change. Deferred to
@@ -552,7 +569,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
         if (messageController != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             messageController.updateContext(
-              buildMessageContext(widget.controller),
+              buildMessageContext(widget.controller, now: now),
             );
           });
         }
@@ -576,6 +593,7 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                       controller: widget.controller,
                       snapshot: snapshot,
                       messageController: widget.messageController,
+                      now: now,
                     ),
             ),
           ),
@@ -1178,11 +1196,13 @@ class _DashboardView extends StatelessWidget {
     required this.controller,
     required this.snapshot,
     this.messageController,
+    required this.now,
   });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
   final MessageController? messageController;
+  final DateTime now;
 
   @override
   Widget build(BuildContext context) {
@@ -1190,6 +1210,8 @@ class _DashboardView extends StatelessWidget {
     final l10n = context.l10n;
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
+    final messageContext = buildMessageContext(controller, now: now);
+    final sharpRise = messageContext.sharpRise;
     final warmup = computeWarmupStatus(
       snapshot,
       latestReading: controller.displayLatestReading,
@@ -1285,6 +1307,7 @@ class _DashboardView extends StatelessWidget {
             child: _DashboardHeroCard(
               controller: controller,
               snapshot: snapshot,
+              sharpRise: sharpRise,
             ),
           ),
           if (!isWarmingUp)
@@ -1323,6 +1346,7 @@ class _DashboardView extends StatelessWidget {
                             readings: history,
                             preferences: preferences,
                             historySync: snapshot.historySync,
+                            sharpRiseTailStart: sharpRise?.tailStart,
                           ),
                         ),
                       ],
@@ -1401,10 +1425,15 @@ class _MetricChip extends StatelessWidget {
 }
 
 class _DashboardHeroCard extends StatefulWidget {
-  const _DashboardHeroCard({required this.controller, required this.snapshot});
+  const _DashboardHeroCard({
+    required this.controller,
+    required this.snapshot,
+    required this.sharpRise,
+  });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
+  final SharpRiseSignal? sharpRise;
 
   @override
   State<_DashboardHeroCard> createState() => _DashboardHeroCardState();
@@ -1497,41 +1526,40 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.end,
                 children: <Widget>[
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: <Widget>[
-                        Flexible(
-                          child: Text(
-                            bigValue,
-                            maxLines: 1,
-                            overflow: TextOverflow.fade,
-                            softWrap: false,
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              color: Colors.white,
-                              height: 0.92,
-                              fontWeight: FontWeight.w900,
-                            ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: <Widget>[
+                      Text(
+                        bigValue,
+                        maxLines: 1,
+                        overflow: TextOverflow.fade,
+                        softWrap: false,
+                        style: theme.textTheme.displayMedium?.copyWith(
+                          color: Colors.white,
+                          height: 0.92,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          unitLabel,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: const Color(0xFFC7E4DD),
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Text(
-                            unitLabel,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: const Color(0xFFC7E4DD),
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
+                  if (widget.sharpRise != null) const _SharpRiseBadge(),
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: _StagePill(
@@ -1636,6 +1664,32 @@ class _StagePill extends StatelessWidget {
             color: Colors.white,
             fontWeight: FontWeight.w800,
             letterSpacing: 0,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SharpRiseBadge extends StatelessWidget {
+  const _SharpRiseBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      key: const ValueKey<String>('sharpRiseBadge'),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3D6),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFE3A008)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Text(
+          context.l10n.sharpRiseBadge,
+          style: const TextStyle(
+            color: Color(0xFF4A2B00),
+            fontWeight: FontWeight.w800,
           ),
         ),
       ),
