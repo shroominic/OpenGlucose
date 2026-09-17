@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_ble_flutter/cgm_ble_flutter.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart';
@@ -200,9 +201,15 @@ CgmDriver buildPlatformDriver() {
 
 CgmDriver _buildPlatformRegistry(BleTransport transport) {
   const aidexDiscovery = AidexDiscovery();
+  const cbioDiscovery = CbioDiscovery();
   return CgmDriverRegistry(
     transport: transport,
     registrations: <CgmDriverRegistration>[
+      CgmDriverRegistration(
+        driver: CbioSensorDriver(transport, discovery: cbioDiscovery),
+        scanServiceUuids: CbioDiscovery.scanServiceUuids,
+        discover: cbioDiscovery.mapScanResult,
+      ),
       CgmDriverRegistration(
         driver: AidexSensorDriver(transport, discovery: aidexDiscovery),
         scanServiceUuids: AidexDiscovery.scanServiceUuids,

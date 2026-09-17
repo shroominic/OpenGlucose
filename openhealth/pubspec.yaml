@@ -18,6 +18,8 @@ dependencies:
     path: ../packages/cgm_ble
   cgm_ble_flutter:
     path: ../packages/cgm_ble_flutter
+  cgm_cbio:
+    path: ../packages/cgm_cbio
   cgm_core:
     path: ../packages/cgm_core
   cgm_libre2:
@@ -50,6 +52,10 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.3
   flutter_test:
     sdk: flutter
+  # Device-backed integration harnesses (e.g. the bounded Cbio GS1 live
+  # capture) run through this SDK-provided package. Dev-only: it never ships.
+  integration_test:
+    sdk: flutter
   very_good_analysis: ^10.2.0
   # In-process SQLite (FFI) so the sqflite repository runs in `flutter test`
   # on the host with no device/simulator. Keep the pre-build-hook release
@@ -57,6 +63,11 @@ dev_dependencies:
   # SQLite artifacts into production Android/iOS builds.
   sqflite_common_ffi: 2.3.7+1
   sqlite3: 2.9.4
+  # The device-backed capture harness reads the raw plugin scan stream.
+  # `cgm_ble_flutter` already depends on `flutter_blue_plus`; declaring it here
+  # keeps the harness import explicit and pinned to the version the app links
+  # against. Dev-only: it never ships.
+  flutter_blue_plus: 2.2.1
 
 flutter:
   uses-material-design: true
