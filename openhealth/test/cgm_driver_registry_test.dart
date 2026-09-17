@@ -373,6 +373,133 @@ void main() {
     },
   );
 
+  test(
+    'a scan completes at its timeout when the transport never closes',
+    () async {
+      final transport = _FakeBleTransport();
+      final registry = CgmDriverRegistry(
+        transport: transport,
+        registrations: <CgmDriverRegistration>[
+          CgmDriverRegistration(
+            driver: _FakeDriver('alpha'),
+            scanServiceUuids: const <String>['181F'],
+            discover: (result) => _sensor('alpha', result.deviceId),
+          ),
+        ],
+      );
+
+      final sensors = <DiscoveredSensor>[];
+      final finished = Completer<void>();
+      final subscription = registry
+          .scan(timeout: const Duration(milliseconds: 80))
+          .listen(
+            sensors.add,
+            onDone: () {
+              if (!finished.isCompleted) finished.complete();
+            },
+          );
+      await _pumpEventQueue();
+      expect(transport.scanCalls, 1);
+      transport.emit(
+        const BleScanResult(
+          deviceId: 'synthetic',
+          deviceName: 'synthetic',
+          rssi: -45,
+        ),
+      );
+      await _pumpEventQueue();
+      expect(sensors, hasLength(1));
+
+      await finished.future.timeout(const Duration(seconds: 2));
+      expect(transport.scanCancelCount, 1);
+      await subscription.cancel();
+
+      final second = registry
+          .scan(timeout: const Duration(milliseconds: 80))
+          .listen((_) {});
+      await _pumpEventQueue();
+      expect(transport.scanCalls, 2);
+      await second.cancel();
+    },
+  );
+
+  test(
+    'a deadline reached during discovery setup still ends the scan',
+    () async {
+      final transport = _FakeBleTransport();
+      final slowPreparation = Completer<void>();
+      final registry = CgmDriverRegistry(
+        transport: transport,
+        registrations: <CgmDriverRegistration>[
+          CgmDriverRegistration(
+            driver: _FakeDriver('slow'),
+            scanServiceUuids: const <String>['181F'],
+            prepareDiscovery: () => slowPreparation.future,
+            discover: (result) => _sensor('slow', result.deviceId),
+          ),
+        ],
+      );
+
+      final sensors = <DiscoveredSensor>[];
+      final completed = Completer<void>();
+      registry
+          .scan(timeout: const Duration(milliseconds: 60))
+          .listen(
+            sensors.add,
+            onDone: () {
+              if (!completed.isCompleted) completed.complete();
+            },
+          );
+      await _pumpEventQueue();
+      expect(transport.scanCalls, 0);
+
+      await completed.future.timeout(const Duration(seconds: 2));
+      expect(sensors, isEmpty);
+      expect(transport.scanCalls, 0);
+
+      // The abandoned preparation must not resurrect a scan later.
+      slowPreparation.complete();
+      await _pumpEventQueue();
+      expect(transport.scanCalls, 0);
+    },
+  );
+
+  test('a transport that never confirms cancellation stays bounded', () async {
+    final transport = _WedgedCancelTransport();
+    final registry = CgmDriverRegistry(
+      transport: transport,
+      registrations: <CgmDriverRegistration>[
+        CgmDriverRegistration(
+          driver: _FakeDriver('alpha'),
+          scanServiceUuids: const <String>['181F'],
+          discover: (result) => _sensor('alpha', result.deviceId),
+        ),
+      ],
+    );
+
+    final finished = Completer<void>();
+    registry
+        .scan(timeout: const Duration(milliseconds: 60))
+        .listen((_) {}, onDone: finished.complete);
+    await _pumpEventQueue();
+    expect(transport.scanCalls, 1);
+
+    // The configured deadline must not wait on an unconfirmable cancellation.
+    await finished.future.timeout(const Duration(seconds: 2));
+    expect(transport.cancelCalls, 1);
+    expect(transport.scanCalls, 1);
+
+    // A retry in the same session must reach the transport again. The
+    // unconfirmed cancellation bounds this scan; it must not disable scanning
+    // until the app restarts.
+    final finishedAgain = Completer<void>();
+    registry
+        .scan(timeout: const Duration(milliseconds: 60))
+        .listen((_) {}, onDone: finishedAgain.complete);
+    await finishedAgain.future.timeout(const Duration(seconds: 6));
+    expect(transport.scanCalls, 2);
+  });
+
   test('rejects duplicate and unknown driver IDs', () async {
     final transport = _FakeBleTransport();
     final duplicate = _FakeDriver('duplicate');
@@ -425,6 +552,33 @@ DiscoveredSensor _sensor(String driverId, String deviceId) => DiscoveredSensor(
 );
 
 Future<void> _pumpEventQueue() => Future<void>.delayed(Duration.zero);
+
+/// A transport whose scan cancellation never reports completion.
+final class _WedgedCancelTransport implements BleTransport {
+  int scanCalls = 0;
+  int cancelCalls = 0;
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) {
+    scanCalls += 1;
+    return StreamController<BleScanResult>(
+      onCancel: () {
+        cancelCalls += 1;
+        return Completer<void>().future;
+      },
+    ).stream;
+  }
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw UnimplementedError();
+}
 
 final class _FakeBleTransport implements BleTransport {
   late StreamController<BleScanResult> _scanController;

@@ -6,6 +6,20 @@ import 'package:cgm_core/cgm_core.dart';
 
 typedef CgmDiscoveryMapper = DiscoveredSensor? Function(BleScanResult result);
 
+/// Prints a scan lifecycle diagnostic in debug builds only.
+///
+/// The scan path was debugged against a physical device, so its transitions are
+/// worth keeping. Every message stays identity-free, and the call sits inside
+/// an `assert` so release builds neither build nor emit them.
+void _debugScanStep(Object Function() message) {
+  assert(() {
+    // Diagnostic-only helper: the analyzer would otherwise flag the print.
+    // ignore: avoid_print, intentional debug-only scan diagnostics.
+    print('[scan] ${message()}');
+    return true;
+  }(), 'scan diagnostics run only in debug builds');
+}
+
 /// One vendor driver and its pure advertisement classifier.
 final class CgmDriverRegistration {
   CgmDriverRegistration({
@@ -109,9 +123,17 @@ final class CgmDriverRegistry implements CgmDriver {
   Future<void> _lifecycleTail = Future<void>.value();
   Future<void> Function()? _cancelActiveScan;
   StreamController<DiscoveredSensor>? _activeScanController;
+  Timer? _activeScanTimeout;
   Object? _scanStopFailure;
   StackTrace? _scanStopFailureStackTrace;
   var _scanGeneration = 0;
+
+  /// Upper bound for one transport scan cancellation.
+  ///
+  /// A transport that cannot confirm its own cancellation must not be able to
+  /// block the scan lifecycle (and therefore the UI) forever. Cancelling a
+  /// healthy transport resolves in milliseconds, so this only bounds failure.
+  static const _scanCancellationTimeout = Duration(seconds: 2);
 
   @override
   String get driverId => 'openglucose-driver-registry';
@@ -142,11 +164,39 @@ final class CgmDriverRegistry implements CgmDriver {
             }
             final generation = ++_scanGeneration;
             _activeScanController = controller;
+            var deadlineExpired = false;
+            _activeScanTimeout?.cancel();
+            _activeScanTimeout = timeout == null
+                ? null
+                : Timer(timeout, () {
+                    deadlineExpired = true;
+                    unawaited(
+                      _completeScanAtDeadline(generation, controller),
+                    );
+                  });
+            // Discovery setup can await a vendor receiver. A scan that reaches
+            // its deadline while that is pending must still end on time.
+            bool aborted() {
+              if (!deadlineExpired && !cancelled && !controller.isClosed) {
+                return false;
+              }
+              if (identical(_activeScanController, controller)) {
+                _activeScanTimeout?.cancel();
+                _activeScanTimeout = null;
+                _activeScanController = null;
+                _cancelActiveScan = null;
+              }
+              if (!controller.isClosed) {
+                unawaited(controller.close());
+              }
+              return true;
+            }
+
             final seen = <String, String>{};
             try {
               final availableRegistrations = <CgmDriverRegistration>[];
               for (final registration in _registrations) {
-                if (cancelled || controller.isClosed) return;
+                if (aborted()) return;
                 try {
                   await registration.prepareDiscovery?.call().timeout(
                     const Duration(seconds: 15),
@@ -157,7 +207,7 @@ final class CgmDriverRegistry implements CgmDriver {
                   // manufacturers or reuse its previously cached identity.
                 }
               }
-              if (cancelled || controller.isClosed) return;
+              if (aborted()) return;
               final source = _transport.scan(
                 timeout: timeout,
                 allowDuplicates: true,
@@ -212,6 +262,10 @@ final class CgmDriverRegistry implements CgmDriver {
                 },
               );
               _cancelActiveScan = subscription.cancel;
+              assert(() {
+                _debugScanStep(() => 'started a transport scan');
+                return true;
+              }(), 'scan diagnostics run only in debug builds');
             } on Object catch (error, stackTrace) {
               if (_ownsScan(generation, controller)) {
                 controller.addError(error, stackTrace);
@@ -247,6 +301,10 @@ final class CgmDriverRegistry implements CgmDriver {
             // Keep cleanup fail-closed inside the registry; connect and every
             // replacement scan rethrow this latched failure.
             _latchScanStopFailure(error, stackTrace);
+            assert(() {
+              _debugScanStep(() => 'latched a failed scan cancellation');
+              return true;
+            }(), 'scan diagnostics run only in debug builds');
           },
         );
       },
@@ -280,6 +338,43 @@ final class CgmDriverRegistry implements CgmDriver {
       identical(_activeScanController, controller) &&
       !controller.isClosed;
 
+  /// Ends a scan whose transport stream never closed on its own.
+  ///
+  /// flutter_blue_plus can stop a physical scan without emitting the
+  /// `isScanning == false` transition that `FlutterBluePlusTransport` waits
+  /// for, which leaves the transport stream open past the requested timeout.
+  /// The registry owns that timeout for every consumer, so the Connect-a-sensor
+  /// panel and any caller that replaces a scan always observe completion
+  /// instead of an indefinite spinner.
+  Future<void> _completeScanAtDeadline(
+    int generation,
+    StreamController<DiscoveredSensor> controller,
+  ) async {
+    if (!_ownsScan(generation, controller)) {
+      return;
+    }
+    _activeScanTimeout?.cancel();
+    _activeScanTimeout = null;
+    // Close the result stream first: the same listener drains and releases its
+    // subscription before the cancellation below is serialized.
+    unawaited(controller.close());
+    assert(() {
+      _debugScanStep(() => 'ended an overrun scan at its deadline');
+      return true;
+    }(), 'scan diagnostics run only in debug builds');
+    try {
+      await _serialize<void>(() async {
+        if (identical(_activeScanController, controller)) {
+          await _stopActiveScanLocked();
+        }
+      });
+    } on Object {
+      // The result stream is already closed and the transport could not
+      // confirm its cancellation, which stays latched for the next scan
+      // attempt. This deadline path must not surface a second unhandled error.
+    }
+  }
+
   Future<void> _finishScan(
     int generation,
     StreamController<DiscoveredSensor> controller,
@@ -296,6 +391,8 @@ final class CgmDriverRegistry implements CgmDriver {
     }
     _cancelActiveScan = null;
     _activeScanController = null;
+    _activeScanTimeout?.cancel();
+    _activeScanTimeout = null;
     if (!controller.isClosed) {
       await controller.close();
     }
@@ -312,14 +409,33 @@ final class CgmDriverRegistry implements CgmDriver {
     final cancelScan = _cancelActiveScan;
     final controller = _activeScanController;
     _scanGeneration += 1;
+    _activeScanTimeout?.cancel();
+    _activeScanTimeout = null;
 
     Object? cancellationError;
     StackTrace? cancellationStackTrace;
-    try {
-      await cancelScan?.call();
-    } on Object catch (error, stackTrace) {
-      cancellationError = error;
-      cancellationStackTrace = stackTrace;
+    var cancellationUnconfirmed = false;
+    if (cancelScan != null) {
+      // A transport that neither completes nor fails its own cancellation must
+      // not hold the whole scan lifecycle open.
+      var cancelled = false;
+      await Future.any(<Future<void>>[
+        cancelScan().then<void>(
+          (_) => cancelled = true,
+          onError: (Object error, StackTrace stackTrace) {
+            cancellationError = error;
+            cancellationStackTrace = stackTrace;
+          },
+        ),
+        Future<void>.delayed(_scanCancellationTimeout),
+      ]);
+      cancellationUnconfirmed = !cancelled && cancellationError == null;
+      if (cancellationUnconfirmed) {
+        assert(() {
+          _debugScanStep(() => 'proceeded past an unconfirmed cancellation');
+          return true;
+        }(), 'scan diagnostics run only in debug builds');
+      }
     }
 
     if (controller != null && !controller.isClosed) {
@@ -329,17 +445,20 @@ final class CgmDriverRegistry implements CgmDriver {
       }
     }
 
-    if (cancellationError != null) {
+    final cancellationFailure = cancellationError;
+    if (cancellationFailure != null) {
       // StreamSubscription.cancel is not retryable: later calls return the
       // same failed future. Latch the failure so no replacement scan or
       // routed connection can proceed without proof that the process-global
       // BLE scan stopped. Recreating the registry is the recovery boundary.
+      // An unconfirmed cancellation is deliberately not latched: it is bounded
+      // in time, and a retry in the same session must stay possible.
       _latchScanStopFailure(
-        cancellationError,
+        cancellationFailure,
         cancellationStackTrace ?? StackTrace.current,
       );
       Error.throwWithStackTrace(
-        cancellationError,
+        cancellationFailure,
         cancellationStackTrace ?? StackTrace.current,
       );
     }

@@ -2545,6 +2545,70 @@ void main() {
     await scan.timeout(const Duration(seconds: 1));
   });
 
+  testWidgets('a wedged physical scan cannot leave the controller scanning', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final transport = _WedgedScanTransport();
+    final registry = CgmDriverRegistry(
+      transport: transport,
+      registrations: <CgmDriverRegistration>[
+        CgmDriverRegistration(
+          driver: _ControlledDriver(
+            const <_ControlledSession>[],
+            driverId: 'aidex',
+          ),
+          scanServiceUuids: const <String>['181f'],
+          discover: (result) => _multiDriverSensor(
+            driverId: 'aidex',
+            storageKey: 'aidex:${result.deviceId}',
+          ),
+        ),
+      ],
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: registry,
+      healthStateStore: _ControllableHealthStateStore(),
+    );
+
+    await controller.initialize();
+    final scan = controller.scan();
+    await tester.pump();
+    expect(transport.scanStarted, isTrue);
+    transport.emit(
+      const BleScanResult(
+        deviceId: 'shared-platform-id',
+        deviceName: 'alpha',
+        rssi: -42,
+      ),
+    );
+    await tester.pump();
+    expect(controller.scanning, isTrue);
+    expect(controller.sensors, hasLength(1));
+
+    // Nothing else can end this scan: the transport never closes its stream.
+    await tester.pump(const Duration(seconds: 7));
+    await scan;
+    expect(controller.scanning, isFalse);
+    expect(controller.sensors, hasLength(1));
+
+    // A repeat request must reach the transport again instead of hanging
+    // behind the wedged scan. The previous cancellation is bounded, so the
+    // retry starts once that bound elapses.
+    final repeat = controller.scan();
+    await tester.pump(const Duration(seconds: 10));
+    expect(transport.scanCalls, 2);
+
+    await tester.pump(const Duration(seconds: 7));
+    await repeat;
+    expect(controller.scanning, isFalse);
+
+    controller.dispose();
+    await transport.cancelled.future.timeout(const Duration(seconds: 1));
+  });
+
   test('initial ready snapshot disables activation on reconnect', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -3019,6 +3083,45 @@ final class _BlockingBleTransport implements BleTransport {
         }
       },
     ).stream;
+  }
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) => throw UnimplementedError();
+}
+
+/// A transport that delivers results but never closes its scan stream.
+///
+/// This mirrors the field failure where the Android radio scan ran, delivered
+/// advertisements, and then stopped without the Dart scan stream ever seeing a
+/// completion signal.
+final class _WedgedScanTransport implements BleTransport {
+  final Completer<void> cancelled = Completer<void>();
+  int scanCalls = 0;
+  bool scanStarted = false;
+  StreamController<BleScanResult>? _controller;
+
+  void emit(BleScanResult result) => _controller?.add(result);
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) {
+    scanCalls += 1;
+    scanStarted = true;
+    final controller = StreamController<BleScanResult>(
+      onCancel: () {
+        if (!cancelled.isCompleted) {
+          cancelled.complete();
+        }
+      },
+    );
+    _controller = controller;
+    return controller.stream;
   }
 
   @override
