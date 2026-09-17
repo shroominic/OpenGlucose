@@ -2563,6 +2563,42 @@ abstract class AppLocalizations {
   /// **'Tap a point on the chart to see the exact reading and time.'**
   String get messageTapReadingBody;
 
+  /// No description provided for @messageSharpRiseTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'↑↑ Glucose is spiking'**
+  String get messageSharpRiseTitle;
+
+  /// No description provided for @messageSharpRiseChange.
+  ///
+  /// In en, this message translates to:
+  /// **'Up {change} mg/dL in {minutes} minutes'**
+  String messageSharpRiseChange(int change, int minutes);
+
+  /// No description provided for @messageSharpRisePrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'If walking is safe for you, take a short walk now and watch how your glucose responds.'**
+  String get messageSharpRisePrompt;
+
+  /// No description provided for @sharpRiseBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharp rise'**
+  String get sharpRiseBadge;
+
+  /// No description provided for @sharpRiseNudgeSemantics.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharp rise wellness nudge'**
+  String get sharpRiseNudgeSemantics;
+
+  /// No description provided for @sharpRiseChartTailSemantics.
+  ///
+  /// In en, this message translates to:
+  /// **'Sharp rise chart tail'**
+  String get sharpRiseChartTailSemantics;
+
   /// No description provided for @scenarioWarmup.
   ///
   /// In en, this message translates to:

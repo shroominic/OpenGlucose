@@ -9,7 +9,7 @@ import 'message_context.dart';
 /// - [tip]: a gentle, educational nudge (TASK-005). Low urgency.
 /// - [info]: a temporary, contextual info box (TASK-006), e.g. "warming up".
 /// - [alert]: an attention-grabbing, higher-urgency notice.
-enum AppMessageKind { tip, info, alert }
+enum AppMessageKind { tip, info, nudge, alert }
 
 /// How long a message should keep showing once its trigger matches.
 enum AppMessagePersistence {
@@ -32,6 +32,10 @@ enum AppMessagePersistence {
 /// stay declarative and trivial to unit-test.
 typedef MessageTrigger = bool Function(MessageContext context);
 
+typedef MessageBodyBuilder = String Function(MessageContext context);
+
+typedef MessageDataBuilder = Object? Function(MessageContext context);
+
 /// A single contextual in-app message.
 ///
 /// This is the shared substrate that tips (TASK-005) and temporary info boxes
@@ -50,6 +54,9 @@ class AppMessage {
     this.dismissible = true,
     this.priority = 0,
     this.persistence = AppMessagePersistence.showUntilDismissed,
+    this.bodyBuilder,
+    this.dataBuilder,
+    this.data,
   });
 
   /// Stable, unique identifier. Used as the persistence key for dismissals, so
@@ -69,13 +76,32 @@ class AppMessage {
   final bool dismissible;
 
   /// Higher wins when multiple messages are eligible at once. Ties break on a
-  /// stable kind ordering (alert > info > tip) and then [id].
+  /// stable kind ordering (alert > nudge > info > tip) and then [id].
   final int priority;
 
   /// Show-once / show-until-dismissed semantics. See [AppMessagePersistence].
   final AppMessagePersistence persistence;
 
+  /// Optional context-derived presentation content. The controller resolves it
+  /// before rendering so a catalog entry can retain stable identity while its
+  /// current, local quantification remains accurate.
+  final MessageBodyBuilder? bodyBuilder;
+  final MessageDataBuilder? dataBuilder;
+  final Object? data;
+
   /// Whether this message is eligible to surface in [context], ignoring
   /// dismissal state (which the controller layers on top).
   bool matches(MessageContext context) => trigger?.call(context) ?? true;
+
+  AppMessage resolve(MessageContext context) => AppMessage(
+    id: id,
+    kind: kind,
+    title: title,
+    body: bodyBuilder?.call(context) ?? body,
+    trigger: trigger,
+    dismissible: dismissible,
+    priority: priority,
+    persistence: persistence,
+    data: dataBuilder?.call(context) ?? data,
+  );
 }
