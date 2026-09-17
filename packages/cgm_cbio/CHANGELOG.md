@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `inspectCbioReply`, a read-only structural inspection of one raw `FF31`
+  notification. It reports the plaintext invariants, orientation and constant-mask
+  searches, and returns `unresolved` with a null frame for the captured five-byte
+  payload. It does not decrypt or reassemble.
+
 ## 0.0.1
 
 - Reserve the `cbio` driver contract for offline GS1 research.
