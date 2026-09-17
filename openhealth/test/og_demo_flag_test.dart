@@ -19,7 +19,7 @@ void main() {
           expect(driver, isA<CgmDriverRegistry>());
           expect(
             (driver as CgmDriverRegistry).registeredDriverIds,
-            const <String>{'aidex'},
+            const <String>{'aidex', 'cbio'},
           );
           expect(driver, isNot(isA<DemoCgmDriver>()));
         }
