@@ -110,6 +110,24 @@ decode, and must not be published as a reading.
 - Any glucose value, unit, epoch, or sensor state.
 - Firmware or model coverage: one sensor, one firmware revision, one app build.
 
+## Update: the payload is not command-specific
+
+The vendor's own read queries were then sent to the same live sensor from the
+phone: the storage read `03 F0 04 09`, the time/last-index read `03 F0 03 0A`,
+and the glucose reads `06 0A 00 00 00 00 F0` and `06 0A 01 00 00 00 EF`. All
+four returned the identical five bytes `23 F7 6F D9 F4`, one notification each,
+with nothing further arriving across 19 s.
+
+That result strengthens two of the conclusions above and retires a third. The
+payload is not a per-command reply, since a storage read, a time read, and two
+different glucose reads produce the same bytes; it is not the first fragment of
+a longer plaintext frame; and hypothesis 7 above, a length-prefixed remainder
+still in flight, is now refuted for this path rather than merely unsustained.
+The surviving explanation is unchanged: one fixed response, almost certainly
+keyed, that the sensor emits until the vendor's authentication material is
+present. See `cbio-gs1-glucose-live.md` for the full query, reply, and timing
+record.
+
 ## Exact next evidence needed
 
 1. The vendor's 16-byte stream key, recovered the same way the earlier bench
