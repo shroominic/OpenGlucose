@@ -9,8 +9,8 @@ ran, so the archive is live rather than historical.
 
 Everything below is read from the sensor or computed from its frames. The
 masking key and the link credential are documented by derivation in
-`docs/testing/cbio-gs1-auth-material.md` and are deliberately not restated
-here.
+`docs/testing/cbio-gs1-auth-material.md` (sibling branch
+`docs/cbio-gs1-auth-material`, PR #138) and are deliberately not restated here.
 
 ## The five-byte prompt is a masked control frame
 
