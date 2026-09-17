@@ -49,14 +49,18 @@ only. The package contains no activation/clock builder or live write path.
 `buildCbioGlucoseQuery` and `buildCbioInformationQuery` reproduce the vendor's
 recovered V120 read frames (`06 0A LE16(index) 00 00 C` and `03 F0 selector C`).
 `parseCbioGlucoseBatch` decodes only the plaintext `0A` batch layout and refuses
-the `08` raw-data layout. `CbioGlucoseSyncSession` adds bounded live polling at
-the newest index and bounded history paging from the oldest record, with
-explicit `noRecords`, `decodeFailed`, `queryFailed`, `budgetReached`, and
-`historyNotFullyAvailable` states. `CbioGlucoseRecord.isUnitVerified` is always
-false: the 10-bit field has no established unit or scale. On the live sensor
-every read, including the vendor glucose queries, currently returns the same
-undecodable five-byte frame, so all of these paths fail closed. See the
-[live attempt record](../../docs/testing/cbio-gs1-glucose-live.md).
+the `08` raw-data layout. `cbio_crypto.dart` carries the vendor's static
+per-frame stream mask, `cbio_vendor_frames.dart` builds the masked link frames
+the sensor actually accepts, and `cbio_history_archive.dart` assembles the `08`
+record stream into an ordered archive with gap and overlap detection.
+`CbioGlucoseSyncSession` adds bounded live polling at the newest index and
+bounded history paging from the oldest record, with explicit `noRecords`,
+`decodeFailed`, `queryFailed`, `budgetReached`, and `historyNotFullyAvailable`
+states. `CbioGlucoseRecord.isUnitVerified` is always false: the `08` field has
+no established unit or scale. On the live sensor an authenticated session
+streams a contiguous raw archive up to the present; the `0A` packed field is
+zero throughout, so only `08` carries usable content. See the
+[live record](../../docs/testing/cbio-gs1-glucose-live.md).
 
 Run package checks from this directory with the pinned Dart SDK:
 
