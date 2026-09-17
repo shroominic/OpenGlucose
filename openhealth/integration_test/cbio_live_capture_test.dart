@@ -63,6 +63,15 @@ const Duration _filteredScanWindow = Duration(seconds: 8);
 const Duration _unfilteredScanWindow = Duration(seconds: 12);
 const Duration _discoveryOverhead = Duration(seconds: 8);
 const Duration _linkWindow = Duration(seconds: 25);
+
+/// Bounded linger after the first FF31 packet.
+///
+/// The vendor reply is not proven to fit in one ATT notification: the first
+/// live packet arrived as five bytes whose leading byte (0x23) is the size a
+/// full frame would need. Tearing the link down on the first packet would drop
+/// every later fragment, so the capture keeps listening for this window after
+/// the first packet before it disconnects.
+const Duration _settleWindow = Duration(seconds: 6);
 const Duration _teardownWindow = Duration(seconds: 15);
 const Duration _rawScanWindow = Duration(seconds: 6);
 const Duration _acquireGap = Duration(seconds: 2);
@@ -376,9 +385,14 @@ Future<_LinkOutcome> _captureLink(
   final snapshotSubscription = session.snapshots.listen((_) {});
 
   final deadline = DateTime.now().add(_linkWindow);
+  DateTime? settleDeadline;
   while (DateTime.now().isBefore(deadline)) {
     if (_notificationBytes(events).isNotEmpty) {
-      break;
+      // Keep the link up briefly so a multi-packet reply is recorded whole.
+      settleDeadline ??= DateTime.now().add(_settleWindow);
+      if (!DateTime.now().isBefore(settleDeadline)) {
+        break;
+      }
     }
     if (session.currentSnapshot.stage == CgmSyncStage.error) {
       break;
@@ -403,8 +417,10 @@ Future<_LinkOutcome> _captureLink(
     await logSubscription.cancel().timeout(_teardownWindow);
     await snapshotSubscription.cancel().timeout(_teardownWindow);
   } on Object catch (error) {
-    _emit('CBIO-PROGRESS phase=subscription-cancel-failed '
-        'error=${error.runtimeType}');
+    _emit(
+      'CBIO-PROGRESS phase=subscription-cancel-failed '
+      'error=${error.runtimeType}',
+    );
   }
   return outcome;
 }
@@ -460,9 +476,7 @@ Future<List<BleScanResult>> _rawPluginScan({
       // Best effort: the bounded scan timeout stops the radio anyway.
     }
   }
-  return collected.values
-      .map(_toScanResult)
-      .toList(growable: false);
+  return collected.values.map(_toScanResult).toList(growable: false);
 }
 
 /// Maps one raw plugin result onto the transport's scan-result shape.
@@ -518,7 +532,8 @@ void _assertCapture(_CaptureSummary summary) {
   expect(
     summary.target,
     isNotNull,
-    reason: 'No FF30 GS1 candidate was observed on air during the bounded scan.',
+    reason:
+        'No FF30 GS1 candidate was observed on air during the bounded scan.',
   );
   expect(
     summary.connectSucceeded,
