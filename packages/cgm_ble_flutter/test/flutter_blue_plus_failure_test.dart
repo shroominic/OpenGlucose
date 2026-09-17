@@ -38,7 +38,10 @@ void main() {
         throwsA(same(firstFailure)),
       );
 
-      expect(steps, <String>['results', 'scanning', 'stop', 'close']);
+      // The caller's stream closes first: plugin cancellations can stay
+      // pending, and a stream the platform already stopped must not wait on
+      // them.
+      expect(steps, <String>['close', 'results', 'scanning', 'stop']);
     },
   );
 
@@ -71,7 +74,7 @@ void main() {
     });
 
     await Future<void>.delayed(Duration.zero);
-    expect(steps, <String>['results', 'scanning', 'await-start']);
+    expect(steps, <String>['close', 'results', 'scanning', 'await-start']);
     expect(cleanupFinished.isCompleted, isFalse);
     expect(steps, isNot(contains('replacement-start')));
 
@@ -79,12 +82,12 @@ void main() {
     await replacement;
 
     expect(steps, <String>[
+      'close',
       'results',
       'scanning',
       'await-start',
       'start-finished',
       'stop',
-      'close',
       'replacement-start',
     ]);
   });
