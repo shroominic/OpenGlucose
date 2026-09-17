@@ -1594,6 +1594,27 @@ class AppLocalizationsEn extends AppLocalizations {
       'Tap a point on the chart to see the exact reading and time.';
 
   @override
+  String get messageSharpRiseTitle => '↑↑ Glucose is spiking';
+
+  @override
+  String messageSharpRiseChange(int change, int minutes) {
+    return 'Up $change mg/dL in $minutes minutes';
+  }
+
+  @override
+  String get messageSharpRisePrompt =>
+      'If walking is safe for you, take a short walk now and watch how your glucose responds.';
+
+  @override
+  String get sharpRiseBadge => 'Sharp rise';
+
+  @override
+  String get sharpRiseNudgeSemantics => 'Sharp rise wellness nudge';
+
+  @override
+  String get sharpRiseChartTailSemantics => 'Sharp rise chart tail';
+
+  @override
   String get scenarioWarmup => 'Warmup';
 
   @override

@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/mock_scenarios.dart';
+import 'package:openglucose/src/messaging/message_context.dart';
 import 'package:openglucose/src/session_presentation.dart';
 
 /// Fixed clock so scenario snapshots are deterministic.
@@ -85,17 +86,22 @@ void main() {
       expect(lowCount, greaterThan(snapshot.history.length ~/ 2));
     });
 
-    test('rapidRise trends strongly upward', () {
-      final snapshot = catalog.buildSnapshot(MockScenario.rapidRise);
-      final first = snapshot.history.first.valueMgdl;
-      final last = snapshot.history.last.valueMgdl;
-      expect(last - first, greaterThan(100));
-      final trend = glucoseTrendSummary(
-        snapshot.history,
-        const DisplayPreferences(),
-      );
-      expect(trend.symbol, anyOf('↑', '↑↑', '↗'));
-    });
+    test(
+      'rapidRise ends as an in-range qualifying sharp rise, not a high alert',
+      () {
+        final snapshot = catalog.buildSnapshot(MockScenario.rapidRise);
+        final signal = detectSharpRise(
+          snapshot: snapshot,
+          readings: snapshot.history,
+          isWarmingUp: false,
+          now: _now,
+        );
+        expect(snapshot.latestReading!.valueMgdl, 131);
+        expect(snapshot.latestReading!.valueMgdl, lessThan(180));
+        expect(signal?.changeMgdl, 36);
+        expect(signal?.durationMinutes, 10);
+      },
+    );
 
     test('rapidFall trends strongly downward', () {
       final snapshot = catalog.buildSnapshot(MockScenario.rapidFall);
