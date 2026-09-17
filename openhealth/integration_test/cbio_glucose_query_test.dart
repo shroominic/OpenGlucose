@@ -53,13 +53,19 @@ void _emit(String line) {
 /// The vendor's device-information/read builder `03 F0 x C`.
 List<int> vendorInformationQuery(int selector) {
   final head = <int>[0x03, 0xf0, selector];
-  return [...head, (0x100 - (head.fold<int>(0, (a, b) => a + b) & 0xff)) & 0xff];
+  return [
+    ...head,
+    (0x100 - (head.fold<int>(0, (a, b) => a + b) & 0xff)) & 0xff,
+  ];
 }
 
 /// The vendor's glucose builder `06 0A LE16(index) LE16(0) C`.
 List<int> vendorGlucoseQuery(int index) {
   final head = <int>[0x06, 0x0a, index & 0xff, (index >> 8) & 0xff, 0x00, 0x00];
-  return [...head, (0x100 - (head.fold<int>(0, (a, b) => a + b) & 0xff)) & 0xff];
+  return [
+    ...head,
+    (0x100 - (head.fold<int>(0, (a, b) => a + b) & 0xff)) & 0xff,
+  ];
 }
 
 /// One decoded vendor `0x0A` glucose batch, without a unit or epoch claim.
@@ -187,8 +193,7 @@ Future<void> _runQueries() async {
   final notifications = <(int, List<int>)>[];
   StreamSubscription<List<int>>? subscription;
   final started = DateTime.now().toUtc();
-  int elapsed() =>
-      DateTime.now().toUtc().difference(started).inMilliseconds;
+  int elapsed() => DateTime.now().toUtc().difference(started).inMilliseconds;
 
   try {
     _emit('CBIO-Q connect-start');
@@ -254,7 +259,11 @@ Future<void> _runQueries() async {
       _emit('CBIO-Q write n=$writes label=$label bytes=${_hex(query)}');
       try {
         await write!
-            .write(query, withoutResponse: false, timeout: _writeWindow.inSeconds)
+            .write(
+              query,
+              withoutResponse: false,
+              timeout: _writeWindow.inSeconds,
+            )
             .timeout(_writeWindow);
         _emit('CBIO-Q write-ok n=$writes');
       } on Object catch (error) {
@@ -298,7 +307,9 @@ Future<void> _runQueries() async {
         }
       }
       if (replies.isEmpty) {
-        _emit('CBIO-Q reply label=$label none-within-${_replyWindow.inSeconds}s');
+        _emit(
+          'CBIO-Q reply label=$label none-within-${_replyWindow.inSeconds}s',
+        );
       }
     }
 
@@ -313,7 +324,9 @@ Future<void> _runQueries() async {
     await send(vendorGlucoseQuery(0), 'glucose-index0');
     await send(vendorGlucoseQuery(1), 'glucose-index1');
 
-    _emit('CBIO-Q summary writes=$writes notifications=${notifications.length}');
+    _emit(
+      'CBIO-Q summary writes=$writes notifications=${notifications.length}',
+    );
   } on Object catch (error) {
     _emit('CBIO-Q failed error=${error.runtimeType}');
   } finally {
