@@ -8,10 +8,31 @@ import 'package:test/test.dart';
 /// The vendor's accepted authentication reply, opcode 0x01 result 1.
 const List<int> _authAccepted = <int>[0x04, 0x01, 0x01, 0x00, 0xfa];
 
+/// Synthetic vendor material for this suite.
+///
+/// The package compiles no vendor material, so the fake link and every driver
+/// under test share this obviously synthetic set. The bytes are unrelated to
+/// the real link.
+final CbioCredentials _syntheticCredentials = CbioCredentials(
+  streamKey: _ascii('CGMTESTKEY000000'),
+  authMaterial: _ascii('CGMTESTMATERIAL1'),
+  authenticationTrigger: const <int>[0x10, 0x20, 0x30, 0x40, 0x50],
+);
+
+final List<int> _syntheticKey = _syntheticCredentials.streamKey;
+
+final CbioCredentialSource _syntheticSource = CbioStaticCredentialSource(
+  _syntheticCredentials,
+);
+
+List<int> _ascii(String value) => value.codeUnits;
+
 final class _FakeConnection implements BleConnection {
-  _FakeConnection({required this.services});
+  _FakeConnection({required this.services, List<int>? streamKey})
+    : streamKey = streamKey ?? _syntheticKey;
 
   final List<BleService> services;
+  final List<int> streamKey;
   final StreamController<BleConnectionState> _states =
       StreamController<BleConnectionState>.broadcast();
   final StreamController<List<int>> _notifications =
@@ -50,8 +71,8 @@ final class _FakeConnection implements BleConnection {
     List<int> value, {
     bool withoutResponse = false,
   }) async {
-    if (unmaskCbioFrame(value).elementAtOrNull(1) == 0x01) {
-      _notifications.add(maskCbioFrame(_authAccepted));
+    if (unmaskCbioFrame(value, key: streamKey).elementAtOrNull(1) == 0x01) {
+      _notifications.add(maskCbioFrame(_authAccepted, key: streamKey));
     }
   }
 
@@ -231,6 +252,7 @@ void main() {
     );
     final driver = CbioSensorDriver(
       _FakeBleTransport(connection),
+      credentials: _syntheticSource,
       timing: const CbioSessionTiming(
         authTimeout: Duration(milliseconds: 200),
         historyWindow: Duration(milliseconds: 60),
@@ -266,7 +288,10 @@ void main() {
         ),
       ],
     );
-    final driver = CbioSensorDriver(_FakeBleTransport(connection));
+    final driver = CbioSensorDriver(
+      _FakeBleTransport(connection),
+      credentials: _syntheticSource,
+    );
     final session = await driver.connect(candidate()) as CbioGlucoseSession;
     await session.initialize();
 
@@ -314,6 +339,54 @@ void main() {
     expect(results.single.rssi, -55);
     expect(transport.serviceFilters, hasLength(1));
     expect(transport.serviceFilters.single, CbioDiscovery.scanServiceUuids);
+  });
+
+  test('a driver reports whether its build can authenticate at all', () {
+    final transport = _ScriptedScanTransport(
+      filteredResults: const <BleScanResult>[],
+      unfilteredResults: const <BleScanResult>[],
+    );
+    // No `--dart-define` material in a plain test run, so the default source is
+    // unconfigured and a registry can skip the driver instead of surfacing a
+    // sensor it could never read.
+    expect(CbioSensorDriver(transport).canAuthenticate, isFalse);
+    expect(
+      CbioSensorDriver(
+        transport,
+        credentials: _syntheticSource,
+      ).canAuthenticate,
+      isTrue,
+    );
+  });
+
+  test('a driver without material fails closed before any write', () async {
+    final connection = _FakeConnection(
+      services: const <BleService>[
+        BleService(
+          uuid: CbioUuids.service,
+          characteristics: <BleCharacteristicRef>[
+            BleCharacteristicRef(
+              serviceUuid: CbioUuids.service,
+              characteristicUuid: CbioUuids.receive,
+              properties: BleCharacteristicProperties(notify: true),
+            ),
+            BleCharacteristicRef(
+              serviceUuid: CbioUuids.service,
+              characteristicUuid: CbioUuids.command,
+              properties: BleCharacteristicProperties(write: true),
+            ),
+          ],
+        ),
+      ],
+    );
+    final driver = CbioSensorDriver(_FakeBleTransport(connection));
+    final session = await driver.connect(candidate()) as CbioGlucoseSession;
+    await session.initialize();
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(session.currentSnapshot.lastError, CbioSessionFailure.authMaterial);
+    expect(connection.notifyEnabled, isFalse);
+    await session.disconnect();
   });
 
   test('the unfiltered retry still drops non-FF30 advertisers', () async {
