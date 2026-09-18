@@ -33,6 +33,7 @@
 // run is active. This file prints only redacted identifiers and never prints
 // payload bytes.
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_ble_flutter/cgm_ble_flutter.dart';
@@ -44,19 +45,49 @@ import 'package:integration_test/integration_test.dart';
 import 'package:openglucose/src/local_ble_trace_sink.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// The only write this capture may emit: `06 08 01 00 00 00 F1`.
+/// Every write this capture may emit, by plaintext `03/19/06` command pair.
 ///
-/// Opcode 0x08 is the driver's bounded, non-activating read. Activation (0x07),
-/// clock writes (0x03), resets, and threshold writes are never authorized here.
-const List<int> _allowedWrite = <int>[
-  0x06,
-  0x08,
-  0x01,
-  0x00,
-  0x00,
-  0x00,
-  0xf1,
-];
+/// These are the vendor link set-up and read frames the authenticated session
+/// sends: device information, authentication, the one-per-session clock frame,
+/// and the packed and raw reads. Activation (0x07), reset, threshold,
+/// calibration, key-registration, and firmware frames are never authorized.
+const Set<String> _allowedCommandKeys = <String>{
+  '03f0',
+  '1901',
+  '0603',
+  '060a',
+  '0608',
+};
+
+/// One captured write that the session was authorized to send.
+bool _isAllowedWrite(List<int> masked, List<int> key) {
+  final plaintext = unmaskCbioFrame(masked, key: key);
+  if (plaintext.length < 2) {
+    return false;
+  }
+  return _allowedCommandKeys.contains(
+    '${plaintext[0].toRadixString(16).padLeft(2, '0')}'
+    '${plaintext[1].toRadixString(16).padLeft(2, '0')}',
+  );
+}
+
+/// Vendor material for this run.
+///
+/// Nothing in the repository carries the stream key or the link credential, so
+/// the harness reads them from the process environment or from `--dart-define`
+/// and aborts before touching the radio when they are absent. Provide them
+/// without writing them to a committed file, for example with
+/// `--dart-define-from-file` against a git-ignored local file.
+final CbioMapCredentialSource _credentials = CbioMapCredentialSource(
+  <String, String>{
+    ...Platform.environment,
+    if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
+    if (cbioAuthMaterialHex.isNotEmpty)
+      cbioAuthMaterialDefine: cbioAuthMaterialHex,
+    if (cbioAuthTriggerHex.isNotEmpty)
+      cbioAuthTriggerDefine: cbioAuthTriggerHex,
+  },
+);
 
 /// Every phase is bounded so a silent or unresponsive radio cannot hang.
 const Duration _filteredScanWindow = Duration(seconds: 8);
@@ -102,6 +133,16 @@ void main() {
   testWidgets(
     'Cbio GS1 live capture: FF30 discovery, connect, FF31 notification bytes',
     (tester) async {
+      if (!_credentials.isConfigured) {
+        // The authenticated link cannot be driven without the injected
+        // material, and a missing material is a configuration problem rather
+        // than a finding about the sensor.
+        _emit(
+          'CBIO-PROGRESS phase=abort abort=vendor-material-missing '
+          'missing=${_credentials.missing.join(",")}',
+        );
+        return;
+      }
       final summary = await tester.runAsync(_runCapture);
       _report(summary!);
       _assertCapture(summary);
@@ -111,6 +152,7 @@ void main() {
 }
 
 Future<_CaptureSummary> _runCapture() async {
+  final vendor = _credentials.read();
   final token = 'cbio-${DateTime.now().toUtc().millisecondsSinceEpoch}';
   final sink = LocalBleTraceSink(sessionToken: token);
   final events = <BleTraceEvent>[];
@@ -119,7 +161,11 @@ Future<_CaptureSummary> _runCapture() async {
     sink: _TeeTraceSink(sink, events),
   );
   const discovery = CbioDiscovery();
-  final driver = CbioSensorDriver(transport, discovery: discovery);
+  final driver = CbioSensorDriver(
+    transport,
+    discovery: discovery,
+    credentials: _credentials,
+  );
 
   _emit('CBIO-PROGRESS phase=heartbeat');
   await transport.recordCaptureHeartbeat().timeout(_discoveryOverhead);
@@ -342,6 +388,7 @@ Future<_CaptureSummary> _runCapture() async {
 
   return _CaptureSummary(
     sessionToken: token,
+    streamKey: vendor.streamKey,
     traceFile: segmentFileName == null
         ? null
         : '${await _traceDirectoryPath()}/$segmentFileName',
@@ -550,12 +597,12 @@ void _assertCapture(_CaptureSummary summary) {
   expect(
     summary.illegalWrites,
     isEmpty,
-    reason: 'The driver emitted a write that is not the allowed 0x08 read.',
+    reason: 'The driver emitted a write outside the authorised link set.',
   );
   expect(
     summary.writeBytes.length,
-    lessThanOrEqualTo(1),
-    reason: 'The driver emitted more than one write.',
+    lessThanOrEqualTo(12),
+    reason: 'The authenticated session spent more writes than a session may.',
   );
   expect(
     summary.notifications,
@@ -714,6 +761,7 @@ final class _LinkOutcome {
 final class _CaptureSummary {
   const _CaptureSummary({
     required this.sessionToken,
+    required this.streamKey,
     required this.traceFile,
     required this.filteredCandidates,
     required this.filteredError,
@@ -741,6 +789,11 @@ final class _CaptureSummary {
   });
 
   final String sessionToken;
+
+  /// The mask key the driver under test writes with, used to read back the
+  /// plaintext command of each captured write. It is never printed.
+  final List<int> streamKey;
+
   final String? traceFile;
   final List<DiscoveredSensor> filteredCandidates;
   final Object? filteredError;
@@ -766,23 +819,11 @@ final class _CaptureSummary {
   final String? driverError;
   final int traceEvents;
 
-  /// Writes that are not the single bounded 0x08 read.
+  /// Writes outside the authorised vendor link set.
   List<List<int>> get illegalWrites => <List<int>>[
     for (final bytes in writeBytes)
-      if (!_sameBytes(bytes, _allowedWrite)) bytes,
+      if (!_isAllowedWrite(bytes, streamKey)) bytes,
   ];
-}
-
-bool _sameBytes(List<int> left, List<int> right) {
-  if (left.length != right.length) {
-    return false;
-  }
-  for (var index = 0; index < left.length; index += 1) {
-    if (left[index] != right[index]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 /// Keeps an in-memory copy of every trace event for assertions while the

@@ -2,10 +2,13 @@
 library;
 
 export 'src/cbio_driver.dart';
+export 'src/cbio_credentials.dart';
 export 'src/cbio_frames.dart';
+export 'src/cbio_glucose_session.dart';
 export 'src/cbio_history_archive.dart';
 export 'src/cbio_vendor_frames.dart';
 export 'src/cbio_crypto.dart';
 export 'src/cbio_glucose_sync.dart';
 export 'src/cbio_queries.dart';
 export 'src/cbio_reply_inspection.dart';
+export 'src/cbio_session_evidence.dart';

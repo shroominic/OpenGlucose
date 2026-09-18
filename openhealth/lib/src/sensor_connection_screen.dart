@@ -131,9 +131,7 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       _handleLibre2NfcState,
       onError: (Object _, StackTrace _) {
         _handleLibre2NfcState(
-          const Libre2NfcSetupState.failed(
-            Libre2NfcFailureKind.readFailed,
-          ),
+          const Libre2NfcSetupState.failed(Libre2NfcFailureKind.readFailed),
         );
       },
     );
@@ -263,12 +261,20 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       ),
       final stage? => _ConnectionProgress(
         stage: stage,
+        statusText: _cbioProgressText,
         librePhase: _controller.snapshot?.metadata['cgm.libre2.phase'],
         libreDecoder: _controller.snapshot?.metadata['cgm.libre2.decoder'],
       ),
       null =>
         widget.inline ? _buildInlineChooser(context) : _buildChooser(context),
     };
+  }
+
+  /// The closed GS1 phase mapped to product copy. The driver's own status text
+  /// is an internal, unbounded string and never reaches this card.
+  String? get _cbioProgressText {
+    final snapshot = _controller.snapshot;
+    return snapshot == null ? null : cbioProgressTextForSnapshot(snapshot);
   }
 
   String get _connectionFailureMessage {
@@ -576,9 +582,9 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
   }
 
   Widget _buildSensorHelp(BuildContext context) {
-    final titleStyle = Theme.of(context).textTheme.titleLarge?.copyWith(
-      fontWeight: FontWeight.w900,
-    );
+    final titleStyle = Theme.of(
+      context,
+    ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900);
     if (_aidexHelpExpanded) {
       final support = _aidexSupportFor(
         platform: Theme.of(context).platform,
@@ -643,9 +649,9 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
           children: <Widget>[
             Text(
               'Saved Libre 2',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 6),
             const Text(
@@ -891,13 +897,11 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
     setState(() => _libre2NfcState = state);
   }
 
-  Future<void> _startLibre2NfcSetup() => _runLibre2NfcAction(
-    _libre2NfcSetupSession.start,
-  );
+  Future<void> _startLibre2NfcSetup() =>
+      _runLibre2NfcAction(_libre2NfcSetupSession.start);
 
-  Future<void> _retryLibre2NfcSetup() => _runLibre2NfcAction(
-    _libre2NfcSetupSession.retry,
-  );
+  Future<void> _retryLibre2NfcSetup() =>
+      _runLibre2NfcAction(_libre2NfcSetupSession.retry);
 
   Future<void> _runLibre2NfcAction(Future<void> Function() action) async {
     if (_libre2NfcActionInProgress ||
@@ -1533,9 +1537,7 @@ class _DiscoveredSensorCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton(
-                  key: ValueKey<String>(
-                    'resolveInterruptedMove-$resultNumber',
-                  ),
+                  key: ValueKey<String>('resolveInterruptedMove-$resultNumber'),
                   onPressed: canReviewInterrupted
                       ? () => unawaited(onReviewInterrupted(sensor))
                       : null,
@@ -1856,9 +1858,7 @@ class _NfcScanAffordanceState extends State<_NfcScanAffordance>
             children: <Widget>[
               if (widget.animate)
                 for (var index = 0; index < 3; index += 1)
-                  _NfcPulseRing(
-                    progress: (_pulse.value + index / 3) % 1,
-                  ),
+                  _NfcPulseRing(progress: (_pulse.value + index / 3) % 1),
               AnimatedContainer(
                 duration: reduceMotion
                     ? Duration.zero
@@ -1938,10 +1938,7 @@ class _Libre2SafeResult extends StatelessWidget {
     return Card(
       key: const ValueKey<String>('libre2NfcSafeResult'),
       child: ListTile(
-        leading: const Icon(
-          Icons.sensors_rounded,
-          color: Color(0xFF0B6E69),
-        ),
+        leading: const Icon(Icons.sensors_rounded, color: Color(0xFF0B6E69)),
         title: Text(
           libre2SensorModelLabel(model),
           style: const TextStyle(fontWeight: FontWeight.w900),
@@ -2230,17 +2227,19 @@ class _SensorFamilySupport {
 class _ConnectionProgress extends StatelessWidget {
   const _ConnectionProgress({
     required this.stage,
+    this.statusText,
     this.librePhase,
     this.libreDecoder,
   });
 
   final CgmSyncStage stage;
+  final String? statusText;
   final String? librePhase;
   final String? libreDecoder;
 
   @override
   Widget build(BuildContext context) {
-    final text = switch (librePhase) {
+    final phaseText = switch (librePhase) {
       'reconnecting' => 'Connection lost. Reconnecting once to your sensor.',
       'awaitingAdvertisement' => 'Looking for your Libre 2 sensor',
       'connecting' => 'Connecting to FreeStyle Libre 2',
@@ -2251,6 +2250,7 @@ class _ConnectionProgress extends StatelessWidget {
       'validatedPacket' => libreGlucoseWaitingDetail(libreDecoder),
       _ => _connectionStageText(stage),
     };
+    final text = statusText ?? phaseText;
     final receiving =
         librePhase == 'awaitingPacket' || librePhase == 'validatedPacket';
     return Semantics(
@@ -2453,9 +2453,7 @@ class _ConnectionFailure extends StatelessWidget {
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton(
-                      key: const ValueKey<String>(
-                        'chooseAnotherSensorButton',
-                      ),
+                      key: const ValueKey<String>('chooseAnotherSensorButton'),
                       onPressed: onChooseAnother,
                       child: const Text('Choose another sensor'),
                     ),

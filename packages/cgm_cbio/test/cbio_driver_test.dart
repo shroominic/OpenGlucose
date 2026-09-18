@@ -5,46 +5,43 @@ import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
-List<int> _checked(List<int> prefix) => <int>[
-  ...prefix,
-  (-prefix.fold<int>(0, (sum, byte) => sum + byte)) & 255,
-];
+/// The vendor's accepted authentication reply, opcode 0x01 result 1.
+const List<int> _authAccepted = <int>[0x04, 0x01, 0x01, 0x00, 0xfa];
 
-const List<int> readCommand = <int>[0x06, 0x08, 0x01, 0x00, 0x00, 0x00, 0xf1];
+/// Synthetic vendor material for this suite.
+///
+/// The package compiles no vendor material, so the fake link and every driver
+/// under test share this obviously synthetic set. The bytes are unrelated to
+/// the real link.
+final CbioCredentials _syntheticCredentials = CbioCredentials(
+  streamKey: _ascii('CGMTESTKEY000000'),
+  authMaterial: _ascii('CGMTESTMATERIAL1'),
+  authenticationTrigger: const <int>[0x10, 0x20, 0x30, 0x40, 0x50],
+);
 
-final class _FakeBleConnection implements BleConnection {
-  _FakeBleConnection(this.deviceId, {List<BleService>? services})
-    : services =
-          services ??
-          <BleService>[
-            BleService(
-              uuid: CbioUuids.service,
-              characteristics: <BleCharacteristicRef>[
-                const BleCharacteristicRef(
-                  serviceUuid: CbioUuids.service,
-                  characteristicUuid: CbioUuids.receive,
-                  properties: BleCharacteristicProperties(notify: true),
-                ),
-                const BleCharacteristicRef(
-                  serviceUuid: CbioUuids.service,
-                  characteristicUuid: CbioUuids.command,
-                  properties: BleCharacteristicProperties(write: true),
-                ),
-              ],
-            ),
-          ];
+final List<int> _syntheticKey = _syntheticCredentials.streamKey;
 
-  @override
-  final String deviceId;
+final CbioCredentialSource _syntheticSource = CbioStaticCredentialSource(
+  _syntheticCredentials,
+);
+
+List<int> _ascii(String value) => value.codeUnits;
+
+final class _FakeConnection implements BleConnection {
+  _FakeConnection({required this.services, List<int>? streamKey})
+    : streamKey = streamKey ?? _syntheticKey;
 
   final List<BleService> services;
+  final List<int> streamKey;
   final StreamController<BleConnectionState> _states =
       StreamController<BleConnectionState>.broadcast();
   final StreamController<List<int>> _notifications =
       StreamController<List<int>>.broadcast();
-  final List<(BleCharacteristicRef, List<int>, bool)> writeLog =
-      <(BleCharacteristicRef, List<int>, bool)>[];
+
   bool notifyEnabled = false;
+
+  @override
+  String get deviceId => 'synthetic-device';
 
   @override
   Stream<BleConnectionState> get connectionStates => _states.stream;
@@ -65,7 +62,8 @@ final class _FakeBleConnection implements BleConnection {
   Future<List<BleService>> discoverServices() async => services;
 
   @override
-  Future<List<int>> read(BleCharacteristicRef characteristic) async => <int>[];
+  Future<List<int>> read(BleCharacteristicRef characteristic) async =>
+      const <int>[0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
 
   @override
   Future<void> write(
@@ -73,7 +71,9 @@ final class _FakeBleConnection implements BleConnection {
     List<int> value, {
     bool withoutResponse = false,
   }) async {
-    writeLog.add((characteristic, value, withoutResponse));
+    if (unmaskCbioFrame(value, key: streamKey).elementAtOrNull(1) == 0x01) {
+      _notifications.add(maskCbioFrame(_authAccepted, key: streamKey));
+    }
   }
 
   @override
@@ -81,18 +81,12 @@ final class _FakeBleConnection implements BleConnection {
     BleCharacteristicRef characteristic,
     bool enabled,
   ) async {
-    if (enabled) {
-      notifyEnabled = true;
-    }
+    notifyEnabled = enabled;
   }
 
   @override
   Stream<List<int>> notifications(BleCharacteristicRef characteristic) =>
       _notifications.stream;
-
-  void emitNotification(List<int> bytes) {
-    _notifications.add(bytes);
-  }
 
   @override
   Future<void> removeBond() async {}
@@ -105,13 +99,39 @@ final class _FakeBleConnection implements BleConnection {
 }
 
 final class _FakeBleTransport implements BleTransport {
-  _FakeBleTransport({
-    this.scanResults = const <BleScanResult>[],
-    _FakeBleConnection? connection,
-  }) : connection = connection ?? _FakeBleConnection('synthetic-device');
+  _FakeBleTransport(this.connection);
 
-  final List<BleScanResult> scanResults;
-  final _FakeBleConnection connection;
+  final _FakeConnection connection;
+
+  @override
+  Stream<BleScanResult> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+    List<String>? withServices,
+  }) async* {}
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async => connection;
+}
+
+/// Transport fake that records the service filters each scan pass used.
+///
+/// Models the device behaviour that blocks this sensor today: a scan with the
+/// FF30 service filter completes with no results, while an unfiltered pass
+/// still sees the FF30 advertisement.
+final class _ScriptedScanTransport implements BleTransport {
+  _ScriptedScanTransport({
+    required this.filteredResults,
+    required this.unfilteredResults,
+  });
+
+  final List<BleScanResult> filteredResults;
+  final List<BleScanResult> unfilteredResults;
+  final List<List<String>?> serviceFilters = <List<String>?>[];
+  final List<Duration?> timeouts = <Duration?>[];
 
   @override
   Stream<BleScanResult> scan({
@@ -119,7 +139,12 @@ final class _FakeBleTransport implements BleTransport {
     bool allowDuplicates = true,
     List<String>? withServices,
   }) async* {
-    for (final result in scanResults) {
+    serviceFilters.add(withServices);
+    timeouts.add(timeout);
+    final results = (withServices == null || withServices.isEmpty)
+        ? unfilteredResults
+        : filteredResults;
+    for (final result in results) {
       yield result;
     }
   }
@@ -128,10 +153,16 @@ final class _FakeBleTransport implements BleTransport {
   Future<BleConnection> connect(
     String deviceId, {
     Duration timeout = const Duration(seconds: 10),
-  }) async {
-    return connection;
-  }
+  }) async => throw UnimplementedError('scan-only fake');
 }
+
+/// The FF30 advertisement shape the platform reports for this sensor.
+BleScanResult _ff30Advertisement({int rssi = -61}) => BleScanResult(
+  deviceId: 'synthetic-ff30-device',
+  deviceName: 'Cbio / SiSensing candidate',
+  rssi: rssi,
+  serviceUuids: const <String>[CbioUuids.service],
+);
 
 void main() {
   const discovery = CbioDiscovery();
@@ -146,7 +177,7 @@ void main() {
   );
 
   test('FF30 variants map; foreign services and empty ids are rejected', () {
-    for (final uuid in [
+    for (final uuid in <String>[
       CbioUuids.service,
       CbioUuids.service.toUpperCase(),
       'FF30',
@@ -157,21 +188,27 @@ void main() {
           deviceId: 'synthetic-device',
           deviceName: '',
           rssi: -63,
-          serviceUuids: [uuid],
+          serviceUuids: <String>[uuid],
         ),
       );
       expect(result, isNotNull);
       expect(result!.driverId, 'cbio');
       expect(result.capabilities.supportsDirectBle, isTrue);
+      expect(result.capabilities.supportsHistory, isTrue);
     }
-    for (final uuid in [CbioUuids.receive, CbioUuids.command, 'ff31', 'ff32']) {
+    for (final uuid in <String>[
+      CbioUuids.receive,
+      CbioUuids.command,
+      'ff31',
+      'ff32',
+    ]) {
       expect(
         discovery.mapScanResult(
           BleScanResult(
             deviceId: 'synthetic-device',
             deviceName: 'Cbio GS1',
             rssi: -50,
-            serviceUuids: [uuid],
+            serviceUuids: <String>[uuid],
           ),
         ),
         isNull,
@@ -183,7 +220,7 @@ void main() {
           deviceId: '',
           deviceName: '',
           rssi: -50,
-          serviceUuids: [CbioUuids.service],
+          serviceUuids: <String>[CbioUuids.service],
         ),
       ),
       isNull,
@@ -193,8 +230,7 @@ void main() {
   test('locates FF31 when the platform reports short-form UUIDs', () async {
     // Android hands the app short-form UUIDs (`FF30`/`FF31`/`FF32`) rather
     // than the full 128-bit base form the driver declares.
-    final connection = _FakeBleConnection(
-      'synthetic-device',
+    final connection = _FakeConnection(
       services: <BleService>[
         BleService(
           uuid: 'FF30',
@@ -213,107 +249,130 @@ void main() {
         ),
       ],
     );
-    final transport = _FakeBleTransport(connection: connection);
     final driver = CbioSensorDriver(
-      transport,
-      passiveWindow: const Duration(days: 1),
+      _FakeBleTransport(connection),
+      credentials: _syntheticSource,
+      timing: const CbioSessionTiming(
+        authTimeout: Duration(milliseconds: 200),
+        historyWindow: Duration(milliseconds: 60),
+        historyIdleWindow: Duration(milliseconds: 30),
+        publishInterval: Duration.zero,
+      ),
     );
-    final session = await driver.connect(candidate()) as CbioSession;
-    await session.initialize();
+    final session = await driver.connect(candidate());
+    expect(session, isA<CbioGlucoseSession>());
+    await (session as CbioGlucoseSession).initialize();
+
     expect(connection.notifyEnabled, isTrue);
     expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+    expect(
+      session.currentSnapshot.metadata[cbioPhaseMetadataKey],
+      CbioSessionPhase.history,
+    );
+    await session.disconnect();
   });
 
-  test('scan surfaces one FF30 candidate', () async {
-    final transport = _FakeBleTransport(
-      scanResults: <BleScanResult>[
-        BleScanResult(
-          deviceId: 'synthetic-device',
-          deviceName: '',
-          rssi: -50,
-          serviceUuids: [CbioUuids.service],
+  test('a connection without FF32 fails closed before any write', () async {
+    final connection = _FakeConnection(
+      services: const <BleService>[
+        BleService(
+          uuid: CbioUuids.service,
+          characteristics: <BleCharacteristicRef>[
+            BleCharacteristicRef(
+              serviceUuid: CbioUuids.service,
+              characteristicUuid: CbioUuids.receive,
+              properties: BleCharacteristicProperties(notify: true),
+            ),
+          ],
         ),
       ],
     );
     final driver = CbioSensorDriver(
-      transport,
-      passiveWindow: const Duration(days: 1),
+      _FakeBleTransport(connection),
+      credentials: _syntheticSource,
     );
-    final sensors = await driver
-        .scan(timeout: Duration.zero, allowDuplicates: false)
-        .toList();
-    expect(sensors, hasLength(1));
-    expect(sensors.single.driverId, 'cbio');
-    expect(sensors.single.deviceId, 'synthetic-device');
-  });
-
-  test(
-    'session enables notifications and decodes a valid plaintext ACK',
-    () async {
-      final connection = _FakeBleConnection('synthetic-device');
-      final transport = _FakeBleTransport(connection: connection);
-      final driver = CbioSensorDriver(
-        transport,
-        passiveWindow: const Duration(days: 1),
-      );
-      final session = await driver.connect(candidate()) as CbioSession;
-      await session.initialize();
-      expect(connection.notifyEnabled, isTrue);
-
-      connection.emitNotification(_checked(<int>[4, 0x01, 0, 0x7e]));
-      await Future<void>.delayed(Duration.zero);
-      expect(session.currentSnapshot.statusText, contains('0x01'));
-
-      await session.disconnect();
-    },
-  );
-
-  test('a notification cancels the passive 0x08 read', () async {
-    final connection = _FakeBleConnection('synthetic-device');
-    final transport = _FakeBleTransport(connection: connection);
-    final driver = CbioSensorDriver(
-      transport,
-      passiveWindow: const Duration(milliseconds: 5),
-    );
-    final session = await driver.connect(candidate()) as CbioSession;
+    final session = await driver.connect(candidate()) as CbioGlucoseSession;
     await session.initialize();
-    connection.emitNotification(_checked(<int>[4, 0x01, 0, 0x7e]));
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-    expect(connection.writeLog, isEmpty);
+
+    expect(session.currentSnapshot.stage, CgmSyncStage.error);
+    expect(connection.notifyEnabled, isFalse);
     await session.disconnect();
   });
 
   test(
-    'silence sends exactly one bounded 0x08 read, never another write',
+    'scan retries unfiltered when the FF30 filter surfaces no candidate',
     () async {
-      final connection = _FakeBleConnection('synthetic-device');
-      final transport = _FakeBleTransport(connection: connection);
-      final driver = CbioSensorDriver(
-        transport,
-        passiveWindow: const Duration(milliseconds: 1),
+      // The sensor's advertisement reaches this app without the FF30 service
+      // UUID on the filterable layer, so a filtered pass alone reports an
+      // empty nearby-sensor list on a sensor that is advertising and healthy.
+      final transport = _ScriptedScanTransport(
+        filteredResults: const <BleScanResult>[],
+        unfilteredResults: <BleScanResult>[_ff30Advertisement()],
       );
-      final session = await driver.connect(candidate()) as CbioSession;
-      await session.initialize();
-      await Future<void>.delayed(const Duration(milliseconds: 30));
-      expect(connection.writeLog, hasLength(1));
-      expect(
-        connection.writeLog.single.$1.characteristicUuid,
-        CbioUuids.command,
-      );
-      expect(connection.writeLog.single.$2, readCommand);
-      expect(connection.writeLog.single.$3, isFalse);
-      await session.disconnect();
+      final driver = CbioSensorDriver(transport, discovery: discovery);
+
+      final results = await driver
+          .scan(timeout: const Duration(seconds: 3))
+          .toList();
+
+      expect(results, hasLength(1));
+      expect(results.single.deviceId, 'synthetic-ff30-device');
+      expect(results.single.driverId, 'cbio');
+      expect(transport.serviceFilters, hasLength(2));
+      expect(transport.serviceFilters.first, CbioDiscovery.scanServiceUuids);
+      expect(transport.serviceFilters.last, isNull);
+      expect(transport.timeouts, everyElement(const Duration(seconds: 3)));
     },
   );
 
-  test('missing FF31 fails closed without a write', () async {
-    final connection = _FakeBleConnection(
-      'synthetic-device',
-      services: <BleService>[
+  test(
+    'scan does not retry unfiltered when the filter finds the sensor',
+    () async {
+      final transport = _ScriptedScanTransport(
+        filteredResults: <BleScanResult>[_ff30Advertisement(rssi: -55)],
+        unfilteredResults: <BleScanResult>[_ff30Advertisement(rssi: -90)],
+      );
+      final driver = CbioSensorDriver(transport, discovery: discovery);
+
+      final results = await driver.scan().toList();
+
+      expect(results, hasLength(1));
+      expect(results.single.rssi, -55);
+      expect(transport.serviceFilters, hasLength(1));
+      expect(transport.serviceFilters.single, CbioDiscovery.scanServiceUuids);
+    },
+  );
+
+  test('a driver reports whether its build can authenticate at all', () {
+    final transport = _ScriptedScanTransport(
+      filteredResults: const <BleScanResult>[],
+      unfilteredResults: const <BleScanResult>[],
+    );
+    // No `--dart-define` material in a plain test run, so the default source is
+    // unconfigured and a registry can skip the driver instead of surfacing a
+    // sensor it could never read.
+    expect(CbioSensorDriver(transport).canAuthenticate, isFalse);
+    expect(
+      CbioSensorDriver(
+        transport,
+        credentials: _syntheticSource,
+      ).canAuthenticate,
+      isTrue,
+    );
+  });
+
+  test('a driver without material fails closed before any write', () async {
+    final connection = _FakeConnection(
+      services: const <BleService>[
         BleService(
           uuid: CbioUuids.service,
           characteristics: <BleCharacteristicRef>[
-            const BleCharacteristicRef(
+            BleCharacteristicRef(
+              serviceUuid: CbioUuids.service,
+              characteristicUuid: CbioUuids.receive,
+              properties: BleCharacteristicProperties(notify: true),
+            ),
+            BleCharacteristicRef(
               serviceUuid: CbioUuids.service,
               characteristicUuid: CbioUuids.command,
               properties: BleCharacteristicProperties(write: true),
@@ -322,16 +381,30 @@ void main() {
         ),
       ],
     );
-    final transport = _FakeBleTransport(connection: connection);
-    final driver = CbioSensorDriver(transport);
-    final session = await driver.connect(candidate()) as CbioSession;
+    final driver = CbioSensorDriver(_FakeBleTransport(connection));
+    final session = await driver.connect(candidate()) as CbioGlucoseSession;
     await session.initialize();
+
     expect(session.currentSnapshot.stage, CgmSyncStage.error);
-    expect(
-      session.currentSnapshot.lastError,
-      contains('missingNotifyCharacteristic'),
-    );
-    expect(connection.writeLog, isEmpty);
+    expect(session.currentSnapshot.lastError, CbioSessionFailure.authMaterial);
+    expect(connection.notifyEnabled, isFalse);
     await session.disconnect();
+  });
+
+  test('the unfiltered retry still drops non-FF30 advertisers', () async {
+    final transport = _ScriptedScanTransport(
+      filteredResults: const <BleScanResult>[],
+      unfilteredResults: const <BleScanResult>[
+        BleScanResult(
+          deviceId: 'synthetic-foreign-device',
+          deviceName: 'Desk lamp',
+          rssi: -70,
+          serviceUuids: <String>['0000fff0-0000-1000-8000-00805f9b34fb'],
+        ),
+      ],
+    );
+    final driver = CbioSensorDriver(transport, discovery: discovery);
+
+    expect(await driver.scan().toList(), isEmpty);
   });
 }

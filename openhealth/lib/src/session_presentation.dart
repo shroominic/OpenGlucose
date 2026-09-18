@@ -1,5 +1,6 @@
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:intl/intl.dart';
 
@@ -386,12 +387,27 @@ String stageLabelForSnapshot(CgmSessionSnapshot snapshot) {
       return 'Searching';
     }
     if (snapshot.stage == CgmSyncStage.syncing &&
-        const {'awaitingPacket', 'validatedPacket'}.contains(
-          snapshot.metadata['cgm.libre2.phase'],
-        )) {
+        const {
+          'awaitingPacket',
+          'validatedPacket',
+        }.contains(snapshot.metadata['cgm.libre2.phase'])) {
       return 'Waiting';
     }
     return 'Connecting';
+  }
+  if (isCbioSnapshot(snapshot)) {
+    if (snapshot.stage == CgmSyncStage.error) {
+      return 'Error';
+    }
+    if (snapshot.stage == CgmSyncStage.disconnected) {
+      return snapshot.latestReading != null || snapshot.history.isNotEmpty
+          ? 'Reconnecting'
+          : 'Disconnected';
+    }
+    if (snapshot.stage == CgmSyncStage.syncing) {
+      return 'Fetching history';
+    }
+    return snapshot.stage == CgmSyncStage.ready ? 'Live' : 'Connecting';
   }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
@@ -461,6 +477,9 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
         ? userMessageForLibreConnectionLoss(snapshot.lastError)
         : userMessageForLibreConnectionFailure(snapshot.lastError);
   }
+  if (isCbioSnapshot(snapshot)) {
+    return userMessageForCbioFailure(snapshot.lastError);
+  }
   final bleFailure = BleFailure.fromMetadata(snapshot.metadata);
   return bleFailure == null
       ? snapshot.lastError
@@ -469,6 +488,149 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
 
 bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
     snapshot.sensor.driverId == 'libre2-gen1';
+
+bool isCbioSnapshot(CgmSessionSnapshot snapshot) =>
+    snapshot.sensor.driverId == 'cbio';
+
+/// Product copy for the closed CBio session phase, or null to fall through.
+///
+/// The GS1 session publishes one of a fixed set of phases in
+/// [cbioPhaseMetadataKey], and this card renders *that*, never
+/// [CgmSessionSnapshot.statusText]. The status text is an internal, unbounded
+/// field: rendering it would put raw driver wording on a product surface and
+/// would let a session that never authenticates replace the bounded-sync stage
+/// label the connection screen shows for every other driver, which is what the
+/// session-sync failure guard asserts.
+///
+/// Returns null when the snapshot is not a CBio snapshot, carries no closed
+/// phase, or is failing, so the caller keeps the generic stage label.
+String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
+  if (!isCbioSnapshot(snapshot)) {
+    return null;
+  }
+  return switch (snapshot.metadata[cbioPhaseMetadataKey]) {
+    CbioSessionPhase.connecting => 'Connecting to the sensor',
+    CbioSessionPhase.authenticating => 'Checking the sensor link',
+    CbioSessionPhase.history => 'Fetching sensor history',
+    CbioSessionPhase.live => 'Receiving sensor readings',
+    CbioSessionPhase.disconnected =>
+      'Connection lost. Reconnecting to your sensor.',
+    _ => null,
+  };
+}
+
+/// The failure-card sentence for a closed CBio session code.
+///
+/// The session publishes machine codes. They are support codes, not copy: the
+/// failure card is the one place a user reads them, and `cbio.auth.rejected` is
+/// not a sentence. Each code keeps its own failure, because "the sensor refused
+/// this build's credential" and "the sensor is out of range" have different
+/// next steps.
+String userMessageForCbioFailure(String? code) => switch (code) {
+  CbioSessionFailure.authMaterial =>
+    'OpenGlucose could not read the link credential for this sensor. '
+        'Choose another sensor or update the app.',
+  CbioSessionFailure.authRejected =>
+    'The sensor refused the link credential this build uses. '
+        'Choose another sensor or update the app.',
+  CbioSessionFailure.authTimeout =>
+    'The sensor did not answer the link setup. Keep it close and try again.',
+  CbioSessionFailure.topology =>
+    'This sensor does not present the link OpenGlucose supports yet. '
+        'Choose another sensor.',
+  CbioSessionFailure.write =>
+    'The link refused a command from this phone. Keep the sensor close and '
+        'try again.',
+  CbioSessionFailure.disconnected =>
+    'The sensor disconnected. Keep it close and try again.',
+  CbioSessionFailure.connect =>
+    'Could not reach the sensor. Keep it close and try again.',
+  _ => 'OpenGlucose could not connect to this sensor.',
+};
+
+/// The provisional marker every CBio surface shows.
+///
+/// The GS1 raw field is divided by ten by two independent clients of the
+/// protocol, but no reference measurement has confirmed that scale, so the
+/// derived number stays visible with its unit explicitly unsettled.
+String? provisionalReadingNoticeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot)) {
+    return cbioProvisionalUnitNotice;
+  }
+  return libreConnectionDetailForSnapshot(snapshot);
+}
+
+/// The history-card quality notice for a provisional reading set.
+String historyProvisionalNoticeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot)) {
+    return cbioProvisionalUnitNotice;
+  }
+  return 'Includes provisional readings. Not validated for body glucose.';
+}
+
+/// Progress or completion wording for a fetched sensor history.
+String historySyncProgressText(CgmHistorySyncState state) {
+  final stored = state.storedCount;
+  final target = state.totalAvailable;
+  if (target > 0 && stored < target) {
+    return 'Fetching sensor history: $stored of $target records';
+  }
+  return 'Fetching sensor history: $stored records';
+}
+
+/// The CBio dashboard value: the sensor's raw field divided by ten.
+///
+/// No glucose unit is attached, because the protocol's scale is unverified.
+/// The number the harness reads out of the same `0x08` field is the same
+/// number this renders, so the app and the capture tooling agree.
+String? cbioProvisionalValueText(CgmReading? reading) {
+  final raw = reading?.rawValue;
+  if (raw == null) {
+    return null;
+  }
+  return (raw / 10).toStringAsFixed(1);
+}
+
+/// Sensor positions inside the stored span that this phone never received.
+///
+/// The first and last stored positions bound an *envelope*. The protocol's own
+/// `index` counter advances one per stored minute, so a stored span of 1-7 with
+/// five records holds two holes - positions the sensor moved past that were
+/// never delivered to this app.
+int cbioMissingPositions(Iterable<CgmReading> readings) {
+  final positions = <int>{
+    for (final reading in readings)
+      if (reading.sensorMinute != null) reading.sensorMinute!,
+  };
+  if (positions.isEmpty) {
+    return 0;
+  }
+  final sorted = positions.toList()..sort();
+  return (sorted.last - sorted.first + 1) - sorted.length;
+}
+
+/// What the app actually stored for this sensor: how many records, which sensor
+/// positions they cover, and - when the envelope is not full - how many
+/// positions inside it never arrived. Positions are the protocol's own `index`
+/// counter, which advances one per stored minute; it is never a wall clock.
+String cbioStoredRangeText(Iterable<CgmReading> readings) {
+  final positions = <int>[
+    for (final reading in readings)
+      if (reading.sensorMinute != null) reading.sensorMinute!,
+  ];
+  if (positions.isEmpty) {
+    return '${readings.length} readings stored';
+  }
+  positions.sort();
+  final stored =
+      '${readings.length} readings stored · '
+      'sensor minutes ${positions.first}–${positions.last}';
+  final missing = cbioMissingPositions(readings);
+  if (missing <= 0) {
+    return stored;
+  }
+  return '$stored · $missing positions not received';
+}
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter
 /// on each snapshot. Retained glucose history or a saved NFC state is not proof

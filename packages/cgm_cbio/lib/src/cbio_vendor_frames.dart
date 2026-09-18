@@ -1,8 +1,8 @@
 /// Masked vendor V120 frames for the authenticated GS1 link.
 ///
 /// Every frame is built in plaintext with the vendor's zero-sum checksum and
-/// then masked with [cbioVendorStreamKey]. These are the exact shapes the
-/// SiSensing application sends; the plaintext builders in `cbio_queries.dart`
+/// then masked with the injected vendor stream key. These are the exact shapes
+/// the SiSensing application sends; the plaintext builders in `cbio_queries.dart`
 /// describe the same layouts and are useful for reading and testing, but the
 /// sensor only accepts the masked forms.
 ///
@@ -10,21 +10,29 @@
 /// information, authentication, the vendor clock frame, glucose reads, and raw
 /// history reads. Activation, reset, threshold, and key-registration frames are
 /// deliberately absent.
+///
+/// [key] and [material] have no defaults. They are injected at run time through
+/// a [CbioCredentialSource]; see `cbio_credentials.dart` for why.
 library;
 
+import 'cbio_credentials.dart';
 import 'cbio_crypto.dart';
 
 /// Masked `03 F0 selector C` device-information read.
-List<int> buildMaskedCbioDeviceInformation(int selector) =>
-    maskCbioFrame(_informationFrame(selector));
+List<int> buildMaskedCbioDeviceInformation(
+  int selector, {
+  required List<int> key,
+}) => maskCbioFrame(_informationFrame(selector), key: key);
 
 /// Masked `19 01 00 <6 reversed address octets> <16 auth material> C`.
 ///
 /// [reversedAddressOctets] is the sensor Bluetooth address in reverse order,
-/// exactly as the vendor's `n1()` builds it.
+/// exactly as the vendor's `n1()` builds it. [material] is the injected link
+/// credential.
 List<int> buildMaskedCbioAuthentication(
   List<int> reversedAddressOctets, {
-  List<int> material = cbioVendorAuthMaterial,
+  required List<int> key,
+  required List<int> material,
 }) {
   if (reversedAddressOctets.length != 6) {
     throw ArgumentError.value(
@@ -37,14 +45,14 @@ List<int> buildMaskedCbioAuthentication(
     throw ArgumentError.value(material, 'material', 'must be exactly 16 bytes');
   }
   final head = <int>[0x19, 0x01, 0x00, ...reversedAddressOctets, ...material];
-  return maskCbioFrame([...head, _checksum(head)]);
+  return maskCbioFrame([...head, _checksum(head)], key: key);
 }
 
 /// Masked `06 03 LE32(epoch) C` vendor clock frame.
 ///
 /// This changes the sensor clock. Callers must log the write and send it only
 /// when the record timestamps need it.
-List<int> buildMaskedCbioClock(int epochSeconds) {
+List<int> buildMaskedCbioClock(int epochSeconds, {required List<int> key}) {
   if (epochSeconds < 0 || epochSeconds > 0xffffffff) {
     throw ArgumentError.value(epochSeconds, 'epochSeconds', 'must be uint32');
   }
@@ -56,16 +64,16 @@ List<int> buildMaskedCbioClock(int epochSeconds) {
     (epochSeconds >> 16) & 0xff,
     (epochSeconds >> 24) & 0xff,
   ];
-  return maskCbioFrame([...head, _checksum(head)]);
+  return maskCbioFrame([...head, _checksum(head)], key: key);
 }
 
 /// Masked `06 0A LE16(index) 00 00 C` packed glucose read.
-List<int> buildMaskedCbioGlucoseQuery(int index) =>
-    maskCbioFrame(_readFrame(0x0a, index));
+List<int> buildMaskedCbioGlucoseQuery(int index, {required List<int> key}) =>
+    maskCbioFrame(_readFrame(0x0a, index), key: key);
 
 /// Masked `06 08 LE16(index) 00 00 C` raw history read.
-List<int> buildMaskedCbioRawQuery(int index) =>
-    maskCbioFrame(_readFrame(0x08, index));
+List<int> buildMaskedCbioRawQuery(int index, {required List<int> key}) =>
+    maskCbioFrame(_readFrame(0x08, index), key: key);
 
 List<int> _informationFrame(int selector) {
   if (selector < 1 || selector > 255) {

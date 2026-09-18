@@ -1,7 +1,7 @@
 name: cgm_cbio
-description: Offline, target-unverified Cbio GS1 driver scaffold.
+description: Target-unverified Cbio GS1 live driver with offline frame inspection; vendor material is injected, never compiled.
 publish_to: none
-version: 0.0.1
+version: 0.1.0
 
 environment:
   sdk: ^3.11.4

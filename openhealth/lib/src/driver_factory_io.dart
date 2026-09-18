@@ -23,6 +23,12 @@ import 'protocol_capture_profile.dart';
 import 'protocol_capture_status.dart';
 import 'yuwell_secure_session_store.dart';
 
+/// Where the GS1 driver resolves the vendor material its link needs.
+///
+/// The values are never compiled into the repository, so a plain build reports
+/// itself unconfigured and the platform registry leaves the driver out.
+const CbioCredentialSource cbioCredentials = CbioDefineCredentialSource();
+
 /// When built with `--dart-define=OG_DEMO=true`, native/simulator builds use the
 /// in-memory [DemoCgmDriver] instead of the real BLE driver, so the app can be
 /// exercised in the iOS simulator (which has no Bluetooth). Defaults to false,
@@ -205,11 +211,22 @@ CgmDriver _buildPlatformRegistry(BleTransport transport) {
   return CgmDriverRegistry(
     transport: transport,
     registrations: <CgmDriverRegistration>[
-      CgmDriverRegistration(
-        driver: CbioSensorDriver(transport, discovery: cbioDiscovery),
-        scanServiceUuids: CbioDiscovery.scanServiceUuids,
-        discover: cbioDiscovery.mapScanResult,
-      ),
+      // The GS1 link both authenticates and unmaskes its replies with vendor
+      // material this repository does not carry. A build that did not supply
+      // it cannot read the sensor at all, so registering the driver would put
+      // a candidate in the nearby-sensor list that can only fail. The driver is
+      // therefore offered only when its material is configured; supply it with
+      // `--dart-define-from-file` (see `packages/cgm_cbio/README.md`).
+      if (cbioCredentials.isConfigured)
+        CgmDriverRegistration(
+          driver: CbioSensorDriver(
+            transport,
+            discovery: cbioDiscovery,
+            credentials: cbioCredentials,
+          ),
+          scanServiceUuids: CbioDiscovery.scanServiceUuids,
+          discover: cbioDiscovery.mapScanResult,
+        ),
       CgmDriverRegistration(
         driver: AidexSensorDriver(transport, discovery: aidexDiscovery),
         scanServiceUuids: AidexDiscovery.scanServiceUuids,

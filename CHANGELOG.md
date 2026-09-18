@@ -12,11 +12,21 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ### Added
 
-- Add a `cgm_cbio` GS1 scaffold, pure `FF30` discovery mapping, synthetic
-  contract/frame tests, offline plaintext inspection, and SiSensing UUID/protocol
-  evidence. The package has no
-  transport, app registration, authentication, or glucose support. Record a
-  separately authorized Mac bench probe in the evidence document.
+- Add the `cgm_cbio` GS1 live driver and app surface: `FF30` discovery mapping,
+  read-only `FF31` reply inspection, an authenticated, fail-closed read session
+  with bounded history sync, and live glucose rows. Vendor link material is
+  injected at build time, never compiled into the package. SiSensing UUID and
+  protocol evidence stay recorded. Record a separately authorized Mac bench
+  probe in the evidence document.
+- Add a durable, redacted GS1 evidence artifact for device-backed runs:
+  `make cbio-gs1-evidence` records one `gs1-session-<utc>-<harness>.json` per run
+  with the session outcome, record counts and index ranges, closed error
+  taxonomy, and app/harness identity, and indexes it. Both device harnesses now
+  assert the record's invariants instead of printing lines for a human to read.
+- Add a self-proving vendor-material guard (`make vendor-material-guard`, a
+  dedicated security workflow job): the rule rejects a synthetic canary and must
+  also clear the checked-out tree, so a rule that stops matching fails the check
+  rather than reporting a clean repository.
 - Add a private Android Gen1 Libre 2 receiver path with an explicitly initiated
   NFC streaming exchange, encrypted receiver state, durable login counters,
   exact-target Bluetooth connection, and CRC-validated packet diagnostics.

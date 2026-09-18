@@ -80,6 +80,7 @@ class FlutterBluePlusTransport
     StreamSubscription<bool>? scanningSubscription;
     Future<void>? startupFuture;
     Future<void>? closeFuture;
+    Timer? scanDeadline;
     var startedScan = false;
     var closed = false;
 
@@ -92,35 +93,53 @@ class FlutterBluePlusTransport
         return existing;
       }
       closed = true;
+      scanDeadline?.cancel();
+      scanDeadline = null;
       final completer = Completer<void>();
       closeFuture = completer.future;
       final results = resultsSubscription;
       final scanning = scanningSubscription;
+      // Close the caller's stream before cleanup. Cleanup awaits plugin
+      // futures that can stay pending on some Android stacks, and a scan the
+      // platform already stopped must not hold its caller open behind them.
+      unawaited(
+        controller.close().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
+      );
       unawaited(
         closeFlutterBluePlusScanResources(
-          cancelResults: results?.cancel,
-          cancelScanning: scanning?.cancel,
-          awaitPendingStart: waitForStartup
-              ? () async {
-                  final pending = startupFuture;
-                  if (pending != null) {
-                    await pending;
-                  }
-                }
-              : null,
-          stopScan: stopScan
-              ? () async {
-                  if (fbp.FlutterBluePlus.isScanningNow) {
-                    await fbp.FlutterBluePlus.stopScan();
-                  }
-                }
-              : null,
-          closeController: controller.close,
-        ).then<void>(
-          (_) => completer.complete(),
-          onError: (Object error, StackTrace stackTrace) =>
-              completer.completeError(error, stackTrace),
-        ),
+              cancelResults: results?.cancel,
+              cancelScanning: scanning?.cancel,
+              awaitPendingStart: waitForStartup
+                  ? () async {
+                      final pending = startupFuture;
+                      if (pending != null) {
+                        await pending;
+                      }
+                    }
+                  : null,
+              stopScan: stopScan
+                  ? () async {
+                      if (fbp.FlutterBluePlus.isScanningNow) {
+                        await fbp.FlutterBluePlus.stopScan();
+                      }
+                    }
+                  : null,
+              closeController: controller.close,
+            )
+            .timeout(
+              // The radio is already stopped by this point; a plugin future that
+              // never completes must not leave cancellation pending forever.
+              const Duration(seconds: 5),
+              onTimeout: () {},
+            )
+            .then<void>(
+              (_) => completer.complete(),
+              onError: (Object error, StackTrace stackTrace) =>
+                  completer.completeError(error, stackTrace),
+            ),
       );
       return completer.future;
     }
@@ -132,6 +151,32 @@ class FlutterBluePlusTransport
           waitForStartup: waitForStartup,
         ).then<void>((_) {}, onError: (Object _, StackTrace _) {}),
       );
+    }
+
+    /// Closes this scan when the requested window elapses.
+    ///
+    /// `flutter_blue_plus` stops the radio when its own `timeout` fires, but
+    /// that stop is not reliably visible here: the plugin can finish the scan
+    /// without publishing `isScanning = false`, and its pending `startScan`
+    /// future can stay pending past the window. Callers pass `timeout`
+    /// expecting a bounded scan, so the stream must bound itself instead of
+    /// waiting for a signal that may never arrive.
+    void armScanDeadline(Duration window) {
+      scanDeadline?.cancel();
+      scanDeadline = Timer(window + const Duration(milliseconds: 750), () {
+        if (closed) {
+          return;
+        }
+        // Close the caller's stream first: cleanup below awaits plugin
+        // futures that may themselves be the pending signal.
+        unawaited(
+          controller.close().then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          ),
+        );
+        closeStreamSafely(waitForStartup: false);
+      });
     }
 
     String signatureOf(BleScanResult result) {
@@ -170,6 +215,10 @@ class FlutterBluePlusTransport
 
     startupFuture = () async {
       try {
+        final window = timeout;
+        if (window != null) {
+          armScanDeadline(window);
+        }
         await _ensureAdapterReady();
         if (closed) {
           return;
@@ -414,6 +463,7 @@ Future<void> closeFlutterBluePlusScanResources({
   Future<void> Function()? awaitPendingStart,
   required Future<void> Function()? stopScan,
   required Future<void> Function() closeController,
+  Duration stepTimeout = const Duration(seconds: 5),
 }) async {
   Object? firstError;
   StackTrace? firstStackTrace;
@@ -423,18 +473,22 @@ Future<void> closeFlutterBluePlusScanResources({
       return;
     }
     try {
-      await action();
+      // A radio that already stopped can leave these plugin futures pending
+      // forever. Bound each one so cleanup always finishes.
+      await action().timeout(stepTimeout, onTimeout: () {});
     } catch (error, stackTrace) {
       firstError ??= error;
       firstStackTrace ??= stackTrace;
     }
   }
 
+  // Close the caller's stream first. This is the step every caller depends on;
+  // it must not sit behind plugin futures that may never complete.
+  await run(closeController);
   await run(cancelResults);
   await run(cancelScanning);
   await run(awaitPendingStart);
   await run(stopScan);
-  await run(closeController);
   if (firstError != null) {
     Error.throwWithStackTrace(firstError!, firstStackTrace!);
   }

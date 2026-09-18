@@ -16,6 +16,16 @@ copyrights, licenses, and notice requirements. The MIT License does not
 relicense those components. A distributor is responsible for preserving every
 applicable third-party notice in source and binary distributions.
 
+Interoperability material: `packages/cgm_cbio` carries link material and a
+stream masking constant derived from a shipped third-party sensor application.
+The derivation record, including the artifact hash and the cross-check against
+an independent open-source client, is in
+[docs/testing/cbio-gs1-auth-material.md](docs/testing/cbio-gs1-auth-material.md);
+the record references the artifact rather than restating the bytes. Because the
+material is third-party derived, the same pre-publication inventory and review
+steps below apply to it, and its redistribution terms are part of the pending
+review logged in [docs/dependencies.md](docs/dependencies.md).
+
 Before publishing an artifact:
 
 1. resolve dependencies from the committed manifests and application

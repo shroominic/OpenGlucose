@@ -47,14 +47,32 @@ final RegExp _utcTimestamp = RegExp(
   r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$',
 );
 
+/// Whether this process runs on a POSIX ABI whose `struct stat` layout is
+/// audited in [_PosixFunctions.securityFailure].
+///
+/// The descriptor-bound read enforces ownership, mode and file type on the inode
+/// the bytes come from, and it does that by parsing `struct stat`. A layout that
+/// has not been audited against the platform headers is never guessed: the host
+/// fails closed with `unsupported_platform`, which is a closed reason and not a
+/// crash. Darwin and Linux x86_64 are audited; other ABIs stay unsupported until
+/// someone verifies their offsets on a real host of that ABI.
+bool _hasAuditedDescriptorLayout() {
+  final abi = ffi.Abi.current();
+  if (Platform.isMacOS) {
+    return abi == ffi.Abi.macosArm64 || abi == ffi.Abi.macosX64;
+  }
+  if (Platform.isLinux) {
+    return abi == ffi.Abi.linuxX64;
+  }
+  return false;
+}
+
 ({List<int>? bytes, _ValidationError? error}) _readDescriptorBound(
   String path, {
   required int maximumBytes,
   void Function()? afterSecureOpenForTest,
 }) {
-  if (!Platform.isMacOS ||
-      (ffi.Abi.current() != ffi.Abi.macosArm64 &&
-          ffi.Abi.current() != ffi.Abi.macosX64)) {
+  if (!_hasAuditedDescriptorLayout()) {
     return (bytes: null, error: _ValidationError.unsupportedPlatform);
   }
 
@@ -162,19 +180,29 @@ final class _PosixFunctions {
   late final _FstatDart fstat;
   late final int Function() geteuid;
   _ValidationError? securityFailure(int descriptor) {
-    // Darwin stat64: uid_t follows dev/mode/nlink/ino64 at byte16.
-    // Only audited Darwin64 ABIs are enabled, never guessed Linux offsets.
+    // `struct stat` layouts are ABI-specific, so each one is audited against the
+    // platform headers instead of being guessed:
+    //
+    //   Darwin64 stat64 (macos-arm64, macos-x64)
+    //     byte 4  mode_t  (16-bit)   byte 16 uid_t
+    //   Linux x86_64 glibc (linux-x64)
+    //     byte 24 mode_t  (32-bit)   byte 28 uid_t
+    //
+    // Reading the low 16 bits of mode_t little-endian serves both layouts.
+    final isDarwin = Platform.isMacOS;
+    final uidOffset = isDarwin ? 16 : 28;
+    final modeOffset = isDarwin ? 4 : 24;
     final stat = calloc<ffi.Uint8>(512);
     try {
       if (fstat(descriptor, stat.cast()) != 0) {
         return _ValidationError.readFailed;
       }
-      if ((stat + 16).cast<ffi.Uint32>().value != geteuid()) {
+      if ((stat + uidOffset).cast<ffi.Uint32>().value != geteuid()) {
         return _ValidationError.ownerMismatch;
       }
       // /dev/fd FileStat mode describes the open descriptor (read-only), not
       // the underlying file's full permission bits. Use descriptor fstat.
-      final mode = (stat + 4).cast<ffi.Uint16>().value;
+      final mode = (stat + modeOffset).cast<ffi.Uint16>().value;
       if ((mode & 0xf000) != 0x8000) return _ValidationError.notRegularFile;
       if ((mode & 0xfff) != 0x180) return _ValidationError.insecurePermissions;
       return null;
