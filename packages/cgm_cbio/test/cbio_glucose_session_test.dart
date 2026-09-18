@@ -439,6 +439,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
@@ -489,6 +490,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
@@ -518,6 +520,7 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
         );
         await session.initialize();
