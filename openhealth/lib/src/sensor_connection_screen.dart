@@ -270,15 +270,11 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
     };
   }
 
-  /// The driver already publishes a closed, user-safe phase sentence for the
-  /// GS1 link: connecting, authenticating, fetching history, or live.
+  /// The closed GS1 phase mapped to product copy. The driver's own status text
+  /// is an internal, unbounded string and never reaches this card.
   String? get _cbioProgressText {
     final snapshot = _controller.snapshot;
-    if (snapshot == null || !isCbioSnapshot(snapshot)) {
-      return null;
-    }
-    final text = snapshot.statusText.trim();
-    return text.isEmpty ? null : text;
+    return snapshot == null ? null : cbioProgressTextForSnapshot(snapshot);
   }
 
   String get _connectionFailureMessage {

@@ -489,6 +489,33 @@ bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
 bool isCbioSnapshot(CgmSessionSnapshot snapshot) =>
     snapshot.sensor.driverId == 'cbio';
 
+/// Product copy for the closed CBio session phase, or null to fall through.
+///
+/// The GS1 session publishes one of a fixed set of phases in
+/// [cbioPhaseMetadataKey], and this card renders *that*, never
+/// [CgmSessionSnapshot.statusText]. The status text is an internal, unbounded
+/// field: rendering it would put raw driver wording on a product surface and
+/// would let a session that never authenticates replace the bounded-sync stage
+/// label the connection screen shows for every other driver, which is what the
+/// session-sync failure guard asserts.
+///
+/// Returns null when the snapshot is not a CBio snapshot, carries no closed
+/// phase, or is failing, so the caller keeps the generic stage label.
+String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
+  if (!isCbioSnapshot(snapshot)) {
+    return null;
+  }
+  return switch (snapshot.metadata[cbioPhaseMetadataKey]) {
+    CbioSessionPhase.connecting => 'Connecting to the sensor',
+    CbioSessionPhase.authenticating => 'Checking the sensor link',
+    CbioSessionPhase.history => 'Fetching sensor history',
+    CbioSessionPhase.live => 'Receiving sensor readings',
+    CbioSessionPhase.disconnected =>
+      'Connection lost. Reconnecting to your sensor.',
+    _ => null,
+  };
+}
+
 /// The provisional marker every CBio surface shows.
 ///
 /// The GS1 raw field is divided by ten by two independent clients of the
