@@ -7,16 +7,22 @@
 /// guessing when a batch is missing or out of order.
 library;
 
+import 'cbio_frames.dart';
+
 /// One raw (`08`) record with an explicit, unverified engineering value.
 ///
-/// The vendor layout is `temp LE16, dump LE16, current LE16, extra LE16`. Two
-/// independent implementations of this protocol divide `current` by 10, and the
-/// observed live values are consistent with that reading. Nothing establishes
-/// that the divisor is ten *of a particular unit*, and no reference measurement
-/// exists for this sensor, so the record exposes the raw field and its scaled
-/// value and no unit at all: [isUnitVerified] stays false, no accessor carries a
-/// unit in its name, and callers must show [rawCurrent] alongside anything
-/// scaled.
+/// The vendor layout is `temp LE16, dump LE16, payload LE16, processed LE16`.
+/// Two independent implementations of this protocol divide the payload word by
+/// 10, and the observed live values are consistent with that reading. Nothing
+/// establishes that the divisor is ten *of a particular unit*, and no reference
+/// measurement exists for this sensor, so the record exposes the raw field and
+/// its scaled value and no unit at all: [isUnitVerified] stays false, no
+/// accessor carries a unit in its name, and callers must show [rawPayload]
+/// alongside anything scaled.
+///
+/// The processed word shares the `0A` packed layout and is empty on the
+/// observed firmware. It is exposed as [rawProcessed] so a caller can see that
+/// for itself; it is not the reading.
 final class CbioRawGlucoseRecord {
   const CbioRawGlucoseRecord({
     required this.index,
@@ -24,8 +30,8 @@ final class CbioRawGlucoseRecord {
     required this.reindex,
     required this.rawTemperature,
     required this.rawDump,
-    required this.rawCurrent,
-    required this.rawExtra,
+    required this.rawPayload,
+    required this.rawProcessed,
   });
 
   final int index;
@@ -41,19 +47,21 @@ final class CbioRawGlucoseRecord {
   /// Raw dump field; no meaning is established.
   final int rawDump;
 
-  /// Raw value field. Independent clients read this as tenths of a glucose unit.
-  final int rawCurrent;
+  /// The reading-bearing payload word; independent clients read this as tenths
+  /// of mmol/L.
+  final int rawPayload;
 
-  /// Raw trailing field; no meaning is established.
-  final int rawExtra;
+  /// The firmware's processed word, in the `0A` packed layout. Zero in every
+  /// captured GS1 record on the observed firmware.
+  final int rawProcessed;
 
-  /// `rawCurrent / 10`, the scale this package and the capture harness read.
+  /// `rawPayload / 10`, the scale this package and the capture harness read.
   ///
   /// This is an unverified engineering value, not mmol/L, not mg/dL, and not any
   /// other unit. Rendering it with a unit suffix asserts a unit the protocol
   /// does not establish, which is what the tracking issue is about. A converted
   /// mg/dL accessor used to live here and was removed for that reason.
-  double get rawCurrentScaled => rawCurrent / 10;
+  double get rawPayloadScaled => rawPayload / 10;
 
   /// Always false until a reference measurement confirms the scale and unit.
   bool get isUnitVerified => false;
@@ -110,12 +118,14 @@ final class CbioHistoryArchive {
 
   /// Ingests one notification payload, masked or already unmasked by the caller.
   CbioArchiveIngestStatus ingest(List<int> frame) {
-    final batch = _parseRawBatch(frame);
-    if (batch == null) {
+    final CbioRawBatch batch;
+    try {
+      batch = parseCbioRawDataFrame(frame);
+    } on CbioFrameException {
       return CbioArchiveIngestStatus.notRawBatch;
     }
     final known = batch.records
-        .where((r) => _byIndex.containsKey(r.index))
+        .where((r) => _byIndex.containsKey(r.processed.index))
         .length;
     if (known == batch.records.length) {
       return CbioArchiveIngestStatus.duplicate;
@@ -123,52 +133,30 @@ final class CbioHistoryArchive {
     if (known > 0) {
       _outOfOrder = true;
     }
+    final records = <CbioRawGlucoseRecord>[
+      for (final record in batch.records)
+        CbioRawGlucoseRecord(
+          index: record.processed.index,
+          rawTime: record.processed.rawTime,
+          reindex: record.processed.reindex,
+          rawTemperature: record.rawTemperature,
+          rawDump: record.rawDump,
+          rawPayload: record.rawPayload,
+          rawProcessed: record.processed.rawWord,
+        ),
+    ];
     final newest = newestIndex;
     final startsAfterNewest =
-        newest != null && batch.records.first.index > newest + 1;
+        newest != null && records.first.index > newest + 1;
     if (startsAfterNewest) {
       _gapDetected = true;
     }
-    for (final record in batch.records) {
+    for (final record in records) {
       _byIndex.putIfAbsent(record.index, () => record);
     }
-    _batchCounts.add(batch.records.length);
+    _batchCounts.add(records.length);
     return startsAfterNewest
         ? CbioArchiveIngestStatus.gap
         : CbioArchiveIngestStatus.accepted;
   }
-
-  /// One decoded raw batch, or null when the frame is not a plaintext `08`.
-  static _RawBatch? _parseRawBatch(List<int> frame) {
-    if (frame.length < 12) return null;
-    if (frame[0] + 1 != frame.length) return null;
-    if ((frame.fold<int>(0, (a, b) => a + b) & 255) != 0) return null;
-    if (frame[1] != 0x08) return null;
-    final count = frame[2];
-    if (frame.length != 12 + 8 * count) return null;
-    int le16(int offset) => frame[offset] | (frame[offset + 1] << 8);
-    int le32(int offset) => le16(offset) | (le16(offset + 2) << 16);
-    final startIndex = le16(3);
-    final baseTime = le32(5);
-    final baseReindex = le16(frame.length - 3);
-    final records = <CbioRawGlucoseRecord>[
-      for (var i = 0; i < count; i++)
-        CbioRawGlucoseRecord(
-          index: startIndex + i,
-          rawTime: baseTime + 60 * i,
-          reindex: baseReindex + count - 1 - i,
-          rawTemperature: le16(9 + 8 * i),
-          rawDump: le16(11 + 8 * i),
-          rawCurrent: le16(13 + 8 * i),
-          rawExtra: le16(15 + 8 * i),
-        ),
-    ];
-    return _RawBatch(records);
-  }
-}
-
-final class _RawBatch {
-  const _RawBatch(this.records);
-
-  final List<CbioRawGlucoseRecord> records;
 }

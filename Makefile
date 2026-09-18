@@ -5,6 +5,7 @@ SHELL := /bin/sh
 .PHONY: help bootstrap tooling-bootstrap tooling-check hooks format \
 	format-check lint typecheck test-unit test-integration test-e2e test \
 	cbio-gs1-evidence \
+	cbio-gs1-decode-comparison \
 	build build-android build-web build-ios build-macos test-ios-native \
 	test-macos-native \
 	verify-android-release-signing vendor-material-guard check
@@ -56,6 +57,9 @@ test-e2e: ## Report the explicitly deferred device end-to-end lane.
 
 cbio-gs1-evidence: ## Run one GS1 session on a device and record a redacted artifact.
 	@./scripts/cbio-gs1-evidence.sh
+
+cbio-gs1-decode-comparison: ## Replay one captured GS1 log as a side-by-side decode.
+	@./scripts/cbio-gs1-decode-comparison.sh
 
 test: test-unit test-integration ## Run all locally configured automated tests.
 

@@ -94,6 +94,13 @@ const Set<CbioWriteKind> _requiredWrites = <CbioWriteKind>{
 /// stored record instead of re-reading the whole archive.
 const int _rawStartIndex = int.fromEnvironment('CBIO_RAW_START_INDEX');
 
+/// Records carried in the emitted comparison. The window itself is not
+/// truncated; only the artifact's per-record table is.
+const int _comparisonRecords = int.fromEnvironment(
+  'CBIO_COMPARISON_RECORDS',
+  defaultValue: 1520,
+);
+
 String _hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
 
@@ -135,6 +142,30 @@ void main() {
         isTrue,
         reason: 'the link produced no glucose and no raw history record',
       );
+      // Gate G1: the reading-bearing field must carry content, and the app's
+      // live path and the harness path must report the same field for the same
+      // records. A run that reports an empty field is not a passing run.
+      final comparison = run.comparison;
+      expect(comparison, isNotNull, reason: 'no side-by-side decode');
+      expect(
+        comparison!.processedCount,
+        evidence.rawIndices.length,
+        reason:
+            'every raw record must contribute one payload and one '
+            'processed sample',
+      );
+      expect(
+        comparison.payloadNonZero,
+        greaterThan(0),
+        reason: 'the payload field the app renders decoded to zero everywhere',
+      );
+      expect(
+        run.appPathAgrees,
+        isTrue,
+        reason:
+            'the app path and the harness path disagree on the payload '
+            'word',
+      );
     },
     timeout: const Timeout(Duration(minutes: 8)),
   );
@@ -148,11 +179,14 @@ final class _SessionRun {
   final Map<CbioWriteKind, int> writeKinds = <CbioWriteKind, int>{};
   final Map<int, int> glucoseByIndex = <int, int>{};
   final Map<int, int> rawByIndex = <int, int>{};
+  final Map<int, int> processedByIndex = <int, int>{};
   final Map<String, int> errors = <String, int>{};
   int notifications = 0;
   bool targetAcquired = false;
   bool gattReleased = false;
   bool authenticationObserved = false;
+  bool appPathAgrees = false;
+  CbioDecodeComparison? comparison;
   CbioSessionOutcome outcome = CbioSessionOutcome.failed;
 
   void wrote(CbioWriteKind kind) =>
@@ -178,9 +212,10 @@ final class _SessionRun {
     allowedWrites: _allowedWrites,
     glucoseIndices: glucoseByIndex.keys.toList()..sort(),
     rawIndices: rawByIndex.keys.toList()..sort(),
-    rawGlucoseValues: [
+    rawPayloadValues: rawByIndex.values.toList(),
+    processedGlucoseValues: [
       ...glucoseByIndex.values,
-      ...rawByIndex.values,
+      ...processedByIndex.values,
     ],
     errors: errors,
   );
@@ -439,13 +474,16 @@ Future<void> _runSession(_SessionRun run) async {
         final rawBatch = parseCbioRawDataFrame(plaintext);
         rawRecords.addAll(rawBatch.records);
         for (final record in rawBatch.records) {
-          run.rawByIndex[record.packed.index] = record.packed.rawGlucose;
+          run.rawByIndex[record.processed.index] = record.rawPayload;
+          run.processedByIndex[record.processed.index] =
+              record.processed.rawGlucose;
         }
         _emit(
           'CBIO-A 08-batch count=${rawBatch.records.length} '
-          'first=${rawBatch.records.first.packed.index} '
-          'last=${rawBatch.records.last.packed.index} '
-          'raw=${rawBatch.records.map((r) => r.packed.rawGlucose).join(',')} '
+          'first=${rawBatch.records.first.processed.index} '
+          'last=${rawBatch.records.last.processed.index} '
+          'payload=${rawBatch.records.map((r) => r.rawPayload).join(',')} '
+          'processed=${rawBatch.records.map((r) => r.processed.rawGlucose).join(',')} '
           'temp=${rawBatch.records.map((r) => r.rawTemperature).join(',')}',
         );
       } on CbioFrameException {
@@ -468,11 +506,35 @@ Future<void> _runSession(_SessionRun run) async {
     }
     if (rawRecords.isNotEmpty) {
       _emit(
-        'CBIO-A raw first=${rawRecords.first.packed.index} '
-        'last=${rawRecords.last.packed.index} '
-        'raw=${rawRecords.map((r) => r.packed.rawGlucose).join(',')}',
+        'CBIO-A raw first=${rawRecords.first.processed.index} '
+        'last=${rawRecords.last.processed.index} '
+        'payload=${rawRecords.map((r) => r.rawPayload).join(',')}',
       );
     }
+    // Both decoders see the same bytes in the same session: the app's live path
+    // (the history archive, which is what the installed app renders) and the
+    // frame parser the evidence path uses. They must report the same field.
+    final comparison = compareCbioDecode(
+      plaintextFrames,
+      maxRecords: _comparisonRecords,
+    );
+    final appPath = CbioHistoryArchive();
+    plaintextFrames.forEach(appPath.ingest);
+    final agreement = compareCbioWithArchive(comparison, appPath.records);
+    run.appPathAgrees = agreement.agrees;
+    run.comparison = comparison;
+    _emit(
+      'CBIO-A compare appPath agrees=${agreement.agrees} '
+      'agreeing=${agreement.agreeing}/${agreement.compared} '
+      'missing=${agreement.missing} disagreeing=${agreement.disagreeing} '
+      'records=${comparison.recordCount} '
+      'payload=${comparison.payloadMinimum}..${comparison.payloadMaximum} '
+      'payloadNonZero=${comparison.payloadNonZero} '
+      'processed=${comparison.processedMinimum}..${comparison.processedMaximum} '
+      'processedNonZero=${comparison.processedNonZero} '
+      'index=${comparison.firstIndex}..${comparison.lastIndex}',
+    );
+    _emit('CBIO-COMPARISON ${jsonEncode(comparison.toJson())}');
     run.outcome = CbioSessionOutcome.completed;
   } on TestFailure {
     // An in-flight assertion (an out-of-envelope write) is not a session

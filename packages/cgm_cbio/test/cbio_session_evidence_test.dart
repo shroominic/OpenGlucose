@@ -12,7 +12,8 @@ CbioSessionEvidence evidence({
   Map<CbioWriteKind, int>? writes,
   List<int> glucoseIndices = const [10, 11],
   List<int> rawIndices = const [1, 2],
-  List<int> rawGlucoseValues = const [400, 503],
+  List<int> rawPayloadValues = const [400, 503],
+  List<int> processedGlucoseValues = const [0, 0],
   Map<String, int> errors = const {},
   String unitStatus = 'unverified',
 }) => CbioSessionEvidence(
@@ -44,7 +45,8 @@ CbioSessionEvidence evidence({
   },
   glucoseIndices: glucoseIndices,
   rawIndices: rawIndices,
-  rawGlucoseValues: rawGlucoseValues,
+  rawPayloadValues: rawPayloadValues,
+  processedGlucoseValues: processedGlucoseValues,
   errors: errors,
 );
 
@@ -92,7 +94,8 @@ void main() {
         writes: const {},
         glucoseIndices: const [],
         rawIndices: const [],
-        rawGlucoseValues: const [],
+        rawPayloadValues: const [],
+        processedGlucoseValues: const [],
         errors: const {'target_missing': 1},
       ).invariantViolations(),
       isEmpty,
@@ -130,14 +133,41 @@ void main() {
     );
   });
 
-  test('raw values must stay inside the 10-bit envelope', () {
+  test('payload and processed values have separate envelopes', () {
     expect(
-      evidence(rawGlucoseValues: [0, 1023]).invariantViolations(),
+      evidence(rawPayloadValues: [0, 0xffff]).invariantViolations(),
       isEmpty,
     );
     expect(
-      evidence(rawGlucoseValues: const [1024]).invariantViolations(),
-      contains('raw_glucose_outside_envelope'),
+      evidence(rawPayloadValues: const [0x10000]).invariantViolations(),
+      contains('raw_payload_outside_envelope'),
+    );
+    // The processed field stays inside the packed ten-bit envelope.
+    expect(
+      evidence(processedGlucoseValues: const [0, 1023]).invariantViolations(),
+      isEmpty,
+    );
+    expect(
+      evidence(processedGlucoseValues: const [1024]).invariantViolations(),
+      contains('processed_glucose_outside_envelope'),
+    );
+  });
+
+  test('one payload word is required for every raw record', () {
+    expect(
+      evidence(
+        rawIndices: const [1, 2],
+        rawPayloadValues: const [64],
+      ).invariantViolations(),
+      contains('raw_payload_count_disagrees_with_records'),
+    );
+    // An empty window needs no payload values.
+    expect(
+      evidence(
+        rawIndices: const [],
+        rawPayloadValues: const [],
+      ).invariantViolations(),
+      isEmpty,
     );
   });
 
@@ -175,7 +205,7 @@ void main() {
   test('the artifact is schema-shaped and carries no identity leaks', () {
     final json =
         jsonDecode(jsonEncode(evidence().toJson())) as Map<String, Object?>;
-    expect(json['schema'], 'cbio.session-evidence/1');
+    expect(json['schema'], 'cbio.session-evidence/2');
     expect(json['outcome'], 'completed');
     expect(json['unitStatus'], 'unverified');
     expect(
@@ -185,8 +215,13 @@ void main() {
     expect(json['records'], {
       'glucose': {'count': 2, 'firstIndex': 10, 'lastIndex': 11},
       'raw': {'count': 2, 'firstIndex': 1, 'lastIndex': 2},
-      'rawGlucoseMinimum': 400,
-      'rawGlucoseMaximum': 503,
+      'rawPayload': {'count': 2, 'minimum': 400, 'maximum': 503, 'nonZero': 2},
+      'processedGlucose': {
+        'count': 2,
+        'minimum': 0,
+        'maximum': 0,
+        'nonZero': 0,
+      },
     });
     expect(json['writes'], {'device_information_read': 1, 'glucose_read': 2});
     final encoded = jsonEncode(json);
@@ -216,7 +251,7 @@ void main() {
     expect(
       cbioSessionEvidenceArtifactViolations(
         mutated((copy) {
-          copy['schema'] = 'cbio.session-evidence/2';
+          copy['schema'] = 'cbio.session-evidence/1';
         }),
       ),
       contains('unknown_schema'),
@@ -249,10 +284,30 @@ void main() {
       cbioSessionEvidenceArtifactViolations(
         mutated((copy) {
           final records = copy['records']! as Map<String, Object?>;
-          records['rawGlucoseMaximum'] = cbioRawGlucoseMaximum + 1;
+          (records['rawPayload']! as Map<String, Object?>)['maximum'] =
+              cbioRawPayloadMaximum + 1;
         }),
       ),
-      contains('raw_glucose_outside_envelope:rawGlucoseMaximum'),
+      contains('record_value_outside_envelope:rawPayload:maximum'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          final records = copy['records']! as Map<String, Object?>;
+          (records['processedGlucose']! as Map<String, Object?>)['maximum'] =
+              cbioRawGlucoseMaximum + 1;
+        }),
+      ),
+      contains('record_value_outside_envelope:processedGlucose:maximum'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          final records = copy['records']! as Map<String, Object?>;
+          (records['raw']! as Map<String, Object?>)['count'] = 3;
+        }),
+      ),
+      contains('raw_payload_count_disagrees_with_records'),
     );
     expect(
       cbioSessionEvidenceArtifactViolations(
