@@ -120,46 +120,49 @@ void main() {
     );
   });
 
-  test('the progress card copy comes from the closed phase, never the driver', () {
-    // A syncing snapshot with no closed phase must fall through to the generic
-    // stage label. The driver's status text is an internal, unbounded string.
-    expect(
-      cbioProgressTextForSnapshot(
-        CgmSessionSnapshot(
-          stage: CgmSyncStage.syncing,
-          statusText: 'Listening for notifications',
-          sensor: _sensor,
-          capabilities: _sensor.capabilities,
+  test(
+    'the progress card copy comes from the closed phase, never the driver',
+    () {
+      // A syncing snapshot with no closed phase must fall through to the generic
+      // stage label. The driver's status text is an internal, unbounded string.
+      expect(
+        cbioProgressTextForSnapshot(
+          CgmSessionSnapshot(
+            stage: CgmSyncStage.syncing,
+            statusText: 'Listening for notifications',
+            sensor: _sensor,
+            capabilities: _sensor.capabilities,
+          ),
         ),
-      ),
-      isNull,
-    );
-    expect(
-      cbioProgressTextForSnapshot(
-        CgmSessionSnapshot(
-          stage: CgmSyncStage.syncing,
-          statusText: 'anything at all',
-          sensor: _sensor,
-          capabilities: _sensor.capabilities,
-          metadata: const <String, String>{
-            cbioPhaseMetadataKey: CbioSessionPhase.authenticating,
-          },
+        isNull,
+      );
+      expect(
+        cbioProgressTextForSnapshot(
+          CgmSessionSnapshot(
+            stage: CgmSyncStage.syncing,
+            statusText: 'anything at all',
+            sensor: _sensor,
+            capabilities: _sensor.capabilities,
+            metadata: const <String, String>{
+              cbioPhaseMetadataKey: CbioSessionPhase.authenticating,
+            },
+          ),
         ),
-      ),
-      'Checking the sensor link',
-    );
-    expect(
-      cbioProgressTextForSnapshot(
-        _snapshot(
-          stage: CgmSyncStage.syncing,
-          statusText: 'whatever',
-          history: const <CgmReading>[],
-          historySync: const CgmHistorySyncState(),
+        'Checking the sensor link',
+      );
+      expect(
+        cbioProgressTextForSnapshot(
+          _snapshot(
+            stage: CgmSyncStage.syncing,
+            statusText: 'whatever',
+            history: const <CgmReading>[],
+            historySync: const CgmHistorySyncState(),
+          ),
         ),
-      ),
-      isNot(contains('whatever')),
-    );
-  });
+        isNot(contains('whatever')),
+      );
+    },
+  );
 
   testWidgets(
     'a syncing cbio session shows the bounded-sync stage label, not the driver text',
