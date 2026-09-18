@@ -911,6 +911,10 @@ String userMessageForBleFailure(BleFailure failure) {
           'already bonded or connected to another phone. Keep it close and '
           'stop the other connection, if applicable, before trying again. Do '
           'not reset an active sensor.',
+    BleFailureKind.scanUnavailable =>
+      "Android paused the scan because the phone's screen is off, so no "
+          'sensor could be found - the sensor may be right beside you. Keep '
+          'the screen on and try again.',
     BleFailureKind.deviceDisconnected =>
       'The sensor disconnected. Keep the phone close and try again.',
     BleFailureKind.operationTimedOut =>

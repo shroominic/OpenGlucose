@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'android_live_update_bridge.dart';
 import 'cgm_driver_registry.dart';
 import 'demo_driver.dart';
+import 'display_awake_gate.dart';
 import 'display_preferences.dart';
 import 'health_state_store.dart';
 import 'ios_live_activity_bridge.dart';
@@ -38,12 +39,14 @@ class CgmAppController extends ChangeNotifier {
     required SharedPreferences preferences,
     required CgmDriver driver,
     HealthStateStore? healthStateStore,
+    DisplayAwakeGate? displayAwake,
     Duration reconnectDelay = const Duration(seconds: 3),
     @visibleForTesting LiveActivityPrivacySetter? liveActivityPrivacySetter,
     @visibleForTesting Future<void> Function()? liveActivityPrivacyRefresh,
   }) : _preferences = preferences,
        _healthStateStore =
            healthStateStore ?? PreferencesHealthStateStore(preferences),
+       _displayAwake = displayAwake ?? const NoopDisplayAwakeGate(),
        _reconnectDelay = reconnectDelay,
        _liveActivityPrivacySetter = liveActivityPrivacySetter,
        _liveActivityPrivacyRefresh = liveActivityPrivacyRefresh,
@@ -79,6 +82,7 @@ class CgmAppController extends ChangeNotifier {
   final Duration _reconnectDelay;
   int _reconnectAttempts = 0;
   final CgmDriver _driver;
+  final DisplayAwakeGate _displayAwake;
   final LiveActivityPrivacySetter? _liveActivityPrivacySetter;
   final Future<void> Function()? _liveActivityPrivacyRefresh;
   final Map<String, DiscoveredSensor> _sensorsById =
@@ -470,6 +474,11 @@ class CgmAppController extends ChangeNotifier {
       _driver.scan(timeout: _scanTimeout),
     );
     _scanIterator = iterator;
+    // Android will not run the unfiltered pass this sensor needs while the
+    // display is off, and it reports that by returning nothing at all. Hold the
+    // display for the window so the pass is allowed to run, and release it when
+    // the window ends however it ends.
+    await _holdDisplayForScan();
     try {
       while (await iterator.moveNext()) {
         if (!_ownsScan(generation)) {
@@ -479,12 +488,24 @@ class CgmAppController extends ChangeNotifier {
         _sensorsById[_sensorIdentity(sensor)] = sensor;
         notifyListeners();
       }
+      if (_ownsScan(generation) &&
+          _sensorsById.isEmpty &&
+          !await _displayIsInteractive()) {
+        _recordScanFailure(
+          BleFailure(
+            kind: BleFailureKind.scanUnavailable,
+            operation: BleOperation.scan,
+            diagnosticCode: 'cgm.ble.scan.display-off',
+          ),
+        );
+      }
     } catch (error) {
       if (!_ownsScan(generation)) {
         return;
       }
       _recordScanFailure(error);
     } finally {
+      await _releaseDisplayAfterScan();
       if (identical(_scanIterator, iterator)) {
         _scanIterator = null;
       }
@@ -492,6 +513,36 @@ class CgmAppController extends ChangeNotifier {
         _scanning = false;
         notifyListeners();
       }
+    }
+  }
+
+  /// Holds the display for one scan window. A gate failure never breaks a scan.
+  Future<void> _holdDisplayForScan() async {
+    try {
+      await _displayAwake.hold();
+    } on Object {
+      // The platform bridge is not a scan dependency.
+    }
+  }
+
+  /// Releases the hold taken for a scan window, however the window ended.
+  Future<void> _releaseDisplayAfterScan() async {
+    try {
+      await _displayAwake.release();
+    } on Object {
+      // The platform bridge is not a scan dependency.
+    }
+  }
+
+  /// Whether the platform would run an unfiltered scan right now.
+  ///
+  /// A platform that cannot answer reads as interactive, so a scan is only
+  /// ever called declined when the platform said so.
+  Future<bool> _displayIsInteractive() async {
+    try {
+      return await _displayAwake.isInteractive();
+    } on Object {
+      return true;
     }
   }
 

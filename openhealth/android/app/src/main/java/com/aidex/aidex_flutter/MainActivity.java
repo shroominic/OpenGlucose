@@ -24,6 +24,7 @@ public final class MainActivity extends FlutterActivity {
 
   private boolean requestedNotificationPermission;
   private DebugProtocolCaptureBridge protocolCaptureBridge;
+  private DisplayAwakeBridge displayAwakeBridge;
   private YuwellSecureStoreBridge yuwellSecureStoreBridge;
 
   @Override
@@ -34,6 +35,9 @@ public final class MainActivity extends FlutterActivity {
         .setMethodCallHandler(this::handleLiveUpdateCall);
     yuwellSecureStoreBridge = new YuwellSecureStoreBridge(this);
     yuwellSecureStoreBridge.register(
+        flutterEngine.getDartExecutor().getBinaryMessenger());
+    displayAwakeBridge = new DisplayAwakeBridge(this);
+    displayAwakeBridge.register(
         flutterEngine.getDartExecutor().getBinaryMessenger());
     if (protocolCaptureAvailable()) {
       protocolCaptureBridge = new DebugProtocolCaptureBridge(this);
