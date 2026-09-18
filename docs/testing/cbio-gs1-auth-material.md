@@ -143,25 +143,38 @@ Not in scope of the recovered initial sequence: activation (`0A 07 LE32(epoch)
 LE32(1234) C`) and the clock update are state-changing sensor writes and were
 not performed by this lane.
 
-## Synthetic test vectors
+## Test vectors
 
 Every frame is summed to zero modulo 256 by its trailing `C` byte and then
 RC4-masked with the `0x11164` key at stream offset zero. Inputs below are
 synthetic: the address is `66:55:44:33:22:11` (reversed to `66 55 44 33 22 11`
 in the frame) and the timestamp is `1700000000`.
 
-| Purpose | Plaintext frame | Expected masked bytes |
-| --- | --- | --- |
-| Authentication (synthetic address) | `1901006655443322115448453534345530545949544534363154` | `3ef66fbf5d376bfeacd5ce463a8332d9b2e7bd0576c155804f5e` |
-| Device information `F0`/`02` | `03f0020b` | `24076dd2` |
-| Glucose query, index 1 | `060a01000000ef` | `21fd6ed90873b7` |
-| Raw read, index 1 | `060801000000f1` | `21ff6ed90873a9` |
-| Clock update | `060300f153654e` | `21f46f285b1616` |
-| Activation (state-changing) | `0a0700f15365d204000070` | `2df06f285b168ad8bd81f6` |
+This record publishes **plaintext layouts only**. Masked bytes are a function of
+the key, so any masked byte string published here would be derived from the real
+key and would belong to the material this document refuses to restate. Generate
+them at run time instead:
+
+```dart
+// key is injected, never compiled; see packages/cgm_cbio/lib/src/cbio_credentials.dart
+maskCbioFrame(plaintext, key: credentials.streamKey);
+```
+
+| Purpose | Plaintext frame |
+| --- | --- |
+| Authentication (synthetic address, material field omitted) | `19 01 00 <6 reversed address octets> <16-byte material> C` |
+| Device information `F0`/`02` | `03f0020b` |
+| Glucose query, index 1 | `060a01000000ef` |
+| Raw read, index 1 | `060801000000f1` |
+| Clock update | `060300f153654e` |
+| Activation (state-changing) | `0a0700f15365d204000070` |
 
 The raw-read row independently reproduces the `06 08 01 00 00 00 F1` plaintext
 derived in `cbio-gs1-offline.md` from the native builders, which is a useful
 self-check that the plaintext construction and the masking are consistent.
+
+The authentication row is deliberately incomplete. Its bytes `9..24` are the
+link credential; written out, the row would contain the credential itself.
 
 ## Limits
 
@@ -170,8 +183,8 @@ self-check that the plaintext construction and the masking are consistent.
   output (the material) is established by static analysis of `register_key`, by
   two independent implementations, and by the live authentication success.
 - The `16`-byte material and the `.rodata` RC4 key are recorded only in the
-  private scratch directory and in the issue that tracks this work; they are
-  deliberately not reproduced as bare constants in this document beyond the
-  test vectors above.
+  private scratch directory. They are not reproduced in this document, in any
+  other repository file, or in any test fixture, and the package reads them from
+  an injected `CbioCredentialSource` instead.
 - Glucose scaling, validity flags, and the exact epoch convention remain open
   and are unchanged by this pass.
