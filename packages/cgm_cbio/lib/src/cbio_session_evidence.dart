@@ -117,6 +117,9 @@ const Set<String> cbioSessionErrorReasons = <String>{
 /// Highest raw value the 10-bit packed glucose field can hold.
 const int cbioRawGlucoseMaximum = 0x3ff;
 
+/// Highest value the 16-bit raw payload word can hold.
+const int cbioRawPayloadMaximum = 0xffff;
+
 /// Identity strings that must never appear in an evidence artifact: a Bluetooth
 /// address in colon or dash form, or a long hex run that could carry credential
 /// or vendor material.
@@ -133,7 +136,7 @@ final List<RegExp> _forbiddenEvidencePatterns = <RegExp>[
 List<String> cbioSessionEvidenceArtifactViolations(Object? decoded) {
   if (decoded is! Map<String, Object?>) return const ['artifact_not_an_object'];
   final violations = <String>[];
-  if (decoded['schema'] != 'cbio.session-evidence/1') {
+  if (decoded['schema'] != 'cbio.session-evidence/2') {
     violations.add('unknown_schema');
   }
   final identity = decoded['identity'];
@@ -232,17 +235,62 @@ List<String> _recordViolations(Object? records) {
       violations.add('record_index_out_of_bounds:$key');
     }
   }
-  for (final key in const ['rawGlucoseMinimum', 'rawGlucoseMaximum']) {
-    final value = records[key];
-    if (value == null) continue;
-    if (value is! int || value < 0 || value > cbioRawGlucoseMaximum) {
-      violations.add('raw_glucose_outside_envelope:$key');
+  violations.addAll(
+    _valueBlockViolations(
+      records['rawPayload'],
+      'rawPayload',
+      cbioRawPayloadMaximum,
+    ),
+  );
+  violations.addAll(
+    _valueBlockViolations(
+      records['processedGlucose'],
+      'processedGlucose',
+      cbioRawGlucoseMaximum,
+    ),
+  );
+  final raw = records['raw'];
+  final payload = records['rawPayload'];
+  if (raw is Map && payload is Map) {
+    final rawCount = raw['count'];
+    final payloadCount = payload['count'];
+    if (rawCount is int && payloadCount is int && rawCount != payloadCount) {
+      violations.add('raw_payload_count_disagrees_with_records');
     }
   }
-  final minimum = records['rawGlucoseMinimum'];
-  final maximum = records['rawGlucoseMaximum'];
-  if (minimum is int && maximum is int && minimum > maximum) {
-    violations.add('raw_glucose_range_inverted');
+  return violations;
+}
+
+/// Validates one `{count, minimum, maximum, nonZero}` value block.
+///
+/// Every session carries both blocks, including a session that decoded nothing:
+/// an absent block cannot be told apart from a field that is genuinely empty,
+/// which is the ambiguity that made an all-zero raw reading unreadable.
+List<String> _valueBlockViolations(Object? block, String name, int maximum) {
+  if (block is! Map) return ['record_values_missing:$name'];
+  final violations = <String>[];
+  final count = block['count'];
+  if (count is! int || count < 0) {
+    return ['record_value_count_invalid:$name'];
+  }
+  for (final key in const ['minimum', 'maximum', 'nonZero']) {
+    final value = block[key];
+    if (count == 0) {
+      if (value != null) violations.add('record_value_not_null:$name:$key');
+      continue;
+    }
+    if (value is! int || value < 0 || value > maximum) {
+      violations.add('record_value_outside_envelope:$name:$key');
+    }
+  }
+  final nonZero = block['nonZero'];
+  if (nonZero is int && (nonZero < 0 || nonZero > count)) {
+    violations.add('record_value_nonzero_out_of_range:$name');
+  }
+  final minimum = block['minimum'];
+  final blockMaximum = block['maximum'];
+  if (minimum is int && blockMaximum is int && minimum > blockMaximum) {
+    violations.add('record_value_range_inverted:$name');
   }
   return violations;
 }
@@ -290,9 +338,10 @@ final class CbioSessionEvidence {
     required this.allowedWrites,
     required this.glucoseIndices,
     required this.rawIndices,
-    required this.rawGlucoseValues,
+    required this.rawPayloadValues,
+    required this.processedGlucoseValues,
     required this.errors,
-    this.schema = 'cbio.session-evidence/1',
+    this.schema = 'cbio.session-evidence/2',
   });
 
   /// Artifact schema identifier.
@@ -352,8 +401,17 @@ final class CbioSessionEvidence {
   /// Sensor indices of the raw history records the run decoded.
   final List<int> rawIndices;
 
-  /// Raw, uncalibrated glucose values the run decoded.
-  final List<int> rawGlucoseValues;
+  /// Payload words the run decoded from `08` records, one per raw record.
+  ///
+  /// This is the field the app's live path renders. It has no verified scale.
+  final List<int> rawPayloadValues;
+
+  /// The firmware's processed field, one per `08` record, plus the packed
+  /// values of any `0A` batch the run decoded.
+  ///
+  /// Kept separate from [rawPayloadValues] so an empty processed field can never
+  /// be mistaken for a measured zero again.
+  final List<int> processedGlucoseValues;
 
   /// Closed failure reasons observed, per count.
   final Map<String, int> errors;
@@ -373,7 +431,7 @@ final class CbioSessionEvidence {
       violations.add('clock_moved_backwards');
     }
     if (unitStatus != 'unverified') violations.add('unit_status_claimed');
-    if (schema != 'cbio.session-evidence/1') violations.add('unknown_schema');
+    if (schema != 'cbio.session-evidence/2') violations.add('unknown_schema');
     for (final kind in writeKinds.keys) {
       if (!allowedWrites.contains(kind)) {
         violations.add('write_outside_allowed_set:${kind.wire}');
@@ -394,11 +452,20 @@ final class CbioSessionEvidence {
     if (!_isOrderedAndUnique(rawIndices)) {
       violations.add('raw_indices_not_ordered_or_unique');
     }
-    for (final value in rawGlucoseValues) {
-      if (value < 0 || value > cbioRawGlucoseMaximum) {
-        violations.add('raw_glucose_outside_envelope');
+    for (final value in rawPayloadValues) {
+      if (value < 0 || value > cbioRawPayloadMaximum) {
+        violations.add('raw_payload_outside_envelope');
         break;
       }
+    }
+    for (final value in processedGlucoseValues) {
+      if (value < 0 || value > cbioRawGlucoseMaximum) {
+        violations.add('processed_glucose_outside_envelope');
+        break;
+      }
+    }
+    if (rawIndices.isNotEmpty && rawPayloadValues.length != rawIndices.length) {
+      violations.add('raw_payload_count_disagrees_with_records');
     }
     if (outcome == CbioSessionOutcome.completed) {
       if (!targetAcquired) violations.add('completed_without_target');
@@ -438,12 +505,8 @@ final class CbioSessionEvidence {
     'records': <String, Object?>{
       'glucose': _describe(glucoseIndices),
       'raw': _describe(rawIndices),
-      'rawGlucoseMinimum': rawGlucoseValues.isEmpty
-          ? null
-          : rawGlucoseValues.reduce((a, b) => a < b ? a : b),
-      'rawGlucoseMaximum': rawGlucoseValues.isEmpty
-          ? null
-          : rawGlucoseValues.reduce((a, b) => a > b ? a : b),
+      'rawPayload': _describeValues(rawPayloadValues),
+      'processedGlucose': _describeValues(processedGlucoseValues),
     },
     'errors': Map<String, int>.of(errors),
   };
@@ -452,6 +515,20 @@ final class CbioSessionEvidence {
     'count': indices.length,
     'firstIndex': indices.isEmpty ? null : indices.first,
     'lastIndex': indices.isEmpty ? null : indices.last,
+  };
+
+  /// Describes one decoded value series without implying a unit.
+  ///
+  /// `nonZero` is what separates "this field is empty" from "this field is
+  /// zero": a decoder that reads the wrong field reports a full count and no
+  /// non-zero sample.
+  static Map<String, Object?> _describeValues(
+    List<int> values,
+  ) => <String, Object?>{
+    'count': values.length,
+    'minimum': values.isEmpty ? null : values.reduce((a, b) => a < b ? a : b),
+    'maximum': values.isEmpty ? null : values.reduce((a, b) => a > b ? a : b),
+    'nonZero': values.where((value) => value != 0).length,
   };
 
   /// Gaps are expected: a bounded window can skip stored indices. Duplicates

@@ -291,7 +291,10 @@ final class _QueryRun {
     allowedWrites: _allowedWrites,
     glucoseIndices: glucoseByIndex.keys.toList()..sort(),
     rawIndices: const <int>[],
-    rawGlucoseValues: glucoseByIndex.values.toList(),
+    rawPayloadValues: const <int>[],
+    // This harness only reads the packed `0A` layout, which is the firmware's
+    // processed field. It carries no payload word at all.
+    processedGlucoseValues: glucoseByIndex.values.toList(),
     errors: errors,
   );
 }

@@ -112,7 +112,8 @@ Future<void> main(List<String> arguments) async {
     '$header'
     '| ${capturedAt.toIso8601String()} | `$harness` | '
     '`${artifact['outcome']}` | glucose ${(records['glucose']! as Map)['count']}, '
-    'raw ${(records['raw']! as Map)['count']} | '
+    'raw ${(records['raw']! as Map)['count']} '
+    '(payload ${_range(records['rawPayload'])}) | '
     '${errors.isEmpty ? 'none' : errors.keys.join(', ')} | '
     '`${file.uri.pathSegments.last}` |\n',
     mode: FileMode.append,
@@ -124,9 +125,19 @@ Future<void> main(List<String> arguments) async {
     'notifications=${artifact['notifications']} '
     'glucose=${(records['glucose']! as Map)['count']} '
     'raw=${(records['raw']! as Map)['count']} '
+    'payload=${_range(records['rawPayload'])} '
+    'processed=${_range(records['processedGlucose'])} '
     'errors=${errors.isEmpty ? 'none' : errors.keys.join(',')} '
     'unit=${artifact['unitStatus']}',
   );
+}
+
+/// `min..max nonZero=n` for one decoded value block.
+String _range(Object? block) {
+  if (block is! Map) return 'missing';
+  if (block['count'] == 0) return 'empty';
+  return '${block['minimum']}..${block['maximum']} '
+      'nonZero=${block['nonZero']}';
 }
 
 Map<String, String?> _parseArguments(List<String> arguments) {

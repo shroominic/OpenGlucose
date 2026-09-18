@@ -64,7 +64,8 @@ void main() {
     expect(first.index, 1);
     expect(first.rawTime, 1757534220);
     expect(first.reindex, 5000);
-    expect(first.rawCurrent, 78);
+    expect(first.rawPayload, 78);
+    expect(first.rawProcessed, 0);
     expect(first.rawTemperature, 320);
     expect(first.derivedMillimolesPerLitre, 7.8);
     expect(first.derivedMilligramsPerDecilitre, 141);
@@ -127,8 +128,8 @@ void main() {
     expect(status, CbioArchiveIngestStatus.accepted);
     expect(archive.sawOverlap, isTrue);
     expect(archive.length, 5);
-    expect(archive.records[2].rawCurrent, 60);
-    expect(archive.records[4].rawCurrent, 95);
+    expect(archive.records[2].rawPayload, 60);
+    expect(archive.records[4].rawPayload, 95);
   });
 
   test('ignores frames that are not plaintext 08 batches', () {
@@ -177,10 +178,45 @@ void main() {
       final fromArchive = archive.records[i];
       expect(fromArchive.rawTemperature, fromFrame.rawTemperature);
       expect(fromArchive.rawDump, fromFrame.rawDump);
-      expect(fromArchive.rawCurrent, fromFrame.rawCurrent);
-      expect(fromArchive.index, fromFrame.packed.index);
-      expect(fromArchive.rawTime, fromFrame.packed.rawTime);
-      expect(fromArchive.reindex, fromFrame.packed.reindex);
+      expect(fromArchive.rawPayload, fromFrame.rawPayload);
+      expect(fromArchive.rawProcessed, fromFrame.processed.rawWord);
+      expect(fromArchive.index, fromFrame.processed.index);
+      expect(fromArchive.rawTime, fromFrame.processed.rawTime);
+      expect(fromArchive.reindex, fromFrame.processed.reindex);
+    }
+  });
+
+  test('the archive reads the payload word, not the processed word', () {
+    // A record whose processed word is zero while the payload carries a value:
+    // the shape every captured GS1 record has on this firmware.
+    final archive = CbioHistoryArchive();
+    final frame = _rawBatch(first: 1, count: 1, baseTime: 1000, current: 64);
+    expect(archive.ingest(frame), CbioArchiveIngestStatus.accepted);
+
+    final record = archive.records.single;
+    expect(record.rawPayload, 64);
+    expect(record.rawProcessed, 0);
+    expect(record.derivedMillimolesPerLitre, 6.4);
+  });
+
+  test('the archive and the frame parser decode the same words', () {
+    for (final current in [0, 1, 64, 0xffff]) {
+      final frame = _rawBatch(
+        first: 1,
+        count: 2,
+        baseTime: 1000,
+        current: current,
+      );
+      final archive = CbioHistoryArchive();
+      expect(archive.ingest(frame), CbioArchiveIngestStatus.accepted);
+      final parsed = parseCbioRawDataFrame(frame);
+      for (var i = 0; i < parsed.records.length; i++) {
+        expect(archive.records[i].rawPayload, parsed.records[i].rawPayload);
+        expect(
+          archive.records[i].rawProcessed,
+          parsed.records[i].processed.rawWord,
+        );
+      }
     }
   });
 

@@ -29,6 +29,7 @@ final class CbioPackedRecord {
     required this.index,
     required this.rawTime,
     required this.reindex,
+    required this.rawWord,
     required this.rawGlucose,
     required this.rawTrend,
     required this.rawGlucoseWarning,
@@ -38,6 +39,11 @@ final class CbioPackedRecord {
   final int index;
   final int rawTime;
   final int reindex;
+
+  /// The two packed bytes as a little-endian unsigned 16-bit word, so a
+  /// caller can see the span the ten-bit field is cut from.
+  final int rawWord;
+
   final int rawGlucose;
   final int rawTrend;
   final int rawGlucoseWarning;
@@ -134,6 +140,7 @@ CbioFrame _parseCbioPlaintextFrame(List<int> bytes) {
         index: initialIndex + i,
         rawTime: initialTime + 60 * i,
         reindex: baseReindex + count - 1 - i,
+        rawWord: le16(9 + 2 * i),
         rawGlucose: (bytes[9 + 2 * i] >> 6) | (bytes[10 + 2 * i] << 2),
         rawTrend: (bytes[9 + 2 * i] >> 3) & 7,
         rawGlucoseWarning: (bytes[9 + 2 * i] >> 1) & 3,
@@ -143,18 +150,44 @@ CbioFrame _parseCbioPlaintextFrame(List<int> bytes) {
 }
 
 /// Fields from the separate eight-byte 0x08 record layout, without conversion.
+///
+/// The four 16-bit words are `temperature, dump, payload, processed`. They are
+/// kept separate because they are not interchangeable: on the observed firmware
+/// the payload word is the only one that carries a reading, and the processed
+/// word decodes to zero in every captured record.
 final class CbioRawRecord {
   const CbioRawRecord({
-    required this.packed,
     required this.rawTemperature,
-    required this.rawCurrent,
     required this.rawDump,
+    required this.rawPayload,
+    required this.processed,
   });
 
-  final CbioPackedRecord packed;
+  /// LE16 at record offset 0. Independent clients read it as tenths of Celsius;
+  /// the scale is still unverified here.
   final int rawTemperature;
-  final int rawCurrent;
+
+  /// LE16 at record offset 2. No meaning is established for it.
   final int rawDump;
+
+  /// LE16 at record offset 4: the word that carries the reading.
+  ///
+  /// The recovered native structure names this field `current`. It is the field
+  /// the app's live path renders (`rawPayload / 10`), and it is the only field
+  /// in an `08` record with content on the observed firmware. It is still not a
+  /// validated glucose measurement: no reference measurement settles its scale,
+  /// so no value derived from it is unit-verified.
+  final int rawPayload;
+
+  /// LE16 at record offset 6, sharing the `0A` packed bit layout.
+  ///
+  /// This is the firmware's processed field, not the payload. It read `0x0000`
+  /// in every record of every captured GS1 session, so reporting it as the raw
+  /// reading makes an empty processed field look like a measured zero.
+  final CbioPackedRecord processed;
+
+  /// Always false: no reference measurement has established the scale.
+  bool get isUnitVerified => false;
 }
 
 /// Separate from [CbioFrame] to preserve the existing closed frame contract.
@@ -167,8 +200,10 @@ final class CbioRawBatch {
 
 /// Parses only complete plaintext 0x08 data, never an ACK or a 0x0a batch.
 ///
-/// The embedded glucose field is not a validated glucose measurement. Native
-/// algorithms, firmware selection, units, epoch, and validity remain separate.
+/// This is the single owner of the `08` record layout; the history archive
+/// decodes through it rather than repeating the offsets. The payload word is
+/// not a validated glucose measurement. Native algorithms, firmware selection,
+/// units, epoch, and validity remain separate.
 CbioRawBatch parseCbioRawDataFrame(List<int> bytes) {
   _validateCbioFrame(bytes);
   if (bytes[1] != 0x08) {
@@ -193,11 +228,12 @@ CbioRawBatch parseCbioRawDataFrame(List<int> bytes) {
       CbioRawRecord(
         rawTemperature: le16(9 + 8 * i),
         rawDump: le16(11 + 8 * i),
-        rawCurrent: le16(13 + 8 * i),
-        packed: CbioPackedRecord(
+        rawPayload: le16(13 + 8 * i),
+        processed: CbioPackedRecord(
           index: index + i,
           rawTime: time + 60 * i,
           reindex: reindex + count - 1 - i,
+          rawWord: le16(15 + 8 * i),
           rawGlucose: (bytes[15 + 8 * i] >> 6) | (bytes[16 + 8 * i] << 2),
           rawTrend: (bytes[15 + 8 * i] >> 3) & 7,
           rawGlucoseWarning: (bytes[15 + 8 * i] >> 1) & 3,

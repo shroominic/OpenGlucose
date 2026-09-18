@@ -6,6 +6,8 @@ export 'src/cbio_frames.dart';
 export 'src/cbio_history_archive.dart';
 export 'src/cbio_vendor_frames.dart';
 export 'src/cbio_crypto.dart';
+export 'src/cbio_decode_comparison.dart';
 export 'src/cbio_glucose_sync.dart';
+export 'src/cbio_log_replay.dart';
 export 'src/cbio_queries.dart';
 export 'src/cbio_session_evidence.dart';

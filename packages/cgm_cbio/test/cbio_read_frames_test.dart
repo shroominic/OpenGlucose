@@ -23,9 +23,9 @@ List<int> raw({
   ...le32(time),
   for (var i = 0; i < count; i++) ...[
     ...le16(0x1234 + i), // temperature
-    ...le16(0x5678 + i), // dump precedes current on wire
-    ...le16(0x9abc + i), // current
-    0xd5, 0x12,
+    ...le16(0x5678 + i), // dump precedes the payload on wire
+    ...le16(0x9abc + i), // payload
+    0xd5, 0x12, // processed word: glucose 75, trend 2, warning 2, bit 1
   ],
   ...le16(reindex),
 ]);
@@ -154,7 +154,7 @@ void main() {
     expect(
       parseCbioRawDataFrame(
         raw(count: 1, index: 1),
-      ).records.single.packed.index,
+      ).records.single.processed.index,
       1,
     );
   });
@@ -167,17 +167,18 @@ void main() {
       final r = parsed.records[i];
       expect(r.rawTemperature, 0x1234 + i);
       expect(r.rawDump, 0x5678 + i);
-      expect(r.rawCurrent, 0x9abc + i);
-      expect(r.packed.index, 7 + i);
-      expect(r.packed.rawTime, 1234 + 60 * i);
-      expect(r.packed.reindex, 41 - i);
-      expect(r.packed.rawGlucose, 75);
-      expect(r.packed.rawTrend, 2);
-      expect(r.packed.rawGlucoseWarning, 2);
-      expect(r.packed.rawSharedWarning, 1);
+      expect(r.rawPayload, 0x9abc + i);
+      expect(r.processed.index, 7 + i);
+      expect(r.processed.rawTime, 1234 + 60 * i);
+      expect(r.processed.reindex, 41 - i);
+      expect(r.processed.rawWord, 0x12d5);
+      expect(r.processed.rawGlucose, 75);
+      expect(r.processed.rawTrend, 2);
+      expect(r.processed.rawGlucoseWarning, 2);
+      expect(r.processed.rawSharedWarning, 1);
     }
     bytes.fillRange(0, bytes.length, 0);
-    expect(parsed.records.first.rawCurrent, 0x9abc);
+    expect(parsed.records.first.rawPayload, 0x9abc);
     expect(() => parsed.records.clear(), throwsUnsupportedError);
   });
 
@@ -198,7 +199,7 @@ void main() {
     expect(
       parseCbioRawDataFrame(
         raw(count: 1, index: 0xffff, time: 0xffffffff, reindex: 0xffff),
-      ).records.single.packed.index,
+      ).records.single.processed.index,
       0xffff,
     );
   });
