@@ -1081,4 +1081,59 @@ void main() {
       },
     );
   });
+
+  group('CbioGlucoseSession live edge', () {
+    test('a holed archive still finishes ingesting at the live edge', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      final now = DateTime.now().toUtc();
+      final base = now.millisecondsSinceEpoch ~/ 1000 - 180;
+      await _defaultResponder(
+        connection,
+        rawBatches: <List<int>>[
+          // Positions 1-3 arrive, then the sensor skips position 4 and keeps
+          // pushing to its live edge. The hole stays visible in the positions
+          // the session publishes (#188); it must not pin the fetch to
+          // "in progress" for the rest of the session.
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: base,
+            baseReindex: 3,
+            currents: <int>[64, 70, 75],
+          ),
+          _rawBatch(
+            startIndex: 5,
+            baseEpochSeconds: base + 240,
+            baseReindex: 5,
+            currents: <int>[80],
+          ),
+        ],
+      );
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+        clock: () => now,
+      );
+      await session.initialize();
+      await _pumpUntil(() => session.currentSnapshot.history.length == 4);
+      await _pumpUntil(
+        () =>
+            session.currentSnapshot.stage == CgmSyncStage.ready &&
+            session.currentSnapshot.historySync.inProgress == false,
+      );
+
+      final snapshot = session.currentSnapshot;
+      expect(snapshot.historySync.storedCount, 4);
+      expect(
+        snapshot.history.map((reading) => reading.sensorMinute),
+        <int>[1, 2, 3, 5],
+        reason: 'the hole at position 4 is still visible in the positions',
+      );
+      expect(_phaseOf(snapshot), CbioSessionPhase.live);
+      await session.disconnect();
+    });
+  });
 }

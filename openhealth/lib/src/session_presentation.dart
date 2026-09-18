@@ -532,10 +532,15 @@ String? cbioProvisionalValueText(CgmReading? reading) {
   return (raw / 10).toStringAsFixed(1);
 }
 
-/// What the app actually stored for this sensor: how many records and which
-/// sensor positions they cover. Positions are the protocol's own `index`
-/// counter, which advances one per stored minute; it is never a wall clock.
-String cbioStoredRangeText(Iterable<CgmReading> readings) {
+/// What the app actually stored for this sensor: how many records, which sensor
+/// positions they cover, the local window the anchor gives that range, and how
+/// many positions never arrived. Positions are the protocol's own `index`
+/// counter, which advances one per stored minute and is never a wall clock on
+/// its own: the clock comes from [anchor] when the session holds one.
+String cbioStoredRangeText(
+  Iterable<CgmReading> readings, {
+  CbioIndexTimeAnchor? anchor,
+}) {
   final positions = <int>[
     for (final reading in readings)
       if (reading.sensorMinute != null) reading.sensorMinute!,
@@ -544,8 +549,27 @@ String cbioStoredRangeText(Iterable<CgmReading> readings) {
     return '${readings.length} readings stored';
   }
   positions.sort();
-  return '${readings.length} readings stored · '
-      'sensor minutes ${positions.first}–${positions.last}';
+  final oldest = positions.first;
+  final newest = positions.last;
+  final missing = newest - oldest + 1 - positions.length;
+  return <String>[
+    '${readings.length} readings stored',
+    'sensor minutes $oldest–$newest',
+    if (anchor != null && anchor.coversIndex(oldest))
+      _anchorWindowText(anchor, oldest, newest),
+    if (missing > 0)
+      missing == 1
+          ? '1 position not received'
+          : '$missing positions not received',
+  ].join(' · ');
+}
+
+/// The local window the anchor gives the stored range, oldest to newest.
+String _anchorWindowText(CbioIndexTimeAnchor anchor, int oldest, int newest) {
+  final format = DateFormat('HH:mm');
+  final from = format.format(anchor.timeForIndex(oldest).toLocal());
+  final to = format.format(anchor.timeForIndex(newest).toLocal());
+  return '$from–$to';
 }
 
 /// The index-to-clock anchor a GS1 session published, or null when it has none.

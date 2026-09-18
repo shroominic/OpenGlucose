@@ -235,6 +235,7 @@ final class CbioGlucoseSession implements CgmSession {
   int? _clockReferenceEpochSeconds;
   CbioIndexTimeAnchor? _anchor;
   bool _anchorLogged = false;
+  bool _closedOnIdle = false;
   bool _catchUpOpen = false;
   bool _budgetExhausted = false;
   bool _closing = false;
@@ -461,6 +462,7 @@ final class CbioGlucoseSession implements CgmSession {
 
   void _beginHistory(int startIndex) {
     _catchUpOpen = false;
+    _closedOnIdle = false;
     _catchUpTimer?.cancel();
     _catchUpTimer = null;
     _setPhase(
@@ -486,13 +488,21 @@ final class CbioGlucoseSession implements CgmSession {
       return;
     }
     _historyIdleTimer?.cancel();
-    _historyIdleTimer = Timer(timing.historyIdleWindow, _finishHistory);
+    _historyIdleTimer = Timer(
+      timing.historyIdleWindow,
+      () => _finishHistory(closedOnIdle: true),
+    );
   }
 
-  void _finishHistory() {
+  void _finishHistory({bool closedOnIdle = false}) {
     if (_closing) {
       return;
     }
+    // Closing on the idle timer means the sensor stopped offering records
+    // before the window deadline, which is the only counter-free evidence that
+    // the fetch reached the front. A deadline close has to fall back on the
+    // freshness check below.
+    _closedOnIdle = _closedOnIdle || closedOnIdle;
     _historyDeadlineTimer?.cancel();
     _historyDeadlineTimer = null;
     _historyIdleTimer?.cancel();
@@ -740,26 +750,40 @@ final class CbioGlucoseSession implements CgmSession {
     }
   }
 
-  bool get _atLiveEdge {
-    if (_archive.length == 0 || _archive.hasGap) {
+  /// Whether the fetch has caught up with what the sensor offered.
+  ///
+  /// `inProgress` answers one question: is there more of what the sensor pushed
+  /// still coming. A hole in the middle describes the range, not the fetch, and
+  /// is reported by the positions and the caption, so it no longer pins the
+  /// sync open for the rest of the session.
+  bool get _historyCaughtUp {
+    if (_archive.length == 0) {
       return false;
     }
+    if (_closedOnIdle) {
+      return true;
+    }
+    // A deadline close means the window ran out before the sensor stopped
+    // offering, so the newest stored record has to sit at the app's own live
+    // edge. This is a freshness check, never a rendered clock: the anchored
+    // instant is used when the session holds one, and the bare counter is only
+    // a fallback for "did anything arrive in the last few minutes".
     if (_archive.oldestIndex != _historyStartIndex) {
       return false;
     }
+    final newestIndex = _archive.newestIndex;
     final newestTime = _archive.newestTime;
-    if (newestTime == null) {
+    if (newestIndex == null || newestTime == null) {
       return false;
     }
-    final newest = DateTime.fromMillisecondsSinceEpoch(
-      newestTime * 1000,
-      isUtc: true,
-    );
+    final newest =
+        _anchor?.timeForIndex(newestIndex) ??
+        DateTime.fromMillisecondsSinceEpoch(newestTime * 1000, isUtc: true);
     return _clock().toUtc().difference(newest).abs() <= timing.liveEdgeWindow;
   }
 
   CgmHistorySyncState get _historySyncState => CgmHistorySyncState(
-    inProgress: !_atLiveEdge || _catchUpOpen,
+    inProgress: !_historyCaughtUp || _catchUpOpen,
     storedCount: _archive.length,
     totalAvailable: _archive.newestIndex ?? 0,
     latestStoredOffset: _archive.newestIndex,

@@ -42,6 +42,15 @@ List<CgmReading> _readings({required bool anchored}) => <CgmReading>[
     ),
 ];
 
+CgmReading _position(int index) => CgmReading(
+  valueMgdl: 100 + index.toDouble(),
+  source: CgmRecordSource.raw,
+  sensorMinute: index,
+  recordedAt: null,
+  rawValue: 55,
+  isDisplayProvisional: true,
+);
+
 CgmSessionSnapshot _snapshot({
   required bool anchored,
   bool covered = true,
@@ -212,6 +221,61 @@ void main() {
         reason: 'the device zone, not UTC, is what the hero shows',
       );
     }
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await tester.pump();
+  });
+
+  test(
+    'the caption names the anchored window and the positions that never came',
+    () {
+      final local = DateFormat('HH:mm');
+      final anchored = _snapshot(anchored: true);
+      expect(
+        cbioStoredRangeText(
+          anchored.history,
+          anchor: cbioAnchorForSnapshot(anchored),
+        ),
+        '3 readings stored \u00b7 sensor minutes 10065\u201310067 \u00b7 '
+        '${local.format(_anchorInstant.subtract(const Duration(minutes: 2)).toLocal())}'
+        '\u2013${local.format(_anchorInstant.toLocal())}',
+      );
+      expect(
+        cbioStoredRangeText(anchored.history),
+        '3 readings stored \u00b7 sensor minutes 10065\u201310067',
+        reason: 'without an anchor the positions stay the only range',
+      );
+
+      final holed = _snapshot(
+        anchored: false,
+        history: <CgmReading>[
+          for (final index in <int>[10065, 10066, 10068]) _position(index),
+        ],
+      );
+      expect(
+        cbioStoredRangeText(holed.history),
+        '3 readings stored \u00b7 sensor minutes 10065\u201310068 \u00b7 '
+        '1 position not received',
+      );
+    },
+  );
+
+  testWidgets('the hero caption carries the anchored window', (tester) async {
+    final local = DateFormat('HH:mm');
+    final (controller, preferences) = await _controllerFor(
+      _snapshot(anchored: true),
+    );
+    await _pumpApp(tester, controller, preferences);
+
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey<String>('cbioStoredRange')))
+          .data,
+      '3 readings stored \u00b7 sensor minutes 10065\u201310067 \u00b7 '
+      '${local.format(_anchorInstant.subtract(const Duration(minutes: 2)).toLocal())}'
+      '\u2013${local.format(_anchorInstant.toLocal())}',
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();

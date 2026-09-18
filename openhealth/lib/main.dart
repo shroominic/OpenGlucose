@@ -1171,7 +1171,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
               if (isCbioSnapshot(snapshot)) ...<Widget>[
                 const SizedBox(height: 6),
                 Text(
-                  cbioStoredRangeText(snapshot.history),
+                  cbioStoredRangeText(
+                    snapshot.history,
+                    anchor: cbioAnchorForSnapshot(snapshot),
+                  ),
                   key: const ValueKey<String>('cbioStoredRange'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFFC7E4DD),

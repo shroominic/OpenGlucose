@@ -69,6 +69,21 @@ when the sensor's own newest record stamp agrees with the app's clock to within
   hero says `Sensor clock unsynced · ordered by sensor index, not by clock`
   instead of a placeholder time.
 
+The stored-history caption uses the same anchor:
+
+- `10067 readings stored · sensor minutes 1–10067 · 02:34–19:02` when the
+  anchor covers the range, with the window in the device's local zone;
+- `… · 3 positions not received` appended whenever the stored positions have
+  holes, counted from the range they span;
+- without an anchor the caption stays exactly as captured above: count and
+  sensor minutes only, with the unsynced line beside it.
+
+Ingest also answers one question only: `inProgress` is true while the sensor is
+still pushing and false once the fetch has caught up with the front it offered -
+a close on the settle (idle) timer is that evidence, so a hole in the middle no
+longer pins a finished fetch to "Fetching sensor history" for the rest of the
+session. The hole stays visible in the positions and the caption.
+
 The timestamps therefore inherit the clock this app set on the sensor and its
 drift, which the surface states as the ±1 minute of one stored record. The
 capture above predates the anchor and shows the unsynced copy; a device
