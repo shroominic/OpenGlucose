@@ -190,9 +190,7 @@ void main() {
 
     expect(
       tester
-          .widget<Text>(
-            find.byKey(const ValueKey<String>('cbioStoredRange')),
-          )
+          .widget<Text>(find.byKey(const ValueKey<String>('cbioStoredRange')))
           .data,
       '5 readings stored · sensor minutes 10–16 · 2 positions not received',
     );

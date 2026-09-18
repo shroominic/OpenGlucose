@@ -526,9 +526,18 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     if (isPlatformProtocolCaptureEnabled) {
       unawaited(_restoreLibreActivationResult());
     }
-    _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
+    _startForegroundFreshness();
+  }
+
+  void _startForegroundFreshness() {
+    _freshnessTimer ??= Timer.periodic(_foregroundFreshnessInterval, (_) {
       unawaited(widget.controller.ensureFreshData());
     });
+  }
+
+  void _stopForegroundFreshness() {
+    _freshnessTimer?.cancel();
+    _freshnessTimer = null;
   }
 
   Future<void> _restoreLibreActivationResult() async {
@@ -544,17 +553,34 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    _freshnessTimer?.cancel();
+    _stopForegroundFreshness();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) {
-      return;
+    switch (state) {
+      case AppLifecycleState.resumed:
+        _startForegroundFreshness();
+        unawaited(widget.controller.ensureFreshData(force: true));
+      case AppLifecycleState.inactive:
+        // Transient on both platforms - a permission sheet, the app switcher,
+        // an incoming call. The user has not left the app and the session must
+        // not be disturbed.
+        break;
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        // The host is no longer presenting the app, so the foreground-only
+        // poll stops. It polls on a timer, and a poll against a session that
+        // the platform has already dropped opens a new BLE link with nobody
+        // present to use it. The session itself keeps whatever link it holds:
+        // iOS is declared `bluetooth-central` and the lock-screen surface is
+        // fed from that same session, so leaving the foreground is not a
+        // reason to tear it down. The poll restarts on `resumed`.
+        _stopForegroundFreshness();
     }
-    unawaited(widget.controller.ensureFreshData(force: true));
   }
 
   @override
@@ -1261,6 +1287,14 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                 Text(
                   cbioStoredRangeText(snapshot.history),
                   key: const ValueKey<String>('cbioStoredRange'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFC7E4DD),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  cbioClockStateText(snapshot, reading: latest),
+                  key: const ValueKey<String>('cbioClockState'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFFC7E4DD),
                   ),

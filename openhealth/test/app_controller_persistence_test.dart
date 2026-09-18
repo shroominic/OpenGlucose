@@ -2643,6 +2643,104 @@ void main() {
     await transport.cancelled.future.timeout(const Duration(seconds: 1));
   });
 
+  test('disposing the controller disconnects its live session', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _testSensor();
+    final session = _ControlledSession(
+      _testSnapshot(sensor, stage: CgmSyncStage.ready),
+    );
+    final driver = _ControlledDriver(<_ControlledSession>[session]);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+    );
+
+    await controller.initialize();
+    await controller.connect(sensor);
+    await _drainEventQueue();
+    expect(session.disconnectCalls, 0);
+
+    controller.dispose();
+    await _drainEventQueue();
+
+    expect(
+      session.disconnectCalls,
+      1,
+      reason: 'a disposed controller must not leave a GATT client open',
+    );
+    await driver.close();
+  });
+
+  testWidgets(
+    'a backgrounded app stops foreground polling and resumes it on return',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _testSensor();
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready),
+      );
+      final driver = _ControlledDriver(<_ControlledSession>[session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+        reconnectDelay: Duration.zero,
+      );
+
+      await controller.initialize();
+      await controller.connect(sensor);
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pump();
+
+      await tester.pump(const Duration(seconds: 45));
+      final whileForeground = session.refreshLiveDataCalls;
+      expect(
+        whileForeground,
+        greaterThan(0),
+        reason: 'the declared foreground poll polls while presenting',
+      );
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      final whilePaused = session.refreshLiveDataCalls;
+      await tester.pump(const Duration(seconds: 90));
+      expect(
+        session.refreshLiveDataCalls,
+        whilePaused,
+        reason: 'a backgrounded app must not keep driving its session',
+      );
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(
+        session.refreshLiveDataCalls,
+        greaterThan(whilePaused),
+        reason: 'returning to the foreground refreshes immediately',
+      );
+      final onReturn = session.refreshLiveDataCalls;
+      await tester.pump(const Duration(seconds: 45));
+      expect(session.refreshLiveDataCalls, greaterThan(onReturn));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
   test('a sensor that keeps dropping exhausts the retry budget', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -2691,10 +2789,7 @@ void main() {
     );
     final stopped = controller.snapshot;
     expect(stopped?.stage, CgmSyncStage.error);
-    expect(
-      stopped?.metadata[cgmAutomaticReconnectAllowedMetadataKey],
-      'false',
-    );
+    expect(stopped?.metadata[cgmAutomaticReconnectAllowedMetadataKey], 'false');
     expect(controller.connectionRequiresUserAction, isTrue);
     expect(stopped?.lastError, 'cgm.session.reconnectExhausted');
 
@@ -3251,6 +3346,7 @@ class _ControlledSession implements CgmSession {
   final Exception? disconnectError;
   CgmSessionSnapshot? _snapshotOnSnapshotsAccess;
   CgmSessionSnapshot? _snapshotOnRefreshLiveData;
+  int disconnectCalls = 0;
   int refreshLiveDataCalls = 0;
   int syncHistoryCalls = 0;
   int refreshDiagnosticsCalls = 0;
@@ -3289,6 +3385,7 @@ class _ControlledSession implements CgmSession {
 
   @override
   Future<void> disconnect() async {
+    disconnectCalls += 1;
     final error = disconnectError;
     if (error != null) throw error;
   }

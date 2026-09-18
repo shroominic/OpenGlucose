@@ -557,6 +557,7 @@ void main() {
           capabilities: CbioGlucoseSession.capabilities,
         ),
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
@@ -644,12 +645,24 @@ void main() {
         expect(latest.isDisplayProvisional, isTrue);
         expect(latest.rawValue, 97);
         expect(latest.sensorMinute, 3);
-        // The archived record exposes the rounded mg/dL derivation of the
-        // unverified mmol/L scale, never the raw field as a measurement.
-        expect(latest.valueMgdl, 175);
-        // The sensor's own second counter has no epoch, so no wall-clock
-        // timestamp is invented for it; the index is the honest position.
-        expect(latest.recordedAt, isNull);
+        // The record carries the unverified /10 scale of its own raw field.
+        // The archive publishes no glucose unit, so the session publishes the
+        // same unit-free number the hero renders - not a converted mg/dL value.
+        expect(latest.valueMgdl, 9.7);
+        // These records stamp the clock this session wrote, so the index is
+        // anchored to it and each position steps 60 s back from the newest.
+        // The counter itself is never the source: the clock-anchor group below
+        // holds the case where it does not agree with the app's clock.
+        expect(
+          snapshot.history.map((reading) => reading.recordedAt),
+          <DateTime?>[
+            for (final offset in <int>[0, 60, 120])
+              DateTime.fromMillisecondsSinceEpoch(
+                (base + offset) * 1000,
+                isUtc: true,
+              ),
+          ],
+        );
         expect(snapshot.history.map((r) => r.sensorMinute), <int>[1, 2, 3]);
         expect(snapshot.capabilities.supportsHistory, isTrue);
         await session.disconnect();
@@ -975,60 +988,56 @@ void main() {
   });
 
   group('CbioGlucoseSession provisional scale', () {
-    test(
-      'the app and the capture harness share one raw field and one scale',
-      () {
-        // Replayed 08 batch: the sample the capture harness read out of the
-        // sensor was raw 47..53 at index 9940..9992. Those counters live in the
-        // same record field the session publishes as `rawValue`, so the app and
-        // the harness already agree byte for byte. Only the unit label differed:
-        // the app multiplied the unverified /10 scale by 18.0182 and called the
-        // result mg/dL, which no reference measurement supports.
-        final frame = _rawBatch(
-          startIndex: 9940,
-          baseEpochSeconds: 596400,
-          baseReindex: 9940,
-          currents: <int>[47, 50, 53],
-        );
+    test('the app and the capture harness share one raw field and one scale', () {
+      // Replayed 08 batch: the sample the capture harness read out of the
+      // sensor was raw 47..53 at index 9940..9992. Those counters live in the
+      // same record field the session publishes as `rawValue`, so the app and
+      // the harness already agree byte for byte. Only the unit label differed:
+      // the app multiplied the unverified /10 scale by 18.0182 and called the
+      // result mg/dL, which no reference measurement supports.
+      final frame = _rawBatch(
+        startIndex: 9940,
+        baseEpochSeconds: 596400,
+        baseReindex: 9940,
+        currents: <int>[47, 50, 53],
+      );
 
-        final batch = parseCbioRawDataFrame(frame);
+      final batch = parseCbioRawDataFrame(frame);
 
-        expect(batch.records.map((record) => record.packed.index), <int>[
-          9940,
-          9941,
-          9942,
-        ]);
-        expect(batch.records.map((record) => record.rawCurrent), <int>[
-          47,
-          50,
-          53,
-        ]);
-        final archived = <CbioRawGlucoseRecord>[
-          for (final record in batch.records)
-            CbioRawGlucoseRecord(
-              index: record.packed.index,
-              rawTime: record.packed.rawTime,
-              reindex: record.packed.reindex,
-              rawTemperature: record.rawTemperature,
-              rawDump: record.rawDump,
-              rawCurrent: record.rawCurrent,
-              rawExtra: 0,
-            ),
-        ];
+      expect(batch.records.map((record) => record.packed.index), <int>[
+        9940,
+        9941,
+        9942,
+      ]);
+      expect(batch.records.map((record) => record.rawCurrent), <int>[
+        47,
+        50,
+        53,
+      ]);
+      final archived = <CbioRawGlucoseRecord>[
+        for (final record in batch.records)
+          CbioRawGlucoseRecord(
+            index: record.packed.index,
+            rawTime: record.packed.rawTime,
+            reindex: record.packed.reindex,
+            rawTemperature: record.rawTemperature,
+            rawDump: record.rawDump,
+            rawCurrent: record.rawCurrent,
+            rawExtra: 0,
+          ),
+      ];
 
-        for (final record in archived) {
-          // The one scale both paths use, stated without a glucose unit.
-          expect(record.derivedMillimolesPerLitre, record.rawCurrent / 10);
-          expect(record.isUnitVerified, isFalse);
-        }
-        expect(archived.first.derivedMillimolesPerLitre, 4.7);
-        expect(archived.last.derivedMillimolesPerLitre, 5.3);
-        // The mg/dL derivation stays available for the chart's internal scale,
-        // but it is a conversion of an unverified unit, never a measurement.
-        expect(archived.first.derivedMilligramsPerDecilitre, 85);
-        expect(archived.last.derivedMilligramsPerDecilitre, 95);
-      },
-    );
+      for (final record in archived) {
+        // The one scale both paths use, stated without a glucose unit.
+        expect(record.rawCurrentScaled, record.rawCurrent / 10);
+        expect(record.isUnitVerified, isFalse);
+      }
+      expect(archived.first.rawCurrentScaled, 4.7);
+      expect(archived.last.rawCurrentScaled, 5.3);
+      // No unit-bearing derivation is left to publish: the record exposes the
+      // raw field and its /10 scale, and the glucose unit stays unclaimed until
+      // a reference measurement settles it.
+    });
   });
 
   group('CbioGlucoseSession vendor material', () {
@@ -1079,5 +1088,118 @@ void main() {
       expect(session.currentSnapshot.statusText, contains('vendor material'));
       await session.disconnect();
     });
+  });
+
+  group('CbioGlucoseSession clock anchor', () {
+    test('stamps stored history once the sensor took the clock', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      final now = DateTime.now().toUtc();
+      final nowSeconds = now.millisecondsSinceEpoch ~/ 1000;
+      final base = nowSeconds - 120;
+      await _defaultResponder(
+        connection,
+        rawBatches: <List<int>>[
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: base,
+            baseReindex: 3,
+            currents: <int>[64, 70, 75],
+          ),
+        ],
+      );
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+        clock: () => now,
+      );
+      await session.initialize();
+      await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+
+      final snapshot = session.currentSnapshot;
+      final anchor = CbioIndexTimeAnchor.fromMetadata(snapshot.metadata);
+      expect(anchor, isNotNull);
+      expect(anchor!.anchorIndex, 3);
+      expect(anchor.coveredFromIndex, 1);
+      expect(anchor.anchorEpochSeconds, nowSeconds);
+      expect(
+        anchor.clockReferenceEpochSeconds,
+        nowSeconds,
+        reason: 'the reference is the epoch this session wrote to the sensor',
+      );
+      expect(anchor.clockAgreement, Duration.zero);
+      expect(
+        snapshot.history.map((reading) => reading.recordedAt),
+        <DateTime?>[
+          for (final offset in <int>[-120, -60, 0])
+            DateTime.fromMillisecondsSinceEpoch(
+              (nowSeconds + offset) * 1000,
+              isUtc: true,
+            ),
+        ],
+        reason:
+            'positions step 60 s from the anchored record, not from the '
+            'counter',
+      );
+      expect(
+        await session.refreshDiagnostics().then(
+          (items) => items.single.fields['clockAnchor'],
+        ),
+        contains('index 3'),
+      );
+      await session.disconnect();
+    });
+
+    test(
+      'publishes no timestamp while the sensor clock is the counter',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        final now = DateTime.now().toUtc();
+        final nowSeconds = now.millisecondsSinceEpoch ~/ 1000;
+        // The #146 capture: the newest stored record is 448 positions, 7 h 28 m,
+        // away from the clock the app set.
+        final base = nowSeconds - 448 * 60;
+        await _defaultResponder(
+          connection,
+          rawBatches: <List<int>>[
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: base,
+              baseReindex: 3,
+              currents: <int>[64, 70, 75],
+            ),
+          ],
+        );
+
+        final session = CbioGlucoseSession(
+          sensor: _sensor,
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          clock: () => now,
+        );
+        await session.initialize();
+        await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+
+        final snapshot = session.currentSnapshot;
+        expect(CbioIndexTimeAnchor.fromMetadata(snapshot.metadata), isNull);
+        expect(
+          snapshot.history.every((reading) => reading.recordedAt == null),
+          isTrue,
+          reason: 'the counter is a position, never a clock',
+        );
+        expect(
+          await session.refreshDiagnostics().then(
+            (items) => items.single.fields['clockAnchor'],
+          ),
+          contains('unsynced'),
+        );
+        await session.disconnect();
+      },
+    );
   });
 }

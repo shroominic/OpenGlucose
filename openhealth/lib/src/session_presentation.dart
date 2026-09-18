@@ -38,6 +38,52 @@ String readingTimeText(
   return '$hour:$minute';
 }
 
+/// How long a live surface may stay silent before it is honestly stale.
+const Duration liveSurfaceStaleAfter = Duration(minutes: 10);
+
+/// The youngest honest timestamp behind a snapshot's live surface.
+///
+/// Drivers that time their own readings are judged by the reading time, which
+/// is what the surface shows as the record's own moment. The CBio protocol
+/// carries no epoch: a GS1 record is positioned by the sensor's minute counter,
+/// so [CgmReading.recordedAt] is null unless the session holds a clock anchor
+/// for the position (the clock this app set on the sensor). An anchored record
+/// is judged by that time; a record the anchor does not cover falls back to the
+/// only clock left, when this phone received the data,
+/// [CgmHistorySyncState.lastSyncAt]. A receipt time is returned here for
+/// staleness only; it is never published as a sensor time.
+DateTime? liveSurfaceFreshnessAt({
+  required CgmSessionSnapshot snapshot,
+  CgmReading? reading,
+  DateTime? now,
+}) {
+  final effectiveNow = now ?? DateTime.now();
+  if (!isCbioSnapshot(snapshot)) {
+    return clampedDisplayRecordedAt(reading?.recordedAt, now: effectiveNow);
+  }
+  final anchored = clampedDisplayRecordedAt(
+    reading?.recordedAt,
+    now: effectiveNow,
+  );
+  if (anchored != null) {
+    return anchored;
+  }
+  final receivedAt = snapshot.historySync.lastSyncAt;
+  if (receivedAt == null) {
+    return null;
+  }
+  final localReceivedAt = receivedAt.toLocal();
+  return localReceivedAt.isAfter(effectiveNow) ? effectiveNow : localReceivedAt;
+}
+
+bool liveSurfaceIsStale(DateTime? freshnessAt, {DateTime? now}) {
+  if (freshnessAt == null) {
+    return true;
+  }
+  final effectiveNow = now ?? DateTime.now();
+  return effectiveNow.difference(freshnessAt) > liveSurfaceStaleAfter;
+}
+
 /// Local charts and explicit raw exports may retain provisional samples, with
 /// their quality flag. They are not inputs to wellness summaries or messaging.
 List<CgmReading> readingsForWellness(Iterable<CgmReading> readings) =>
@@ -1028,6 +1074,49 @@ String cbioStoredRangeText(Iterable<CgmReading> readings) {
     return stored;
   }
   return '$stored · $missing positions not received';
+}
+
+/// The index-to-clock anchor a GS1 session published, or null when it has none.
+CbioIndexTimeAnchor? cbioAnchorForSnapshot(CgmSessionSnapshot snapshot) =>
+    isCbioSnapshot(snapshot)
+    ? CbioIndexTimeAnchor.fromMetadata(snapshot.metadata)
+    : null;
+
+/// The clock state of a GS1 surface.
+///
+/// The record index is a wall clock only where the session holds an anchor for
+/// it: the clock this app set on the sensor, confirmed against the sensor's own
+/// newest record stamp. Without one the line names the ordering the surface can
+/// stand behind instead of a placeholder time, and with one it states the
+/// reference and the minute it can be trusted to.
+/// [reading] is the same reading the surface shows as the latest, so the clock
+/// line and the value above it always describe one position.
+String cbioClockStateText(
+  CgmSessionSnapshot snapshot, {
+  CgmReading? reading,
+  DateTime? now,
+}) {
+  if (!isCbioSnapshot(snapshot)) {
+    return '';
+  }
+  final anchor = cbioAnchorForSnapshot(snapshot);
+  if (anchor == null) {
+    return 'Sensor clock unsynced · ordered by sensor index, not by clock';
+  }
+  final latest = reading ?? snapshot.latestReading;
+  // The line repeats the reading's own stamp, so a position the publisher left
+  // untimed is never given a clock the anchor does not cover.
+  if (latest == null ||
+      clampedDisplayRecordedAt(latest.recordedAt, now: now) == null) {
+    return 'Sensor clock set by this app · this position has no anchored time';
+  }
+  return 'Sensor clock set by this app · latest '
+      '${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor)})';
+}
+
+String _anchorUncertaintyText(CbioIndexTimeAnchor anchor) {
+  final minutes = anchor.uncertainty.inMinutes;
+  return minutes >= 1 ? '±$minutes min' : '±${anchor.uncertainty.inSeconds} s';
 }
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter

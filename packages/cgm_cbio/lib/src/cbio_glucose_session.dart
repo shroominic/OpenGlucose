@@ -33,6 +33,7 @@ import 'cbio_credentials.dart';
 import 'cbio_crypto.dart';
 import 'cbio_driver.dart';
 import 'cbio_history_archive.dart';
+import 'cbio_index_time_anchor.dart';
 import 'cbio_vendor_frames.dart';
 
 /// Snapshot metadata key carrying the closed session phase.
@@ -267,6 +268,9 @@ final class CbioGlucoseSession implements CgmSession {
   CgmSyncStage _stage = CgmSyncStage.connecting;
   int _readsUsed = 0;
   bool _clockWritten = false;
+  int? _clockReferenceEpochSeconds;
+  CbioIndexTimeAnchor? _anchor;
+  bool _anchorLogged = false;
   bool _catchUpOpen = false;
   bool _budgetExhausted = false;
   bool _automaticReconnectAllowed = true;
@@ -486,6 +490,11 @@ final class CbioGlucoseSession implements CgmSession {
       return false;
     }
     _clockWritten = true;
+    // The one reference the app can offer the record index: the epoch it just
+    // pushed into the sensor clock. The index that corresponds to it is
+    // derived later, from the sensor's own stamps, never from the counter
+    // alone.
+    _clockReferenceEpochSeconds = epoch;
     _log(CgmLogLevel.info, 'cbio.clock.set');
     return true;
   }
@@ -815,20 +824,45 @@ final class CbioGlucoseSession implements CgmSession {
     lastSyncAt: _lastSyncAt,
   );
 
-  List<CgmReading> get _historyReadings => <CgmReading>[
-    for (final record in _archive.records)
-      CgmReading(
-        valueMgdl: record.derivedMilligramsPerDecilitre.toDouble(),
-        source: CgmRecordSource.raw,
-        sensorMinute: record.index,
-        // `rawTime` is the sensor's own second counter (it advances 60 s per
-        // stored record). It carries no epoch, so it is never rendered as a
-        // wall-clock timestamp; the record index is the honest position.
-        recordedAt: null,
-        rawValue: record.rawCurrent,
-        isDisplayProvisional: true,
-      ),
-  ];
+  /// The history as published. A record carries a timestamp only when the
+  /// session holds an anchor that covers its position; the counter is never
+  /// the source of that timestamp, only the index the anchor steps from.
+  List<CgmReading> _historyReadingsFor(CbioIndexTimeAnchor? anchor) =>
+      <CgmReading>[
+        for (final record in _archive.records)
+          CgmReading(
+            // The archive publishes no glucose unit, so the session publishes
+            // the unverified /10 scale of the record's own raw field. This is
+            // the same number the hero renders; it is deliberately not a
+            // conversion into mg/dL, which no reference measurement supports.
+            valueMgdl: record.rawCurrentScaled,
+            source: CgmRecordSource.raw,
+            sensorMinute: record.index,
+            recordedAt: anchor != null && anchor.coversIndex(record.index)
+                ? anchor.timeForIndex(record.index)
+                : null,
+            rawValue: record.rawCurrent,
+            isDisplayProvisional: true,
+          ),
+      ];
+
+  /// The anchor this session can support right now, recomputed on every
+  /// publication. It appears only once the sensor's own newest record stamp
+  /// agrees with the app's clock, so a sensor that never took the written
+  /// clock publishes no timestamp at all rather than a guessed one.
+  CbioIndexTimeAnchor? _publishAnchor() {
+    final anchor = deriveCbioIndexTimeAnchor(
+      records: _archive.records,
+      clockReferenceEpochSeconds: _clockReferenceEpochSeconds,
+      now: _clock().toUtc(),
+    );
+    _anchor = anchor;
+    if (anchor != null && !_anchorLogged) {
+      _anchorLogged = true;
+      _log(CgmLogLevel.info, 'cbio.clock.anchor=index${anchor.anchorIndex}');
+    }
+    return anchor;
+  }
 
   void _setPhase(
     String phase,
@@ -849,7 +883,8 @@ final class CbioGlucoseSession implements CgmSession {
       return;
     }
     void publish() {
-      final history = _historyReadings;
+      final anchor = _publishAnchor();
+      final history = _historyReadingsFor(anchor);
       _snapshot = _snapshot.copyWith(
         stage: _stage,
         statusText: _statusText,
@@ -861,6 +896,7 @@ final class CbioGlucoseSession implements CgmSession {
           ...sensor.metadata,
           cbioPhaseMetadataKey: _phase,
           'cgm.cbio.unit': 'provisional',
+          ...?anchor?.toMetadata(),
           if (!_automaticReconnectAllowed)
             cgmAutomaticReconnectAllowedMetadataKey: 'false',
         },
@@ -996,6 +1032,12 @@ final class CbioGlucoseSession implements CgmSession {
             'phase': _phase,
             'reads': '$_readsUsed',
             'clockWritten': _clockWritten.toString(),
+            'clockAnchor': _anchor == null
+                ? 'unsynced: no position on the sensor clock this app set'
+                : 'index ${_anchor!.anchorIndex} at '
+                      '${_anchor!.anchorEpochSeconds} (source '
+                      '${_anchor!.source}, covers from '
+                      '${_anchor!.coveredFromIndex})',
             'storedRecords': '${_archive.length}',
             'newestIndex': '${_archive.newestIndex ?? 0}',
             'unit': cbioProvisionalUnitNotice,
@@ -1046,6 +1088,7 @@ final class CbioGlucoseSession implements CgmSession {
         ...sensor.metadata,
         cbioPhaseMetadataKey: _phase,
         'cgm.cbio.unit': 'provisional',
+        ...?_anchor?.toMetadata(),
       },
     );
     if (!_snapshotController.isClosed) {

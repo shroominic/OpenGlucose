@@ -1397,6 +1397,20 @@ class CgmAppController extends ChangeNotifier {
     _cancelSyncStageDeadline();
     unawaited(_snapshotSubscription?.cancel());
     unawaited(_logSubscription?.cancel());
+    // Nothing else tears a live session down: [disconnect] is reached only from
+    // an explicit user path. Without this the GATT client outlives the last
+    // owner that could ever service it, holding a radio and a connection slot
+    // for an app state that no longer exists.
+    final session = _session;
+    _session = null;
+    if (session != null) {
+      unawaited(
+        session.disconnect().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
+      );
+    }
     super.dispose();
   }
 

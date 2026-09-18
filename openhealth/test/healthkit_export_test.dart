@@ -510,6 +510,10 @@ void main() {
       preferences: preferences,
       driver: DemoCgmDriver(),
     );
+    // The controller only exports vendor readings, so the sync needs a
+    // populated session before the scripted exporter failure can be reached.
+    await appController.initialize();
+    await appController.connect(MockScenarioCatalog.sensor);
     await tester.pumpWidget(
       _localizedApp(
         IntegrationsSettingsPane(
@@ -667,8 +671,10 @@ void main() {
     await healthExport.setEnabled(enabled: true);
     final appController = CgmAppController(
       preferences: preferences,
-      driver: DemoCgmDriver(),
+      driver: DemoCgmDriver(initialScenario: MockScenario.multiSensorHistory),
     );
+    await appController.initialize();
+    await appController.connect(MockScenarioCatalog.sensor);
     await tester.pumpWidget(
       _localizedApp(
         IntegrationsSettingsPane(

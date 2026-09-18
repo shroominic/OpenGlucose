@@ -1707,7 +1707,9 @@ void main() {
     await tester.tap(find.text('Choose another sensor'));
     await tester.runAsync(() async {
       for (var attempt = 0; attempt < 40; attempt += 1) {
-        if (controller.lastError?.contains('Clearing the selected sensor') ??
+        if (controller.lastError?.contains(
+              'The selected sensor could not be cleared safely',
+            ) ??
             false) {
           break;
         }
@@ -1722,7 +1724,10 @@ void main() {
       findsNothing,
     );
     expect(controller.snapshot, isNotNull);
-    expect(controller.lastError, contains('Clearing the selected sensor'));
+    expect(
+      controller.lastError,
+      contains('The selected sensor could not be cleared safely'),
+    );
 
     await _disposeConnectionScreen(tester, controller);
     await tester.pump(const Duration(milliseconds: 701));
