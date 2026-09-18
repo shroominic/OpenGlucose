@@ -18,6 +18,8 @@ body:
         - cgm_ble
         - cgm_ble_flutter
         - cgm_aidex
+        - cgm_libre2
+        - cgm_yuwell_anytime
         - Build, tooling, or documentation
         - Unsure
     validations:

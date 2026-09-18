@@ -7,4 +7,16 @@ import 'driver_factory_stub.dart'
 Future<void> configurePlatformPrivacyDefaults() =>
     platform.configurePlatformPrivacyDefaults();
 
+Future<void> stopPlatformProtocolCapture() =>
+    platform.stopPlatformProtocolCapture();
+
+bool get isPlatformProtocolCaptureEnabled =>
+    platform.platformProtocolCaptureEnabled;
+
+bool get isPlatformLibreGen1StreamingEnabled =>
+    platform.platformLibreGen1StreamingEnabled;
+
+Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() =>
+    platform.preparePlatformLibreGen1Connection();
+
 CgmDriver buildDefaultDriver() => platform.buildPlatformDriver();

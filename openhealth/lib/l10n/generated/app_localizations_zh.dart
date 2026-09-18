@@ -71,6 +71,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get exploreSampleData => '查看示例数据';
 
   @override
+  String get previewSampleDataSubtitle => '无需连接传感器即可预览 OpenGlucose';
+
+  @override
   String get sampleDataNotSensor => '示例数据——并非来自传感器';
 
   @override
@@ -254,25 +257,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String get howItWorksTitle => '工作方式';
 
   @override
-  String get howItWorksBody => '佩戴 Aidex X 传感器，通过蓝牙配对并等待预热完成。之后，读数会直接传输到你的手机。';
+  String get howItWorksBody =>
+      '选择传感器型号，查看它的支持状态，并按此版本中提供的步骤完成设置。已连接的受支持传感器共用同一套 OpenGlucose 仪表板。';
 
   @override
-  String get applySensorTitle => '佩戴传感器';
+  String get chooseModelTitle => '选择传感器型号';
 
   @override
-  String get applySensorBody => '一款一体式小型传感器，最长可佩戴 15 天。';
+  String get chooseModelBody => '查看此版本可以连接哪些传感器型号。';
 
   @override
-  String get warmupTitle => '约 1 小时预热';
+  String get followSetupTitle => '按型号完成设置';
 
   @override
-  String get warmupBody => '传感器会在首次读数前自行校准。';
+  String get followSetupBody => '连接与预热步骤因传感器型号而异。';
 
   @override
-  String get readingEveryMinuteTitle => '每分钟一条读数';
+  String get seeTrendsTitle => '查看趋势';
 
   @override
-  String get readingEveryMinuteBody => '持续更新实时读数和趋势。';
+  String get seeTrendsBody => '受支持的传感器共用同一套 OpenGlucose 仪表板。';
 
   @override
   String get targetRangeTitle => '设置目标范围';
@@ -287,22 +291,23 @@ class AppLocalizationsZh extends AppLocalizations {
   String get readyTitle => '已准备就绪';
 
   @override
-  String get readyBody => '请打开 Aidex X 传感器并放在附近。我们会通过蓝牙扫描并连接，然后将显示实时仪表板。';
+  String get readyBody =>
+      '接下来，选择“连接传感器”以挑选型号。OpenGlucose 会显示它的支持状态以及此版本中可用的设置方式。';
 
   @override
-  String get turnOnBluetoothTitle => '打开蓝牙';
+  String get checkModelSupportTitle => '确认型号支持';
 
   @override
-  String get turnOnBluetoothBody => '配对期间请将手机靠近传感器。';
+  String get checkModelSupportBody => '在开始任何连接之前都会先显示可用性。';
 
   @override
-  String get watchItComeAliveTitle => '查看实时数据';
+  String get guidedStepsTitle => '使用引导步骤';
 
   @override
-  String get watchItComeAliveBody => '预热结束后，趋势和读数会立即显示。';
+  String get guidedStepsBody => '不同传感器型号的设置要求可能不同。';
 
   @override
-  String get connectMySensor => '连接我的传感器';
+  String get finishSetup => '完成设置';
 
   @override
   String get lifeRemainingUnavailable => '无法获取剩余使用时间';
@@ -486,7 +491,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get noActiveSensor => '没有活动传感器';
 
   @override
-  String get previousDataStaysOnThisPhone => '你以往的数据会保留在此手机上。';
+  String get previousDataStaysOnThisDevice => '你以往的数据会保留在此设备上。';
 
   @override
   String get inactiveSensorExpired =>

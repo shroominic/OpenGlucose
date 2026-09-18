@@ -17,6 +17,7 @@ class BleScanResult {
     this.serviceUuids = const <String>[],
     this.manufacturerData = const <BleManufacturerData>[],
     this.serviceData = const <String, List<int>>{},
+    this.observedAt,
   });
 
   final String deviceId;
@@ -25,6 +26,10 @@ class BleScanResult {
   final List<String> serviceUuids;
   final List<BleManufacturerData> manufacturerData;
   final Map<String, List<int>> serviceData;
+
+  /// Time of the actual advertisement observation, not cached replay delivery.
+  /// Null means the transport cannot prove when it observed the advertisement.
+  final DateTime? observedAt;
 }
 
 class BleCharacteristicProperties {
@@ -87,6 +92,21 @@ abstract interface class BleTransport {
   });
 }
 
+/// Optional transport contract for one explicit physical connection attempt.
+///
+/// Implementations must not retry, install automatic reconnection, or create
+/// or remove bonds. Wrappers must preserve this contract end to end; when the
+/// underlying transport cannot supply it they report false and fail without
+/// falling back to [BleTransport.connect]. Existing connect behavior is intact.
+abstract interface class BleSingleAttemptTransport implements BleTransport {
+  bool get supportsSingleAttemptConnect;
+
+  Future<BleConnection> connectOnce(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  });
+}
+
 abstract interface class BleConnection {
   String get deviceId;
   Stream<BleConnectionState> get connectionStates;
@@ -120,4 +140,10 @@ abstract interface class BleConnection {
   Future<void> removeBond();
 
   Future<void> disconnect();
+}
+
+/// Optional connection capability that reports the ATT MTU actually agreed
+/// with the peer. A completed MTU request alone is not proof of this value.
+abstract interface class BleNegotiatedMtu {
+  int? get negotiatedMtu;
 }

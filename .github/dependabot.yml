@@ -67,6 +67,28 @@ updates:
     labels:
       - dependencies
 
+  - package-ecosystem: pub
+    directory: /packages/cgm_libre2
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:20"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+
+  - package-ecosystem: pub
+    directory: /packages/cgm_yuwell_anytime
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:25"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+
   - package-ecosystem: gradle
     directory: /openhealth/android
     schedule:

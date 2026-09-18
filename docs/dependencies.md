@@ -90,3 +90,53 @@ package's popularity.
 See [NOTICE.md](../NOTICE.md) for distribution guidance and
 [docs/compatibility.md](compatibility.md) for dependency-related support-floor
 changes.
+
+## Cbio GS1 interoperability package
+
+`cgm_cbio` uses only the existing in-repository `cgm_core` and `cgm_ble`
+contracts, plus the existing `lints` and `test` development tools. The package
+is MIT, unpublished, and has no native components, permissions, network
+destinations, telemetry, build scripts, or persistent data. Offline resolution
+uses the local Pub cache; no new external package is introduced. The app
+manifest and lockfile are unchanged. Library lockfiles stay uncommitted.
+
+The package does carry interoperability material that is **not** authored by
+OpenGlucose contributors: a per-frame stream masking constant and the link
+material for the GS1 protocol, both derived from a shipped third-party sensor
+application and cross-checked against an independent open-source client. The
+derivation record is kept in
+[testing/cbio-gs1-auth-material.md](testing/cbio-gs1-auth-material.md) and
+references the artifact rather than restating the bytes.
+
+Two reviews stay open and gate any distribution of this package:
+
+1. redistribution and notice terms for the derived material, together with the
+   inventory step described in [NOTICE.md](../NOTICE.md); and
+2. how the material reaches a build at all, since today it is a committed
+   source constant present in every artifact built from this branch.
+
+Remove the package and its workspace enumeration to roll back; no sensor or
+storage migration is needed.
+Exact-model protocol and licensing review are still required before adding
+any vendor-derived implementation.
+
+## Private Libre Gen1 receiver integration
+
+The application depends on the in-repository `cgm_libre2` package; that
+package uses the existing `cgm_ble` and `cgm_core` workspace contracts, as
+specified by ADR 0001. These internal path dependencies introduce no external
+package version, native plugin, permission, network destination, telemetry,
+or background service. Native receiver storage uses the existing Android
+Keystore and backup-excluded app directory. Normal builds leave the receiver
+unregistered. Removing the debug registration disables new connections;
+preserve the receiver journal and counter rather than rolling them back after
+a sensor operation.
+
+The optional `cgm_libre2_glucose` workspace package is separately GPL-licensed.
+The maintainer approved this route for private Android bench work after a
+bounded permissive-source search. It adds pure Dart factory conversion, not a
+new native plugin, permission, service, telemetry, or network destination.
+The normal app entry point does not import its adapter. Package separation is
+not a GPL exception for a combined binary. Follow [ADR 0004](architecture/adr/0004-private-libre-glucose-decoder.md)
+and its exact-source notices before any external distribution. No general
+MIT-only license claim is made for the decoder-enabled debug executable.

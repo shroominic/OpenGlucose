@@ -88,6 +88,35 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('a terminal scan error completes under widget fake async', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _FailingScanDriver(
+        BleFailure(
+          kind: BleFailureKind.bluetoothOff,
+          operation: BleOperation.scan,
+          diagnosticCode: 'test.scan.terminal',
+        ),
+      ),
+      healthStateStore: PreferencesHealthStateStore(preferences),
+    );
+    await controller.initialize();
+
+    var completed = false;
+    final scan = controller.scan().whenComplete(() => completed = true);
+    await tester.pump();
+    await tester.pump();
+
+    expect(completed, isTrue);
+    expect(controller.scanning, isFalse);
+    await scan;
+    controller.dispose();
+  });
+
   testWidgets('Bluetooth-off scan shows enable guidance and retry', (
     tester,
   ) async {
@@ -122,7 +151,7 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey<String>('scanSensorsButton')));
+    await _startNearbySensorScan(tester);
     await tester.pumpAndSettle();
 
     expect(
@@ -180,10 +209,10 @@ void main() {
         preferences: preferences,
       ),
     );
-    await tester.tap(find.byKey(const ValueKey<String>('scanSensorsButton')));
+    await _startNearbySensorScan(tester);
     await tester.pumpAndSettle();
 
-    expect(find.text('Sensor partial'), findsOneWidget);
+    expect(find.text('Supported sensor'), findsOneWidget);
     expect(
       find.byKey(const ValueKey<String>('sensorScanInlineFailure')),
       findsOneWidget,
@@ -295,6 +324,89 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('a failed scan replacement is contained and does not rescan', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _CancelFailingScanDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: PreferencesHealthStateStore(preferences),
+    );
+    await controller.initialize();
+
+    final firstScan = controller.scan();
+    await _drainEventQueue();
+    expect(driver.scanCalls, 1);
+
+    await controller.scan();
+
+    expect(driver.scanCalls, 1);
+    expect(controller.scanning, isFalse);
+    expect(controller.scanFailure, isNull);
+    expect(
+      controller.lastError,
+      'Sensor scan could not be completed. Check Bluetooth and try again.',
+    );
+    await firstScan.timeout(const Duration(seconds: 1));
+    controller.dispose();
+  });
+
+  test(
+    'back-to-back scans start only the newest stream and cancel once',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _CancellationTrackedScanDriver();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: PreferencesHealthStateStore(preferences),
+      );
+      await controller.initialize();
+
+      final initialScan = controller.scan();
+      await _drainEventQueue();
+      expect(driver.scans, hasLength(1));
+
+      final firstReplacement = controller.scan();
+      final secondReplacement = controller.scan();
+      await _drainEventQueue();
+
+      expect(driver.scans, hasLength(2));
+      expect(driver.scans.map((scan) => scan.cancellations), <int>[1, 0]);
+
+      controller.dispose();
+      await Future.wait(<Future<void>>[
+        initialScan,
+        firstReplacement,
+        secondReplacement,
+      ]).timeout(const Duration(seconds: 1));
+      await _drainEventQueue();
+
+      expect(driver.scans.map((scan) => scan.cancellations), <int>[1, 1]);
+    },
+  );
+}
+
+Future<void> _startNearbySensorScan(WidgetTester tester) async {
+  await tester.tap(
+    find.byKey(const ValueKey<String>('connectSensorButton')),
+  );
+  await tester.pump();
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('nearbyScanProgress'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
 }
 
 class _FailingScanDriver implements CgmDriver {
@@ -365,6 +477,64 @@ class _ControlledScanDriver implements CgmDriver {
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async =>
       _StaticSession(sensor);
+}
+
+class _CancelFailingScanDriver implements CgmDriver {
+  int scanCalls = 0;
+
+  @override
+  String get driverId => 'cancel-failing-scan';
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) {
+    scanCalls += 1;
+    return StreamController<DiscoveredSensor>(
+      onCancel: () => throw StateError('synthetic scan cleanup failure'),
+    ).stream;
+  }
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) {
+    throw UnsupportedError('This driver only exercises scan cancellation.');
+  }
+}
+
+class _CancellationTrackedScanDriver implements CgmDriver {
+  final List<_CancellationTrackedScan> scans = <_CancellationTrackedScan>[];
+
+  @override
+  String get driverId => 'cancellation-tracked-scan';
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) {
+    final scan = _CancellationTrackedScan();
+    scans.add(scan);
+    return scan.controller.stream;
+  }
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) {
+    throw UnsupportedError('This driver only exercises scan replacement.');
+  }
+}
+
+class _CancellationTrackedScan {
+  _CancellationTrackedScan() {
+    controller = StreamController<DiscoveredSensor>(
+      onCancel: () {
+        cancellations += 1;
+      },
+    );
+  }
+
+  late final StreamController<DiscoveredSensor> controller;
+  int cancellations = 0;
 }
 
 class _StaticSession implements CgmSession {

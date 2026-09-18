@@ -1,5 +1,6 @@
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'app_language_controller.dart';
 import 'display_preferences.dart';
@@ -36,6 +37,19 @@ String readingTimeText(
   final minute = recordedAt.minute.toString().padLeft(2, '0');
   return '$hour:$minute';
 }
+
+/// Local charts and explicit raw exports may retain provisional samples, with
+/// their quality flag. They are not inputs to wellness summaries or messaging.
+List<CgmReading> readingsForWellness(Iterable<CgmReading> readings) =>
+    List<CgmReading>.unmodifiable(
+      readings.where(
+        (reading) =>
+            !reading.isDisplayProvisional &&
+            reading.source != CgmRecordSource.raw &&
+            reading.valueMgdl.isFinite &&
+            reading.valueMgdl > 0,
+      ),
+    );
 
 enum WarmupPhase { warming, waiting }
 
@@ -189,12 +203,13 @@ String sensorLifeText(
   DateTime? sessionStart, {
   DateTime? now,
   AppLanguage language = AppLanguage.english,
+  Duration totalLife = kSensorLifeDuration,
 }) {
   if (sessionStart == null) {
     return _localized(language, 'Life remaining unavailable', '无法获取剩余使用时间');
   }
   final effectiveNow = now ?? DateTime.now();
-  final remaining = kSensorLifeDuration - effectiveNow.difference(sessionStart);
+  final remaining = totalLife - effectiveNow.difference(sessionStart);
   if (remaining <= Duration.zero) {
     return _localized(language, 'Sensor expired', '传感器已到期');
   }
@@ -278,7 +293,12 @@ SensorLifecycle computeSensorLifecycle(
 }) {
   final effectiveNow = now ?? DateTime.now();
   final sessionStart = snapshot.sessionInfo.sessionStart;
-  const totalLife = kSensorLifeDuration;
+  final configuredLife = Duration(
+    minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+  );
+  final totalLife = configuredLife > Duration.zero
+      ? configuredLife
+      : kSensorLifeDuration;
 
   // A stopped session or an explicit expired health flag means the sensor is
   // done regardless of the exact clock math (covers the mock `expired`
@@ -407,6 +427,50 @@ String stageLabelForSnapshot(
   CgmSessionSnapshot snapshot, {
   AppLanguage language = AppLanguage.english,
 }) {
+  if (isLibreGen1Snapshot(snapshot)) {
+    if (libreConnectionWasLost(snapshot)) {
+      return _localized(language, 'Connection lost', '连接已丢失');
+    }
+    if (snapshot.stage == CgmSyncStage.error) {
+      return _localized(language, 'Error', '出错');
+    }
+    if (snapshot.stage == CgmSyncStage.disconnected) {
+      return _localized(language, 'Disconnected', '已断开连接');
+    }
+    if (snapshot.stage == CgmSyncStage.ready) {
+      return currentReadingForSnapshot(snapshot, snapshot.latestReading) == null
+          ? _localized(language, 'Waiting', '等待中')
+          : _localized(language, 'Connected', '已连接');
+    }
+    if (snapshot.stage == CgmSyncStage.connecting &&
+        snapshot.metadata['cgm.libre2.phase'] == 'awaitingAdvertisement') {
+      return _localized(language, 'Searching', '正在搜索');
+    }
+    if (snapshot.stage == CgmSyncStage.syncing &&
+        const {
+          'awaitingPacket',
+          'validatedPacket',
+        }.contains(snapshot.metadata['cgm.libre2.phase'])) {
+      return _localized(language, 'Waiting', '等待中');
+    }
+    return _localized(language, 'Connecting', '正在连接');
+  }
+  if (isCbioSnapshot(snapshot)) {
+    if (snapshot.stage == CgmSyncStage.error) {
+      return _localized(language, 'Error', '出错');
+    }
+    if (snapshot.stage == CgmSyncStage.disconnected) {
+      return snapshot.latestReading != null || snapshot.history.isNotEmpty
+          ? _localized(language, 'Reconnecting', '正在重新连接')
+          : _localized(language, 'Disconnected', '已断开连接');
+    }
+    if (snapshot.stage == CgmSyncStage.syncing) {
+      return _localized(language, 'Fetching history', '正在获取历史数据');
+    }
+    return snapshot.stage == CgmSyncStage.ready
+        ? _localized(language, 'Live', '实时')
+        : _localized(language, 'Connecting', '正在连接');
+  }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
   if (snapshot.stage == CgmSyncStage.error) {
@@ -436,6 +500,13 @@ String stageLabelForSnapshot(
 }
 
 String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isLibreGen1Snapshot(snapshot)) {
+    return switch (stageLabelForSnapshot(snapshot)) {
+      'Error' || 'Disconnected' || 'Connection lost' => 'error',
+      'Connected' => 'live',
+      _ => 'progress',
+    };
+  }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
   if (snapshot.stage == CgmSyncStage.error) {
@@ -797,6 +868,14 @@ String? primaryErrorTextForSnapshot(
   if (!shouldShowPrimaryError(snapshot)) {
     return null;
   }
+  if (isLibreGen1Snapshot(snapshot)) {
+    return libreConnectionWasLost(snapshot)
+        ? userMessageForLibreConnectionLoss(snapshot.lastError)
+        : userMessageForLibreConnectionFailure(snapshot.lastError);
+  }
+  if (isCbioSnapshot(snapshot)) {
+    return userMessageForCbioFailure(snapshot.lastError);
+  }
   final bleFailure = BleFailure.fromMetadata(snapshot.metadata);
   if (bleFailure != null) {
     return userMessageForBleFailure(bleFailure, language: language);
@@ -804,6 +883,282 @@ String? primaryErrorTextForSnapshot(
   return _bondTransferMessageForSnapshot(snapshot, language: language) ??
       safeOperationFailureText('Connection', language: language);
 }
+
+bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
+    snapshot.sensor.driverId == 'libre2-gen1';
+
+bool isCbioSnapshot(CgmSessionSnapshot snapshot) =>
+    snapshot.sensor.driverId == 'cbio';
+
+/// Product copy for the closed CBio session phase, or null to fall through.
+///
+/// The GS1 session publishes one of a fixed set of phases in
+/// [cbioPhaseMetadataKey], and this card renders *that*, never
+/// [CgmSessionSnapshot.statusText]. The status text is an internal, unbounded
+/// field: rendering it would put raw driver wording on a product surface and
+/// would let a session that never authenticates replace the bounded-sync stage
+/// label the connection screen shows for every other driver, which is what the
+/// session-sync failure guard asserts.
+///
+/// Returns null when the snapshot is not a CBio snapshot, carries no closed
+/// phase, or is failing, so the caller keeps the generic stage label.
+String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
+  if (!isCbioSnapshot(snapshot)) {
+    return null;
+  }
+  return switch (snapshot.metadata[cbioPhaseMetadataKey]) {
+    CbioSessionPhase.connecting => 'Connecting to the sensor',
+    CbioSessionPhase.authenticating => 'Checking the sensor link',
+    CbioSessionPhase.history => 'Fetching sensor history',
+    CbioSessionPhase.live => 'Receiving sensor readings',
+    CbioSessionPhase.disconnected =>
+      'Connection lost. Reconnecting to your sensor.',
+    _ => null,
+  };
+}
+
+/// The failure-card sentence for a closed CBio session code.
+///
+/// The session publishes machine codes. They are support codes, not copy: the
+/// failure card is the one place a user reads them, and `cbio.auth.rejected` is
+/// not a sentence. Each code keeps its own failure, because "the sensor refused
+/// this build's credential" and "the sensor is out of range" have different
+/// next steps.
+String userMessageForCbioFailure(String? code) => switch (code) {
+  CbioSessionFailure.authMaterial =>
+    'OpenGlucose could not read the link credential for this sensor. '
+        'Choose another sensor or update the app.',
+  CbioSessionFailure.authRejected =>
+    'The sensor refused the link credential this build uses. '
+        'Choose another sensor or update the app.',
+  CbioSessionFailure.authTimeout =>
+    'The sensor did not answer the link setup. Keep it close and try again.',
+  CbioSessionFailure.topology =>
+    'This sensor does not present the link OpenGlucose supports yet. '
+        'Choose another sensor.',
+  CbioSessionFailure.write =>
+    'The link refused a command from this phone. Keep the sensor close and '
+        'try again.',
+  CbioSessionFailure.disconnected =>
+    'The sensor disconnected. Keep it close and try again.',
+  CbioSessionFailure.connect =>
+    'Could not reach the sensor. Keep it close and try again.',
+  _ => 'OpenGlucose could not connect to this sensor.',
+};
+
+/// The provisional marker every CBio surface shows.
+///
+/// The GS1 raw field is divided by ten by two independent clients of the
+/// protocol, but no reference measurement has confirmed that scale, so the
+/// derived number stays visible with its unit explicitly unsettled.
+String? provisionalReadingNoticeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot)) {
+    return cbioProvisionalUnitNotice;
+  }
+  return libreConnectionDetailForSnapshot(snapshot);
+}
+
+/// The history-card quality notice for a provisional reading set.
+String historyProvisionalNoticeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot)) {
+    return cbioProvisionalUnitNotice;
+  }
+  return 'Includes provisional readings. Not validated for body glucose.';
+}
+
+/// Progress or completion wording for a fetched sensor history.
+String historySyncProgressText(CgmHistorySyncState state) {
+  final stored = state.storedCount;
+  final target = state.totalAvailable;
+  if (target > 0 && stored < target) {
+    return 'Fetching sensor history: $stored of $target records';
+  }
+  return 'Fetching sensor history: $stored records';
+}
+
+/// The CBio dashboard value: the sensor's raw field divided by ten.
+///
+/// No glucose unit is attached, because the protocol's scale is unverified.
+/// The number the harness reads out of the same `0x08` field is the same
+/// number this renders, so the app and the capture tooling agree.
+String? cbioProvisionalValueText(CgmReading? reading) {
+  final raw = reading?.rawValue;
+  if (raw == null) {
+    return null;
+  }
+  return (raw / 10).toStringAsFixed(1);
+}
+
+/// Sensor positions inside the stored span that this phone never received.
+///
+/// The first and last stored positions bound an *envelope*. The protocol's own
+/// `index` counter advances one per stored minute, so a stored span of 1-7 with
+/// five records holds two holes - positions the sensor moved past that were
+/// never delivered to this app.
+int cbioMissingPositions(Iterable<CgmReading> readings) {
+  final positions = <int>{
+    for (final reading in readings)
+      if (reading.sensorMinute != null) reading.sensorMinute!,
+  };
+  if (positions.isEmpty) {
+    return 0;
+  }
+  final sorted = positions.toList()..sort();
+  return (sorted.last - sorted.first + 1) - sorted.length;
+}
+
+/// What the app actually stored for this sensor: how many records, which sensor
+/// positions they cover, and - when the envelope is not full - how many
+/// positions inside it never arrived. Positions are the protocol's own `index`
+/// counter, which advances one per stored minute; it is never a wall clock.
+String cbioStoredRangeText(Iterable<CgmReading> readings) {
+  final positions = <int>[
+    for (final reading in readings)
+      if (reading.sensorMinute != null) reading.sensorMinute!,
+  ];
+  if (positions.isEmpty) {
+    return '${readings.length} readings stored';
+  }
+  positions.sort();
+  final stored =
+      '${readings.length} readings stored · '
+      'sensor minutes ${positions.first}–${positions.last}';
+  final missing = cbioMissingPositions(readings);
+  if (missing <= 0) {
+    return stored;
+  }
+  return '$stored · $missing positions not received';
+}
+
+/// The live driver rebuilds this diagnostic from its in-memory packet counter
+/// on each snapshot. Retained glucose history or a saved NFC state is not proof
+/// that the current Bluetooth session received verified packets.
+bool libreConnectionWasLost(CgmSessionSnapshot? snapshot) {
+  if (snapshot == null ||
+      !isLibreGen1Snapshot(snapshot) ||
+      (snapshot.stage != CgmSyncStage.error &&
+          snapshot.stage != CgmSyncStage.disconnected) ||
+      snapshot.lastError == null ||
+      snapshot.lastError!.isEmpty ||
+      snapshot.lastError == 'libre2.cancelled') {
+    return false;
+  }
+  final phase = snapshot.stage == CgmSyncStage.error
+      ? 'failed'
+      : 'disconnected';
+  if (snapshot.metadata['cgm.libre2.phase'] != phase) return false;
+  final diagnostics = snapshot.diagnostics.where(
+    (item) => item.key == 'libre2.gen1.transport',
+  );
+  if (diagnostics.length != 1) return false;
+  final fields = diagnostics.single.fields;
+  return fields['phase'] == phase &&
+      RegExp(r'^[1-9][0-9]{0,8}$').hasMatch(fields['validatedPackets'] ?? '');
+}
+
+String userMessageForLibreConnectionLoss(String? code) => switch (code) {
+  'libre2.cleanupUnconfirmed' || 'libre2.loginOutcomeUnknown' =>
+    'The sensor connection stopped, but its final state could not be confirmed. '
+        'Stop setup and check the connection before trying again.',
+  'libre2.invalidPacket' =>
+    'The sensor data could not be verified, so the connection was stopped. '
+        'No glucose reading is available.',
+  _ =>
+    'The sensor was sending data, then the connection stopped. '
+        'Keep it close and try again.',
+};
+
+/// Cached records remain history during Libre transport setup. Raw protocol
+/// samples and advertisements are not calibrated current glucose readings.
+CgmReading? currentReadingForSnapshot(
+  CgmSessionSnapshot snapshot,
+  CgmReading? reading,
+) {
+  if (isLibreGen1Snapshot(snapshot) &&
+      (snapshot.stage != CgmSyncStage.ready ||
+          reading?.source == CgmRecordSource.raw)) {
+    return null;
+  }
+  return reading;
+}
+
+/// Only closed, stage-consistent Libre progress reaches public surfaces.
+/// A saved phase must not turn a disconnected session into a connected claim.
+String? libreConnectionDetailForSnapshot(CgmSessionSnapshot snapshot) {
+  if (!isLibreGen1Snapshot(snapshot)) return null;
+  if (libreConnectionWasLost(snapshot)) {
+    return userMessageForLibreConnectionLoss(snapshot.lastError);
+  }
+  if (snapshot.stage == CgmSyncStage.error) {
+    return userMessageForLibreConnectionFailure(snapshot.lastError);
+  }
+  if (snapshot.stage == CgmSyncStage.disconnected) {
+    return 'Sensor disconnected. Connect again to receive data.';
+  }
+  if (snapshot.stage == CgmSyncStage.ready) {
+    final reading = currentReadingForSnapshot(snapshot, snapshot.latestReading);
+    if (reading == null) return 'Waiting for a verified glucose reading.';
+    return reading.isDisplayProvisional
+        ? 'Bench estimate. Not validated for body glucose.'
+        : null;
+  }
+  final phase = snapshot.metadata['cgm.libre2.phase'];
+  if (snapshot.stage == CgmSyncStage.syncing) {
+    return switch (phase) {
+      'awaitingPacket' => 'Connected. Waiting for sensor data.',
+      'validatedPacket' => libreGlucoseWaitingDetail(
+        snapshot.metadata['cgm.libre2.decoder'],
+      ),
+      _ => 'Waiting for verified sensor data.',
+    };
+  }
+  if (snapshot.stage != CgmSyncStage.connecting) {
+    return 'Preparing the sensor connection.';
+  }
+  return switch (phase) {
+    'reconnecting' => 'Connection lost. Reconnecting once to your sensor.',
+    'awaitingAdvertisement' => 'Looking for your Libre 2 sensor',
+    'discovering' => 'Checking the sensor connection',
+    'reservingLogin' || 'loggingIn' => 'Signing in to the sensor',
+    'subscribing' => 'Starting sensor updates',
+    _ => 'Connecting to FreeStyle Libre 2',
+  };
+}
+
+/// Closed decoder outcomes only; native exceptions and coefficients stay private.
+String libreGlucoseWaitingDetail(String? outcome) => switch (outcome) {
+  'warmingUp' => 'Sensor warming up. Waiting for glucose readings.',
+  'invalidData' => 'Receiving sensor data. No usable glucose reading yet.',
+  _ => 'Receiving sensor data. Glucose decoding is not ready.',
+};
+
+String userMessageForLibreConnectionFailure(String? code) => switch (code) {
+  'libre2.advertisementUnavailable' =>
+    'Your Libre 2 sensor was not found. Keep it close and try again.',
+  'libre2.invalidBootstrap' ||
+  'libre2.bootstrapUnavailable' ||
+  'libre2.targetMismatch' =>
+    'The sensor setup could not be verified. Choose your sensor again.',
+  'libre2.sessionInUse' =>
+    'A sensor connection is already in progress. Wait for it to finish.',
+  'libre2.oneShotUnavailable' || 'libre2.topologyRejected' =>
+    'This sensor connection is not supported by this build.',
+  'libre2.counterUnavailable' =>
+    'The sensor connection could not be prepared. Choose your sensor again.',
+  'libre2.connectionFailed' =>
+    'Could not connect to your Libre 2 sensor. Keep it close and try again.',
+  'libre2.loginOutcomeUnknown' || 'libre2.cleanupUnconfirmed' =>
+    'The connection result could not be confirmed. '
+        'Stop setup and check the connection before trying again.',
+  'libre2.subscriptionFailed' =>
+    'Could not start sensor updates. Keep the sensor close and try again.',
+  'libre2.invalidPacket' =>
+    'The sensor data could not be verified. No glucose reading is available.',
+  'libre2.disconnected' =>
+    'The sensor disconnected. Keep it close and try again.',
+  'libre2.cancelled' => 'Sensor connection cancelled.',
+  _ => 'OpenGlucose could not connect to your Libre 2 sensor.',
+};
 
 /// Compile-time gate for privacy-safe support codes in explicitly marked
 /// private test builds. Normal release builds compile this to false.
@@ -953,9 +1308,26 @@ bool snapshotAllowsAutomaticReconnect(CgmSessionSnapshot snapshot) {
   if (snapshot.metadata.containsKey(cgmBondTransferStateMetadataKey)) {
     return false;
   }
+  if (snapshot.metadata[cgmAutomaticReconnectAllowedMetadataKey] == 'false') {
+    return false;
+  }
   return BleFailure.fromMetadata(snapshot.metadata)?.allowsAutomaticRetry ??
       true;
 }
+
+/// Closed session metadata set by the host when a connected session stopped
+/// making progress inside its bounded sync deadline. The host writes `true`.
+const cgmSessionSyncStalledMetadataKey = 'cgm.session.syncStalled';
+
+/// Product copy for a sensor that connected but never produced a readable
+/// reading inside that deadline. It names a next action without promising
+/// compatibility with sensor models this build cannot decode.
+const String sensorSyncStalledMessage =
+    "This sensor didn't return a readable reading. Try again, or choose "
+    'another sensor. Some sensor models are not supported yet.';
+
+bool snapshotHasSyncStalled(CgmSessionSnapshot snapshot) =>
+    snapshot.metadata[cgmSessionSyncStalledMetadataKey] == 'true';
 
 class GlucoseTrendSummary {
   const GlucoseTrendSummary({this.symbol = '', this.deltaText = ''});

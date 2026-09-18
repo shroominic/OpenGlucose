@@ -218,6 +218,12 @@ abstract class AppLocalizations {
   /// **'Explore sample data'**
   String get exploreSampleData;
 
+  /// No description provided for @previewSampleDataSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview OpenGlucose without connecting a sensor'**
+  String get previewSampleDataSubtitle;
+
   /// No description provided for @sampleDataNotSensor.
   ///
   /// In en, this message translates to:
@@ -569,44 +575,44 @@ abstract class AppLocalizations {
   /// No description provided for @howItWorksBody.
   ///
   /// In en, this message translates to:
-  /// **'Apply your Aidex X sensor, pair it over Bluetooth, and let it warm up. After that, readings stream straight to your phone.'**
+  /// **'Choose a sensor model, check its support status, and follow the setup steps available in this build. Connected supported sensors use the same OpenGlucose dashboard.'**
   String get howItWorksBody;
 
-  /// No description provided for @applySensorTitle.
+  /// No description provided for @chooseModelTitle.
   ///
   /// In en, this message translates to:
-  /// **'Apply the sensor'**
-  String get applySensorTitle;
+  /// **'Choose your model'**
+  String get chooseModelTitle;
 
-  /// No description provided for @applySensorBody.
+  /// No description provided for @chooseModelBody.
   ///
   /// In en, this message translates to:
-  /// **'A small all-in-one sensor you wear for up to 15 days.'**
-  String get applySensorBody;
+  /// **'See which sensor models this build can connect.'**
+  String get chooseModelBody;
 
-  /// No description provided for @warmupTitle.
+  /// No description provided for @followSetupTitle.
   ///
   /// In en, this message translates to:
-  /// **'About 1 hour warm-up'**
-  String get warmupTitle;
+  /// **'Follow its setup'**
+  String get followSetupTitle;
 
-  /// No description provided for @warmupBody.
+  /// No description provided for @followSetupBody.
   ///
   /// In en, this message translates to:
-  /// **'The sensor calibrates itself before the first reading.'**
-  String get warmupBody;
+  /// **'Connection and warm-up steps depend on the sensor model.'**
+  String get followSetupBody;
 
-  /// No description provided for @readingEveryMinuteTitle.
+  /// No description provided for @seeTrendsTitle.
   ///
   /// In en, this message translates to:
-  /// **'A reading every minute'**
-  String get readingEveryMinuteTitle;
+  /// **'See your trends'**
+  String get seeTrendsTitle;
 
-  /// No description provided for @readingEveryMinuteBody.
+  /// No description provided for @seeTrendsBody.
   ///
   /// In en, this message translates to:
-  /// **'Live values and trends, refreshed continuously.'**
-  String get readingEveryMinuteBody;
+  /// **'Supported sensors use the same OpenGlucose dashboard.'**
+  String get seeTrendsBody;
 
   /// No description provided for @targetRangeTitle.
   ///
@@ -635,38 +641,38 @@ abstract class AppLocalizations {
   /// No description provided for @readyBody.
   ///
   /// In en, this message translates to:
-  /// **'Have your Aidex X sensor on and nearby. We’ll scan for it over Bluetooth and connect — then your live dashboard takes over.'**
+  /// **'Next, select Connect a sensor to choose a model. OpenGlucose will show its support status and the setup method available in this build.'**
   String get readyBody;
 
-  /// No description provided for @turnOnBluetoothTitle.
+  /// No description provided for @checkModelSupportTitle.
   ///
   /// In en, this message translates to:
-  /// **'Turn on Bluetooth'**
-  String get turnOnBluetoothTitle;
+  /// **'Check model support'**
+  String get checkModelSupportTitle;
 
-  /// No description provided for @turnOnBluetoothBody.
+  /// No description provided for @checkModelSupportBody.
   ///
   /// In en, this message translates to:
-  /// **'Keep your phone close to the sensor while it pairs.'**
-  String get turnOnBluetoothBody;
+  /// **'Availability is shown before any connection starts.'**
+  String get checkModelSupportBody;
 
-  /// No description provided for @watchItComeAliveTitle.
+  /// No description provided for @guidedStepsTitle.
   ///
   /// In en, this message translates to:
-  /// **'Watch it come alive'**
-  String get watchItComeAliveTitle;
+  /// **'Use the guided steps'**
+  String get guidedStepsTitle;
 
-  /// No description provided for @watchItComeAliveBody.
+  /// No description provided for @guidedStepsBody.
   ///
   /// In en, this message translates to:
-  /// **'Trends and readings appear as soon as warm-up finishes.'**
-  String get watchItComeAliveBody;
+  /// **'Requirements can differ between sensor models.'**
+  String get guidedStepsBody;
 
-  /// No description provided for @connectMySensor.
+  /// No description provided for @finishSetup.
   ///
   /// In en, this message translates to:
-  /// **'Connect my sensor'**
-  String get connectMySensor;
+  /// **'Finish setup'**
+  String get finishSetup;
 
   /// No description provided for @lifeRemainingUnavailable.
   ///
@@ -992,11 +998,11 @@ abstract class AppLocalizations {
   /// **'No active sensor'**
   String get noActiveSensor;
 
-  /// No description provided for @previousDataStaysOnThisPhone.
+  /// No description provided for @previousDataStaysOnThisDevice.
   ///
   /// In en, this message translates to:
-  /// **'Your previous data stays on this phone.'**
-  String get previousDataStaysOnThisPhone;
+  /// **'Your previous data stays on this device.'**
+  String get previousDataStaysOnThisDevice;
 
   /// No description provided for @inactiveSensorExpired.
   ///

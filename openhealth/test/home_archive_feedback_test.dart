@@ -19,6 +19,118 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets(
+    'home connects inline and offers model help after empty Bluetooth search',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _NoSensorDriver();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text("Can't find your sensor?"), findsNothing);
+      expect(find.text('FreeStyle Libre 2'), findsNothing);
+      expect(find.textContaining('NFC'), findsNothing);
+      expect(driver.scanCalls, 0);
+      await tester.tap(
+        find.byKey(const ValueKey<String>('connectSensorButton')),
+      );
+      await tester.pumpAndSettle();
+      expect(driver.scanCalls, 1);
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.text('OpenGlucose'), findsOneWidget);
+      expect(find.text("Can't find your sensor?"), findsOneWidget);
+      expect(find.text('FreeStyle Libre 2'), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('supportedModelCatalog')),
+        findsNothing,
+      );
+      expect(find.textContaining('NFC'), findsNothing);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('sensorHelpButton')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('sensorHelpButton')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Which sensor do you have?'), findsOneWidget);
+      expect(find.text('AiDEX / LinX'), findsOneWidget);
+      expect(find.textContaining('NFC'), findsNothing);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('chooseLibre2Help')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey<String>('chooseLibre2Help')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey<String>('libre2NfcGuide')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('NFC'), findsWidgets);
+      expect(find.byType(BottomSheet), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets('settings connection returns to inline home search', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _NoSensorDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+    );
+    await controller.initialize();
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Connect a sensor').last);
+    await tester.pumpAndSettle();
+    expect(driver.scanCalls, 1);
+    expect(
+      find.byKey(const ValueKey<String>('sensorConnectionScreen')),
+      findsOneWidget,
+    );
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('settingsOverview')),
+      findsNothing,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
+  testWidgets(
     'home keeps only compact expiry while Current sensor owns lifecycle card',
     (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{
@@ -42,10 +154,12 @@ void main() {
         ),
       );
       await tester.pump();
-      await tester.tap(find.text('Find my sensor'));
+      await _startNearbySensorScan(tester);
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('Connect'));
-      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(
+        find.byKey(const ValueKey<String>('connectButton-1')),
+      );
+      await _waitForSensorConnectionFlowToClose(tester);
 
       expect(find.byType(SensorLifecycleCard), findsNothing);
       expect(_compactExpiryText(), findsOneWidget);
@@ -398,7 +512,7 @@ void main() {
   );
 
   testWidgets(
-    'sample data is offered after first-run onboarding with no history',
+    'sample data stays out of the home and is available from Settings',
     (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final preferences = await SharedPreferences.getInstance();
@@ -429,6 +543,24 @@ void main() {
 
       expect(controller.archivedSensors, isEmpty);
       expect(controller.allHistoricalReadings, isEmpty);
+      expect(
+        find.byKey(const ValueKey<String>('connectSensorButton')),
+        findsOneWidget,
+      );
+      expect(find.text('Nearby sensors'), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('findNearbySensorsButton')),
+        findsNothing,
+      );
+      expect(find.text('Explore sample data'), findsNothing);
+
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Explore sample data'),
+        250,
+        scrollable: find.byType(Scrollable).last,
+      );
       expect(find.text('Explore sample data'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
@@ -436,7 +568,7 @@ void main() {
     },
   );
 
-  testWidgets('sample data is hidden when archived glucose is retained', (
+  testWidgets('home keeps sample data secondary when archive is retained', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
@@ -467,6 +599,10 @@ void main() {
 
     expect(controller.archivedSensors, hasLength(1));
     expect(controller.allHistoricalReadings, isNotEmpty);
+    expect(
+      find.byKey(const ValueKey<String>('connectSensorButton')),
+      findsOneWidget,
+    );
     expect(find.text('Explore sample data'), findsNothing);
     expect(
       find.byKey(const ValueKey<String>('historicalOverviewCard')),
@@ -476,6 +612,40 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
   });
+}
+
+Future<void> _startNearbySensorScan(WidgetTester tester) async {
+  await tester.tap(
+    find.byKey(const ValueKey<String>('connectSensorButton')),
+  );
+  await tester.pump();
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('nearbyScanProgress'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
+}
+
+Future<void> _waitForSensorConnectionFlowToClose(WidgetTester tester) async {
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('sensorConnectionScreen'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
 }
 
 Finder _compactExpiryText() => find.byWidgetPredicate((widget) {
@@ -571,6 +741,7 @@ _archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
 }
 
 class _NoSensorDriver implements CgmDriver {
+  int scanCalls = 0;
   @override
   String get driverId => 'aidex-test';
 
@@ -578,7 +749,9 @@ class _NoSensorDriver implements CgmDriver {
   Stream<DiscoveredSensor> scan({
     Duration? timeout,
     bool allowDuplicates = true,
-  }) async* {}
+  }) async* {
+    scanCalls++;
+  }
 
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) {

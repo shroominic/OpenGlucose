@@ -77,3 +77,17 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // The device-backed harnesses under `integration_test/` run through the
+    // SDK-provided `integration_test` package, which pins
+    // androidx.test.espresso 3.2.0. In that release `espresso-core` and
+    // `espresso-idling-resource` both declare the `androidx.test.espresso`
+    // Android namespace, which AGP 8 rejects during manifest merging. Raise
+    // both to the first release with unique namespaces so the debug host can
+    // build. Debug-only: no release artifact or production behavior changes.
+    debugImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    debugImplementation(
+        "androidx.test.espresso:espresso-idling-resource:3.5.1",
+    )
+}

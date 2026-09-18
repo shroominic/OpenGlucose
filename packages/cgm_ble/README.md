@@ -43,6 +43,31 @@ release scans/subscriptions on cancellation, normalize UUIDs consistently, and
 avoid logging payloads or device identifiers by default. Platform permission
 prompts belong to the application layer.
 
+Protocols that prohibit hidden reconnect attempts can require the optional
+`BleSingleAttemptTransport` capability. Check `supportsSingleAttemptConnect`
+before calling `connectOnce`; an unsupported wrapper must fail without calling
+the ordinary `connect` method. The recording wrapper preserves this capability.
+Other drivers can keep their existing connection policy.
+
+`BleScanResult.observedAt` is optional and records when the underlying adapter
+observed an advertisement. A cached replay must keep its original time. Null
+is not proof of freshness. A protocol requiring a fresh observation must reject
+missing, old, or future timestamps rather than substitute the delivery time.
+
+## Sensitive protocol capture
+
+`RecordingBleTransport` and `RecordingBleConnection` can append a versioned
+trace of advertisements, connection lifecycle, service topology, bond state,
+raw reads and writes, and notification data to an injected `BleTraceSink`.
+They never print trace data, and a sink failure cannot fail the BLE operation.
+
+Every `BleTraceEvent` is restricted diagnostic data. It can contain a sensor
+name, device identifier, pairing behavior, and raw protocol bytes. Keep traces
+in app-private local storage, make capture an explicit user action, and never
+attach an unredacted trace to logs, issues, pull requests, or test fixtures.
+`toSensitiveJson()` is named explicitly to keep serialization at that trusted
+boundary; `toString()` always redacts event data.
+
 ## Development
 
 From the repository root, run `make check`. To exercise this package alone:

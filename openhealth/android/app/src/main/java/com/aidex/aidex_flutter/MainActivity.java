@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 
@@ -17,9 +18,13 @@ import java.util.Map;
 
 public final class MainActivity extends FlutterActivity {
   private static final String CHANNEL_NAME = "com.aidex.cgm/android_live_update";
+  private static final String PROTOCOL_CAPTURE_METADATA =
+      "com.openglucose.protocol_capture.available";
   private static final int NOTIFICATION_PERMISSION_REQUEST_CODE = 4106;
 
   private boolean requestedNotificationPermission;
+  private DebugProtocolCaptureBridge protocolCaptureBridge;
+  private YuwellSecureStoreBridge yuwellSecureStoreBridge;
 
   @Override
   public void configureFlutterEngine(FlutterEngine flutterEngine) {
@@ -27,6 +32,53 @@ public final class MainActivity extends FlutterActivity {
     new MethodChannel(
             flutterEngine.getDartExecutor().getBinaryMessenger(), CHANNEL_NAME)
         .setMethodCallHandler(this::handleLiveUpdateCall);
+    yuwellSecureStoreBridge = new YuwellSecureStoreBridge(this);
+    yuwellSecureStoreBridge.register(
+        flutterEngine.getDartExecutor().getBinaryMessenger());
+    if (protocolCaptureAvailable()) {
+      protocolCaptureBridge = new DebugProtocolCaptureBridge(this);
+      protocolCaptureBridge.register(
+          flutterEngine.getDartExecutor().getBinaryMessenger());
+    }
+  }
+
+  private boolean protocolCaptureAvailable() {
+    try {
+      final ApplicationInfo info =
+          getPackageManager()
+              .getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA);
+      return info.metaData != null
+          && info.metaData.getBoolean(PROTOCOL_CAPTURE_METADATA, false)
+          && (info.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    } catch (PackageManager.NameNotFoundException ignored) {
+      return false;
+    }
+  }
+
+  @Override
+  protected void onResume() {
+    super.onResume();
+    if (protocolCaptureBridge != null) {
+      protocolCaptureBridge.onResume();
+    }
+  }
+
+  @Override
+  protected void onPause() {
+    if (protocolCaptureBridge != null) {
+      protocolCaptureBridge.onPause();
+    }
+    super.onPause();
+  }
+
+  @Override
+  protected void onDestroy() {
+    if (protocolCaptureBridge != null) {
+      protocolCaptureBridge.destroy();
+      protocolCaptureBridge = null;
+    }
+    yuwellSecureStoreBridge = null;
+    super.onDestroy();
   }
 
   private void handleLiveUpdateCall(MethodCall call, MethodChannel.Result result) {

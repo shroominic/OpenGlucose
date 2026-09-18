@@ -1,7 +1,7 @@
 name: openglucose
 description: Your Open-source health and wellness app focused on local data and privacy.
 publish_to: none
-version: 0.1.6+28
+version: 0.4.0+29
 
 environment:
   sdk: ^3.11.4
@@ -20,8 +20,18 @@ dependencies:
     path: ../packages/cgm_ble
   cgm_ble_flutter:
     path: ../packages/cgm_ble_flutter
+  cgm_cbio:
+    path: ../packages/cgm_cbio
   cgm_core:
     path: ../packages/cgm_core
+  cgm_libre2:
+    path: ../packages/cgm_libre2
+  # Optional GPL converter: imported only by libre_glucose_debug_main.dart.
+  # Combined distribution needs the review recorded in ADR 0004.
+  cgm_libre2_glucose:
+    path: ../packages/cgm_libre2_glucose
+  cgm_yuwell_anytime:
+    path: ../packages/cgm_yuwell_anytime
   # Kept aligned with the Flutter SDK's flutter_localizations pin.
   intl: ^0.20.2
   path_provider: ^2.1.5
@@ -45,6 +55,10 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.3
   flutter_test:
     sdk: flutter
+  # Device-backed integration harnesses (e.g. the bounded Cbio GS1 live
+  # capture) run through this SDK-provided package. Dev-only: it never ships.
+  integration_test:
+    sdk: flutter
   very_good_analysis: ^10.2.0
   # In-process SQLite (FFI) so the sqflite repository runs in `flutter test`
   # on the host with no device/simulator. Keep the pre-build-hook release
@@ -52,6 +66,11 @@ dev_dependencies:
   # SQLite artifacts into production Android/iOS builds.
   sqflite_common_ffi: 2.3.7+1
   sqlite3: 2.9.4
+  # The device-backed capture harness reads the raw plugin scan stream.
+  # `cgm_ble_flutter` already depends on `flutter_blue_plus`; declaring it here
+  # keeps the harness import explicit and pinned to the version the app links
+  # against. Dev-only: it never ships.
+  flutter_blue_plus: 2.2.1
 
 flutter:
   generate: true
