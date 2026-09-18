@@ -68,6 +68,20 @@ abstract final class CbioSessionFailure {
   static const String disconnected = 'cbio.disconnected';
 }
 
+/// Whether a closed failure code is worth another automatic attempt.
+///
+/// The host will reconnect a link that dropped, timed out, or never came up.
+/// It must not reconnect a failure that is reproduced byte for byte: a
+/// credential this build cannot read, a credential the sensor already refused,
+/// and a firmware that does not present the GS1 link surface this build
+/// expects. Each of those is a decision for the user, not for a timer.
+bool cbioFailureAllowsAutomaticReconnect(String code) => switch (code) {
+  CbioSessionFailure.authMaterial ||
+  CbioSessionFailure.authRejected ||
+  CbioSessionFailure.topology => false,
+  _ => true,
+};
+
 /// Bounded timings for one session. Every window has a deadline.
 final class CbioSessionTiming {
   const CbioSessionTiming({
@@ -233,6 +247,7 @@ final class CbioGlucoseSession implements CgmSession {
   bool _clockWritten = false;
   bool _catchUpOpen = false;
   bool _budgetExhausted = false;
+  bool _automaticReconnectAllowed = true;
   bool _closing = false;
   bool _linkDropped = false;
 
@@ -805,6 +820,8 @@ final class CbioGlucoseSession implements CgmSession {
           ...sensor.metadata,
           cbioPhaseMetadataKey: _phase,
           'cgm.cbio.unit': 'provisional',
+          if (!_automaticReconnectAllowed)
+            cgmAutomaticReconnectAllowedMetadataKey: 'false',
         },
         lastError: _lastError,
         clearLastError: _lastError == null,
@@ -843,6 +860,9 @@ final class CbioGlucoseSession implements CgmSession {
 
   void _fail(String code, {String statusText = 'Connection failed'}) {
     _cancelTimers();
+    if (!cbioFailureAllowsAutomaticReconnect(code)) {
+      _automaticReconnectAllowed = false;
+    }
     _setPhase(
       CbioSessionPhase.failed,
       CgmSyncStage.error,
