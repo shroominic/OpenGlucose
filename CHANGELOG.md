@@ -10,6 +10,8 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-18
+
 ### Added
 
 - Add the `cgm_cbio` GS1 live driver and app surface: `FF30` discovery mapping,
@@ -75,6 +77,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 - The Libre NFC animation now starts only after the native reader confirms NFC
   and capture readiness. Reader loss publishes a closed retry state; reopening
   or retrying waits for a fresh native state instead of inventing readiness.
+
+### Security
+
+- GS1 vendor link material is no longer compiled into the package. The link
+  resolves it from an injected source, the platform registry omits the driver
+  when a build does not supply it, and a self-proving guard rejects the material
+  and clears the checked-out tree.
 
 ## [0.1.6] - 2026-08-31
 
