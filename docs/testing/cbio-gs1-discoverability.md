@@ -36,7 +36,7 @@ it is a scan the platform declined to run.
 
 | time (UTC+7) | display | app state | result | evidence |
 |---|---|---|---|---|
-| 17:16:39–17:18:08 | off (`mWakefulness=Dozing`) | foreground | `aborted_no_target` after 88 s | `target_missing` |
+| 17:16:39–17:18:08 | off | foreground | `aborted_no_target` after 88 s | `target_missing`; screen-off refusal at 17:17:59; the phone was still black and `mWakefulness=Dozing` when checked at 17:28 |
 | 17:40:55–17:47:25 | on (kept awake) | foreground | **`completed`** | 719 notifications, raw 1..10969 |
 | 17:49:32–17:50:17 | off (`KEYCODE_SLEEP`) | foreground | `aborted_no_target` after 80 s | 3× screen-off refusal |
 | 17:50:34–17:51:06 | on | foreground | target acquired, `auth-ok source=serial-2a25` | ~32 s to authenticated |
