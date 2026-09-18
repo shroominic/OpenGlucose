@@ -670,6 +670,72 @@ void main() {
     );
 
     test(
+      'surfaces a restarted sensor counter instead of absorbing it',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        final now = DateTime.now().toUtc();
+        final base = now.millisecondsSinceEpoch ~/ 1000 - 120;
+        await _defaultResponder(
+          connection,
+          rawBatches: <List<int>>[
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: base,
+              baseReindex: 3,
+              currents: <int>[64, 80, 97],
+            ),
+            // The same three positions come back stamped from a counter a week
+            // away: the sensor's numbering restarted, so these are different
+            // records wearing indexes the archive already holds.
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: base - 604800,
+              baseReindex: 3,
+              currents: <int>[70, 88, 99],
+            ),
+          ],
+        );
+
+        final session = CbioGlucoseSession(
+          sensor: _sensor,
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          clock: () => now,
+        );
+        final messages = <String>[];
+        final subscription = session.logs.listen(
+          (entry) => messages.add(entry.message),
+        );
+        await session.initialize();
+        await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+        await _pumpUntil(
+          () => messages.any((m) => m.contains('counter-restart')),
+        );
+
+        // The old numbering keeps its records: the new cycle is not spliced on
+        // to it, and no position is silently renumbered.
+        expect(
+          session.currentSnapshot.history.map((r) => r.sensorMinute),
+          <int>[1, 2, 3],
+        );
+        expect(session.currentSnapshot.history.map((r) => r.rawValue), <int>[
+          64,
+          80,
+          97,
+        ]);
+        expect(
+          messages.any((m) => m.contains('counter-restart')),
+          isTrue,
+          reason: 'a restart must be visible, not absorbed as a duplicate',
+        );
+        await subscription.cancel();
+        await session.disconnect();
+      },
+    );
+
+    test(
       'reports history progress until the archive reaches the live edge',
       () async {
         final connection = _FakeConnection();
