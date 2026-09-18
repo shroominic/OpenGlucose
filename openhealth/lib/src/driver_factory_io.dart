@@ -15,6 +15,7 @@ import 'package:flutter/widgets.dart';
 import 'debug_shared_scan_transport.dart';
 import 'cgm_driver_registry.dart';
 import 'demo_driver.dart';
+import 'display_awake_gate.dart';
 import 'local_ble_trace_sink.dart';
 import 'libre_gen1_secure_store.dart';
 import 'mock_scenarios.dart';
@@ -28,6 +29,11 @@ import 'yuwell_secure_session_store.dart';
 /// The values are never compiled into the repository, so a plain build reports
 /// itself unconfigured and the platform registry leaves the driver out.
 const CbioCredentialSource cbioCredentials = CbioDefineCredentialSource();
+
+/// The device display gate: Android defers an unfiltered scan while the display
+/// is off, so the scan window asks this build's on-device bridge to hold it.
+DisplayAwakeGate buildPlatformDisplayAwakeGate() =>
+    const PlatformDisplayAwakeGate();
 
 /// When built with `--dart-define=OG_DEMO=true`, native/simulator builds use the
 /// in-memory [DemoCgmDriver] instead of the real BLE driver, so the app can be

@@ -2519,6 +2519,7 @@ String _signalLabel(int rssi) {
 }
 
 String _scanFailureTitle(BleFailure? failure) => switch (failure?.kind) {
+  BleFailureKind.scanUnavailable => 'Bluetooth scan could not run',
   BleFailureKind.bluetoothOff => 'Bluetooth is off',
   BleFailureKind.permissionRequired => 'Bluetooth access needed',
   BleFailureKind.bluetoothUnavailable => 'Bluetooth is unavailable',

@@ -1365,6 +1365,13 @@ String userMessageForBleFailure(
       '传感器在设置过程中变得不可用。它可能超出范围，或已与另一部手机绑定或连接。请将手机靠近传感器，'
           '如有需要请停止另一部手机上的连接后再试。请勿重置正在使用的传感器。',
     ),
+    BleFailureKind.scanUnavailable => _localized(
+      language,
+      "Android paused the scan because the phone's screen is off, so no "
+          'sensor could be found - the sensor may be right beside you. Keep '
+          'the screen on and try again.',
+      '扫描未能运行：手机屏幕熄灭时 Android 会暂停扫描，传感器可能就在旁边。请保持屏幕常亮后重试。',
+    ),
     BleFailureKind.deviceDisconnected => _localized(
       language,
       'The sensor disconnected. Keep the phone close and try again.',

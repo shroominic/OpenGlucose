@@ -73,6 +73,7 @@ Future<_BootstrapResult> _bootstrap() async {
     preferences: preferences,
     driver: buildDefaultDriver(),
     healthStateStore: healthStateStore,
+    displayAwake: buildDefaultDisplayAwakeGate(),
   );
   await controller.initialize();
   final healthExport = HealthExportController(
