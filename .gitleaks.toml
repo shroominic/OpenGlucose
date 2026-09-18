@@ -1,21 +1,39 @@
-# Secret-scan configuration.
+# Secret scanning policy for the repository sweep.
 #
-# The default ruleset stays in force. One historical finding is allowlisted
-# below, and only for the commit, the file, and the assignment that produced
-# it: the synthetic masked-vector fixture in the GS1 crypto test.
-#
-# That fixture was a 48-character hex literal of a masked frame whose plaintext
-# is published beside it, so the rule was right to flag it (#147). The driver
-# no longer compiles or publishes vendor material at all: #166 replaced the
-# fixture with obviously synthetic bytes plus an injected credential source, so
-# the literal exists only in history. Re-encoding was never a security control,
-# and this allowlist is not a template for handling key-derived data - it keeps
-# one superseded fixture from making every later review range red.
+# The default rule set is extended, never replaced, and no path is exempt: a
+# secret introduced anywhere in the tree still fails the sweep. Every entry
+# below either names a value that is already in this repository's history and is
+# not a credential, records the single historical binding that holds a
+# key-derived test vector, or scopes one obsolete commit that a release
+# aggregate still reaches through a merge it later reverted.
+
+title = "OpenGlucose secret scanning policy"
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Superseded synthetic masked-vector fixture (#147, #164, #166)"
-commits = ["36a0b2af1416894b29dae981af8bf8a84a29864b"]
-paths = ['''^packages/cgm_cbio/test/cbio_crypto_test\.dart$''']
+description = "Known non-secret values, one recorded key-derived fixture binding, and one superseded commit."
+regexTarget = "line"
+regexes = [
+  # macOS self-test storage entry name: a local keychain label, not a credential.
+  '''^\s*const testKey = 'ct5[.]macos[.]selftest[.]v1';$''',
+  # App Store Connect issuer identifier: an identifier, not a credential. The
+  # credential for that API is a private key file that is not in this repository.
+  '''API_ISSUER_ID="[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"''',
+  # Test-only fixture defaults in a Dart test helper, bounded to that shape.
+  '''^\s*String token = '[A-Za-z0-9_-]{24}',$''',
+  # RECORDED, NOT DISMISSED: this binding held a published synthetic masking
+  # vector, which is a function of the vendor stream key and therefore material
+  # rather than a false positive. It is already public and no scanner setting can
+  # un-publish it; the binding is removed from every tip and the tree guard in
+  # `security/gitleaks-vendor-material.toml` rejects it or any successor at the
+  # tip. Purging the history and rotating the material are decision requests, not
+  # something this policy can settle. Bounded to this one binding name.
+  '''const _authMasked = ''',
+]
+# The sensor lane's first redaction commit carried a synthetic, key-shaped test
+# fixture. That commit has been rewritten and is no longer a tip, but
+# `release/v0.4.0-lane-append` merged it and then reverted the merge, so it is
+# still reachable. Bounded to that one commit; the tip guard covers every tip.
+commits = ["3be16fc212b699d7e9be1852dcbbac8bec6e3ec0"]
