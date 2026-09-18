@@ -87,8 +87,25 @@ void main() {
     expect(archive.length, 6);
     expect([archive.oldestIndex, archive.newestIndex], [1, 6]);
     expect(archive.contiguous, isTrue);
-    expect(archive.oldestTime, 1000);
-    expect(archive.newestTime, 1180 + 120);
+    expect(archive.oldestSensorCounter, 1000);
+    expect(archive.newestSensorCounter, 1180 + 120);
+  });
+
+  test('the sensor counter is a record position, never a wall clock', () {
+    final archive = CbioHistoryArchive();
+    archive.ingest(_rawBatch(first: 1, count: 3, baseTime: 1000));
+    archive.ingest(_rawBatch(first: 4, count: 3, baseTime: 1180));
+
+    // The counter advances one step per stored record, so its span tracks the
+    // record count and says nothing about elapsed wall time.
+    expect(
+      archive.newestSensorCounter! - archive.oldestSensorCounter!,
+      60 * (archive.length - 1),
+    );
+    // A time-shaped name would invite a caller to build a DateTime; both are
+    // gone.
+    expect(() => (archive as dynamic).oldestTime, throwsNoSuchMethodError);
+    expect(() => (archive as dynamic).newestTime, throwsNoSuchMethodError);
   });
 
   test('flags a gap when a batch starts past the newest index', () {
@@ -144,7 +161,7 @@ void main() {
     expect(archive.length, 0);
     expect(archive.oldestIndex, isNull);
     expect(archive.newestIndex, isNull);
-    expect(archive.oldestTime, isNull);
+    expect(archive.oldestSensorCounter, isNull);
     expect(archive.batchCounts, isEmpty);
   });
 

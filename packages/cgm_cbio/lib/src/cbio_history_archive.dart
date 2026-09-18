@@ -28,7 +28,12 @@ final class CbioRawGlucoseRecord {
 
   final int index;
 
-  /// Sensor-recorded epoch seconds, from the batch base plus 60 s per record.
+  /// Epoch-less sensor counter: the batch base plus 60 per record.
+  ///
+  /// This is the sensor's own position, not Unix time. It advances exactly one
+  /// step per stored record, so a surface that renders it as `HH:mm` reports
+  /// the ingest position and calls it a wall clock. No clock can be derived
+  /// from it without the sensor's activation time.
   final int rawTime;
 
   final int reindex;
@@ -102,8 +107,16 @@ final class CbioHistoryArchive {
   /// True when the archive covers every index between its ends.
   bool get contiguous => !_gapDetected;
 
-  int? get oldestTime => _byIndex.isEmpty ? null : records.first.rawTime;
-  int? get newestTime => _byIndex.isEmpty ? null : records.last.rawTime;
+  /// Lowest sensor counter in the archive, or null when it is empty.
+  ///
+  /// Named for what it is. A time-shaped name invites a caller to build a
+  /// `DateTime` from it, which is the defect this rename closes.
+  int? get oldestSensorCounter =>
+      _byIndex.isEmpty ? null : records.first.rawTime;
+
+  /// Highest sensor counter in the archive, or null when it is empty.
+  int? get newestSensorCounter =>
+      _byIndex.isEmpty ? null : records.last.rawTime;
 
   /// Ingests one notification payload, masked or already unmasked by the caller.
   CbioArchiveIngestStatus ingest(List<int> frame) {

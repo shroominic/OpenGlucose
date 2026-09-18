@@ -36,6 +36,11 @@ final class CbioPackedRecord {
   });
 
   final int index;
+
+  /// Epoch-less per-record counter: the batch base plus 60 per record.
+  ///
+  /// It is the sensor's own position, not Unix time. Never render it as a
+  /// clock and never build a `DateTime` from it.
   final int rawTime;
   final int reindex;
   final int rawGlucose;
