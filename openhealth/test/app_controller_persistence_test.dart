@@ -2643,6 +2643,63 @@ void main() {
     },
   );
 
+  test('a sensor that keeps dropping exhausts the retry budget', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _testSensor();
+    final first = _ControlledSession(
+      _testSnapshot(sensor, stage: CgmSyncStage.ready),
+    );
+    final driver = _ControlledDriver(<_ControlledSession>[
+      first,
+      for (var index = 0; index < 40; index += 1)
+        _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.disconnected),
+        ),
+    ]);
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+      reconnectDelay: const Duration(milliseconds: 1),
+    );
+
+    await controller.initialize();
+    await controller.connect(sensor);
+    await _drainEventQueue();
+    first.emit(_testSnapshot(sensor, stage: CgmSyncStage.disconnected));
+    await _drainEventQueue();
+
+    // Far more rounds than any honest retry budget, and every round drops the
+    // link again, so only the budget itself can stop the controller.
+    for (var round = 0; round < 12; round += 1) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await _drainEventQueue();
+      if (driver.connectedSensors.length <= 1) {
+        continue;
+      }
+      driver.sessions[driver.connectedSensors.length - 1].emit(
+        _testSnapshot(sensor, stage: CgmSyncStage.disconnected),
+      );
+      await _drainEventQueue();
+    }
+
+    expect(
+      driver.connectedSensors,
+      hasLength(6),
+      reason: 'one attempt plus a bounded retry run',
+    );
+    final stopped = controller.snapshot;
+    expect(stopped?.stage, CgmSyncStage.error);
+    expect(stopped?.metadata[cgmAutomaticReconnectAllowedMetadataKey], 'false');
+    expect(controller.connectionRequiresUserAction, isTrue);
+    expect(stopped?.lastError, 'cgm.session.reconnectExhausted');
+
+    await controller.disconnect();
+    controller.dispose();
+    await driver.close();
+  });
+
   test('initial ready snapshot disables activation on reconnect', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();
@@ -3046,6 +3103,7 @@ class _ControlledDriver implements CgmDriver {
   _ControlledDriver(this._sessions, {this.driverId = 'controlled'});
 
   final List<_ControlledSession> _sessions;
+  List<_ControlledSession> get sessions => _sessions;
   final List<DiscoveredSensor> connectedSensors = <DiscoveredSensor>[];
   int _nextSession = 0;
 

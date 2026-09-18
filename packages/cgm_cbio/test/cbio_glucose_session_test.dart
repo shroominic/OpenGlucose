@@ -434,6 +434,33 @@ void main() {
       await session.disconnect();
     });
 
+    test('a refused credential is not worth an automatic retry', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      await _defaultResponder(connection, authReply: _authRejected);
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.error,
+      );
+
+      expect(session.currentSnapshot.lastError, 'cbio.auth.rejected');
+      expect(
+        session
+            .currentSnapshot
+            .metadata[cgmAutomaticReconnectAllowedMetadataKey],
+        'false',
+        reason: 'the same credential would be refused byte for byte',
+      );
+      await session.disconnect();
+    });
+
     test('an unanswered authentication times out without reads', () async {
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
@@ -455,6 +482,31 @@ void main() {
         <int>[0x01],
       );
       expect(session.currentSnapshot.lastError, 'cbio.auth.timeout');
+      await session.disconnect();
+    });
+
+    test('a link that never came up stays worth a retry', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      connection.onWrite = (_) async {};
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.error,
+      );
+
+      expect(session.currentSnapshot.lastError, 'cbio.auth.timeout');
+      expect(
+        session.currentSnapshot.metadata,
+        isNot(contains(cgmAutomaticReconnectAllowedMetadataKey)),
+        reason: 'an unanswered link is a transient radio state',
+      );
       await session.disconnect();
     });
 
