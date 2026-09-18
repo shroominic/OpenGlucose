@@ -532,9 +532,20 @@ void main() {
         // The archived record exposes the rounded mg/dL derivation of the
         // unverified mmol/L scale, never the raw field as a measurement.
         expect(latest.valueMgdl, 175);
-        // The sensor's own second counter has no epoch, so no wall-clock
-        // timestamp is invented for it; the index is the honest position.
-        expect(latest.recordedAt, isNull);
+        // These records stamp the clock this session wrote, so the index is
+        // anchored to it and each position steps 60 s back from the newest.
+        // The counter itself is never the source: the clock-anchor group below
+        // holds the case where it does not agree with the app's clock.
+        expect(
+          snapshot.history.map((reading) => reading.recordedAt),
+          <DateTime?>[
+            for (final offset in <int>[0, 60, 120])
+              DateTime.fromMillisecondsSinceEpoch(
+                (base + offset) * 1000,
+                isUtc: true,
+              ),
+          ],
+        );
         expect(snapshot.history.map((r) => r.sensorMinute), <int>[1, 2, 3]);
         expect(snapshot.capabilities.supportsHistory, isTrue);
         await session.disconnect();
@@ -956,5 +967,118 @@ void main() {
       expect(session.currentSnapshot.statusText, contains('vendor material'));
       await session.disconnect();
     });
+  });
+
+  group('CbioGlucoseSession clock anchor', () {
+    test('stamps stored history once the sensor took the clock', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      final now = DateTime.now().toUtc();
+      final nowSeconds = now.millisecondsSinceEpoch ~/ 1000;
+      final base = nowSeconds - 120;
+      await _defaultResponder(
+        connection,
+        rawBatches: <List<int>>[
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: base,
+            baseReindex: 3,
+            currents: <int>[64, 70, 75],
+          ),
+        ],
+      );
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+        clock: () => now,
+      );
+      await session.initialize();
+      await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+
+      final snapshot = session.currentSnapshot;
+      final anchor = CbioIndexTimeAnchor.fromMetadata(snapshot.metadata);
+      expect(anchor, isNotNull);
+      expect(anchor!.anchorIndex, 3);
+      expect(anchor.coveredFromIndex, 1);
+      expect(anchor.anchorEpochSeconds, nowSeconds);
+      expect(
+        anchor.clockReferenceEpochSeconds,
+        nowSeconds,
+        reason: 'the reference is the epoch this session wrote to the sensor',
+      );
+      expect(anchor.clockAgreement, Duration.zero);
+      expect(
+        snapshot.history.map((reading) => reading.recordedAt),
+        <DateTime?>[
+          for (final offset in <int>[-120, -60, 0])
+            DateTime.fromMillisecondsSinceEpoch(
+              (nowSeconds + offset) * 1000,
+              isUtc: true,
+            ),
+        ],
+        reason:
+            'positions step 60 s from the anchored record, not from the '
+            'counter',
+      );
+      expect(
+        await session.refreshDiagnostics().then(
+          (items) => items.single.fields['clockAnchor'],
+        ),
+        contains('index 3'),
+      );
+      await session.disconnect();
+    });
+
+    test(
+      'publishes no timestamp while the sensor clock is the counter',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        final now = DateTime.now().toUtc();
+        final nowSeconds = now.millisecondsSinceEpoch ~/ 1000;
+        // The #146 capture: the newest stored record is 448 positions, 7 h 28 m,
+        // away from the clock the app set.
+        final base = nowSeconds - 448 * 60;
+        await _defaultResponder(
+          connection,
+          rawBatches: <List<int>>[
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: base,
+              baseReindex: 3,
+              currents: <int>[64, 70, 75],
+            ),
+          ],
+        );
+
+        final session = CbioGlucoseSession(
+          sensor: _sensor,
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          clock: () => now,
+        );
+        await session.initialize();
+        await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+
+        final snapshot = session.currentSnapshot;
+        expect(CbioIndexTimeAnchor.fromMetadata(snapshot.metadata), isNull);
+        expect(
+          snapshot.history.every((reading) => reading.recordedAt == null),
+          isTrue,
+          reason: 'the counter is a position, never a clock',
+        );
+        expect(
+          await session.refreshDiagnostics().then(
+            (items) => items.single.fields['clockAnchor'],
+          ),
+          contains('unsynced'),
+        );
+        await session.disconnect();
+      },
+    );
   });
 }

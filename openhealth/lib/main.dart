@@ -1177,6 +1177,14 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                     color: const Color(0xFFC7E4DD),
                   ),
                 ),
+                const SizedBox(height: 6),
+                Text(
+                  cbioClockStateText(snapshot, reading: latest),
+                  key: const ValueKey<String>('cbioClockState'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFFC7E4DD),
+                  ),
+                ),
               ],
               if (latest?.isDisplayProvisional == true) ...<Widget>[
                 const SizedBox(height: 6),

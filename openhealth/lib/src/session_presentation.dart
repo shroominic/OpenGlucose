@@ -548,6 +548,49 @@ String cbioStoredRangeText(Iterable<CgmReading> readings) {
       'sensor minutes ${positions.first}–${positions.last}';
 }
 
+/// The index-to-clock anchor a GS1 session published, or null when it has none.
+CbioIndexTimeAnchor? cbioAnchorForSnapshot(CgmSessionSnapshot snapshot) =>
+    isCbioSnapshot(snapshot)
+    ? CbioIndexTimeAnchor.fromMetadata(snapshot.metadata)
+    : null;
+
+/// The clock state of a GS1 surface.
+///
+/// The record index is a wall clock only where the session holds an anchor for
+/// it: the clock this app set on the sensor, confirmed against the sensor's own
+/// newest record stamp. Without one the line names the ordering the surface can
+/// stand behind instead of a placeholder time, and with one it states the
+/// reference and the minute it can be trusted to.
+/// [reading] is the same reading the surface shows as the latest, so the clock
+/// line and the value above it always describe one position.
+String cbioClockStateText(
+  CgmSessionSnapshot snapshot, {
+  CgmReading? reading,
+  DateTime? now,
+}) {
+  if (!isCbioSnapshot(snapshot)) {
+    return '';
+  }
+  final anchor = cbioAnchorForSnapshot(snapshot);
+  if (anchor == null) {
+    return 'Sensor clock unsynced · ordered by sensor index, not by clock';
+  }
+  final latest = reading ?? snapshot.latestReading;
+  // The line repeats the reading's own stamp, so a position the publisher left
+  // untimed is never given a clock the anchor does not cover.
+  if (latest == null ||
+      clampedDisplayRecordedAt(latest.recordedAt, now: now) == null) {
+    return 'Sensor clock set by this app · this position has no anchored time';
+  }
+  return 'Sensor clock set by this app · latest '
+      '${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor)})';
+}
+
+String _anchorUncertaintyText(CbioIndexTimeAnchor anchor) {
+  final minutes = anchor.uncertainty.inMinutes;
+  return minutes >= 1 ? '±$minutes min' : '±${anchor.uncertainty.inSeconds} s';
+}
+
 /// The live driver rebuilds this diagnostic from its in-memory packet counter
 /// on each snapshot. Retained glucose history or a saved NFC state is not proof
 /// that the current Bluetooth session received verified packets.
