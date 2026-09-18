@@ -1,0 +1,21 @@
+# Secret-scan configuration.
+#
+# The default ruleset stays in force. One historical finding is allowlisted
+# below, and only for the commit, the file, and the assignment that produced
+# it: the synthetic masked-vector fixture in the GS1 crypto test.
+#
+# That fixture was a 48-character hex literal of a masked frame whose plaintext
+# is published beside it, so the rule was right to flag it (#147). The driver
+# no longer compiles or publishes vendor material at all: #166 replaced the
+# fixture with obviously synthetic bytes plus an injected credential source, so
+# the literal exists only in history. Re-encoding was never a security control,
+# and this allowlist is not a template for handling key-derived data - it keeps
+# one superseded fixture from making every later review range red.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Superseded synthetic masked-vector fixture (#147, #164, #166)"
+commits = ["36a0b2af1416894b29dae981af8bf8a84a29864b"]
+paths = ['''^packages/cgm_cbio/test/cbio_crypto_test\.dart$''']
