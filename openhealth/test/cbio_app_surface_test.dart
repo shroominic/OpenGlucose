@@ -131,6 +131,73 @@ void main() {
     }
   });
 
+  test('the stored range names a hole instead of printing an envelope', () {
+    List<CgmReading> readingsAt(List<int> positions) => <CgmReading>[
+      for (final position in positions)
+        CgmReading(
+          valueMgdl: 100,
+          source: CgmRecordSource.raw,
+          sensorMinute: position,
+          rawValue: 55,
+          isDisplayProvisional: true,
+        ),
+    ];
+
+    expect(
+      cbioStoredRangeText(readingsAt(<int>[1, 2, 3])),
+      '3 readings stored · sensor minutes 1–3',
+    );
+    expect(
+      cbioStoredRangeText(readingsAt(<int>[1, 2, 3, 6, 7])),
+      '5 readings stored · sensor minutes 1–7 · 2 positions not received',
+      reason: '1-7 is an envelope, not what the app stored',
+    );
+    expect(
+      cbioStoredRangeText(readingsAt(<int>[4])),
+      '1 readings stored · sensor minutes 4–4',
+    );
+  });
+
+  testWidgets('the dashboard names a hole in the stored history', (
+    tester,
+  ) async {
+    final readings = <CgmReading>[
+      for (final position in <int>[10, 11, 12, 15, 16])
+        CgmReading(
+          valueMgdl: 100 + position.toDouble(),
+          source: CgmRecordSource.raw,
+          sensorMinute: position,
+          recordedAt: null,
+          rawValue: 55,
+          isDisplayProvisional: true,
+        ),
+    ];
+    final (controller, preferences) = await _controllerFor(
+      () => _snapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'Live. Reading every minute.',
+        history: readings,
+        historySync: const CgmHistorySyncState(
+          storedCount: 5,
+          totalAvailable: 16,
+          latestStoredOffset: 16,
+        ),
+      ),
+    );
+    await _pumpApp(tester, controller, preferences);
+
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey<String>('cbioStoredRange')))
+          .data,
+      '5 readings stored · sensor minutes 10–16 · 2 positions not received',
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await tester.pump();
+  });
+
   test('history progress wording reports the fetched count', () {
     expect(
       historySyncProgressText(
