@@ -24,9 +24,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 const Duration _scanWindow = Duration(seconds: 8);
-const Duration _scanOverhead = Duration(seconds: 8);
+const Duration _scanOverhead = Duration(seconds: 3);
 const Duration _acquisitionBudget = Duration(seconds: 80);
-const Duration _acquireGap = Duration(seconds: 2);
+const Duration _acquireGap = Duration(seconds: 1);
 const Duration _connectWindow = Duration(seconds: 25);
 const Duration _connectRetryGap = Duration(milliseconds: 800);
 
@@ -34,6 +34,11 @@ const Duration _connectRetryGap = Duration(milliseconds: 800);
 /// owns its own operation timeouts; this only bounds the harness's wait for a
 /// plugin future whose radio has already stopped.
 const Duration _pluginCallWindow = Duration(seconds: 8);
+
+/// The service the sensor advertises, in canonical form. Android reports the
+/// 16-bit form (`FF30`) while an advertisement may carry either.
+const String _sensorServiceUuid = '0000ff30-0000-1000-8000-00805f9b34fb';
+const List<String> _sensorServiceFilter = <String>[_sensorServiceUuid];
 const Duration _discoveryWindow = Duration(seconds: 25);
 const Duration _subscribeWindow = Duration(seconds: 15);
 const Duration _writeWindow = Duration(seconds: 15);
@@ -239,9 +244,13 @@ Future<void> _runSession(_SessionRun run) async {
   }
   final vendor = _credentials.read();
 
+  _emit(
+    'CBIO-A session-start adapter=${fbp.FlutterBluePlus.adapterStateNow.name} '
+    'target=${_targetDeviceId.isEmpty ? "scan" : "defined"}',
+  );
   final targetId = _targetDeviceId.isNotEmpty
       ? _targetDeviceId
-      : await _acquireTargetId();
+      : await _acquireTargetId(run);
   if (targetId == null) {
     _emit('CBIO-A abort=no-target');
     run.noteError('target_missing');
@@ -688,41 +697,127 @@ Future<void> _releaseLink(
   run.noteError('disconnect_failed');
 }
 
-/// One bounded raw-plugin scan for the FF30 Cbio / SiSensing advertiser.
-Future<String?> _acquireTargetId() async {
+/// Canonicalises a UUID the way the app driver does, so Android's short
+/// `FF30` form compares equal to the full Bluetooth base form.
+String _canonicalUuid(String uuid) {
+  final normalized = uuid.trim().toLowerCase();
+  return switch (normalized.length) {
+    4 => '0000$normalized-0000-1000-8000-00805f9b34fb',
+    8 => '$normalized-0000-1000-8000-00805f9b34fb',
+    _ => normalized,
+  };
+}
+
+/// Whether one advertisement is an FF30 Cbio / SiSensing candidate.
+///
+/// The unfiltered pass runs without a platform scan filter, so this mapping is
+/// what keeps a foreign advertiser from being surfaced as a sensor.
+bool _isCbioCandidate(fbp.ScanResult result) =>
+    result.advertisementData.serviceUuids.any(
+      (uuid) =>
+          _canonicalUuid(uuid.toString()) == _canonicalUuid(_sensorServiceUuid),
+    );
+
+/// Runs one bounded scan pass and returns the first FF30 candidate seen, or
+/// null when the window closes without one.
+///
+/// The pass owns its whole lifecycle. Results are subscribed before the radio
+/// starts, so an advertisement that arrives during start-up is not lost, and
+/// the pass ends when the plugin reports the scan stopped or when its own
+/// deadline elapses, whichever comes first: `flutter_blue_plus` can finish a
+/// timed scan without ever publishing `isScanning = false`, and it can leave
+/// the `startScan` future pending, so neither signal may be the only bound.
+Future<String?> _scanPass({
+  required List<fbp.Guid> withServices,
+  required _SessionRun run,
+}) async {
+  final collected = <String>{};
+  final done = Completer<void>();
+  StreamSubscription<List<fbp.ScanResult>>? results;
+  StreamSubscription<bool>? scanning;
+  var started = false;
+
+  void finish() {
+    if (!done.isCompleted) done.complete();
+  }
+
+  final deadline = Timer(_scanWindow + _scanOverhead, finish);
+  try {
+    results = fbp.FlutterBluePlus.onScanResults.listen((batch) {
+      for (final result in batch) {
+        if (_isCbioCandidate(result)) {
+          collected.add(result.device.remoteId.str);
+        }
+      }
+    });
+    scanning = fbp.FlutterBluePlus.isScanning.listen((isScanning) {
+      if (started && !isScanning) {
+        finish();
+      }
+    });
+    final startup = fbp.FlutterBluePlus.startScan(
+      withServices: withServices,
+      timeout: _scanWindow,
+      continuousUpdates: true,
+      oneByOne: true,
+      androidUsesFineLocation: true,
+    );
+    unawaited(
+      startup.then<void>(
+        (_) {
+          started = true;
+          // A window that elapsed while the radio was still starting must not
+          // leave the scanner registered behind the pass.
+          if (done.isCompleted && fbp.FlutterBluePlus.isScanningNow) {
+            unawaited(_stopRadio());
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          run.noteError('scan_failed');
+          _emit('CBIO-A scan-start-failed error=${error.runtimeType}');
+          finish();
+        },
+      ),
+    );
+    await done.future;
+  } on Object catch (error) {
+    run.noteError('scan_failed');
+    _emit('CBIO-A scan-failed error=${error.runtimeType}');
+  } finally {
+    deadline.cancel();
+    await results?.cancel();
+    await scanning?.cancel();
+    await _stopRadio();
+  }
+  return collected.isEmpty ? null : collected.first;
+}
+
+/// Locates the sensor inside the acquisition budget.
+///
+/// The FF30-filtered pass is first because it is the cheapest, but this sensor's
+/// advertisement does not always carry the service UUID in the field Android
+/// filters on, so a filtered pass can finish empty while the sensor is
+/// centimetres away. One unfiltered retry follows each empty filtered pass, and
+/// every result still has to classify as an FF30 candidate before it is
+/// returned, so a foreign advertiser is never surfaced as a sensor.
+Future<String?> _acquireTargetId(_SessionRun run) async {
   final deadline = DateTime.now().add(_acquisitionBudget);
   while (DateTime.now().isBefore(deadline)) {
-    final collected = <String, fbp.ScanResult>{};
-    StreamSubscription<List<fbp.ScanResult>>? subscription;
-    try {
-      await fbp.FlutterBluePlus.startScan(
-        withServices: [fbp.Guid('ff30')],
-        timeout: _scanWindow,
-        continuousUpdates: true,
-        androidUsesFineLocation: true,
-      );
-      subscription = fbp.FlutterBluePlus.scanResults.listen((batch) {
-        for (final result in batch) {
-          collected[result.device.remoteId.str] = result;
-        }
-      });
-      await Future<void>.delayed(_scanWindow + _scanOverhead);
-    } on Object {
-      // A failed window just retries inside the acquisition budget.
-    } finally {
-      try {
-        await subscription?.cancel().timeout(_teardownWindow);
-      } on Object {
-        // Best effort.
-      }
-      try {
-        await fbp.FlutterBluePlus.stopScan().timeout(_teardownWindow);
-      } on Object {
-        // Best effort.
-      }
+    final filtered = await _scanPass(
+      withServices: _sensorServiceFilter.map(fbp.Guid.new).toList(),
+      run: run,
+    );
+    if (filtered != null) {
+      _emit('CBIO-A scan-source=filtered');
+      return filtered;
     }
-    if (collected.isNotEmpty) {
-      return collected.keys.first;
+    if (!DateTime.now().isBefore(deadline)) {
+      break;
+    }
+    final unfiltered = await _scanPass(withServices: const [], run: run);
+    if (unfiltered != null) {
+      _emit('CBIO-A scan-source=unfiltered');
+      return unfiltered;
     }
     await Future<void>.delayed(_acquireGap);
   }
