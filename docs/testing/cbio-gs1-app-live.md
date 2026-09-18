@@ -47,6 +47,33 @@ protocol does not establish.
   per stored minute. It carries no epoch, so the app does not invent a
   wall-clock time from it.
 
+## Clock anchor
+
+The counter stays epoch-less; what the app can offer instead is the one
+reference it establishes itself. The session writes the sensor clock once per
+session (`06 03 LE32(epoch)`), and the surface reads an index as a clock only
+when the sensor's own newest record stamp agrees with the app's clock to within
+`cbioAnchorTolerance` (3 minutes):
+
+- the anchor is the newest stored position plus that position's own stamp, and
+  every older position steps back 60 s per index, as the vendor layout reports
+  the counter (`base + 60 * i`);
+- the range the anchor speaks for stops at the first hole or counter jump, so a
+  position the archive cannot support keeps no timestamp;
+- the anchor is published in the snapshot metadata
+  (`cgm.cbio.clock.anchorIndex`, `…anchorEpochSeconds`,
+  `…anchorCoveredFrom`, `…referenceEpochSeconds`), and the hero states the
+  provenance: `Sensor clock set by this app · latest 09:05 (±1 min)`;
+- when the clock was never written, or the sensor's stamps disagree with the
+  app's clock (the +7 h 28 m counter of #146), no anchor is published and the
+  hero says `Sensor clock unsynced · ordered by sensor index, not by clock`
+  instead of a placeholder time.
+
+The timestamps therefore inherit the clock this app set on the sensor and its
+drift, which the surface states as the ±1 minute of one stored record. The
+capture above predates the anchor and shows the unsynced copy; a device
+re-capture of the anchored copy is still pending.
+
 ## How to reproduce
 
 ```bash
