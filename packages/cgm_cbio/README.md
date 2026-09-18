@@ -64,9 +64,8 @@ only. The package contains no activation/clock builder or live write path.
 `buildCbioGlucoseQuery` and `buildCbioInformationQuery` reproduce the vendor's
 recovered V120 read frames (`06 0A LE16(index) 00 00 C` and `03 F0 selector C`).
 `parseCbioGlucoseBatch` decodes only the plaintext `0A` batch layout and refuses
-the `08` raw-data layout. `cbio_crypto.dart` carries the vendor's static
-per-frame stream mask, `cbio_vendor_frames.dart` builds the masked link frames
-the sensor actually accepts, and `cbio_history_archive.dart` assembles the `08`
+the `08` raw-data layout. `cbio_vendor_frames.dart` builds the masked link
+frames the sensor actually accepts, and `cbio_history_archive.dart` assembles the `08`
 record stream into an ordered archive with gap and overlap detection.
 `CbioGlucoseSyncSession` adds bounded live polling at the newest index and
 bounded history paging from the oldest record, with explicit `noRecords`,
@@ -76,6 +75,36 @@ no established unit or scale. On the live sensor an authenticated session
 streams a contiguous raw archive up to the present; the `0A` packed field is
 zero throughout, so only `08` carries usable content. See the
 [live record](../../docs/testing/cbio-gs1-glucose-live.md).
+
+## Vendor material is injected, never compiled
+
+The vendor link needs three values that this package does **not** carry: the
+16-byte RC4 stream key, the 16-byte link credential inside the authentication
+frame, and the five-byte authentication prompt. They come from the vendor
+artifact described in the evidence record, and storing them in this public
+repository is not acceptable.
+
+`cbio_credentials.dart` defines the boundary. `CbioCredentials` validates and
+holds the three values and never renders them in `toString`; a
+`CbioCredentialSource` supplies them and fails closed with
+`CbioCredentialUnavailable` when they are absent or malformed.
+`CbioMapCredentialSource` reads them from a supplied string map (a process
+environment) and `CbioDefineCredentialSource` from `--dart-define` values.
+There is no compiled default.
+
+`cbioRc4Keystream`, `maskCbioFrame`, `unmaskCbioFrame`, and every builder in
+`cbio_vendor_frames.dart` take the key and material as required arguments, so a
+caller that has not resolved material cannot compile a call. Run a build or a
+bench that needs the live link with a git-ignored define file:
+
+```sh
+flutter run --dart-define-from-file=cbio_vendor.local.json
+```
+
+where the file supplies `CBIO_VENDOR_STREAM_KEY_HEX`,
+`CBIO_VENDOR_AUTH_MATERIAL_HEX`, and `CBIO_VENDOR_AUTH_TRIGGER_HEX`. Tests and
+fixtures use synthetic material of the same shape; the real values are never
+checked in.
 
 Run package checks from this directory with the pinned Dart SDK:
 

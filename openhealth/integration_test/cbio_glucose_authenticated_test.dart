@@ -15,6 +15,7 @@
 // Masked bytes are logged; the authentication frame's plaintext is not, because
 // it carries the link credential.
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
@@ -39,6 +40,23 @@ const Duration _teardownWindow = Duration(seconds: 15);
 const int _maxWrites = 9;
 
 const String _targetDeviceId = String.fromEnvironment('CBIO_TARGET_DEVICE_ID');
+
+/// Vendor material for this run.
+///
+/// Nothing in the repository carries the stream key or the link credential, so
+/// the harness reads them from the process environment or from `--dart-define`
+/// and aborts before touching the radio when they are absent. Provide them
+/// without writing them to a committed file, for example with
+/// `--dart-define-from-file` against a git-ignored local file.
+final CbioMapCredentialSource _credentials =
+    CbioMapCredentialSource(<String, String>{
+      ...Platform.environment,
+      if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
+      if (cbioAuthMaterialHex.isNotEmpty)
+        cbioAuthMaterialDefine: cbioAuthMaterialHex,
+      if (cbioAuthTriggerHex.isNotEmpty)
+        cbioAuthTriggerDefine: cbioAuthTriggerHex,
+    });
 
 /// First raw (`08`) index to request. Zero starts a full history replay; a
 /// higher value resumes partway so a bounded window can reach the newest
@@ -67,6 +85,15 @@ void main() {
 }
 
 Future<void> _runSession() async {
+  if (!_credentials.isConfigured) {
+    _emit(
+      'CBIO-A abort=vendor-material-missing '
+      'missing=${_credentials.missing.join(",")}',
+    );
+    return;
+  }
+  final vendor = _credentials.read();
+
   final targetId = _targetDeviceId.isNotEmpty
       ? _targetDeviceId
       : await _acquireTargetId();
@@ -125,7 +152,7 @@ Future<void> _runSession() async {
 
     subscription = notify.onValueReceived.listen((bytes) {
       masked.add((elapsed(), List<int>.from(bytes)));
-      final plaintext = unmaskCbioFrame(bytes);
+      final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
       _emit(
         'CBIO-A notify t=${elapsed()} masked=${_hex(bytes)} '
         'plaintext=${_hex(plaintext)}',
@@ -193,7 +220,7 @@ Future<void> _runSession() async {
     /// Returns true when the newest unmasked reply is an auth success ACK.
     bool authSucceeded() {
       for (final (_, bytes) in masked.reversed) {
-        final plaintext = unmaskCbioFrame(bytes);
+        final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
         if (plaintext.length != 5) continue;
         if (plaintext.fold<int>(0, (a, b) => a + b) & 255 != 0) continue;
         if (plaintext[1] == 0x01) {
@@ -215,7 +242,11 @@ Future<void> _runSession() async {
     var authenticated = false;
     for (final (source, octets) in addressCandidates) {
       _emit('CBIO-A auth-attempt source=$source');
-      final authFrame = buildMaskedCbioAuthentication(octets);
+      final authFrame = buildMaskedCbioAuthentication(
+        octets,
+        key: vendor.streamKey,
+        material: vendor.authMaterial,
+      );
       await send(authFrame, 'auth-$source');
       final deadline = DateTime.now().add(_authWindow);
       while (DateTime.now().isBefore(deadline)) {
@@ -240,14 +271,18 @@ Future<void> _runSession() async {
     await send(
       buildMaskedCbioClock(
         DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+        key: vendor.streamKey,
       ),
       'clock',
     );
 
     final beforeReads = masked.length;
-    await send(buildMaskedCbioGlucoseQuery(0), 'glucose-0a-index0');
     await send(
-      buildMaskedCbioRawQuery(_rawStartIndex),
+      buildMaskedCbioGlucoseQuery(0, key: vendor.streamKey),
+      'glucose-0a-index0',
+    );
+    await send(
+      buildMaskedCbioRawQuery(_rawStartIndex, key: vendor.streamKey),
       'raw-08-index$_rawStartIndex',
     );
 
@@ -261,7 +296,7 @@ Future<void> _runSession() async {
     final rawRecords = <CbioRawRecord>[];
     final plaintextFrames = <List<int>>[];
     for (final (_, bytes) in masked.sublist(beforeReads)) {
-      final plaintext = unmaskCbioFrame(bytes);
+      final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
       plaintextFrames.add(plaintext);
       try {
         final batch = parseCbioGlucoseBatch(plaintext);
