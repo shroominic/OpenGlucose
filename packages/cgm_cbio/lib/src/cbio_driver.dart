@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 
+import 'cbio_credentials.dart';
 import 'cbio_glucose_session.dart';
 
 /// UUID candidates recovered from both SiSensing GS1 and GS3 Java payloads.
@@ -69,16 +70,28 @@ class CbioSensorDriver implements CgmDriver {
   CbioSensorDriver(
     this._transport, {
     this.discovery = const CbioDiscovery(),
-    this.authMaterial = const CbioCompiledAuthMaterialProvider(),
+    this.credentials = const CbioDefineCredentialSource(),
     this.timing = const CbioSessionTiming(),
     this.clock = DateTime.now,
   });
 
   final BleTransport _transport;
   final CbioDiscovery discovery;
-  final CbioAuthMaterialProvider authMaterial;
+
+  /// Where the session resolves the vendor material its link needs.
+  ///
+  /// The default reads `--dart-define` values and fails closed when the build
+  /// did not carry them; see `cbio_credentials.dart`.
+  final CbioCredentialSource credentials;
+
   final CbioSessionTiming timing;
   final DateTime Function() clock;
+
+  /// Whether this driver can open its authenticated link at all.
+  ///
+  /// A registry that would otherwise surface a sensor it cannot read can ask
+  /// this before registering the driver.
+  bool get canAuthenticate => credentials.isConfigured;
 
   static const CgmCapabilities capabilities = CbioGlucoseSession.capabilities;
 
@@ -135,7 +148,7 @@ class CbioSensorDriver implements CgmDriver {
     final session = CbioGlucoseSession(
       sensor: sensor,
       transport: _transport,
-      authMaterial: authMaterial,
+      credentials: credentials,
       timing: timing,
       clock: clock,
     );

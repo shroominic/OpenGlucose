@@ -17,9 +17,14 @@ void main() {
           expect(driver, isA<DemoCgmDriver>());
         } else {
           expect(driver, isA<CgmDriverRegistry>());
+          // The GS1 driver is registered only when the build supplied the
+          // vendor material its authenticated link needs, so a plain
+          // `flutter test` run expects the AiDEX driver alone.
           expect(
             (driver as CgmDriverRegistry).registeredDriverIds,
-            const <String>{'aidex', 'cbio'},
+            cbioCredentials.isConfigured
+                ? const <String>{'aidex', 'cbio'}
+                : const <String>{'aidex'},
           );
           expect(driver, isNot(isA<DemoCgmDriver>()));
         }

@@ -17,9 +17,10 @@ of frames the session may ever put on the radio (`03 F0` device information,
 `19 01` authentication, `06 03` clock, `06 0A` packed read, `06 08` raw read);
 anything else is rejected before the transport sees it. Activation (`07`),
 reset, thresholds, calibration, key registration, and firmware frames are never
-built. The 16-byte link credential comes from a `CbioAuthMaterialProvider`
-whose compiled default is the derivation-recorded constant; it is never logged,
-published in a snapshot, or attached to an exception.
+built. The vendor material the link authenticates with is resolved once per
+session from an injected `CbioCredentialSource`; it is never logged, published
+in a snapshot, or attached to an exception, and the app's platform registry
+leaves the driver out entirely when a build did not supply it.
 
 The sensor answers one `06 08` request with a stream of `08` batches pushed to
 the same characteristic, so history is an ingest problem rather than a
