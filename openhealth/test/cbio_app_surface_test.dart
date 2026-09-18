@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/health_state_store.dart';
+import 'package:openglucose/src/sensor_connection_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -117,6 +119,96 @@ void main() {
       'Fetching sensor history: 1200 of 1520 records',
     );
   });
+
+  test('the progress card copy comes from the closed phase, never the driver', () {
+    // A syncing snapshot with no closed phase must fall through to the generic
+    // stage label. The driver's status text is an internal, unbounded string.
+    expect(
+      cbioProgressTextForSnapshot(
+        CgmSessionSnapshot(
+          stage: CgmSyncStage.syncing,
+          statusText: 'Listening for notifications',
+          sensor: _sensor,
+          capabilities: _sensor.capabilities,
+        ),
+      ),
+      isNull,
+    );
+    expect(
+      cbioProgressTextForSnapshot(
+        CgmSessionSnapshot(
+          stage: CgmSyncStage.syncing,
+          statusText: 'anything at all',
+          sensor: _sensor,
+          capabilities: _sensor.capabilities,
+          metadata: const <String, String>{
+            cbioPhaseMetadataKey: CbioSessionPhase.authenticating,
+          },
+        ),
+      ),
+      'Checking the sensor link',
+    );
+    expect(
+      cbioProgressTextForSnapshot(
+        _snapshot(
+          stage: CgmSyncStage.syncing,
+          statusText: 'whatever',
+          history: const <CgmReading>[],
+          historySync: const CgmHistorySyncState(),
+        ),
+      ),
+      isNot(contains('whatever')),
+    );
+  });
+
+  testWidgets(
+    'a syncing cbio session shows the bounded-sync stage label, not the driver text',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _ScanningCbioDriver(
+          CgmSessionSnapshot(
+            stage: CgmSyncStage.syncing,
+            statusText: 'Listening for notifications',
+            sensor: _sensor,
+            capabilities: _sensor.capabilities,
+          ),
+        ),
+        healthStateStore: PreferencesHealthStateStore(preferences),
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: SensorConnectionScreen(
+                controller: controller,
+                inline: true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey<String>('connectButton-1')));
+      for (var attempt = 0; attempt < 12; attempt += 1) {
+        await tester.pump(const Duration(milliseconds: 1));
+      }
+
+      // The bounded-failure contract asserts this stage label while a session
+      // has connected but not yet decoded anything.
+      expect(find.text('Syncing sensor history'), findsOneWidget);
+      expect(find.text('Listening for notifications'), findsNothing);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.pump();
+    },
+  );
 
   testWidgets('the dashboard shows the live value with its provisional unit', (
     tester,
@@ -292,6 +384,82 @@ final class _CbioSurfaceSession implements CgmSession {
   @override
   Stream<CgmSessionSnapshot> get snapshots =>
       const Stream<CgmSessionSnapshot>.empty();
+
+  @override
+  CgmUnsafeAdmin? get unsafeAdmin => null;
+
+  @override
+  Future<void> disconnect() async {}
+
+  @override
+  Future<List<CgmCalibrationEntry>> fetchCalibrations() async =>
+      const <CgmCalibrationEntry>[];
+
+  @override
+  Future<void> refresh() async {}
+
+  @override
+  Future<List<CgmDiagnosticItem>> refreshDiagnostics() async =>
+      const <CgmDiagnosticItem>[];
+
+  @override
+  Future<void> refreshLiveData() async {}
+
+  @override
+  Future<void> submitCalibration({
+    required int glucoseMgdl,
+    int? sensorMinute,
+    DateTime? recordedAt,
+  }) async {}
+
+  @override
+  Future<void> syncHistory({
+    bool includeRawHistory = false,
+    int? requestedStartOffset,
+  }) async {}
+}
+
+/// A driver that advertises one CBio sensor, so the connection screen can be
+/// driven through its real connect button and reach the progress card.
+final class _ScanningCbioDriver implements CgmDriver {
+  _ScanningCbioDriver(this.snapshot);
+
+  final CgmSessionSnapshot snapshot;
+
+  @override
+  String get driverId => 'cbio';
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) async* {
+    yield _sensor;
+  }
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async =>
+      _FrozenCbioSession(sensor: sensor, snapshot: snapshot);
+}
+
+/// A session frozen on one snapshot; it never emits anything else.
+final class _FrozenCbioSession implements CgmSession {
+  _FrozenCbioSession({required this.sensor, required this.snapshot})
+    : currentSnapshot = snapshot;
+
+  final CgmSessionSnapshot snapshot;
+
+  @override
+  final DiscoveredSensor sensor;
+
+  @override
+  CgmSessionSnapshot currentSnapshot;
+
+  @override
+  Stream<CgmLogEntry> get logs => const Stream<CgmLogEntry>.empty();
+
+  @override
+  Stream<CgmSessionSnapshot> get snapshots => const Stream.empty();
 
   @override
   CgmUnsafeAdmin? get unsafeAdmin => null;
