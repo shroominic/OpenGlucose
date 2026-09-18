@@ -196,4 +196,88 @@ void main() {
     );
     expect(RegExp(r'[0-9a-f]{32,}').hasMatch(encoded), isFalse);
   });
+
+  test('a recorded artifact validates and leak paths are caught', () {
+    final artifact =
+        jsonDecode(jsonEncode(evidence().toJson())) as Map<String, Object?>;
+    expect(cbioSessionEvidenceArtifactViolations(artifact), isEmpty);
+
+    Map<String, Object?> mutated(void Function(Map<String, Object?>) change) {
+      final copy =
+          jsonDecode(jsonEncode(evidence().toJson())) as Map<String, Object?>;
+      change(copy);
+      return copy;
+    }
+
+    expect(
+      cbioSessionEvidenceArtifactViolations(artifact['outcome']),
+      contains('artifact_not_an_object'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          copy['schema'] = 'cbio.session-evidence/2';
+        }),
+      ),
+      contains('unknown_schema'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          copy['unitStatus'] = 'mg/dL';
+        }),
+      ),
+      contains('unit_status_claimed'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          (copy['errors']! as Map<String, Object?>)['made_up'] = 1;
+        }),
+      ),
+      contains('error_reason_unknown:made_up'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          (copy['writes']! as Map<String, Object?>)['activation'] = 1;
+        }),
+      ),
+      contains('write_kind_unknown:activation'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          final records = copy['records']! as Map<String, Object?>;
+          records['rawGlucoseMaximum'] = cbioRawGlucoseMaximum + 1;
+        }),
+      ),
+      contains('raw_glucose_outside_envelope:rawGlucoseMaximum'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          copy['endedAtUtc'] = '2025-01-01T00:00:00.000Z';
+        }),
+      ),
+      contains('clock_moved_backwards'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+          (copy['identity']! as Map<String, Object?>)['platform'] =
+              'android AA:BB:CC:DD:EE:FF';
+        }),
+      ),
+      contains('identity_leak'),
+    );
+    expect(
+      cbioSessionEvidenceArtifactViolations(
+        mutated((copy) {
+        (copy['identity']! as Map<String, Object?>)['platform'] = 'a' * 40;
+        }),
+      ),
+      contains('identity_leak'),
+    );
+  });
 }

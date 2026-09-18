@@ -4,6 +4,7 @@ SHELL := /bin/sh
 
 .PHONY: help bootstrap tooling-bootstrap tooling-check hooks format \
 	format-check lint typecheck test-unit test-integration test-e2e test \
+	cbio-gs1-evidence \
 	build build-android build-web build-ios build-macos test-ios-native \
 	test-macos-native \
 	verify-android-release-signing check
@@ -49,6 +50,9 @@ test-integration: ## Run every tagged or directory-based integration test.
 
 test-e2e: ## Report the explicitly deferred device end-to-end lane.
 	@./scripts/flutter-workspace.sh test-e2e
+
+cbio-gs1-evidence: ## Run one GS1 session on a device and record a redacted artifact.
+	@./scripts/cbio-gs1-evidence.sh
 
 test: test-unit test-integration ## Run all locally configured automated tests.
 
