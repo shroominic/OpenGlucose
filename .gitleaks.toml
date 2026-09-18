@@ -1,0 +1,17 @@
+# Secret scanning policy for the scheduled repository sweep.
+#
+# The scheduled `Security` run scans the whole clone, including commits that are
+# only reachable from other branches, so a false positive anywhere in the shared
+# history reddens `main` as well. Allowlisting stays narrow here on purpose:
+# neither the rule nor the file is exempt, only the exact non-secret value
+# below, matched against the flagged line.
+
+title = "OpenGlucose secret scanning policy"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "macOS self-test storage entry name: a local keychain label, not a credential."
+regexTarget = "line"
+regexes = ['''ct5[.]macos[.]selftest[.]v1''']
