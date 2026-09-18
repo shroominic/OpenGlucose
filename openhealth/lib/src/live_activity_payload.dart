@@ -90,9 +90,18 @@ LiveActivityPayload buildLiveActivityPayload({
 }) {
   final reading = currentReadingForSnapshot(snapshot, latestReading);
   final effectiveNow = now ?? DateTime.now();
+  // The surface's staleness follows the youngest honest clock this snapshot
+  // has. For the CBio protocol that is the receipt time, which is used here
+  // and nowhere else: it is never published as a sensor timestamp.
+  final freshnessAt = liveSurfaceFreshnessAt(
+    snapshot: snapshot,
+    reading: reading,
+    now: effectiveNow,
+  );
+  final isStale = liveSurfaceIsStale(freshnessAt, now: effectiveNow);
   if (reading?.isDisplayProvisional == true ||
       reading?.source == CgmRecordSource.raw) {
-    return const LiveActivityPayload(
+    return LiveActivityPayload(
       sensorName: liveSurfaceBrandName,
       stageCode: 'progress',
       stageLabel: 'VERIFYING',
@@ -103,7 +112,7 @@ LiveActivityPayload buildLiveActivityPayload({
       detailText: 'Experimental readings are available in the app only.',
       trendSymbol: '',
       deltaText: '',
-      isStale: true,
+      isStale: isStale,
     );
   }
   final warmup = computeWarmupStatus(
@@ -150,9 +159,6 @@ LiveActivityPayload buildLiveActivityPayload({
     reading?.recordedAt,
     now: effectiveNow,
   );
-  final isStale =
-      displayRecordedAt == null ||
-      effectiveNow.difference(displayRecordedAt) > const Duration(minutes: 10);
   final trend = glucoseTrendSummary(
     isLibreGen1Snapshot(snapshot) && reading == null
         ? const <CgmReading>[]
