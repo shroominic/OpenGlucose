@@ -6,7 +6,7 @@ SHELL := /bin/sh
 	format-check lint typecheck test-unit test-integration test-e2e test \
 	build build-android build-web build-ios build-macos test-ios-native \
 	test-macos-native \
-	verify-android-release-signing check
+	verify-android-release-signing vendor-material-guard check
 
 platform_checks :=
 ifeq ($(shell uname -s),Darwin)
@@ -25,6 +25,9 @@ tooling-bootstrap: ## Install checksum-pinned repository quality tools.
 
 tooling-check: tooling-bootstrap ## Run ShellCheck and actionlint with pinned versions.
 	@./scripts/check-tooling.sh
+
+vendor-material-guard: tooling-bootstrap ## Reject vendor material and prove the guard with a canary.
+	@./scripts/check-cbio-vendor-material.sh
 
 hooks: ## Install the pinned Lefthook Git hooks.
 	@./scripts/install-lefthook.sh
@@ -75,4 +78,4 @@ test-macos-native: ## Run the macOS RunnerTests on this Mac.
 verify-android-release-signing: ## Prove Android release signing fails closed without credentials.
 	@./scripts/flutter-workspace.sh verify-android-release-signing
 
-check: tooling-check format-check lint test build verify-android-release-signing $(platform_checks) ## Run every required CI gate supported by this host.
+check: tooling-check vendor-material-guard format-check lint test build verify-android-release-signing $(platform_checks) ## Run every required CI gate supported by this host.

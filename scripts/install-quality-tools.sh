@@ -5,6 +5,7 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 tools_bin="$repo_root/.dart_tool/quality-tools/bin"
 shellcheck_version=0.11.0
 actionlint_version=1.7.12
+gitleaks_version=8.24.3
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -40,8 +41,15 @@ if [ -x "$tools_bin/actionlint" ]; then
   [ "$installed_actionlint" != "$actionlint_version" ] || actionlint_installed=true
 fi
 
-if [ "$shellcheck_installed" = true ] && [ "$actionlint_installed" = true ]; then
-  printf 'ShellCheck %s and actionlint %s are installed.\n' "$shellcheck_version" "$actionlint_version"
+gitleaks_installed=false
+if [ -x "$tools_bin/gitleaks" ]; then
+  installed_gitleaks=$("$tools_bin/gitleaks" version)
+  [ "$installed_gitleaks" != "$gitleaks_version" ] || gitleaks_installed=true
+fi
+
+if [ "$shellcheck_installed" = true ] && [ "$actionlint_installed" = true ] && [ "$gitleaks_installed" = true ]; then
+  printf 'ShellCheck %s, actionlint %s, and gitleaks %s are installed.\n' \
+    "$shellcheck_version" "$actionlint_version" "$gitleaks_version"
   exit 0
 fi
 
@@ -54,24 +62,32 @@ case "$(uname -s):$(uname -m)" in
     shellcheck_sha=339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f
     actionlint_platform=darwin_arm64
     actionlint_sha=aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f
+    gitleaks_platform=darwin_arm64
+    gitleaks_sha=b90f13bb8c90ab72083d9b0c842e39dafb82c0e5c3f872f407366b7a58909013
     ;;
   Darwin:x86_64)
     shellcheck_platform=darwin.x86_64
     shellcheck_sha=c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51
     actionlint_platform=darwin_amd64
     actionlint_sha=5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644
+    gitleaks_platform=darwin_x64
+    gitleaks_sha=41c44ae8ad1d6eef57d4526ad0fd67d8129eee9a856f55c2b3b9395fd3d9ec0f
     ;;
   Linux:aarch64|Linux:arm64)
     shellcheck_platform=linux.aarch64
     shellcheck_sha=68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc
     actionlint_platform=linux_arm64
     actionlint_sha=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+    gitleaks_platform=linux_arm64
+    gitleaks_sha=5f2edbe1f49f7b920f9e06e90759947d3c5dfc16f752fb93aaafc17e9d14cf07
     ;;
   Linux:x86_64|Linux:amd64)
     shellcheck_platform=linux.x86_64
     shellcheck_sha=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
     actionlint_platform=linux_amd64
     actionlint_sha=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    gitleaks_platform=linux_x64
+    gitleaks_sha=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
     ;;
   *) die "unsupported quality-tool platform: $(uname -s) $(uname -m)" ;;
 esac
@@ -87,6 +103,7 @@ trap 'exit 143' TERM
 
 shellcheck_archive="$temporary_dir/shellcheck.tar.gz"
 actionlint_archive="$temporary_dir/actionlint.tar.gz"
+gitleaks_archive="$temporary_dir/gitleaks.tar.gz"
 
 curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
   --output "$shellcheck_archive" \
@@ -98,13 +115,20 @@ curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
   "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_${actionlint_platform}.tar.gz"
 verify_checksum "$actionlint_archive" "$actionlint_sha"
 
-mkdir -p "$temporary_dir/shellcheck" "$temporary_dir/actionlint" "$tools_bin"
+curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+  --output "$gitleaks_archive" \
+  "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks_version}/gitleaks_${gitleaks_version}_${gitleaks_platform}.tar.gz"
+verify_checksum "$gitleaks_archive" "$gitleaks_sha"
+
+mkdir -p "$temporary_dir/shellcheck" "$temporary_dir/actionlint" "$temporary_dir/gitleaks" "$tools_bin"
 tar -xzf "$shellcheck_archive" -C "$temporary_dir/shellcheck"
 tar -xzf "$actionlint_archive" -C "$temporary_dir/actionlint"
+tar -xzf "$gitleaks_archive" -C "$temporary_dir/gitleaks"
 install -m 0755 \
   "$temporary_dir/shellcheck/shellcheck-v${shellcheck_version}/shellcheck" \
   "$tools_bin/shellcheck"
 install -m 0755 "$temporary_dir/actionlint/actionlint" "$tools_bin/actionlint"
+install -m 0755 "$temporary_dir/gitleaks/gitleaks" "$tools_bin/gitleaks"
 
-printf 'Installed checksum-pinned ShellCheck %s and actionlint %s.\n' \
-  "$shellcheck_version" "$actionlint_version"
+printf 'Installed checksum-pinned ShellCheck %s, actionlint %s, and gitleaks %s.\n' \
+  "$shellcheck_version" "$actionlint_version" "$gitleaks_version"
