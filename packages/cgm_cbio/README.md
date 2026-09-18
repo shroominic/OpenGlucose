@@ -34,11 +34,14 @@ Separate offline entry points inspect `08` raw-data batches,
 `F0/04` storage replies, and `F0/03` time replies:
 `parseCbioRawDataFrame`, `parseCbioStorageFrame`, and `parseCbioTimeFrame`.
 These require complete plaintext data frames and reject control ACKs. Raw
-records retain temperature/current/dump integers plus packed fields; none is
-converted to a physical unit. Time fields have no assigned epoch, and storage
-status is not interpreted. The existing `CbioFrame` hierarchy and generic
-parser acceptance remain unchanged. These entry points do not select firmware,
-send queries, or authorize a live read.
+records retain `rawTemperature`, `rawDump`, the reading-bearing `rawPayload`
+word, and the firmware's `processed` word; `parseCbioRawDataFrame` is the single
+owner of that eight-byte layout, so no other path duplicates the offsets. Only
+`rawPayload` is converted, at `raw / 10`, and nothing is presented as a
+physical unit (`isUnitVerified` is always false). Time fields have no assigned
+epoch, and storage status is not interpreted. The existing `CbioFrame`
+hierarchy and generic parser acceptance remain unchanged. These entry points do
+not select firmware, send queries, or authorize a live read.
 
 `parseCbioActivationFrame` separately reads the five-byte `F0/02` state reply
 and preserves its raw byte without an active/inactive enum.
@@ -61,6 +64,12 @@ no established unit or scale. On the live sensor an authenticated session
 streams a contiguous raw archive up to the present; the `0A` packed field is
 zero throughout, so only `08` carries usable content. See the
 [live record](../../docs/testing/cbio-gs1-glucose-live.md).
+
+`cbio_decode_comparison.dart` decodes one captured window through both the app's
+live path and the evidence path and reports per-record agreement (`compared`,
+`agreeing`, `missing`, `disagreeing`). It exists because a field-identity bug is
+invisible in an aggregate range and obvious in the bytes: the evidence path once
+read the empty `processed` word instead of the reading-bearing `rawPayload` word.
 
 Run package checks from this directory with the pinned Dart SDK:
 
