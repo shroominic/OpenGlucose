@@ -2,6 +2,13 @@
 
 ## 0.1.0
 
+- Add `CbioSessionEvidence`, `CbioSessionOutcome`, and `CbioWriteKind`: a pure,
+  host-tested record of one device-backed session (outcome, classified write
+  kinds, record counts and index ranges, bounded timing, closed error taxonomy,
+  harness/app identity) whose `invariantViolations()` is the verdict a harness
+  asserts. It cannot carry a sensor address, credential bytes, vendor material,
+  or a physical glucose unit, and `unitStatus` stays `unverified`.
+
 - Vendor link material (stream key, authentication material, prompt) is supplied
   by an injected `CbioCredentialSource`. Nothing is compiled into the package
   and no value is rendered in `toString`, a snapshot, or an exception.
