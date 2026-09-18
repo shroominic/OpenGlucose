@@ -55,6 +55,24 @@ abstract final class CbioSessionPhase {
   static const String failed = 'failed';
 }
 
+/// Why a masked frame did, or did not, reach the radio.
+///
+/// These are not interchangeable. A refused write is terminal, an exhausted
+/// read budget is not, and a blocked frame never left the app - so the session
+/// can fail closed on the one and carry on with the others.
+enum CbioFrameWrite {
+  /// The command characteristic accepted the frame.
+  sent,
+  /// The transport threw or timed out: the sensor never received the frame.
+  failed,
+  /// The session is closing or the link is gone; there is nothing to send to.
+  unavailable,
+  /// The frame was not one of the permitted commands, so it stayed in the app.
+  blocked,
+  /// The per-session read budget is spent.
+  budgetExhausted,
+}
+
 /// Closed failure codes. They carry no payload and no credential.
 abstract final class CbioSessionFailure {
   static const String connect = 'cbio.connect.failed';
@@ -337,11 +355,14 @@ final class CbioGlucoseSession implements CgmSession {
     // The vendor application issues one packed read first. This firmware
     // answers it with frozen zeros, so its content is ignored and the raw
     // path below carries every reading.
-    await _sendMasked(
+    final query = await _sendMasked(
       buildMaskedCbioGlucoseQuery(0),
       label: 'glucose-0a',
       isRead: true,
     );
+    if (!_requireWritten(query)) {
+      return;
+    }
     _beginHistory(_historyStartIndex);
   }
 
@@ -369,7 +390,7 @@ final class CbioGlucoseSession implements CgmSession {
       label: 'auth',
       isRead: false,
     );
-    if (!wrote) {
+    if (!_requireWritten(wrote)) {
       _authReply = null;
       return false;
     }
@@ -438,7 +459,7 @@ final class CbioGlucoseSession implements CgmSession {
       label: 'clock',
       isRead: false,
     );
-    if (!wrote) {
+    if (!_requireWritten(wrote)) {
       return false;
     }
     _clockWritten = true;
@@ -526,9 +547,11 @@ final class CbioGlucoseSession implements CgmSession {
       label: label,
       isRead: true,
     );
-    if (!wrote) {
+    if (wrote != CbioFrameWrite.sent) {
       _liveWindow = null;
-      _publishBudgetState();
+      if (wrote == CbioFrameWrite.budgetExhausted) {
+        _publishBudgetState();
+      }
       return;
     }
     _liveResponseTimer?.cancel();
@@ -655,29 +678,29 @@ final class CbioGlucoseSession implements CgmSession {
     }
   }
 
-  Future<bool> _sendMasked(
+  Future<CbioFrameWrite> _sendMasked(
     List<int> masked, {
     required String label,
     required bool isRead,
   }) async {
     if (_closing) {
-      return false;
+      return CbioFrameWrite.unavailable;
     }
     final connection = _connection;
     final command = _command;
     if (connection == null || command == null) {
-      return false;
+      return CbioFrameWrite.unavailable;
     }
     final plaintext = unmaskCbioFrame(masked);
     if (!_isAllowedCommand(plaintext)) {
       // Defence in depth: an unrecognised command never reaches the radio.
       _log(CgmLogLevel.error, 'cbio.write.blocked:$label');
-      return false;
+      return CbioFrameWrite.blocked;
     }
     if (isRead && _readsUsed >= timing.maxReadsPerSession) {
       _budgetExhausted = true;
       _log(CgmLogLevel.warning, 'cbio.read.budget');
-      return false;
+      return CbioFrameWrite.budgetExhausted;
     }
     if (isRead) {
       _readsUsed += 1;
@@ -687,11 +710,25 @@ final class CbioGlucoseSession implements CgmSession {
           .write(command, masked, withoutResponse: false)
           .timeout(timing.writeTimeout);
       _log(CgmLogLevel.info, 'cbio.write.$label');
-      return true;
+      return CbioFrameWrite.sent;
     } on Object {
       _log(CgmLogLevel.error, 'cbio.write.failed:$label');
-      return false;
+      return CbioFrameWrite.failed;
     }
+  }
+
+  /// Ends setup when a frame the sensor must receive never reached the radio.
+  ///
+  /// Returning quietly here is what left a refused write parked in the
+  /// connecting stage with no terminal state and no code to report.
+  bool _requireWritten(CbioFrameWrite outcome) {
+    if (outcome == CbioFrameWrite.sent) {
+      return true;
+    }
+    if (outcome == CbioFrameWrite.failed) {
+      _fail(CbioSessionFailure.write);
+    }
+    return false;
   }
 
   static bool _isAllowedCommand(List<int> plaintext) {
