@@ -20,7 +20,10 @@
 // An address recovered from advertisement evidence can be supplied instead of
 // scanning: --dart-define=CBIO_TARGET_DEVICE_ID=AA:BB:CC:DD:EE:FF
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -40,6 +43,31 @@ const Duration _teardownWindow = Duration(seconds: 15);
 const int _maxWrites = 5;
 
 const String _targetDeviceId = String.fromEnvironment('CBIO_TARGET_DEVICE_ID');
+
+/// Build identity, supplied by the evidence run script. Never the sensor
+/// address and never credential material.
+const String _harnessRevision = String.fromEnvironment(
+  'CBIO_REVISION',
+  defaultValue: 'unknown',
+);
+const String _appPackage = String.fromEnvironment(
+  'CBIO_APP_PACKAGE',
+  defaultValue: 'unknown',
+);
+const String _appRevision = String.fromEnvironment(
+  'CBIO_APP_REVISION',
+  defaultValue: 'unknown',
+);
+
+/// Writes this harness may send. Anything else fails before it is transmitted.
+const Set<CbioWriteKind> _allowedWrites = <CbioWriteKind>{
+  CbioWriteKind.deviceInformationRead,
+  CbioWriteKind.glucoseRead,
+};
+const Set<CbioWriteKind> _requiredWrites = <CbioWriteKind>{
+  CbioWriteKind.deviceInformationRead,
+  CbioWriteKind.glucoseRead,
+};
 
 String _hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
@@ -113,6 +141,29 @@ _GlucoseBatch? _decodeGlucose(List<int> bytes) {
   );
 }
 
+/// Cross-checks this harness's own 0A decode against the produced parser, so a
+/// magnitude disagreement between the two paths fails the device run instead of
+/// being visible only to a human comparing printed lines.
+void _crossCheckGlucose(List<int> bytes, _GlucoseBatch local, _QueryRun run) {
+  List<int>? fromPackage;
+  try {
+    fromPackage = [
+      for (final record in parseCbioGlucoseBatch(bytes).records)
+        record.rawGlucose,
+    ];
+  } on CbioFrameException {
+    // The production parser is stricter; a rejection here is recorded, not
+    // silently upgraded into agreement.
+    run.noteError('decode_rejected');
+  }
+  if (fromPackage == null) return;
+  expect(
+    fromPackage,
+    local.rawGlucose,
+    reason: 'the harness and the production parser disagree on raw glucose',
+  );
+}
+
 /// Decoded `F0/03` time information, without an epoch claim.
 final class _TimeInformation {
   const _TimeInformation({
@@ -173,20 +224,89 @@ void main() {
   testWidgets(
     'Cbio GS1 vendor read queries: storage, time, and glucose batches',
     (tester) async {
-      await tester.runAsync(_runQueries);
+      final run = _QueryRun(startedAtUtc: DateTime.now().toUtc());
+      await tester.runAsync(() => _runQueries(run));
+      final evidence = run.evidence();
+      // The artifact is emitted before the verdict, so a failed run still
+      // leaves a reviewable record behind.
+      _emit('CBIO-EVIDENCE ${jsonEncode(evidence.toJson())}');
+      expect(
+        evidence.invariantViolations(),
+        isEmpty,
+        reason: 'session invariants',
+      );
+      expect(
+        evidence.outcome,
+        CbioSessionOutcome.completed,
+        reason: 'the session did not reach a completed verdict',
+      );
+      expect(
+        evidence.notifications,
+        greaterThan(0),
+        reason: 'the sensor answered no read',
+      );
+      expect(
+        evidence.glucoseIndices,
+        isNotEmpty,
+        reason: 'no vendor 0A glucose batch was decoded',
+      );
     },
     timeout: const Timeout(Duration(minutes: 6)),
   );
 }
 
-Future<void> _runQueries() async {
+/// Mutable verdict inputs for one raw read-query session.
+final class _QueryRun {
+  _QueryRun({required this.startedAtUtc});
+
+  final DateTime startedAtUtc;
+  final Map<CbioWriteKind, int> writeKinds = <CbioWriteKind, int>{};
+  final Map<int, int> glucoseByIndex = <int, int>{};
+  final Map<String, int> errors = <String, int>{};
+  int notifications = 0;
+  bool targetAcquired = false;
+  bool gattReleased = false;
+  CbioSessionOutcome outcome = CbioSessionOutcome.failed;
+
+  void wrote(CbioWriteKind kind) =>
+      writeKinds[kind] = (writeKinds[kind] ?? 0) + 1;
+
+  void noteError(String reason) => errors[reason] = (errors[reason] ?? 0) + 1;
+
+  CbioSessionEvidence evidence() => CbioSessionEvidence(
+    harness: 'openhealth/integration_test/cbio_glucose_query_test.dart',
+    harnessRevision: _harnessRevision,
+    appPackage: _appPackage,
+    appRevision: _appRevision,
+    platform: '${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+    unitStatus: 'unverified',
+    startedAtUtc: startedAtUtc,
+    endedAtUtc: DateTime.now().toUtc(),
+    outcome: outcome,
+    targetAcquired: targetAcquired,
+    gattReleased: gattReleased,
+    notifications: notifications,
+    writeKinds: writeKinds,
+    requiredWrites: _requiredWrites,
+    allowedWrites: _allowedWrites,
+    glucoseIndices: glucoseByIndex.keys.toList()..sort(),
+    rawIndices: const <int>[],
+    rawGlucoseValues: glucoseByIndex.values.toList(),
+    errors: errors,
+  );
+}
+
+Future<void> _runQueries(_QueryRun run) async {
   final targetId = _targetDeviceId.isNotEmpty
       ? _targetDeviceId
       : await _acquireTargetId();
   if (targetId == null) {
     _emit('CBIO-Q abort=no-target');
+    run.noteError('target_missing');
+    run.outcome = CbioSessionOutcome.abortedNoTarget;
     return;
   }
+  run.targetAcquired = true;
   _emit('CBIO-Q target-found');
 
   final device = fbp.BluetoothDevice.fromId(targetId);
@@ -233,6 +353,8 @@ Future<void> _runQueries() async {
     _emit('CBIO-Q services=${services.map((s) => s.uuid.str).join(',')}');
     if (notify == null || write == null) {
       _emit('CBIO-Q abort=missing-characteristics notify=$notifyUuid');
+      run.noteError('characteristic_missing');
+      run.outcome = CbioSessionOutcome.abortedMissingCharacteristics;
       return;
     }
 
@@ -241,6 +363,7 @@ Future<void> _runQueries() async {
 
     subscription = notify.onValueReceived.listen((bytes) {
       notifications.add((elapsed(), List<int>.from(bytes)));
+      run.notifications = notifications.length;
       _emit('CBIO-Q notify t=${elapsed()} bytes=${_hex(bytes)}');
     });
     await notify
@@ -254,7 +377,14 @@ Future<void> _runQueries() async {
         _emit('CBIO-Q skip label=$label reason=write-budget');
         return;
       }
+      final kind = CbioWriteKind.classify(query);
+      expect(
+        _allowedWrites,
+        contains(kind),
+        reason: 'write $label is outside the allowed set',
+      );
       writes += 1;
+      run.wrote(kind);
       final before = notifications.length;
       _emit('CBIO-Q write n=$writes label=$label bytes=${_hex(query)}');
       try {
@@ -268,6 +398,7 @@ Future<void> _runQueries() async {
         _emit('CBIO-Q write-ok n=$writes');
       } on Object catch (error) {
         _emit('CBIO-Q write-failed n=$writes error=${error.runtimeType}');
+        run.noteError('write_failed');
       }
       final deadline = DateTime.now().add(_replyWindow);
       while (DateTime.now().isBefore(deadline)) {
@@ -282,6 +413,11 @@ Future<void> _runQueries() async {
         );
         final glucose = _decodeGlucose(bytes);
         if (glucose != null) {
+          for (var i = 0; i < glucose.count; i += 1) {
+            run.glucoseByIndex[glucose.initialIndex + i] =
+                glucose.rawGlucose[i];
+          }
+          _crossCheckGlucose(bytes, glucose, run);
           _emit(
             'CBIO-Q glucose count=${glucose.count} '
             'initial=${glucose.initialIndex} last=${glucose.lastIndex} '
@@ -310,6 +446,7 @@ Future<void> _runQueries() async {
         _emit(
           'CBIO-Q reply label=$label none-within-${_replyWindow.inSeconds}s',
         );
+        run.noteError('reply_timeout');
       }
     }
 
@@ -327,8 +464,17 @@ Future<void> _runQueries() async {
     _emit(
       'CBIO-Q summary writes=$writes notifications=${notifications.length}',
     );
+    run.outcome = CbioSessionOutcome.completed;
+  } on TestFailure {
+    // An in-flight assertion (an out-of-envelope write, a decode disagreement)
+    // is not a session failure: record it and let the test fail loudly.
+    run.noteError('unexpected_error');
+    run.outcome = CbioSessionOutcome.failed;
+    rethrow;
   } on Object catch (error) {
     _emit('CBIO-Q failed error=${error.runtimeType}');
+    run.noteError('unexpected_error');
+    run.outcome = CbioSessionOutcome.failed;
   } finally {
     try {
       await subscription?.cancel().timeout(_teardownWindow);
@@ -338,8 +484,10 @@ Future<void> _runQueries() async {
     try {
       await device.disconnect().timeout(_teardownWindow);
       _emit('CBIO-Q disconnect-ok');
+      run.gattReleased = true;
     } on Object {
       _emit('CBIO-Q disconnect-failed');
+      run.noteError('disconnect_failed');
     }
   }
 }

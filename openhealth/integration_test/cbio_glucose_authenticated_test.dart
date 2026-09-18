@@ -15,7 +15,8 @@
 // Masked bytes are logged; the authentication frame's plaintext is not, because
 // it carries the link credential.
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
@@ -58,6 +59,35 @@ final CbioMapCredentialSource _credentials =
         cbioAuthTriggerDefine: cbioAuthTriggerHex,
     });
 
+/// Build identity, supplied by the evidence run script. Never the sensor
+/// address and never credential material.
+const String _harnessRevision = String.fromEnvironment(
+  'CBIO_REVISION',
+  defaultValue: 'unknown',
+);
+const String _appPackage = String.fromEnvironment(
+  'CBIO_APP_PACKAGE',
+  defaultValue: 'unknown',
+);
+const String _appRevision = String.fromEnvironment(
+  'CBIO_APP_REVISION',
+  defaultValue: 'unknown',
+);
+
+/// Writes this harness may send: link setup, one clock set, and read queries.
+/// A frame that does not classify into this set fails before it is transmitted.
+const Set<CbioWriteKind> _allowedWrites = <CbioWriteKind>{
+  CbioWriteKind.authentication,
+  CbioWriteKind.clockSet,
+  CbioWriteKind.glucoseRead,
+  CbioWriteKind.rawHistoryRead,
+};
+const Set<CbioWriteKind> _requiredWrites = <CbioWriteKind>{
+  CbioWriteKind.authentication,
+  CbioWriteKind.glucoseRead,
+  CbioWriteKind.rawHistoryRead,
+};
+
 /// First raw (`08`) index to request. Zero starts a full history replay; a
 /// higher value resumes partway so a bounded window can reach the newest
 /// stored record instead of re-reading the whole archive.
@@ -78,18 +108,91 @@ void main() {
   testWidgets(
     'Cbio GS1 authenticated session: auth, live glucose, history',
     (tester) async {
-      await tester.runAsync(_runSession);
+      final run = _SessionRun(startedAtUtc: DateTime.now().toUtc());
+      await tester.runAsync(() => _runSession(run));
+      final evidence = run.evidence();
+      // The artifact is emitted before the verdict, so a failed run still
+      // leaves a reviewable record behind.
+      _emit('CBIO-EVIDENCE ${jsonEncode(evidence.toJson())}');
+      expect(
+        evidence.invariantViolations(),
+        isEmpty,
+        reason: 'session invariants',
+      );
+      expect(
+        evidence.outcome,
+        CbioSessionOutcome.completed,
+        reason: 'the session did not reach a completed verdict',
+      );
+      expect(
+        evidence.notifications,
+        greaterThan(0),
+        reason: 'the link produced no FF31 notification',
+      );
+      expect(
+        evidence.glucoseIndices.isNotEmpty || evidence.rawIndices.isNotEmpty,
+        isTrue,
+        reason: 'the link produced no glucose and no raw history record',
+      );
     },
     timeout: const Timeout(Duration(minutes: 8)),
   );
 }
 
-Future<void> _runSession() async {
+/// Mutable verdict inputs for one authenticated session.
+final class _SessionRun {
+  _SessionRun({required this.startedAtUtc});
+
+  final DateTime startedAtUtc;
+  final Map<CbioWriteKind, int> writeKinds = <CbioWriteKind, int>{};
+  final Map<int, int> glucoseByIndex = <int, int>{};
+  final Map<int, int> rawByIndex = <int, int>{};
+  final Map<String, int> errors = <String, int>{};
+  int notifications = 0;
+  bool targetAcquired = false;
+  bool gattReleased = false;
+  bool authenticationObserved = false;
+  CbioSessionOutcome outcome = CbioSessionOutcome.failed;
+
+  void wrote(CbioWriteKind kind) =>
+      writeKinds[kind] = (writeKinds[kind] ?? 0) + 1;
+
+  void noteError(String reason) => errors[reason] = (errors[reason] ?? 0) + 1;
+
+  CbioSessionEvidence evidence() => CbioSessionEvidence(
+    harness: 'openhealth/integration_test/cbio_glucose_authenticated_test.dart',
+    harnessRevision: _harnessRevision,
+    appPackage: _appPackage,
+    appRevision: _appRevision,
+    platform: '${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+    unitStatus: 'unverified',
+    startedAtUtc: startedAtUtc,
+    endedAtUtc: DateTime.now().toUtc(),
+    outcome: outcome,
+    targetAcquired: targetAcquired,
+    gattReleased: gattReleased,
+    notifications: notifications,
+    writeKinds: writeKinds,
+    requiredWrites: _requiredWrites,
+    allowedWrites: _allowedWrites,
+    glucoseIndices: glucoseByIndex.keys.toList()..sort(),
+    rawIndices: rawByIndex.keys.toList()..sort(),
+    rawGlucoseValues: [
+      ...glucoseByIndex.values,
+      ...rawByIndex.values,
+    ],
+    errors: errors,
+  );
+}
+
+Future<void> _runSession(_SessionRun run) async {
   if (!_credentials.isConfigured) {
     _emit(
       'CBIO-A abort=vendor-material-missing '
       'missing=${_credentials.missing.join(",")}',
     );
+    run.noteError('vendor_material_missing');
+    run.outcome = CbioSessionOutcome.failed;
     return;
   }
   final vendor = _credentials.read();
@@ -99,8 +202,11 @@ Future<void> _runSession() async {
       : await _acquireTargetId();
   if (targetId == null) {
     _emit('CBIO-A abort=no-target');
+    run.noteError('target_missing');
+    run.outcome = CbioSessionOutcome.abortedNoTarget;
     return;
   }
+  run.targetAcquired = true;
   _emit('CBIO-A target-found');
 
   final device = fbp.BluetoothDevice.fromId(targetId);
@@ -144,6 +250,8 @@ Future<void> _runSession() async {
     }
     if (notify == null || write == null) {
       _emit('CBIO-A abort=missing-characteristics');
+      run.noteError('characteristic_missing');
+      run.outcome = CbioSessionOutcome.abortedMissingCharacteristics;
       return;
     }
 
@@ -152,6 +260,7 @@ Future<void> _runSession() async {
 
     subscription = notify.onValueReceived.listen((bytes) {
       masked.add((elapsed(), List<int>.from(bytes)));
+      run.notifications = masked.length;
       final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
       _emit(
         'CBIO-A notify t=${elapsed()} masked=${_hex(bytes)} '
@@ -178,6 +287,7 @@ Future<void> _runSession() async {
       }
     } on Object catch (error) {
       _emit('CBIO-A serial-read failed error=${error.runtimeType}');
+      run.noteError('serial_read_failed');
     }
 
     List<int> reversedFromDeviceId() {
@@ -194,7 +304,14 @@ Future<void> _runSession() async {
         _emit('CBIO-A skip label=$label reason=write-budget');
         return false;
       }
+      final kind = CbioWriteKind.classify(unmaskCbioFrame(bytes, key: vendor.streamKey));
+      expect(
+        _allowedWrites,
+        contains(kind),
+        reason: 'write $label is outside the allowed set',
+      );
       writes += 1;
+      run.wrote(kind);
       _emit('CBIO-A write n=$writes label=$label masked=${_hex(bytes)}');
       try {
         await write!
@@ -209,6 +326,7 @@ Future<void> _runSession() async {
         _emit(
           'CBIO-A write-failed n=$writes label=$label error=${error.runtimeType}',
         );
+        run.noteError('write_failed');
         return false;
       }
       if (wait) {
@@ -224,6 +342,7 @@ Future<void> _runSession() async {
         if (plaintext.length != 5) continue;
         if (plaintext.fold<int>(0, (a, b) => a + b) & 255 != 0) continue;
         if (plaintext[1] == 0x01) {
+          run.authenticationObserved = true;
           _emit(
             'CBIO-A auth-reply opcode=01 result=${plaintext[2]} '
             'status=${plaintext[3]}',
@@ -261,9 +380,11 @@ Future<void> _runSession() async {
         break;
       }
       _emit('CBIO-A auth-failed source=$source');
+      run.noteError('auth_rejected');
     }
     if (!authenticated) {
       _emit('CBIO-A abort=authentication-failed');
+      run.outcome = CbioSessionOutcome.abortedAuthenticationFailed;
       return;
     }
 
@@ -301,6 +422,9 @@ Future<void> _runSession() async {
       try {
         final batch = parseCbioGlucoseBatch(plaintext);
         glucoseRecords.addAll(batch.records);
+        for (final record in batch.records) {
+          run.glucoseByIndex[record.index] = record.rawGlucose;
+        }
         _emit(
           'CBIO-A 0a-batch count=${batch.count} initial=${batch.initialIndex} '
           'last=${batch.lastIndex} baseReindex=${batch.baseReindex}',
@@ -311,6 +435,9 @@ Future<void> _runSession() async {
       try {
         final rawBatch = parseCbioRawDataFrame(plaintext);
         rawRecords.addAll(rawBatch.records);
+        for (final record in rawBatch.records) {
+          run.rawByIndex[record.packed.index] = record.packed.rawGlucose;
+        }
         _emit(
           'CBIO-A 08-batch count=${rawBatch.records.length} '
           'first=${rawBatch.records.first.packed.index} '
@@ -343,8 +470,17 @@ Future<void> _runSession() async {
         'raw=${rawRecords.map((r) => r.packed.rawGlucose).join(',')}',
       );
     }
+    run.outcome = CbioSessionOutcome.completed;
+  } on TestFailure {
+    // An in-flight assertion (an out-of-envelope write) is not a session
+    // failure: record it and let the test fail loudly.
+    run.noteError('unexpected_error');
+    run.outcome = CbioSessionOutcome.failed;
+    rethrow;
   } on Object catch (error) {
     _emit('CBIO-A failed error=${error.runtimeType}');
+    run.noteError('unexpected_error');
+    run.outcome = CbioSessionOutcome.failed;
   } finally {
     try {
       await subscription?.cancel().timeout(_teardownWindow);
@@ -354,8 +490,10 @@ Future<void> _runSession() async {
     try {
       await device.disconnect().timeout(_teardownWindow);
       _emit('CBIO-A disconnect-ok');
+      run.gattReleased = true;
     } on Object {
       _emit('CBIO-A disconnect-failed');
+      run.noteError('disconnect_failed');
     }
   }
 }

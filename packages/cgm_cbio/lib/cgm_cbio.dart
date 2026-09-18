@@ -11,3 +11,4 @@ export 'src/cbio_crypto.dart';
 export 'src/cbio_glucose_sync.dart';
 export 'src/cbio_queries.dart';
 export 'src/cbio_reply_inspection.dart';
+export 'src/cbio_session_evidence.dart';
