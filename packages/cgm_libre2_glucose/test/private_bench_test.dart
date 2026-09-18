@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
+//
+// The private bench reads its inputs only through the audited Darwin
+// descriptor path in `tool/analyze_private_bench.dart`. Every assertion below
+// describes that path's result, so the suite is scoped to macOS; the
+// fail-closed contract that every other host gets instead is asserted in
+// `private_bench_host_scope_test.dart`.
+@TestOn('mac-os')
+library;
+
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
