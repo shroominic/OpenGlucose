@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0
+
+- Vendor link material (stream key, authentication material, prompt) is supplied
+  by an injected `CbioCredentialSource`. Nothing is compiled into the package
+  and no value is rendered in `toString`, a snapshot, or an exception.
 
 - Add the vendor V120 read-query builders, a strict `0A` glucose batch decoder,
   and a bounded `CbioGlucoseSyncSession` for live polling and history paging
