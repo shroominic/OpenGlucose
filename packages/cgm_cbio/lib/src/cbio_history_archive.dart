@@ -7,14 +7,16 @@
 /// guessing when a batch is missing or out of order.
 library;
 
-/// One raw (`08`) record with derived, explicitly unverified glucose values.
+/// One raw (`08`) record with an explicit, unverified engineering value.
 ///
 /// The vendor layout is `temp LE16, dump LE16, current LE16, extra LE16`. Two
-/// independent implementations of this protocol divide `current` by 10 to get
-/// mmol/L and `temp` by 10 to get Celsius, and the observed live values are
-/// consistent with that reading. It is still a derived value: no reference
-/// measurement has confirmed it, so [isUnitVerified] stays false and callers
-/// must show [rawCurrent] alongside any converted number.
+/// independent implementations of this protocol divide `current` by 10, and the
+/// observed live values are consistent with that reading. Nothing establishes
+/// that the divisor is ten *of a particular unit*, and no reference measurement
+/// exists for this sensor, so the record exposes the raw field and its scaled
+/// value and no unit at all: [isUnitVerified] stays false, no accessor carries a
+/// unit in its name, and callers must show [rawCurrent] alongside anything
+/// scaled.
 final class CbioRawGlucoseRecord {
   const CbioRawGlucoseRecord({
     required this.index,
@@ -39,20 +41,21 @@ final class CbioRawGlucoseRecord {
   /// Raw dump field; no meaning is established.
   final int rawDump;
 
-  /// Raw value field. Independent clients read this as tenths of mmol/L.
+  /// Raw value field. Independent clients read this as tenths of a glucose unit.
   final int rawCurrent;
 
   /// Raw trailing field; no meaning is established.
   final int rawExtra;
 
-  /// Derived mmol/L, `rawCurrent / 10`. Not independently validated.
-  double get derivedMillimolesPerLitre => rawCurrent / 10;
+  /// `rawCurrent / 10`, the scale this package and the capture harness read.
+  ///
+  /// This is an unverified engineering value, not mmol/L, not mg/dL, and not any
+  /// other unit. Rendering it with a unit suffix asserts a unit the protocol
+  /// does not establish, which is what the tracking issue is about. A converted
+  /// mg/dL accessor used to live here and was removed for that reason.
+  double get rawCurrentScaled => rawCurrent / 10;
 
-  /// Derived mg/dL from the derived mmol/L. Not independently validated.
-  int get derivedMilligramsPerDecilitre =>
-      (derivedMillimolesPerLitre * 18.0182).round();
-
-  /// Always false until a reference measurement confirms the scale.
+  /// Always false until a reference measurement confirms the scale and unit.
   bool get isUnitVerified => false;
 }
 

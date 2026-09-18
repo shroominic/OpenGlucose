@@ -47,6 +47,28 @@ protocol does not establish.
   per stored minute. It carries no epoch, so the app does not invent a
   wall-clock time from it.
 
+### What the archive adoption changed in the rendered number
+
+The archive used to expose the raw field three ways: `rawCurrent`, a derived
+mmol/L accessor (`rawCurrent / 10`), and a derived mg/dL accessor
+(`rawCurrent / 10 * 18.0182`). Nothing in this repository establishes that
+either unit belongs to the field, so the record now exposes `rawCurrent` and
+`rawCurrentScaled` (`rawCurrent / 10`) and no unit-bearing accessor at all.
+
+The session published the mg/dL derivation into `CgmReading.valueMgdl`, so this
+adoption changes the number a cbio record carries, and therefore every surface
+that reads it:
+
+| Surface | Before | After |
+| --- | --- | --- |
+| Hero card | `5.3`, no unit | `5.3`, no unit (unchanged: it already rendered `rawValue / 10`) |
+| Dashboard chart, `valueMgdl` | `rawCurrent / 10 * 18.0182` (e.g. `95` for raw `53`) | `rawCurrent / 10` (e.g. `5.3` for raw `53`) |
+
+The hero is unchanged; the chart's plotted value is the unit-free scale the hero
+already showed, so app and hero agree instead of the chart asserting a unit the
+protocol never established. Provisional readings are still excluded from Apple
+Health, so no export claims the number as mg/dL either.
+
 ## Clock anchor
 
 The counter stays epoch-less; what the app can offer instead is the one

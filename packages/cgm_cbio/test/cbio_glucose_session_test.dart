@@ -648,9 +648,10 @@ void main() {
         expect(latest.isDisplayProvisional, isTrue);
         expect(latest.rawValue, 97);
         expect(latest.sensorMinute, 3);
-        // The archived record exposes the rounded mg/dL derivation of the
-        // unverified mmol/L scale, never the raw field as a measurement.
-        expect(latest.valueMgdl, 175);
+        // The record carries the unverified /10 scale of its own raw field.
+        // The archive publishes no glucose unit, so the session publishes the
+        // same unit-free number the hero renders - not a converted mg/dL value.
+        expect(latest.valueMgdl, 9.7);
         // These records stamp the clock this session wrote, so the index is
         // anchored to it and each position steps 60 s back from the newest.
         // The counter itself is never the source: the clock-anchor group below
@@ -1026,15 +1027,14 @@ void main() {
 
       for (final record in archived) {
         // The one scale both paths use, stated without a glucose unit.
-        expect(record.derivedMillimolesPerLitre, record.rawCurrent / 10);
+        expect(record.rawCurrentScaled, record.rawCurrent / 10);
         expect(record.isUnitVerified, isFalse);
       }
-      expect(archived.first.derivedMillimolesPerLitre, 4.7);
-      expect(archived.last.derivedMillimolesPerLitre, 5.3);
-      // The mg/dL derivation stays available for the chart's internal scale,
-      // but it is a conversion of an unverified unit, never a measurement.
-      expect(archived.first.derivedMilligramsPerDecilitre, 85);
-      expect(archived.last.derivedMilligramsPerDecilitre, 95);
+      expect(archived.first.rawCurrentScaled, 4.7);
+      expect(archived.last.rawCurrentScaled, 5.3);
+      // No unit-bearing derivation is left to publish: the record exposes the
+      // raw field and its /10 scale, and the glucose unit stays unclaimed until
+      // a reference measurement settles it.
     });
   });
 

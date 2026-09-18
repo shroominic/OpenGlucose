@@ -831,7 +831,11 @@ final class CbioGlucoseSession implements CgmSession {
       <CgmReading>[
         for (final record in _archive.records)
           CgmReading(
-            valueMgdl: record.derivedMilligramsPerDecilitre.toDouble(),
+            // The archive publishes no glucose unit, so the session publishes
+            // the unverified /10 scale of the record's own raw field. This is
+            // the same number the hero renders; it is deliberately not a
+            // conversion into mg/dL, which no reference measurement supports.
+            valueMgdl: record.rawCurrentScaled,
             source: CgmRecordSource.raw,
             sensorMinute: record.index,
             recordedAt: anchor != null && anchor.coversIndex(record.index)
