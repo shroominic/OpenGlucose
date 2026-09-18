@@ -107,6 +107,32 @@ void main() {
     expect(stageLabelForSnapshot(snapshot), 'Live');
   });
 
+  test('a closed CBio failure reaches the user as a sentence', () {
+    for (final code in <String>[
+      CbioSessionFailure.connect,
+      CbioSessionFailure.topology,
+      CbioSessionFailure.authMaterial,
+      CbioSessionFailure.authTimeout,
+      CbioSessionFailure.authRejected,
+      CbioSessionFailure.write,
+      CbioSessionFailure.disconnected,
+    ]) {
+      final snapshot = _snapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'Connection failed',
+        history: const <CgmReading>[],
+        historySync: const CgmHistorySyncState(),
+      ).copyWith(lastError: code);
+      final message = primaryErrorTextForSnapshot(snapshot);
+      expect(message, isNotNull, reason: '$code must reach the failure card');
+      expect(
+        message,
+        isNot(contains('cbio.')),
+        reason: '$code is a support code, not a sentence',
+      );
+    }
+  });
+
   test('history progress wording reports the fetched count', () {
     expect(
       historySyncProgressText(

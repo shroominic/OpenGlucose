@@ -477,6 +477,9 @@ String? primaryErrorTextForSnapshot(CgmSessionSnapshot snapshot) {
         ? userMessageForLibreConnectionLoss(snapshot.lastError)
         : userMessageForLibreConnectionFailure(snapshot.lastError);
   }
+  if (isCbioSnapshot(snapshot)) {
+    return userMessageForCbioFailure(snapshot.lastError);
+  }
   final bleFailure = BleFailure.fromMetadata(snapshot.metadata);
   return bleFailure == null
       ? snapshot.lastError
@@ -515,6 +518,35 @@ String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
     _ => null,
   };
 }
+/// The failure-card sentence for a closed CBio session code.
+///
+/// The session publishes machine codes. They are support codes, not copy: the
+/// failure card is the one place a user reads them, and `cbio.auth.rejected` is
+/// not a sentence. Each code keeps its own failure, because "the sensor refused
+/// this build's credential" and "the sensor is out of range" have different
+/// next steps.
+String userMessageForCbioFailure(String? code) => switch (code) {
+  CbioSessionFailure.authMaterial =>
+    'OpenGlucose could not read the link credential for this sensor. '
+        'Choose another sensor or update the app.',
+  CbioSessionFailure.authRejected =>
+    'The sensor refused the link credential this build uses. '
+        'Choose another sensor or update the app.',
+  CbioSessionFailure.authTimeout =>
+    'The sensor did not answer the link setup. Keep it close and try again.',
+  CbioSessionFailure.topology =>
+    'This sensor does not present the link OpenGlucose supports yet. '
+        'Choose another sensor.',
+  CbioSessionFailure.write =>
+    'The link refused a command from this phone. Keep the sensor close and '
+        'try again.',
+  CbioSessionFailure.disconnected =>
+    'The sensor disconnected. Keep it close and try again.',
+  CbioSessionFailure.connect =>
+    'Could not reach the sensor. Keep it close and try again.',
+  _ => 'OpenGlucose could not connect to this sensor.',
+};
+
 
 /// The provisional marker every CBio surface shows.
 ///

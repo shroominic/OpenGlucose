@@ -505,6 +505,71 @@ void main() {
       await session.disconnect();
     });
 
+    test(
+      'a write the radio refuses fails the setup with its own code',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        await _defaultResponder(connection);
+        connection.onWrite = (_) async {
+          throw StateError('radio refused the frame');
+        };
+
+        final session = CbioGlucoseSession(
+          sensor: _sensor,
+          transport: transport,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        await _pumpUntil(
+          () => session.currentSnapshot.stage == CgmSyncStage.error,
+        );
+
+        expect(
+          session.currentSnapshot.lastError,
+          'cbio.write.failed',
+          reason: 'a frame the sensor never received is its own failure',
+        );
+        expect(session.currentSnapshot.stage, CgmSyncStage.error);
+        expect(
+          session.currentSnapshot.metadata[cbioPhaseMetadataKey],
+          CbioSessionPhase.failed,
+        );
+        await session.disconnect();
+      },
+    );
+
+    test('an unusable credential is never reported as a refused one', () async {
+      final connection = _FakeConnection(serial: <int>[]);
+      final transport = _FakeTransport(connection);
+      await _defaultResponder(connection);
+
+      final session = CbioGlucoseSession(
+        sensor: DiscoveredSensor(
+          driverId: 'cbio',
+          deviceId: 'not-an-address',
+          displayName: 'GS1 sensor',
+          storageKey: 'cbio:test',
+          rssi: -55,
+          capabilities: CbioGlucoseSession.capabilities,
+        ),
+        transport: transport,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.error,
+      );
+
+      expect(session.currentSnapshot.lastError, 'cbio.auth.material');
+      expect(
+        session.currentSnapshot.lastError,
+        isNot('cbio.auth.rejected'),
+        reason: 'the link resolves its own credential before asking the sensor',
+      );
+      await session.disconnect();
+    });
+
     test('never logs the link credential', () async {
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
