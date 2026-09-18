@@ -4,7 +4,8 @@
 /// back on the same characteristic, so a history fetch is an ingest loop, not a
 /// request/response pair. This archive ingests those plaintext frames in
 /// arrival order, keeps one record per index, and reports continuity instead of
-/// guessing when a batch is missing or out of order.
+/// guessing when a batch is missing, out of order, or numbered by a counter
+/// that restarted.
 library;
 
 import 'cbio_frames.dart';
@@ -91,6 +92,16 @@ enum CbioArchiveIngestStatus {
 
   /// The frame starts after a missing index range.
   gap,
+
+  /// The frame re-used an index for a record from a different counter era.
+  ///
+  /// The sensor stamps each position once, when it produces that record, so a
+  /// position that comes back carrying a different counter is not a
+  /// retransmission: the sensor's counter restarted or was reset, and the old
+  /// numbering is being re-used for a new stretch of time. The batch is refused
+  /// rather than merged, because merging would staple two unrelated stretches
+  /// onto one index space.
+  counterRestart,
 }
 
 /// Ordered history assembled from a stream of `08` batches.
@@ -99,6 +110,8 @@ final class CbioHistoryArchive {
   final List<int> _batchCounts = <int>[];
   var _gapDetected = false;
   var _outOfOrder = false;
+  var _counterRestart = false;
+  int? _counterRestartIndex;
 
   /// Records sorted by index, oldest first.
   List<CbioRawGlucoseRecord> get records {
@@ -121,8 +134,22 @@ final class CbioHistoryArchive {
   /// True when a batch started at or below an index already received.
   bool get sawOverlap => _outOfOrder;
 
-  /// True when the archive covers every index between its ends.
-  bool get contiguous => !_gapDetected;
+  /// True when an index came back carrying a record from a different counter.
+  ///
+  /// The archive keeps the record it already held and refuses the conflicting
+  /// batch, so this flag is the only signal that the sensor's numbering
+  /// restarted. Consumers must read the positions as two timelines rather than
+  /// one, and no position may be spliced onto the other's numbering.
+  bool get sawCounterRestart => _counterRestart;
+
+  /// Lowest index of the refused batch that came back on a different counter.
+  int? get counterRestartIndex => _counterRestartIndex;
+
+  /// True when the archive covers every index between its ends, on one counter.
+  ///
+  /// A detected counter restart also clears this: the index space no longer
+  /// describes a single unbroken stretch of the sensor's own timeline.
+  bool get contiguous => !_gapDetected && !_counterRestart;
 
   /// Lowest sensor counter in the archive, or null when it is empty.
   ///
@@ -142,6 +169,22 @@ final class CbioHistoryArchive {
       batch = parseCbioRawDataFrame(frame);
     } on CbioFrameException {
       return CbioArchiveIngestStatus.notRawBatch;
+    }
+    // A position the archive already holds is only a retransmission when it
+    // carries the counter it carried before. The sensor stamps a record once,
+    // and the three captured sessions agree on the stamp for every shared index
+    // (index 1 is the same counter in all of them), so a differing counter is
+    // the restart, not a re-delivery. Refuse it instead of merging it.
+    final conflicting = batch.records.where((r) {
+      final stored = _byIndex[r.processed.index];
+      return stored != null && stored.rawTime != r.processed.rawTime;
+    }).length;
+    if (conflicting > 0) {
+      _counterRestart = true;
+      _counterRestartIndex = batch.records
+          .map((r) => r.processed.index)
+          .reduce((a, b) => a < b ? a : b);
+      return CbioArchiveIngestStatus.counterRestart;
     }
     final known = batch.records
         .where((r) => _byIndex.containsKey(r.processed.index))

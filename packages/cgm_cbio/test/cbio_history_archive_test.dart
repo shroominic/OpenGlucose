@@ -282,4 +282,58 @@ void main() {
     final indexes = archive.records.map((r) => r.index).toList();
     expect(indexes, List<int>.generate(1520, (i) => i + 1));
   });
+
+  test('treats a re-used index with a different counter as a restart', () {
+    final archive = CbioHistoryArchive();
+    archive.ingest(_rawBatch(first: 1, count: 3, baseTime: 1000));
+
+    // The same three positions arrive again carrying a counter from a different
+    // era. A retransmission repeats a record, and the sensor stamps each
+    // position once when it produces it, so this cannot be one. Reading it as a
+    // duplicate keeps the old cycle and silently drops the new one.
+    final status = archive.ingest(
+      _rawBatch(first: 1, count: 3, baseTime: 1000000),
+    );
+
+    expect(status, CbioArchiveIngestStatus.counterRestart);
+    expect(archive.sawCounterRestart, isTrue);
+    expect(archive.contiguous, isFalse);
+    expect(archive.hasGap, isFalse);
+    expect(archive.length, 3);
+    expect(archive.batchCounts, [3]);
+    expect(archive.records.first.rawTime, 1000);
+  });
+
+  test('keeps a plain retransmission quiet', () {
+    final archive = CbioHistoryArchive();
+    final batch = _rawBatch(first: 1, count: 3, baseTime: 1000);
+    archive.ingest(batch);
+
+    expect(
+      archive.ingest(_rawBatch(first: 1, count: 3, baseTime: 1000)),
+      CbioArchiveIngestStatus.duplicate,
+    );
+    expect(archive.sawCounterRestart, isFalse);
+    expect(archive.contiguous, isTrue);
+    expect(archive.batchCounts, [3]);
+  });
+
+  test('refuses to splice a restarting batch onto the old index space', () {
+    final archive = CbioHistoryArchive();
+    archive.ingest(_rawBatch(first: 1, count: 3, baseTime: 1000, current: 60));
+
+    // Index 3 re-appears with a counter from a different era while 4 and 5 are
+    // positions the archive has never seen. Merging that would staple the new
+    // cycle's first records onto the old cycle's numbering.
+    final status = archive.ingest(
+      _rawBatch(first: 3, count: 3, baseTime: 500000, current: 95),
+    );
+
+    expect(status, CbioArchiveIngestStatus.counterRestart);
+    expect(archive.sawCounterRestart, isTrue);
+    expect(archive.contiguous, isFalse);
+    expect(archive.length, 3);
+    expect([archive.oldestIndex, archive.newestIndex], [1, 3]);
+    expect(archive.records.last.rawPayload, 60);
+  });
 }

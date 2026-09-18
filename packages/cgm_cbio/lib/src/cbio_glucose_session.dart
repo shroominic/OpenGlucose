@@ -704,6 +704,19 @@ final class CbioGlucoseSession implements CgmSession {
         _log(CgmLogLevel.debug, 'cbio.raw.records=${_archive.length}');
         _restartHistoryIdleTimer();
         _emit();
+      case CbioArchiveIngestStatus.counterRestart:
+        // The sensor's numbering restarted and a position came back on a
+        // different counter. The archive refused the batch rather than
+        // splicing the new stretch onto the old numbering, so say so where a
+        // reader can see it: a silently absorbed restart looks exactly like a
+        // sensor that stopped producing records.
+        _log(
+          CgmLogLevel.warning,
+          'cbio.raw.counter-restart index=${_archive.counterRestartIndex} '
+          'records=${_archive.length} contiguous=false',
+        );
+        _lastSyncAt = _clock().toUtc();
+        _emit();
       case CbioArchiveIngestStatus.duplicate:
       case CbioArchiveIngestStatus.notRawBatch:
         break;
