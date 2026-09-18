@@ -48,6 +48,10 @@ written:
 The raw glucose field has no verified scale, so no artifact, log or document may
 present it as a physical glucose value.
 
+An empty scan is not always an absent sensor: a device session can also fail
+because the platform declined to run the scan. See
+[cbio-gs1-discoverability.md](cbio-gs1-discoverability.md).
+
 `records.rawPayload` and `records.processedGlucose` are kept as separate blocks
 because they are separate fields on the wire: the `08` record's payload word at
 offset 4 and the firmware's processed word at offset 6. A run whose payload

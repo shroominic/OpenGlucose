@@ -139,6 +139,17 @@ The newest record at the time of the run was index 9981,
 | 2 | 0 | 1..1520 (20 s window) | 51..95 | 5 | 127 |
 | 3 | 1521 | 1521..3040 (20 s window) | 49..89 | 5 | 127 |
 | 4 | 1 | 1..9981 (300 s window, until the sensor stopped) | 39..97 | 4 | 657 |
+| 5 | 1 | 1..10969 (whole archive, 390 s) | 39..97 | 4 | 719 |
+
+Run 5 is the hardware re-proof of the field identity below, captured on
+2026-09-18 after the payload-word fix
+(`evidence/gs1-session-20260918T104803-cbio_glucose_authenticated_test.json`,
+outcome `completed`, `gattReleased: true`, no errors) together with a two-decoder
+replay of the same log
+(`evidence/gs1-decode-comparison-20260918T104809.json`: `payload` 46..82 non-zero
+in 3433/3433 records, `processed` 0..0, app path agreeing 3433/3433). Why the
+scans immediately before it found nothing, and why that was not the sensor, is
+recorded in [cbio-gs1-discoverability.md](cbio-gs1-discoverability.md).
 
 Run 3's first record is exactly one minute after run 1's last, and run 4
 returned the whole 1..9981 range including run 1 and run 3's windows. Runs 1 and
