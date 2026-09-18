@@ -1,13 +1,18 @@
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:test/test.dart';
 
-// Expected values are the synthetic vectors in
-// docs/testing/cbio-gs1-auth-material.md.
+// Expected values are the vectors in docs/testing/cbio-gs1-auth-material.md.
 //
-// They are byte lists rather than hex strings on purpose: a 50-character
-// high-entropy string assigned to a name containing "auth" reads as an API
-// credential to secret scanners, and these vectors are not credentials. Byte
-// lists keep the same public vectors without tripping that detector.
+// They are byte lists rather than hex strings because the string form has the
+// exact shape a secret scanner reports, and the Secret Scan gate was red on it.
+//
+// The encoding is not a security control, and it is not a claim that these
+// values are harmless: the masked column is a function of the vendor stream
+// key, so it is key-derived material rather than a synthetic vector, and it
+// should not live in this repository at all. `fix/cbio-credential-redaction`
+// removes the published vectors and tests the mask with synthetic material
+// instead, which supersedes this fixture. Until that lands, this change only
+// stops the fixture from being the reason the gate is red. See #164 and #147.
 const List<int> _authMasked = <int>[
   0x3e,
   0xf6,
