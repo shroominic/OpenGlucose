@@ -44,19 +44,31 @@ import 'package:integration_test/integration_test.dart';
 import 'package:openglucose/src/local_ble_trace_sink.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// The only write this capture may emit: `06 08 01 00 00 00 F1`.
+/// Every write this capture may emit, by plaintext `03/19/06` command pair.
 ///
-/// Opcode 0x08 is the driver's bounded, non-activating read. Activation (0x07),
-/// clock writes (0x03), resets, and threshold writes are never authorized here.
-const List<int> _allowedWrite = <int>[
-  0x06,
-  0x08,
-  0x01,
-  0x00,
-  0x00,
-  0x00,
-  0xf1,
-];
+/// These are the vendor link set-up and read frames the authenticated session
+/// sends: device information, authentication, the one-per-session clock frame,
+/// and the packed and raw reads. Activation (0x07), reset, threshold,
+/// calibration, key-registration, and firmware frames are never authorized.
+const Set<String> _allowedCommandKeys = <String>{
+  '03f0',
+  '1901',
+  '0603',
+  '060a',
+  '0608',
+};
+
+/// One captured write that the session was authorized to send.
+bool _isAllowedWrite(List<int> masked) {
+  final plaintext = unmaskCbioFrame(masked);
+  if (plaintext.length < 2) {
+    return false;
+  }
+  return _allowedCommandKeys.contains(
+    '${plaintext[0].toRadixString(16).padLeft(2, '0')}'
+    '${plaintext[1].toRadixString(16).padLeft(2, '0')}',
+  );
+}
 
 /// Every phase is bounded so a silent or unresponsive radio cannot hang.
 const Duration _filteredScanWindow = Duration(seconds: 8);
@@ -550,12 +562,12 @@ void _assertCapture(_CaptureSummary summary) {
   expect(
     summary.illegalWrites,
     isEmpty,
-    reason: 'The driver emitted a write that is not the allowed 0x08 read.',
+    reason: 'The driver emitted a write outside the authorised link set.',
   );
   expect(
     summary.writeBytes.length,
-    lessThanOrEqualTo(1),
-    reason: 'The driver emitted more than one write.',
+    lessThanOrEqualTo(12),
+    reason: 'The authenticated session spent more writes than a session may.',
   );
   expect(
     summary.notifications,
@@ -766,23 +778,11 @@ final class _CaptureSummary {
   final String? driverError;
   final int traceEvents;
 
-  /// Writes that are not the single bounded 0x08 read.
+  /// Writes outside the authorised vendor link set.
   List<List<int>> get illegalWrites => <List<int>>[
     for (final bytes in writeBytes)
-      if (!_sameBytes(bytes, _allowedWrite)) bytes,
+      if (!_isAllowedWrite(bytes)) bytes,
   ];
-}
-
-bool _sameBytes(List<int> left, List<int> right) {
-  if (left.length != right.length) {
-    return false;
-  }
-  for (var index = 0; index < left.length; index += 1) {
-    if (left[index] != right[index]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 /// Keeps an in-memory copy of every trace event for assertions while the
