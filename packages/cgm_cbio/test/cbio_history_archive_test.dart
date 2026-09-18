@@ -66,11 +66,32 @@ void main() {
     expect(first.reindex, 5000);
     expect(first.rawCurrent, 78);
     expect(first.rawTemperature, 320);
-    expect(first.derivedMillimolesPerLitre, 7.8);
-    expect(first.derivedMilligramsPerDecilitre, 141);
+    expect(first.rawCurrentScaled, 7.8);
     expect(first.isUnitVerified, isFalse);
     expect(archive.records.last.rawTime, 1757534220 + 180);
     expect(archive.records.last.reindex, 4997);
+  });
+
+  test('the record carries no glucose unit in any accessor', () {
+    final archive = CbioHistoryArchive();
+    archive.ingest(_rawBatch(first: 1, count: 1, baseTime: 1000));
+    final record = archive.records.first;
+
+    // The scaled value is the raw field over ten and nothing more. A unit-bearing
+    // accessor would let a surface render a unit the protocol never established,
+    // which is exactly what the raw-scale issue reports.
+    expect(record.rawCurrentScaled, record.rawCurrent / 10);
+    expect(record.isUnitVerified, isFalse);
+    expect(
+      () => (record as dynamic).derivedMilligramsPerDecilitre,
+      throwsNoSuchMethodError,
+      reason: 'a derived mg/dL accessor must not come back',
+    );
+    expect(
+      () => (record as dynamic).derivedMillimolesPerLitre,
+      throwsNoSuchMethodError,
+      reason: 'a derived mmol/L accessor must not come back',
+    );
   });
 
   test('walks consecutive batches without reporting a gap', () {
