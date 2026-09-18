@@ -35,11 +35,11 @@ written:
 
 | Key | Content |
 |---|---|
-| `schema` | `cbio.session-evidence/1` |
+| `schema` | `cbio.session-evidence/2` |
 | `identity` | harness path, harness revision, app package, app revision, platform string |
 | `outcome` | `completed`, `aborted_no_target`, `aborted_missing_characteristics`, `aborted_authentication_failed`, `failed` |
 | `writes` | command frames actually sent, per classified kind |
-| `records` | glucose and raw record counts, first/last index, raw value range |
+| `records` | glucose and raw record counts and first/last index, plus one `{count, minimum, maximum, nonZero}` block per decoded field (`rawPayload`, `processedGlucose`) |
 | `notifications` | FF31 notifications observed |
 | `startedAtUtc`, `endedAtUtc`, `durationMilliseconds` | bounded session timing |
 | `errors` | counts per closed reason from a fixed vocabulary |
@@ -47,6 +47,29 @@ written:
 
 The raw glucose field has no verified scale, so no artifact, log or document may
 present it as a physical glucose value.
+
+`records.rawPayload` and `records.processedGlucose` are kept as separate blocks
+because they are separate fields on the wire: the `08` record's payload word at
+offset 4 and the firmware's processed word at offset 6. A run whose payload
+`nonZero` is 0 fails validation, and a payload count that disagrees with the raw
+record count fails too. `nonZero` is what separates "this field is empty" from
+"this decoder reads the wrong bytes" — an aggregate range cannot.
+
+## Decode comparison
+
+```sh
+make cbio-gs1-decode-comparison
+# equal to: CBIO_EVIDENCE_LOG=<log> dart run tool/replay_gs1_decode.dart
+```
+
+Replays one captured harness log through two decoders over the *same* window —
+the frame parser the evidence path uses and `CbioHistoryArchive`, the decoder
+behind the app's live readings — and writes
+`gs1-decode-comparison-<utc>.json`. The artifact carries the byte arithmetic for
+the first record, the payload and processed ranges, the hourly shape, and an
+`appPathComparison` block with `compared`, `agreeing`, `missing`,
+`disagreeing` and `agrees`. Gate G1 asks for exactly this: the same field, the
+same indices, no unexplained disagreement between the two paths.
 
 ## Redaction
 

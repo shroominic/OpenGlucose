@@ -60,27 +60,67 @@ zero. Two batch shapes matter:
 | Path | Records | Layout | Content |
 | --- | --- | --- | --- |
 | `0A` | 1782, index 1..1782 | packed 10-bit field, `11 + 2n` bytes | **every field zero** |
-| `08` | 9981, index 1..9981 | `temp, dump, current, extra`, `12 + 8n` bytes | one record per minute, values below |
+| `08` | 9981, index 1..9981 | `temp, dump, payload, processed`, `12 + 8n` bytes | one record per minute, values below |
 
 The two paths do not agree, and only `08` carries usable content on this sensor:
 
 - `0A` ends at index 1782, `2026-09-12T01:38:00Z`, and is zero throughout.
 - `08` continues to index 9981, `2026-09-17T18:17:00Z`, with no gaps.
 
-So the processed field the vendor application displays is frozen and empty —
-consistent with a sensor that is logging but not activated — while the raw
-record path is live and current.
+The `08` record is eight bytes and holds **two** candidate reading words. The
+one the app renders is `payload`, the little-endian word at record offset 4.
+The firmware's `processed` word at offset 6 — the same 10-bit packed field the
+`0A` batch carries — is zero in **every record of every captured session**, and
+that is the field the evidence path used to read. The "every raw glucose field
+reads 0" verdict was a wrong-field bug in the evidence decoder, not a sensor
+that reports nothing: the packed word is empty because the sensor is logging but
+not activated, while the payload word is live and current.
+
+### The arithmetic, on a real captured record
+
+First `08` record of the 13:02 session (`plaintext 08 01 6a 0b 40 00 00 00`),
+after the batch header:
+
+| Offset | Bytes | LE16 | Field | Meaning |
+| --- | --- | --- | --- | --- |
+| 0 | `3a 01` | 314 | `temp` | 31.4 °C on the same unverified `/10` scale — the control that the stride is right |
+| 2 | `6a 0b` | 2922 | `dump` | no established meaning |
+| 4 | `40 00` | **64** | `payload` | the reading-bearing word: `raw / 10` → 6.4 |
+| 6 | `00 00` | 0 | `processed` | packed `(b >> 6) \| (b1 << 2)` → 0 |
+
+A zero here is zero *bytes*, not a shifted offset or a wrong width: the
+temperature word decodes to a plausible value at offset 0, so the record stride
+and the offsets are confirmed independently of the glucose question.
+
+### The same window through both decoders
+
+`make cbio-gs1-decode-comparison CBIO_EVIDENCE_LOG=<captured log>` replays one
+captured session through the frame parser and through `CbioHistoryArchive`, the
+decoder behind the app's live readings, and writes
+`evidence/gs1-decode-comparison-<utc>.json`. For the 1520-record window
+(index 1..1520, 2026-09-10T19:57Z to 2026-09-11T21:16Z, 25.3 h):
+
+| Field | Range | Non-zero records | Hourly median |
+| --- | --- | --- | --- |
+| `payload` (offset 4) | 51..95 | 1520 / 1520 | 5.3 at 05:00Z to 8.6 at 12:00Z — dips overnight, rises through the day |
+| `processed` (offset 6) | 0..0 | 0 / 1520 | 0 |
+
+The two decoders agree on all 1520 payload indices (`agreeing` 1520,
+`missing` 0, `disagreeing` 0), which is what gate G1 asks for: one field, one
+scale, no unexplained disagreement between the app path and the evidence path.
+A physiologically-shaped series is still not a calibrated one — it is one more
+reason the `/10` scale is plausible, and nothing more.
 
 ## Derived values, and why they stay unverified
 
-`CbioRawGlucoseRecord` divides `current` by 10 and `temp` by 10 because two
+`CbioRawGlucoseRecord` divides `rawPayload` by 10 and `rawTemperature` by 10 because two
 independent implementations of this protocol read the fields that way, and
 because the result is plausible:
 
 | Field | Raw range | Derived | Distribution |
 | --- | --- | --- | --- |
-| `current` | 39..97 | 3.9..9.7 mmol/L | p05 5.2, p50 6.4, p95 8.0 mmol/L |
-| `temp` | 274..460 | 27.4..46.0 °C | 9961 of 9981 records in 20.0..42.0 °C |
+| `payload` | 39..97 | 3.9..9.7 mmol/L | p05 5.2, p50 6.4, p95 8.0 mmol/L |
+| `rawTemperature` | 274..460 | 27.4..46.0 °C | 9961 of 9981 records in 20.0..42.0 °C |
 
 Agreement between two independent clients, and a glucose range that looks like
 interstitial glucose, is not proof of scale. `isUnitVerified` stays `false` and
@@ -88,12 +128,12 @@ the raw integer is exposed alongside any converted number; a reference
 measurement against a known index is what would settle it.
 
 The newest record at the time of the run was index 9981,
-`2026-09-17T18:17:00Z`, raw `current` 50 and raw `temp` 315 — 5.0 mmol/L and
+`2026-09-17T18:17:00Z`, raw `payload` 50 and raw `rawTemperature` 315 — 5.0 mmol/L and
 31.5 °C on the unverified scale.
 
 ## Reading timeline
 
-| Run | Raw read from | Raw index captured | `current` range | Writes | Notifications |
+| Run | Raw read from | Raw index captured | `payload` range | Writes | Notifications |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 0 | 1..1520 (20 s window) | 51..95 | 5 | 127 |
 | 2 | 0 | 1..1520 (20 s window) | 51..95 | 5 | 127 |
