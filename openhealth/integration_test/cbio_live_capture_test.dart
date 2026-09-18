@@ -78,15 +78,16 @@ bool _isAllowedWrite(List<int> masked, List<int> key) {
 /// and aborts before touching the radio when they are absent. Provide them
 /// without writing them to a committed file, for example with
 /// `--dart-define-from-file` against a git-ignored local file.
-final CbioMapCredentialSource _credentials =
-    CbioMapCredentialSource(<String, String>{
-      ...Platform.environment,
-      if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
-      if (cbioAuthMaterialHex.isNotEmpty)
-        cbioAuthMaterialDefine: cbioAuthMaterialHex,
-      if (cbioAuthTriggerHex.isNotEmpty)
-        cbioAuthTriggerDefine: cbioAuthTriggerHex,
-    });
+final CbioMapCredentialSource _credentials = CbioMapCredentialSource(
+  <String, String>{
+    ...Platform.environment,
+    if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
+    if (cbioAuthMaterialHex.isNotEmpty)
+      cbioAuthMaterialDefine: cbioAuthMaterialHex,
+    if (cbioAuthTriggerHex.isNotEmpty)
+      cbioAuthTriggerDefine: cbioAuthTriggerHex,
+  },
+);
 
 /// Every phase is bounded so a silent or unresponsive radio cannot hang.
 const Duration _filteredScanWindow = Duration(seconds: 8);

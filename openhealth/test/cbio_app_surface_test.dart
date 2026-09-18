@@ -131,6 +131,8 @@ void main() {
         reason: '$code is a support code, not a sentence',
       );
     }
+  });
+
   test('the stored range names a hole instead of printing an envelope', () {
     List<CgmReading> readingsAt(List<int> positions) => <CgmReading>[
       for (final position in positions)

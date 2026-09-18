@@ -518,6 +518,7 @@ String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
     _ => null,
   };
 }
+
 /// The failure-card sentence for a closed CBio session code.
 ///
 /// The session publishes machine codes. They are support codes, not copy: the
@@ -546,7 +547,6 @@ String userMessageForCbioFailure(String? code) => switch (code) {
     'Could not reach the sensor. Keep it close and try again.',
   _ => 'OpenGlucose could not connect to this sensor.',
 };
-
 
 /// The provisional marker every CBio surface shows.
 ///

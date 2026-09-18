@@ -65,12 +65,16 @@ abstract final class CbioSessionPhase {
 enum CbioFrameWrite {
   /// The command characteristic accepted the frame.
   sent,
+
   /// The transport threw or timed out: the sensor never received the frame.
   failed,
+
   /// The session is closing or the link is gone; there is nothing to send to.
   unavailable,
+
   /// The frame was not one of the permitted commands, so it stayed in the app.
   blocked,
+
   /// The per-session read budget is spent.
   budgetExhausted,
 }

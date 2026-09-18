@@ -274,7 +274,7 @@ void main() {
     expect(
       cbioSessionEvidenceArtifactViolations(
         mutated((copy) {
-        (copy['identity']! as Map<String, Object?>)['platform'] = 'a' * 40;
+          (copy['identity']! as Map<String, Object?>)['platform'] = 'a' * 40;
         }),
       ),
       contains('identity_leak'),

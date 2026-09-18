@@ -2607,6 +2607,8 @@ void main() {
 
     controller.dispose();
     await transport.cancelled.future.timeout(const Duration(seconds: 1));
+  });
+
   test('a sensor that keeps dropping exhausts the retry budget', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final preferences = await SharedPreferences.getInstance();

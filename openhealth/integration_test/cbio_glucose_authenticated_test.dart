@@ -49,15 +49,16 @@ const String _targetDeviceId = String.fromEnvironment('CBIO_TARGET_DEVICE_ID');
 /// and aborts before touching the radio when they are absent. Provide them
 /// without writing them to a committed file, for example with
 /// `--dart-define-from-file` against a git-ignored local file.
-final CbioMapCredentialSource _credentials =
-    CbioMapCredentialSource(<String, String>{
-      ...Platform.environment,
-      if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
-      if (cbioAuthMaterialHex.isNotEmpty)
-        cbioAuthMaterialDefine: cbioAuthMaterialHex,
-      if (cbioAuthTriggerHex.isNotEmpty)
-        cbioAuthTriggerDefine: cbioAuthTriggerHex,
-    });
+final CbioMapCredentialSource _credentials = CbioMapCredentialSource(
+  <String, String>{
+    ...Platform.environment,
+    if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
+    if (cbioAuthMaterialHex.isNotEmpty)
+      cbioAuthMaterialDefine: cbioAuthMaterialHex,
+    if (cbioAuthTriggerHex.isNotEmpty)
+      cbioAuthTriggerDefine: cbioAuthTriggerHex,
+  },
+);
 
 /// Build identity, supplied by the evidence run script. Never the sensor
 /// address and never credential material.
@@ -304,7 +305,9 @@ Future<void> _runSession(_SessionRun run) async {
         _emit('CBIO-A skip label=$label reason=write-budget');
         return false;
       }
-      final kind = CbioWriteKind.classify(unmaskCbioFrame(bytes, key: vendor.streamKey));
+      final kind = CbioWriteKind.classify(
+        unmaskCbioFrame(bytes, key: vendor.streamKey),
+      );
       expect(
         _allowedWrites,
         contains(kind),
