@@ -21,6 +21,9 @@ import 'session_presentation.dart';
 typedef LiveActivityPrivacySetter =
     Future<void> Function({required bool enabled});
 
+/// Closed diagnostic for a retry run the controller stopped on its own.
+const String automaticReconnectExhaustedCode = 'cgm.session.reconnectExhausted';
+
 void _debugAppSessionTrace(String milestone) {
   assert(() {
     // Debug-only closed milestones. No device identifiers, sensor values,
@@ -64,9 +67,17 @@ class CgmAppController extends ChangeNotifier {
   static const _resumeCountMetadataKey = 'resumeCount';
   static const _resumeHistoryMetadataKey = 'resumeHistory';
 
+  /// How many automatic reconnect attempts one run may spend without the user.
+  ///
+  /// With the default delay this backoff reaches 3, 6, 12, 24, 48 seconds and
+  /// then stops - about 93 seconds of trying - after which the host asks for a
+  /// decision instead of retrying a dead link every three seconds forever.
+  static const int _maxAutomaticReconnectAttempts = 5;
+
   final SharedPreferences _preferences;
   final HealthStateStore _healthStateStore;
   final Duration _reconnectDelay;
+  int _reconnectAttempts = 0;
   final CgmDriver _driver;
   final LiveActivityPrivacySetter? _liveActivityPrivacySetter;
   final Future<void> Function()? _liveActivityPrivacyRefresh;
@@ -672,6 +683,10 @@ class CgmAppController extends ChangeNotifier {
           _scheduleReconnect();
         } else {
           _cancelReconnect();
+        }
+        if (nextSnapshot.stage == CgmSyncStage.ready) {
+          // The link proved itself, so the next run starts with a full budget.
+          _reconnectAttempts = 0;
         }
         _startPlatformTask(
           _pushLiveActivity(),
@@ -2181,6 +2196,10 @@ class CgmAppController extends ChangeNotifier {
         !_canAutomaticallyReconnect(currentSnapshot)) {
       return;
     }
+    if (_reconnectAttempts >= _maxAutomaticReconnectAttempts) {
+      _stopAutomaticReconnect(currentSnapshot);
+      return;
+    }
     if (currentSnapshot != null &&
         (currentSnapshot.latestReading != null ||
             currentSnapshot.history.isNotEmpty) &&
@@ -2193,8 +2212,9 @@ class CgmAppController extends ChangeNotifier {
       );
       notifyListeners();
     }
-    _reconnectTimer = Timer(_reconnectDelay, () {
+    _reconnectTimer = Timer(_reconnectBackoff, () {
       _reconnectTimer = null;
+      _reconnectAttempts += 1;
       final sensor = _selectedSensor;
       if (sensor == null) {
         return;
@@ -2213,6 +2233,44 @@ class CgmAppController extends ChangeNotifier {
         connect(sensor, allowSessionActivation: _allowSessionActivation),
       );
     });
+  }
+
+  /// Doubling backoff, so a sensor that stays away costs the radio less each
+  /// round instead of a flat delay repeated without limit.
+  Duration get _reconnectBackoff =>
+      _reconnectDelay * (1 << _reconnectAttempts.clamp(0, 8));
+
+  /// Ends the retry run with the state a user can act on.
+  ///
+  /// The failure carries a closed diagnostic and blocks further automatic
+  /// reconnect, so the connect screen offers Try again / Choose another sensor
+  /// instead of the app retrying in the background forever.
+  void _stopAutomaticReconnect(CgmSessionSnapshot? currentSnapshot) {
+    _cancelReconnect();
+    if (currentSnapshot == null) {
+      return;
+    }
+    final failure = BleFailure(
+      kind: BleFailureKind.deviceDisconnected,
+      operation: BleOperation.connect,
+      diagnosticCode: automaticReconnectExhaustedCode,
+    );
+    _snapshot = currentSnapshot.copyWith(
+      stage: CgmSyncStage.error,
+      statusText: 'Reconnect stopped',
+      lastError: automaticReconnectExhaustedCode,
+      metadata: <String, String>{
+        ...currentSnapshot.metadata,
+        ...failure.toMetadata(),
+        cgmAutomaticReconnectAllowedMetadataKey: 'false',
+      },
+    );
+    _lastError = 'Reconnect stopped. Try again when the sensor is close.';
+    _startPlatformTask(
+      _pushLiveActivity(),
+      'Updating private lock-screen state',
+    );
+    notifyListeners();
   }
 
   void _cancelReconnect() {
