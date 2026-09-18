@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
+//
+// #153 repro marker: this file is green on Darwin and red on Linux CI while the
+// private-bench analyzer refuses every artifact with `unsupported_platform`
+// before it parses. Throwaway branch, not for merge.
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
