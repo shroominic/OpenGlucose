@@ -120,10 +120,9 @@ final class _ScriptedScanTransport implements BleTransport {
   }) async* {
     serviceFilters.add(withServices);
     timeouts.add(timeout);
-    final results =
-        (withServices == null || withServices.isEmpty)
-            ? unfilteredResults
-            : filteredResults;
+    final results = (withServices == null || withServices.isEmpty)
+        ? unfilteredResults
+        : filteredResults;
     for (final result in results) {
       yield result;
     }
@@ -301,20 +300,23 @@ void main() {
     },
   );
 
-  test('scan does not retry unfiltered when the filter finds the sensor', () async {
-    final transport = _ScriptedScanTransport(
-      filteredResults: <BleScanResult>[_ff30Advertisement(rssi: -55)],
-      unfilteredResults: <BleScanResult>[_ff30Advertisement(rssi: -90)],
-    );
-    final driver = CbioSensorDriver(transport, discovery: discovery);
+  test(
+    'scan does not retry unfiltered when the filter finds the sensor',
+    () async {
+      final transport = _ScriptedScanTransport(
+        filteredResults: <BleScanResult>[_ff30Advertisement(rssi: -55)],
+        unfilteredResults: <BleScanResult>[_ff30Advertisement(rssi: -90)],
+      );
+      final driver = CbioSensorDriver(transport, discovery: discovery);
 
-    final results = await driver.scan().toList();
+      final results = await driver.scan().toList();
 
-    expect(results, hasLength(1));
-    expect(results.single.rssi, -55);
-    expect(transport.serviceFilters, hasLength(1));
-    expect(transport.serviceFilters.single, CbioDiscovery.scanServiceUuids);
-  });
+      expect(results, hasLength(1));
+      expect(results.single.rssi, -55);
+      expect(transport.serviceFilters, hasLength(1));
+      expect(transport.serviceFilters.single, CbioDiscovery.scanServiceUuids);
+    },
+  );
 
   test('the unfiltered retry still drops non-FF30 advertisers', () async {
     final transport = _ScriptedScanTransport(

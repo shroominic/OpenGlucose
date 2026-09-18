@@ -110,34 +110,36 @@ class FlutterBluePlusTransport
       );
       unawaited(
         closeFlutterBluePlusScanResources(
-          cancelResults: results?.cancel,
-          cancelScanning: scanning?.cancel,
-          awaitPendingStart: waitForStartup
-              ? () async {
-                  final pending = startupFuture;
-                  if (pending != null) {
-                    await pending;
-                  }
-                }
-              : null,
-          stopScan: stopScan
-              ? () async {
-                  if (fbp.FlutterBluePlus.isScanningNow) {
-                    await fbp.FlutterBluePlus.stopScan();
-                  }
-                }
-              : null,
-          closeController: controller.close,
-        ).timeout(
-          // The radio is already stopped by this point; a plugin future that
-          // never completes must not leave cancellation pending forever.
-          const Duration(seconds: 5),
-          onTimeout: () {},
-        ).then<void>(
-          (_) => completer.complete(),
-          onError: (Object error, StackTrace stackTrace) =>
-              completer.completeError(error, stackTrace),
-        ),
+              cancelResults: results?.cancel,
+              cancelScanning: scanning?.cancel,
+              awaitPendingStart: waitForStartup
+                  ? () async {
+                      final pending = startupFuture;
+                      if (pending != null) {
+                        await pending;
+                      }
+                    }
+                  : null,
+              stopScan: stopScan
+                  ? () async {
+                      if (fbp.FlutterBluePlus.isScanningNow) {
+                        await fbp.FlutterBluePlus.stopScan();
+                      }
+                    }
+                  : null,
+              closeController: controller.close,
+            )
+            .timeout(
+              // The radio is already stopped by this point; a plugin future that
+              // never completes must not leave cancellation pending forever.
+              const Duration(seconds: 5),
+              onTimeout: () {},
+            )
+            .then<void>(
+              (_) => completer.complete(),
+              onError: (Object error, StackTrace stackTrace) =>
+                  completer.completeError(error, stackTrace),
+            ),
       );
       return completer.future;
     }
@@ -161,23 +163,20 @@ class FlutterBluePlusTransport
     /// waiting for a signal that may never arrive.
     void armScanDeadline(Duration window) {
       scanDeadline?.cancel();
-      scanDeadline = Timer(
-        window + const Duration(milliseconds: 750),
-        () {
-          if (closed) {
-            return;
-          }
-          // Close the caller's stream first: cleanup below awaits plugin
-          // futures that may themselves be the pending signal.
-          unawaited(
-            controller.close().then<void>(
-              (_) {},
-              onError: (Object _, StackTrace _) {},
-            ),
-          );
-          closeStreamSafely(waitForStartup: false);
-        },
-      );
+      scanDeadline = Timer(window + const Duration(milliseconds: 750), () {
+        if (closed) {
+          return;
+        }
+        // Close the caller's stream first: cleanup below awaits plugin
+        // futures that may themselves be the pending signal.
+        unawaited(
+          controller.close().then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          ),
+        );
+        closeStreamSafely(waitForStartup: false);
+      });
     }
 
     String signatureOf(BleScanResult result) {
