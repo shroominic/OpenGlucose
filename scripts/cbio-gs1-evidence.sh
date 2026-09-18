@@ -19,6 +19,7 @@ gs1_evidence_dir=${EVIDENCE_DIR:-$gs1_repository_root/../evidence}
 gs1_reused_log=${CBIO_EVIDENCE_LOG:-}
 gs1_stream_seconds=${CBIO_STREAM_SECONDS:-20}
 gs1_app_package=${CBIO_APP_PACKAGE:-com.openglucose.app.debug}
+gs1_grant_budget=${CBIO_GRANT_BUDGET_SECONDS:-240}
 gs1_log=
 gs1_status=0
 
@@ -35,6 +36,41 @@ command -v flutter >/dev/null 2>&1 ||
   gs1_die 'flutter is not on PATH; run make bootstrap with the pinned toolchain'
 command -v dart >/dev/null 2>&1 ||
   gs1_die 'dart is not on PATH; run make bootstrap with the pinned toolchain'
+
+# `adb` is not part of `make bootstrap`, so resolve it from ANDROID_HOME when it
+# is not already on PATH. Absence is not fatal: a re-recorded log needs no
+# device, and a device run without adb still fails through `flutter test`.
+gs1_adb=$(command -v adb 2>/dev/null || true)
+if [ -z "$gs1_adb" ] && [ -n "${ANDROID_HOME:-}" ] &&
+  [ -x "$ANDROID_HOME/platform-tools/adb" ]; then
+  gs1_adb="$ANDROID_HOME/platform-tools/adb"
+fi
+
+# Runtime permissions the harness app needs before its radio can work.
+#
+# `flutter test -d <device>` installs the debug app for each run and uninstalls
+# it again afterwards, so every run starts from an app that has never been
+# granted its BLE permissions. On that app a scan filter reports no results at
+# all and a connect never completes, and the app's own permission dialog parks
+# the test until the `testWidgets` timeout, so the run produces no verdict and
+# no artifact. Granting these four permissions for the length of the run is the
+# difference between a silent timeout and a device session; nothing else on the
+# device is read or changed.
+gs1_grant_permissions() {
+  gs1_grant_until=$(( $(date +%s) + gs1_grant_budget ))
+  while [ "$(date +%s)" -lt "$gs1_grant_until" ]; do
+    for gs1_permission in \
+      android.permission.BLUETOOTH_SCAN \
+      android.permission.BLUETOOTH_CONNECT \
+      android.permission.ACCESS_FINE_LOCATION \
+      android.permission.ACCESS_COARSE_LOCATION
+    do
+      "$gs1_adb" -s "$gs1_device_id" shell pm grant \
+        "$gs1_app_package" "$gs1_permission" >/dev/null 2>&1 || true
+    done
+    sleep 2
+  done
+}
 
 case "$gs1_harness" in
   openhealth/*) ;;
@@ -58,6 +94,14 @@ else
   gs1_log=$(mktemp "${TMPDIR:-/tmp}/openglucose-gs1-evidence.XXXXXX")
   gs1_info "Running $gs1_harness on $gs1_device_id (revision $gs1_revision)"
   gs1_info 'The harness sends only its bounded allowed frames; see the harness header.'
+  gs1_grant_pid=
+  if [ -n "$gs1_adb" ]; then
+    gs1_info "Granting $gs1_app_package its BLE runtime permissions for this run"
+    gs1_grant_permissions &
+    gs1_grant_pid=$!
+  else
+    gs1_info 'warning: adb not found; grant the harness BLE permissions yourself'
+  fi
   set +e
   (
     cd "$gs1_repository_root/openhealth"
@@ -68,6 +112,10 @@ else
   ) >"$gs1_log" 2>&1
   gs1_status=$?
   set -e
+  if [ -n "$gs1_grant_pid" ]; then
+    kill "$gs1_grant_pid" >/dev/null 2>&1 || true
+    wait "$gs1_grant_pid" 2>/dev/null || true
+  fi
   gs1_info "flutter test exit status: $gs1_status"
   gs1_info "device log kept at: $gs1_log"
 fi
