@@ -5,15 +5,15 @@ import 'package:test/test.dart';
 CbioRawGlucoseRecord _record({
   required int index,
   required int rawTime,
-  int rawCurrent = 64,
+  int rawPayload = 64,
 }) => CbioRawGlucoseRecord(
   index: index,
   rawTime: rawTime,
   reindex: index,
   rawTemperature: 315,
   rawDump: 0,
-  rawCurrent: rawCurrent,
-  rawExtra: 0,
+  rawPayload: rawPayload,
+  rawProcessed: 0,
 );
 
 /// The #146 capture: 448 stored records, each one minute apart, whose counter

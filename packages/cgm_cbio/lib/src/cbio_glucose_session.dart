@@ -835,13 +835,13 @@ final class CbioGlucoseSession implements CgmSession {
             // the unverified /10 scale of the record's own raw field. This is
             // the same number the hero renders; it is deliberately not a
             // conversion into mg/dL, which no reference measurement supports.
-            valueMgdl: record.rawCurrentScaled,
+            valueMgdl: record.rawPayloadScaled,
             source: CgmRecordSource.raw,
             sensorMinute: record.index,
             recordedAt: anchor != null && anchor.coversIndex(record.index)
                 ? anchor.timeForIndex(record.index)
                 : null,
-            rawValue: record.rawCurrent,
+            rawValue: record.rawPayload,
             isDisplayProvisional: true,
           ),
       ];

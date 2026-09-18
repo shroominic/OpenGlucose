@@ -67,7 +67,7 @@ void main() {
     expect(first.rawPayload, 78);
     expect(first.rawProcessed, 0);
     expect(first.rawTemperature, 320);
-    expect(first.rawCurrentScaled, 7.8);
+    expect(first.rawPayloadScaled, 7.8);
     expect(first.isUnitVerified, isFalse);
     expect(archive.records.last.rawTime, 1757534220 + 180);
     expect(archive.records.last.reindex, 4997);
@@ -81,7 +81,7 @@ void main() {
     // The scaled value is the raw field over ten and nothing more. A unit-bearing
     // accessor would let a surface render a unit the protocol never established,
     // which is exactly what the raw-scale issue reports.
-    expect(record.rawCurrentScaled, record.rawCurrent / 10);
+    expect(record.rawPayloadScaled, record.rawPayload / 10);
     expect(record.isUnitVerified, isFalse);
     expect(
       () => (record as dynamic).derivedMilligramsPerDecilitre,
@@ -217,7 +217,9 @@ void main() {
     final record = archive.records.single;
     expect(record.rawPayload, 64);
     expect(record.rawProcessed, 0);
-    expect(record.derivedMillimolesPerLitre, 6.4);
+    // The payload word is the reading; the scale stays unit-free here.
+    expect(record.rawPayloadScaled, 6.4);
+    expect(record.isUnitVerified, isFalse);
   });
 
   test('the archive and the frame parser decode the same words', () {

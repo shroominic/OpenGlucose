@@ -1004,12 +1004,12 @@ void main() {
 
       final batch = parseCbioRawDataFrame(frame);
 
-      expect(batch.records.map((record) => record.packed.index), <int>[
+      expect(batch.records.map((record) => record.processed.index), <int>[
         9940,
         9941,
         9942,
       ]);
-      expect(batch.records.map((record) => record.rawCurrent), <int>[
+      expect(batch.records.map((record) => record.rawPayload), <int>[
         47,
         50,
         53,
@@ -1017,23 +1017,23 @@ void main() {
       final archived = <CbioRawGlucoseRecord>[
         for (final record in batch.records)
           CbioRawGlucoseRecord(
-            index: record.packed.index,
-            rawTime: record.packed.rawTime,
-            reindex: record.packed.reindex,
+            index: record.processed.index,
+            rawTime: record.processed.rawTime,
+            reindex: record.processed.reindex,
             rawTemperature: record.rawTemperature,
             rawDump: record.rawDump,
-            rawCurrent: record.rawCurrent,
-            rawExtra: 0,
+            rawPayload: record.rawPayload,
+            rawProcessed: record.processed.rawWord,
           ),
       ];
 
       for (final record in archived) {
         // The one scale both paths use, stated without a glucose unit.
-        expect(record.rawCurrentScaled, record.rawCurrent / 10);
+        expect(record.rawPayloadScaled, record.rawPayload / 10);
         expect(record.isUnitVerified, isFalse);
       }
-      expect(archived.first.rawCurrentScaled, 4.7);
-      expect(archived.last.rawCurrentScaled, 5.3);
+      expect(archived.first.rawPayloadScaled, 4.7);
+      expect(archived.last.rawPayloadScaled, 5.3);
       // No unit-bearing derivation is left to publish: the record exposes the
       // raw field and its /10 scale, and the glucose unit stays unclaimed until
       // a reference measurement settles it.
