@@ -111,6 +111,26 @@ scale, no unexplained disagreement between the app path and the evidence path.
 A physiologically-shaped series is still not a calibrated one — it is one more
 reason the `/10` scale is plausible, and nothing more.
 
+### Which path reads which word
+
+Audited end to end on the consolidation tip, so that no surface can quietly keep
+reading the empty field:
+
+| Path | Reads | Produces a glucose number |
+| --- | --- | --- |
+| `parseCbioRawDataFrame` | offset 4 → `rawPayload`; offset 6 → `processed.rawWord` | no — owns the layout only |
+| `CbioHistoryArchive` (the app's live decode) | `rawPayload` | yes: `derivedMillimolesPerLitre` and the record's scaled value |
+| App reading (`CbioGlucoseSession`) | `record.rawPayload` | yes: `rawValue: record.rawPayload`, `valueMgdl: record.rawPayloadScaled`, `isDisplayProvisional: true` |
+| `CbioRawGlucoseRecord.rawProcessed` | offset 6 | **no** — exposed as the firmware's processed word, read by tests only |
+| `compareCbioDecode` (the harness path) | both, side by side | no — reporting only |
+| `parseCbioGlucoseBatch` (`0A` frame) | the `0A` layout's own packed 10-bit field | that frame only, and it is zero on this sensor |
+
+The provisional marker survives the change: the CBIO reading is built with
+`isDisplayProvisional: true`, the surfaces render
+`provisionalReadingNoticeForSnapshot` — "Includes provisional readings. Not
+validated for body glucose." — `isUnitVerified` stays `false`, and every
+artifact and comparison still carries `unitStatus: unverified`.
+
 ## Derived values, and why they stay unverified
 
 `CbioRawGlucoseRecord` divides `rawPayload` by 10 and `rawTemperature` by 10 because two
