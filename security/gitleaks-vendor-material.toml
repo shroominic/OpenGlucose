@@ -1,0 +1,33 @@
+# Vendor-material guard for the CBIO GS1 link.
+#
+# This file is consumed only with `--no-git --source <tree>`, so it inspects the
+# checked-out tree and never history. `scripts/check-cbio-vendor-material.sh`
+# runs it against the repository and then asserts the same rule still fires on a
+# deliberate synthetic canary, so a rule that silently stops matching cannot
+# report green.
+#
+# Why it is not part of `.gitleaks.toml`: the material and a key-derived masked
+# vector are already in this repository's public history, so a history-wide rule
+# would fail forever and no change on the tip could clear it. The tip is where a
+# fix can clear it, and that is what this file guards.
+#
+# The generic ruleset does not match this material when it is committed as a
+# Dart byte-list constant: the pinned scanner reports a synthetic fixture of the
+# same shape and misses the credential itself. This rule therefore matches on
+# the binding name plus a literal payload. It deliberately restates no byte, no
+# key-derived vector, and no device address.
+#
+# There is no allowlist on purpose. An exemption here would have to name the
+# value it exempts, and a legitimate synthetic fixture belongs under a
+# non-material binding name instead of in an exemption.
+
+title = "OpenGlucose CBIO GS1 vendor-material guard"
+
+[extend]
+useDefault = false
+
+[[rules]]
+id = "cbio-vendor-material-constant"
+description = "Vendor GS1 stream material committed as a literal payload"
+regex = '''(?i)(?:cbio[a-z0-9_]*(?:streamkey|authmaterial|authenticationtrigger)|_authmasked)[a-z0-9_]*\s*[:=]\s*(?:const\s+)?(?:<int>\s*\[\s*0x|\[\s*0x|'[0-9a-f]{16,}|"[0-9a-f]{16,}")'''
+tags = ["key", "vendormaterial"]
