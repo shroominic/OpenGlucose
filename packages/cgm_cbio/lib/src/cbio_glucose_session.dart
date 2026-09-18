@@ -803,12 +803,16 @@ final class CbioGlucoseSession implements CgmSession {
     if (_archive.oldestIndex != _historyStartIndex) {
       return false;
     }
-    final newestTime = _archive.newestTime;
-    if (newestTime == null) {
+    // The counter is the sensor's own position, not a clock. Comparing it
+    // against the app's clock is an observation, not a derivation: a counter
+    // that never took the written clock sits decades away from `now`, so this
+    // gate fails closed and the archive is simply not at the live edge.
+    final newestCounter = _archive.newestSensorCounter;
+    if (newestCounter == null) {
       return false;
     }
     final newest = DateTime.fromMillisecondsSinceEpoch(
-      newestTime * 1000,
+      newestCounter * 1000,
       isUtc: true,
     );
     return _clock().toUtc().difference(newest).abs() <= timing.liveEdgeWindow;
