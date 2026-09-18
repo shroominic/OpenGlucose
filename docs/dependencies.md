@@ -91,16 +91,32 @@ See [NOTICE.md](../NOTICE.md) for distribution guidance and
 [docs/compatibility.md](compatibility.md) for dependency-related support-floor
 changes.
 
-## Offline Cbio GS1 scaffold
+## Cbio GS1 interoperability package
 
 `cgm_cbio` uses only the existing in-repository `cgm_core` and `cgm_ble`
 contracts, plus the existing `lints` and `test` development tools. The package
 is MIT, unpublished, and has no native components, permissions, network
-destinations, telemetry, build scripts, credentials, or persistent data.
-It imports no vendor library or algorithm. Offline resolution uses the local
-Pub cache; no new external package is introduced. The app manifest and lockfile
-are unchanged. Library lockfiles stay uncommitted. Remove the scaffold and its
-workspace enumeration to roll back; no sensor or storage migration is needed.
+destinations, telemetry, build scripts, or persistent data. Offline resolution
+uses the local Pub cache; no new external package is introduced. The app
+manifest and lockfile are unchanged. Library lockfiles stay uncommitted.
+
+The package does carry interoperability material that is **not** authored by
+OpenGlucose contributors: a per-frame stream masking constant and the link
+material for the GS1 protocol, both derived from a shipped third-party sensor
+application and cross-checked against an independent open-source client. The
+derivation record is kept in
+[testing/cbio-gs1-auth-material.md](testing/cbio-gs1-auth-material.md) and
+references the artifact rather than restating the bytes.
+
+Two reviews stay open and gate any distribution of this package:
+
+1. redistribution and notice terms for the derived material, together with the
+   inventory step described in [NOTICE.md](../NOTICE.md); and
+2. how the material reaches a build at all, since today it is a committed
+   source constant present in every artifact built from this branch.
+
+Remove the package and its workspace enumeration to roll back; no sensor or
+storage migration is needed.
 Exact-model protocol and licensing review are still required before adding
 any vendor-derived implementation.
 
