@@ -352,15 +352,12 @@ void main() {
             .firstWhere((frame) => frame[1] == 0x01);
         // With 2A25 empty the session falls back to the advertised identity,
         // reversed, exactly as the vendor link setup does.
-        expect(
-          auth.sublist(3, 9),
-          <int>[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa],
-        );
+        expect(auth.sublist(3, 9), <int>[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa]);
         await session.disconnect();
       },
     );
 
-  test('a rejected authentication stops before any read is sent', () async {
+    test('a rejected authentication stops before any read is sent', () async {
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection, authReply: _authRejected);
@@ -795,51 +792,59 @@ void main() {
   });
 
   group('CbioGlucoseSession provisional scale', () {
-    test('the app and the capture harness share one raw field and one scale', () {
-      // Replayed 08 batch: the sample the capture harness read out of the
-      // sensor was raw 47..53 at index 9940..9992. Those counters live in the
-      // same record field the session publishes as `rawValue`, so the app and
-      // the harness already agree byte for byte. Only the unit label differed:
-      // the app multiplied the unverified /10 scale by 18.0182 and called the
-      // result mg/dL, which no reference measurement supports.
-      final frame = _rawBatch(
-        startIndex: 9940,
-        baseEpochSeconds: 596400,
-        baseReindex: 9940,
-        currents: <int>[47, 50, 53],
-      );
+    test(
+      'the app and the capture harness share one raw field and one scale',
+      () {
+        // Replayed 08 batch: the sample the capture harness read out of the
+        // sensor was raw 47..53 at index 9940..9992. Those counters live in the
+        // same record field the session publishes as `rawValue`, so the app and
+        // the harness already agree byte for byte. Only the unit label differed:
+        // the app multiplied the unverified /10 scale by 18.0182 and called the
+        // result mg/dL, which no reference measurement supports.
+        final frame = _rawBatch(
+          startIndex: 9940,
+          baseEpochSeconds: 596400,
+          baseReindex: 9940,
+          currents: <int>[47, 50, 53],
+        );
 
-      final batch = parseCbioRawDataFrame(frame);
+        final batch = parseCbioRawDataFrame(frame);
 
-      expect(
-        batch.records.map((record) => record.packed.index),
-        <int>[9940, 9941, 9942],
-      );
-      expect(batch.records.map((record) => record.rawCurrent), <int>[47, 50, 53]);
-      final archived = <CbioRawGlucoseRecord>[
-        for (final record in batch.records)
-          CbioRawGlucoseRecord(
-            index: record.packed.index,
-            rawTime: record.packed.rawTime,
-            reindex: record.packed.reindex,
-            rawTemperature: record.rawTemperature,
-            rawDump: record.rawDump,
-            rawCurrent: record.rawCurrent,
-            rawExtra: 0,
-          ),
-      ];
+        expect(batch.records.map((record) => record.packed.index), <int>[
+          9940,
+          9941,
+          9942,
+        ]);
+        expect(batch.records.map((record) => record.rawCurrent), <int>[
+          47,
+          50,
+          53,
+        ]);
+        final archived = <CbioRawGlucoseRecord>[
+          for (final record in batch.records)
+            CbioRawGlucoseRecord(
+              index: record.packed.index,
+              rawTime: record.packed.rawTime,
+              reindex: record.packed.reindex,
+              rawTemperature: record.rawTemperature,
+              rawDump: record.rawDump,
+              rawCurrent: record.rawCurrent,
+              rawExtra: 0,
+            ),
+        ];
 
-      for (final record in archived) {
-        // The one scale both paths use, stated without a glucose unit.
-        expect(record.derivedMillimolesPerLitre, record.rawCurrent / 10);
-        expect(record.isUnitVerified, isFalse);
-      }
-      expect(archived.first.derivedMillimolesPerLitre, 4.7);
-      expect(archived.last.derivedMillimolesPerLitre, 5.3);
-      // The mg/dL derivation stays available for the chart's internal scale,
-      // but it is a conversion of an unverified unit, never a measurement.
-      expect(archived.first.derivedMilligramsPerDecilitre, 85);
-      expect(archived.last.derivedMilligramsPerDecilitre, 95);
-    });
+        for (final record in archived) {
+          // The one scale both paths use, stated without a glucose unit.
+          expect(record.derivedMillimolesPerLitre, record.rawCurrent / 10);
+          expect(record.isUnitVerified, isFalse);
+        }
+        expect(archived.first.derivedMillimolesPerLitre, 4.7);
+        expect(archived.last.derivedMillimolesPerLitre, 5.3);
+        // The mg/dL derivation stays available for the chart's internal scale,
+        // but it is a conversion of an unverified unit, never a measurement.
+        expect(archived.first.derivedMilligramsPerDecilitre, 85);
+        expect(archived.last.derivedMilligramsPerDecilitre, 95);
+      },
+    );
   });
 }

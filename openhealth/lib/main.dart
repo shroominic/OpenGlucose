@@ -1102,9 +1102,9 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           ? (cbioSnapshot
                 ? 'Sensor raw value · index ${latest?.sensorMinute ?? '--'}'
                 : (latest?.isDisplayProvisional == true
-                    ? null
-                    : libreConnectionDetailForSnapshot(snapshot)) ??
-                'Latest reading at ${readingTimeText(latest)}')
+                          ? null
+                          : libreConnectionDetailForSnapshot(snapshot)) ??
+                      'Latest reading at ${readingTimeText(latest)}')
           : 'Latest reading at ${readingTimeText(latest)}';
       stageLabel = stageLabelForSnapshot(snapshot);
     }
