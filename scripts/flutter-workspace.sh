@@ -136,6 +136,14 @@ integration_test_files() {
   done
 }
 
+# Harnesses that need a physically attached device: everything under the app's
+# integration_test lane. Nothing on a host runner executes them.
+device_backed_harnesses() {
+  [ -d "$repo_root/openhealth/integration_test" ] || return 0
+  find "$repo_root/openhealth/integration_test" -type f -name '*_test.dart' \
+    -print | sed "s#$repo_root/##" | sort
+}
+
 run_project_tests() {
   project_dir=$1
   shift
@@ -278,7 +286,24 @@ case "$command_name" in
     run_integration_tests
     ;;
   test-e2e)
-    printf '%s\n' 'Device end-to-end tests are not configured; see the controls register for the tracked exception.'
+    skipped=$(device_backed_harnesses)
+    printf '%s\n' '========================================================================'
+    printf '%s\n' 'DEVICE END-TO-END LANE DEFERRED: nothing was executed by this command.'
+    printf '%s\n' '========================================================================'
+    printf '%s\n' 'This is an approved, time-bounded baseline exception (controls register,'
+    printf '%s\n' 'owner @shroominic, review 2026-11-30). It is not hardware coverage.'
+    if [ -n "$skipped" ]; then
+      printf '%s\n' 'Skipped device-backed harnesses:'
+      printf '%s\n' "$skipped" | while IFS= read -r harness; do
+        printf '  %s\n' "$harness"
+      done
+      printf '%s\n' 'Run one on hardware, with the sensor powered and nearby:'
+      printf '%s\n' '  flutter test <harness> -d <adb-serial>'
+      printf '%s\n' 'Required evidence for this lane is a redacted artifact from a real'
+      printf '%s\n' 'run, not the output of this command.'
+    else
+      printf '%s\n' 'Skipped device-backed harnesses: none found, which is itself a defect.'
+    fi
     ;;
   build-android)
     verify_runtime
