@@ -591,8 +591,27 @@ String? cbioProvisionalValueText(CgmReading? reading) {
   return (raw / 10).toStringAsFixed(1);
 }
 
-/// What the app actually stored for this sensor: how many records and which
-/// sensor positions they cover. Positions are the protocol's own `index`
+/// Sensor positions inside the stored span that this phone never received.
+///
+/// The first and last stored positions bound an *envelope*. The protocol's own
+/// `index` counter advances one per stored minute, so a stored span of 1-7 with
+/// five records holds two holes - positions the sensor moved past that were
+/// never delivered to this app.
+int cbioMissingPositions(Iterable<CgmReading> readings) {
+  final positions = <int>{
+    for (final reading in readings)
+      if (reading.sensorMinute != null) reading.sensorMinute!,
+  };
+  if (positions.isEmpty) {
+    return 0;
+  }
+  final sorted = positions.toList()..sort();
+  return (sorted.last - sorted.first + 1) - sorted.length;
+}
+
+/// What the app actually stored for this sensor: how many records, which sensor
+/// positions they cover, and - when the envelope is not full - how many
+/// positions inside it never arrived. Positions are the protocol's own `index`
 /// counter, which advances one per stored minute; it is never a wall clock.
 String cbioStoredRangeText(Iterable<CgmReading> readings) {
   final positions = <int>[
@@ -603,8 +622,14 @@ String cbioStoredRangeText(Iterable<CgmReading> readings) {
     return '${readings.length} readings stored';
   }
   positions.sort();
-  return '${readings.length} readings stored · '
+  final stored =
+      '${readings.length} readings stored · '
       'sensor minutes ${positions.first}–${positions.last}';
+  final missing = cbioMissingPositions(readings);
+  if (missing <= 0) {
+    return stored;
+  }
+  return '$stored · $missing positions not received';
 }
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter
