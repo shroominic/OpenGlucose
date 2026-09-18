@@ -13,8 +13,9 @@
 ///
 /// Activation (`07`), reset, threshold, calibration, key-registration, and
 /// firmware frames are not built here and are rejected before the transport
-/// sees them. The link credential never reaches a log, a snapshot, or an
-/// exception message.
+/// sees them. The vendor material is resolved once per session from an injected
+/// [CbioCredentialSource], and the link credential never reaches a log, a
+/// snapshot, or an exception message.
 ///
 /// The sensor answers one `06 08` request with a stream of `08` batches pushed
 /// to the same characteristic, so history is an ingest problem rather than a
@@ -28,6 +29,7 @@ import 'dart:async';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
 
+import 'cbio_credentials.dart';
 import 'cbio_crypto.dart';
 import 'cbio_driver.dart';
 import 'cbio_history_archive.dart';
@@ -64,28 +66,6 @@ abstract final class CbioSessionFailure {
   static const String authRejected = 'cbio.auth.rejected';
   static const String write = 'cbio.write.failed';
   static const String disconnected = 'cbio.disconnected';
-}
-
-/// Supplies the 16-byte link credential.
-///
-/// The compiled default reads the package constant whose derivation is
-/// recorded in `docs/testing/cbio-gs1-auth-material.md`. A caller may inject a
-/// store-backed implementation without changing the session.
-abstract interface class CbioAuthMaterialProvider {
-  Future<List<int>> read();
-}
-
-/// The derivation-recorded link credential compiled into this package.
-final class CbioCompiledAuthMaterialProvider
-    implements CbioAuthMaterialProvider {
-  const CbioCompiledAuthMaterialProvider([
-    this.material = cbioVendorAuthMaterial,
-  ]);
-
-  final List<int> material;
-
-  @override
-  Future<List<int>> read() async => material;
 }
 
 /// Bounded timings for one session. Every window has a deadline.
@@ -173,12 +153,11 @@ final class CbioGlucoseSession implements CgmSession {
   CbioGlucoseSession({
     required this.sensor,
     required BleTransport transport,
-    CbioAuthMaterialProvider authMaterial =
-        const CbioCompiledAuthMaterialProvider(),
+    CbioCredentialSource credentials = const CbioDefineCredentialSource(),
     this.timing = const CbioSessionTiming(),
     DateTime Function() clock = DateTime.now,
   }) : _transport = transport,
-       _authMaterial = authMaterial,
+       _credentials = credentials,
        _clock = clock,
        _resumeOffset = _resumeOffsetFrom(sensor),
        _snapshot = CgmSessionSnapshot(
@@ -219,7 +198,7 @@ final class CbioGlucoseSession implements CgmSession {
   final CbioSessionTiming timing;
 
   final BleTransport _transport;
-  final CbioAuthMaterialProvider _authMaterial;
+  final CbioCredentialSource _credentials;
   final DateTime Function() _clock;
   final int? _resumeOffset;
   final CbioHistoryArchive _archive = CbioHistoryArchive();
@@ -230,6 +209,7 @@ final class CbioGlucoseSession implements CgmSession {
   final List<int> _reassemblyBuffer = <int>[];
 
   late CgmSessionSnapshot _snapshot;
+  CbioCredentials? _resolved;
   BleConnection? _connection;
   BleCharacteristicRef? _receive;
   BleCharacteristicRef? _command;
@@ -280,6 +260,22 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   Future<void> _initialize() async {
+    // The material is resolved once per session and before the radio is
+    // touched. A build that does not carry it can neither authenticate nor
+    // unmask a reply, so it fails closed here as a configuration problem
+    // instead of opening a link it could never use.
+    final CbioCredentials credentials;
+    try {
+      credentials = _credentials.read();
+    } on CbioCredentialUnavailable {
+      _log(CgmLogLevel.error, 'cbio.credentials.unavailable');
+      _fail(
+        CbioSessionFailure.authMaterial,
+        statusText: 'GS1 vendor material is not configured for this build',
+      );
+      return;
+    }
+    _resolved = credentials;
     _log(CgmLogLevel.info, 'cbio.connect.started');
     final connection = await _transport
         .connect(sensor.deviceId, timeout: timing.connectTimeout)
@@ -338,7 +334,7 @@ final class CbioGlucoseSession implements CgmSession {
     // answers it with frozen zeros, so its content is ignored and the raw
     // path below carries every reading.
     await _sendMasked(
-      buildMaskedCbioGlucoseQuery(0),
+      buildMaskedCbioGlucoseQuery(0, key: _streamKey),
       label: 'glucose-0a',
       isRead: true,
     );
@@ -347,14 +343,18 @@ final class CbioGlucoseSession implements CgmSession {
 
   int get _historyStartIndex => (_resumeOffset ?? 0) + 1;
 
+  /// The resolved per-frame stream key. Reached only after [_initialize]
+  /// resolved the material, so no call site can mask or unmask without it.
+  List<int> get _streamKey => _resolved!.streamKey;
+
   Future<bool> _authenticate() async {
     _setPhase(
       CbioSessionPhase.authenticating,
       CgmSyncStage.connecting,
       'Authenticating with the sensor',
     );
-    final material = await _authMaterial.read();
-    if (material.length != 16) {
+    final material = _resolved?.authMaterial;
+    if (material == null || material.length != 16) {
       _fail(CbioSessionFailure.authMaterial);
       return false;
     }
@@ -365,7 +365,11 @@ final class CbioGlucoseSession implements CgmSession {
     }
     final reply = _authReply = Completer<int>();
     final wrote = await _sendMasked(
-      buildMaskedCbioAuthentication(octets, material: material),
+      buildMaskedCbioAuthentication(
+        octets,
+        key: _streamKey,
+        material: material,
+      ),
       label: 'auth',
       isRead: false,
     );
@@ -434,7 +438,7 @@ final class CbioGlucoseSession implements CgmSession {
     }
     final epoch = _clock().toUtc().millisecondsSinceEpoch ~/ 1000;
     final wrote = await _sendMasked(
-      buildMaskedCbioClock(epoch),
+      buildMaskedCbioClock(epoch, key: _streamKey),
       label: 'clock',
       isRead: false,
     );
@@ -458,7 +462,7 @@ final class CbioGlucoseSession implements CgmSession {
     );
     unawaited(
       _sendMasked(
-        buildMaskedCbioRawQuery(startIndex),
+        buildMaskedCbioRawQuery(startIndex, key: _streamKey),
         label: 'raw-history',
         isRead: true,
       ),
@@ -522,7 +526,7 @@ final class CbioGlucoseSession implements CgmSession {
   Future<void> _readFrom(int index, {required String label}) async {
     final window = _liveWindow = Completer<void>();
     final wrote = await _sendMasked(
-      buildMaskedCbioRawQuery(index),
+      buildMaskedCbioRawQuery(index, key: _streamKey),
       label: label,
       isRead: true,
     );
@@ -586,7 +590,7 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _onNotification(List<int> bytes) {
-    if (_closing || bytes.isEmpty) {
+    if (_closing || bytes.isEmpty || _resolved == null) {
       return;
     }
     _reassemblyBuffer.addAll(bytes);
@@ -600,7 +604,7 @@ final class CbioGlucoseSession implements CgmSession {
       // length byte is only readable after removing the mask. Unmasking an
       // assembled buffer from offset zero is exact whenever the buffer starts
       // on a frame boundary; anything else fails the checksum below.
-      final plaintext = unmaskCbioFrame(_reassemblyBuffer);
+      final plaintext = unmaskCbioFrame(_reassemblyBuffer, key: _streamKey);
       final expected = plaintext[0] + 1;
       if (expected < 5 || expected > 255) {
         // A fragment boundary the vendor layout cannot describe: drop it
@@ -668,7 +672,13 @@ final class CbioGlucoseSession implements CgmSession {
     if (connection == null || command == null) {
       return false;
     }
-    final plaintext = unmaskCbioFrame(masked);
+    // Reachable only before the session resolved its material, and then no
+    // frame is written.
+    final CbioCredentials? resolved = _resolved;
+    if (resolved == null) {
+      return false;
+    }
+    final plaintext = unmaskCbioFrame(masked, key: resolved.streamKey);
     if (!_isAllowedCommand(plaintext)) {
       // Defence in depth: an unrecognised command never reaches the radio.
       _log(CgmLogLevel.error, 'cbio.write.blocked:$label');
@@ -831,12 +841,12 @@ final class CbioGlucoseSession implements CgmSession {
     );
   }
 
-  void _fail(String code) {
+  void _fail(String code, {String statusText = 'Connection failed'}) {
     _cancelTimers();
     _setPhase(
       CbioSessionPhase.failed,
       CgmSyncStage.error,
-      'Connection failed',
+      statusText,
       error: code,
       force: true,
     );

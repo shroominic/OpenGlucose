@@ -5,71 +5,18 @@
 /// sensor address, the serial, the account, or the session, and it does not
 /// roll: every frame restarts the keystream.
 ///
-/// Provenance of [cbioVendorStreamKey]: extracted from virtual and file offset
-/// `0x11164` (`.rodata + 0xe4`) of the hash-verified
-/// `libdata-handle-lib.so` shipped in the SiSensing GS1 application
-/// (`01.20.01.00`, SHA-256 `761f0aab72b35010839e90620c348ee71b888b25682252360a7af16f150bd1d7`).
-/// It is loaded directly by the frame builders and by `register_key`, and it
-/// was cross-checked against an independent open-source client of the same
-/// protocol. See `docs/testing/cbio-gs1-auth-material.md` for the derivation;
-/// the derivation record deliberately does not restate the bytes.
-///
-/// Provenance of [cbioVendorAuthMaterial]: the 16 clear bytes the vendor's
-/// `register_key` copies into its `.bss` block at `0x18170`, which the
-/// authentication builder then reads back into frame offsets 9..24. The value
-/// is the package-bound EU credential; the same constant appears in the
-/// independent open-source client. It is a link credential, not an encryption
-/// key, and it is not a sensor secret.
+/// The key itself is **not in this repository**. It is extracted from a vendor
+/// artifact and injected at run time; the extraction procedure and the artifact
+/// digests are recorded in `docs/testing/cbio-gs1-auth-material.md`, and that
+/// record deliberately does not restate the bytes. Every function here takes
+/// the key as an explicit argument, so a caller that has not resolved vendor
+/// material cannot compile a call to it.
 library;
 
-/// The 16-byte per-frame stream key. Never log or transmit this value.
-const List<int> cbioVendorStreamKey = <int>[
-  0x01,
-  0x38,
-  0x0b,
-  0x9a,
-  0x00,
-  0x5b,
-  0x02,
-  0x5d,
-  0xcd,
-  0x9e,
-  0xc3,
-  0x99,
-  0x09,
-  0x37,
-  0xaa,
-  0xe8,
-];
-
-/// The 16-byte EU link credential carried inside the authentication frame.
-const List<int> cbioVendorAuthMaterial = <int>[
-  0x54,
-  0x48,
-  0x45,
-  0x35,
-  0x34,
-  0x34,
-  0x55,
-  0x30,
-  0x54,
-  0x59,
-  0x49,
-  0x54,
-  0x45,
-  0x34,
-  0x36,
-  0x31,
-];
-
-/// The five bytes the sensor sends when it wants authentication.
-///
-/// `23 F7 6F D9 F4` unmasks to the valid control frame `04 00 00 00 FC`, an
-/// acknowledgement with opcode, result, and raw status all zero.
-const List<int> cbioAuthenticationTrigger = <int>[0x23, 0xf7, 0x6f, 0xd9, 0xf4];
-
 /// RC4 keystream bytes for [length] bytes from offset zero.
-List<int> cbioRc4Keystream(int length, {List<int> key = cbioVendorStreamKey}) {
+///
+/// [key] is the injected 16-byte vendor stream key. It has no default.
+List<int> cbioRc4Keystream(int length, {required List<int> key}) {
   if (length < 0) {
     throw ArgumentError.value(length, 'length', 'must not be negative');
   }
@@ -98,16 +45,16 @@ List<int> cbioRc4Keystream(int length, {List<int> key = cbioVendorStreamKey}) {
   return keystream;
 }
 
-/// Masks one plaintext vendor frame with the static key at offset zero.
-List<int> maskCbioFrame(List<int> plaintext) =>
-    _xorWithStream(plaintext, cbioVendorStreamKey);
+/// Masks one plaintext vendor frame with the injected key at offset zero.
+List<int> maskCbioFrame(List<int> plaintext, {required List<int> key}) =>
+    _xorWithStream(plaintext, key);
 
 /// Removes the vendor mask from one inbound payload.
 ///
 /// Masking is symmetric and restarts at offset zero for every frame, so this
 /// also answers "what was the sensor actually saying" for a captured payload.
-List<int> unmaskCbioFrame(List<int> masked) =>
-    _xorWithStream(masked, cbioVendorStreamKey);
+List<int> unmaskCbioFrame(List<int> masked, {required List<int> key}) =>
+    _xorWithStream(masked, key);
 
 List<int> _xorWithStream(List<int> bytes, List<int> key) {
   final keystream = cbioRc4Keystream(bytes.length, key: key);

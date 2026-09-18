@@ -33,6 +33,7 @@
 // run is active. This file prints only redacted identifiers and never prints
 // payload bytes.
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_ble_flutter/cgm_ble_flutter.dart';
@@ -59,8 +60,8 @@ const Set<String> _allowedCommandKeys = <String>{
 };
 
 /// One captured write that the session was authorized to send.
-bool _isAllowedWrite(List<int> masked) {
-  final plaintext = unmaskCbioFrame(masked);
+bool _isAllowedWrite(List<int> masked, List<int> key) {
+  final plaintext = unmaskCbioFrame(masked, key: key);
   if (plaintext.length < 2) {
     return false;
   }
@@ -69,6 +70,23 @@ bool _isAllowedWrite(List<int> masked) {
     '${plaintext[1].toRadixString(16).padLeft(2, '0')}',
   );
 }
+
+/// Vendor material for this run.
+///
+/// Nothing in the repository carries the stream key or the link credential, so
+/// the harness reads them from the process environment or from `--dart-define`
+/// and aborts before touching the radio when they are absent. Provide them
+/// without writing them to a committed file, for example with
+/// `--dart-define-from-file` against a git-ignored local file.
+final CbioMapCredentialSource _credentials =
+    CbioMapCredentialSource(<String, String>{
+      ...Platform.environment,
+      if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
+      if (cbioAuthMaterialHex.isNotEmpty)
+        cbioAuthMaterialDefine: cbioAuthMaterialHex,
+      if (cbioAuthTriggerHex.isNotEmpty)
+        cbioAuthTriggerDefine: cbioAuthTriggerHex,
+    });
 
 /// Every phase is bounded so a silent or unresponsive radio cannot hang.
 const Duration _filteredScanWindow = Duration(seconds: 8);
@@ -114,6 +132,16 @@ void main() {
   testWidgets(
     'Cbio GS1 live capture: FF30 discovery, connect, FF31 notification bytes',
     (tester) async {
+      if (!_credentials.isConfigured) {
+        // The authenticated link cannot be driven without the injected
+        // material, and a missing material is a configuration problem rather
+        // than a finding about the sensor.
+        _emit(
+          'CBIO-PROGRESS phase=abort abort=vendor-material-missing '
+          'missing=${_credentials.missing.join(",")}',
+        );
+        return;
+      }
       final summary = await tester.runAsync(_runCapture);
       _report(summary!);
       _assertCapture(summary);
@@ -123,6 +151,7 @@ void main() {
 }
 
 Future<_CaptureSummary> _runCapture() async {
+  final vendor = _credentials.read();
   final token = 'cbio-${DateTime.now().toUtc().millisecondsSinceEpoch}';
   final sink = LocalBleTraceSink(sessionToken: token);
   final events = <BleTraceEvent>[];
@@ -131,7 +160,11 @@ Future<_CaptureSummary> _runCapture() async {
     sink: _TeeTraceSink(sink, events),
   );
   const discovery = CbioDiscovery();
-  final driver = CbioSensorDriver(transport, discovery: discovery);
+  final driver = CbioSensorDriver(
+    transport,
+    discovery: discovery,
+    credentials: _credentials,
+  );
 
   _emit('CBIO-PROGRESS phase=heartbeat');
   await transport.recordCaptureHeartbeat().timeout(_discoveryOverhead);
@@ -354,6 +387,7 @@ Future<_CaptureSummary> _runCapture() async {
 
   return _CaptureSummary(
     sessionToken: token,
+    streamKey: vendor.streamKey,
     traceFile: segmentFileName == null
         ? null
         : '${await _traceDirectoryPath()}/$segmentFileName',
@@ -726,6 +760,7 @@ final class _LinkOutcome {
 final class _CaptureSummary {
   const _CaptureSummary({
     required this.sessionToken,
+    required this.streamKey,
     required this.traceFile,
     required this.filteredCandidates,
     required this.filteredError,
@@ -753,6 +788,11 @@ final class _CaptureSummary {
   });
 
   final String sessionToken;
+
+  /// The mask key the driver under test writes with, used to read back the
+  /// plaintext command of each captured write. It is never printed.
+  final List<int> streamKey;
+
   final String? traceFile;
   final List<DiscoveredSensor> filteredCandidates;
   final Object? filteredError;
@@ -781,7 +821,7 @@ final class _CaptureSummary {
   /// Writes outside the authorised vendor link set.
   List<List<int>> get illegalWrites => <List<int>>[
     for (final bytes in writeBytes)
-      if (!_isAllowedWrite(bytes)) bytes,
+      if (!_isAllowedWrite(bytes, streamKey)) bytes,
   ];
 }
 

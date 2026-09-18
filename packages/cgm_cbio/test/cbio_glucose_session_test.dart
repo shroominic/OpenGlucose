@@ -5,6 +5,30 @@ import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
+/// Synthetic vendor material for this suite.
+///
+/// The package compiles no vendor material, so every session under test is
+/// handed this obviously synthetic set through a credential source rather than
+/// reading a compiled constant. The bytes are unrelated to the real link and
+/// are never the values a build supplies.
+final CbioCredentials _syntheticCredentials = CbioCredentials(
+  streamKey: _ascii('CGMTESTKEY000000'),
+  authMaterial: _ascii('CGMTESTMATERIAL1'),
+  authenticationTrigger: const <int>[0x10, 0x20, 0x30, 0x40, 0x50],
+);
+
+final List<int> _syntheticKey = _syntheticCredentials.streamKey;
+
+final CbioCredentialSource _syntheticSource = CbioStaticCredentialSource(
+  _syntheticCredentials,
+);
+
+List<int> _ascii(String value) => value.codeUnits;
+
+/// Reads one captured write back with the key this suite's sessions resolve.
+List<int> _unmaskWrite(List<int> masked) =>
+    unmaskCbioFrame(masked, key: _syntheticKey);
+
 /// The vendor's accepted authentication reply, opcode 0x01 result 1.
 const List<int> _authAccepted = <int>[0x04, 0x01, 0x01, 0x00, 0xfa];
 
@@ -72,8 +96,12 @@ List<int> _packedBatch({required int startIndex, required int count}) {
 }
 
 final class _FakeConnection implements BleConnection {
-  _FakeConnection({this.serial = _serialOctets, List<BleService>? services})
-    : services = services ?? _defaultServices;
+  _FakeConnection({
+    this.serial = _serialOctets,
+    List<BleService>? services,
+    List<int>? streamKey,
+  }) : services = services ?? _defaultServices,
+       streamKey = streamKey ?? _syntheticKey;
 
   static const List<BleService> _defaultServices = <BleService>[
     BleService(
@@ -107,6 +135,7 @@ final class _FakeConnection implements BleConnection {
 
   final List<int> serial;
   final List<BleService> services;
+  final List<int> streamKey;
   final StreamController<BleConnectionState> _states =
       StreamController<BleConnectionState>.broadcast();
   final StreamController<List<int>> _notifications =
@@ -158,7 +187,7 @@ final class _FakeConnection implements BleConnection {
     bool withoutResponse = false,
   }) async {
     writes.add(List<int>.from(value));
-    final plaintext = unmaskCbioFrame(value);
+    final plaintext = unmaskCbioFrame(value, key: streamKey);
     await onWrite?.call(plaintext);
   }
 
@@ -175,7 +204,7 @@ final class _FakeConnection implements BleConnection {
       _notifications.stream;
 
   void emitPlaintext(List<int> frame) =>
-      _notifications.add(maskCbioFrame(frame));
+      _notifications.add(maskCbioFrame(frame, key: streamKey));
 
   /// Emits already-masked bytes, as one slice of a vended frame would arrive.
   void emitMasked(List<int> masked) => _notifications.add(masked);
@@ -213,6 +242,27 @@ final class _FakeTransport implements BleTransport {
   }) async {
     connects += 1;
     return connection;
+  }
+}
+
+/// Counts how many times a session resolves vendor material.
+final class _CountingCredentialSource implements CbioCredentialSource {
+  _CountingCredentialSource([this.credentials]);
+
+  final CbioCredentials? credentials;
+  int reads = 0;
+
+  @override
+  bool get isConfigured => credentials != null;
+
+  @override
+  CbioCredentials read() {
+    reads += 1;
+    final value = credentials;
+    if (value == null) {
+      throw const CbioCredentialUnavailable('set CBIO_VENDOR_STREAM_KEY_HEX');
+    }
+    return value;
   }
 }
 
@@ -298,12 +348,13 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
         );
         await session.initialize();
         await _pumpUntil(() => connection.writes.length >= 4);
 
-        final plaintext = connection.writes.map(unmaskCbioFrame).toList();
+        final plaintext = connection.writes.map(_unmaskWrite).toList();
         expect(plaintext, isNotEmpty);
         for (final frame in plaintext) {
           final key =
@@ -340,15 +391,16 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
         );
         await session.initialize();
         await _pumpUntil(
-          () => connection.writes.map(unmaskCbioFrame).any((f) => f[1] == 0x01),
+          () => connection.writes.map(_unmaskWrite).any((f) => f[1] == 0x01),
         );
 
         final auth = connection.writes
-            .map(unmaskCbioFrame)
+            .map(_unmaskWrite)
             .firstWhere((frame) => frame[1] == 0x01);
         // With 2A25 empty the session falls back to the advertised identity,
         // reversed, exactly as the vendor link setup does.
@@ -365,6 +417,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
@@ -372,7 +425,7 @@ void main() {
         () => session.currentSnapshot.stage == CgmSyncStage.error,
       );
 
-      final plaintext = connection.writes.map(unmaskCbioFrame).toList();
+      final plaintext = connection.writes.map(_unmaskWrite).toList();
       expect(plaintext.map((frame) => frame[1]), <int>[0x01]);
       expect(session.currentSnapshot.lastError, 'cbio.auth.rejected');
       await session.disconnect();
@@ -386,6 +439,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
@@ -394,7 +448,7 @@ void main() {
       );
 
       expect(
-        connection.writes.map(unmaskCbioFrame).map((frame) => frame[1]),
+        connection.writes.map(_unmaskWrite).map((frame) => frame[1]),
         <int>[0x01],
       );
       expect(session.currentSnapshot.lastError, 'cbio.auth.timeout');
@@ -410,6 +464,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       final subscription = session.logs.listen(
@@ -420,7 +475,7 @@ void main() {
       await session.disconnect();
       await subscription.cancel();
 
-      final credential = cbioVendorAuthMaterial
+      final credential = _syntheticCredentials.authMaterial
           .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
           .join(' ');
       expect(logs, isNotEmpty);
@@ -453,6 +508,7 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
           clock: () => now,
         );
@@ -504,6 +560,7 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
           clock: () => now,
         );
@@ -544,6 +601,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
         clock: () => now,
       );
@@ -584,6 +642,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
         clock: () => now,
       );
@@ -630,11 +689,12 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
         );
         await session.initialize();
         await _pumpUntil(
-          () => connection.writes.map(unmaskCbioFrame).any((f) => f[1] == 0x0a),
+          () => connection.writes.map(_unmaskWrite).any((f) => f[1] == 0x0a),
         );
         connection.emitPlaintext(<int>[0x03, 0x99, 0x00]);
         connection.emitPlaintext(_packedBatch(startIndex: 1, count: 4));
@@ -657,7 +717,7 @@ void main() {
         baseReindex: 2,
         currents: <int>[64, 70],
       );
-      final masked = maskCbioFrame(frame);
+      final masked = maskCbioFrame(frame, key: _syntheticKey);
       await _defaultResponder(connection);
       connection.onWrite = (plaintext) async {
         if (plaintext[1] == 0x01) {
@@ -674,6 +734,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
         clock: () => now,
       );
@@ -694,6 +755,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming.copyWith(maxReadsPerSession: 1),
       );
       await session.initialize();
@@ -702,7 +764,7 @@ void main() {
 
       expect(connection.writes, hasLength(3));
       expect(
-        connection.writes.map(unmaskCbioFrame).map((frame) => frame[1]),
+        connection.writes.map(_unmaskWrite).map((frame) => frame[1]),
         isNot(contains(0x08)),
         reason: 'an exhausted read budget blocks the raw history read',
       );
@@ -720,6 +782,7 @@ void main() {
         final session = CbioGlucoseSession(
           sensor: _sensor,
           transport: transport,
+          credentials: _syntheticSource,
           timing: _fastTiming,
         );
         await session.initialize();
@@ -745,6 +808,7 @@ void main() {
       final session = CbioGlucoseSession(
         sensor: _sensor,
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
@@ -776,15 +840,16 @@ void main() {
           metadata: <String, String>{'resumeOffset': '9981'},
         ),
         transport: transport,
+        credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
       await _pumpUntil(
-        () => connection.writes.map(unmaskCbioFrame).any((f) => f[1] == 0x08),
+        () => connection.writes.map(_unmaskWrite).any((f) => f[1] == 0x08),
       );
 
       final raw = connection.writes
-          .map(unmaskCbioFrame)
+          .map(_unmaskWrite)
           .firstWhere((frame) => frame[1] == 0x08);
       expect(raw[2] | (raw[3] << 8), 9982);
       await session.disconnect();
@@ -846,5 +911,55 @@ void main() {
         expect(archived.last.derivedMilligramsPerDecilitre, 95);
       },
     );
+  });
+
+  group('CbioGlucoseSession vendor material', () {
+    test('resolves the material once per session', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      await _defaultResponder(connection);
+      final source = _CountingCredentialSource(_syntheticCredentials);
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: source,
+        timing: _fastTiming,
+      );
+      // `initialize` is idempotent, so a second call must not re-read either.
+      await session.initialize();
+      await session.initialize();
+      await session.disconnect();
+
+      expect(source.reads, 1);
+      expect(transport.connects, 1);
+    });
+
+    test('fails closed before the radio when the build carries none', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      final source = _CountingCredentialSource();
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: source,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+
+      // Nothing was connected, subscribed, or written: a build without vendor
+      // material cannot authenticate or unmask, so it never opens the link.
+      expect(transport.connects, 0);
+      expect(connection.writes, isEmpty);
+      expect(connection.notifySubscribed, isFalse);
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      expect(
+        session.currentSnapshot.lastError,
+        CbioSessionFailure.authMaterial,
+      );
+      expect(session.currentSnapshot.statusText, contains('vendor material'));
+      await session.disconnect();
+    });
   });
 }
