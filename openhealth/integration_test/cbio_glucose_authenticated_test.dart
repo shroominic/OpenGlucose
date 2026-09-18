@@ -28,6 +28,12 @@ const Duration _scanOverhead = Duration(seconds: 8);
 const Duration _acquisitionBudget = Duration(seconds: 80);
 const Duration _acquireGap = Duration(seconds: 2);
 const Duration _connectWindow = Duration(seconds: 25);
+const Duration _connectRetryGap = Duration(milliseconds: 800);
+
+/// Ceiling for a FlutterBluePlus call the harness cancels by hand. The plugin
+/// owns its own operation timeouts; this only bounds the harness's wait for a
+/// plugin future whose radio has already stopped.
+const Duration _pluginCallWindow = Duration(seconds: 8);
 const Duration _discoveryWindow = Duration(seconds: 25);
 const Duration _subscribeWindow = Duration(seconds: 15);
 const Duration _writeWindow = Duration(seconds: 15);
@@ -252,21 +258,17 @@ Future<void> _runSession(_SessionRun run) async {
   int elapsed() => DateTime.now().toUtc().difference(started).inMilliseconds;
 
   try {
-    await device
-        .connect(
-          license: fbp.License.free,
-          timeout: _connectWindow,
-          autoConnect: false,
-        )
-        .timeout(_connectWindow);
+    await _releaseBeforeConnect();
+    await _connectTarget(run, device);
     _emit('CBIO-A connect-ok');
 
-    final services = await device
-        .discoverServices(
-          subscribeToServicesChanged: false,
-          timeout: _discoveryWindow.inSeconds,
-        )
-        .timeout(_discoveryWindow);
+    // The plugin owns this timeout and holds its global Bluetooth mutex until
+    // the call it wrapped has finished. An outer Dart timeout would abandon the
+    // plugin future while it still owned that mutex.
+    final services = await device.discoverServices(
+      subscribeToServicesChanged: false,
+      timeout: _discoveryWindow.inSeconds,
+    );
     fbp.BluetoothCharacteristic? notify;
     fbp.BluetoothCharacteristic? write;
     fbp.BluetoothCharacteristic? serial;
@@ -291,8 +293,17 @@ Future<void> _runSession(_SessionRun run) async {
       return;
     }
 
-    final mtu = await device.requestMtu(247).timeout(_writeWindow);
-    _emit('CBIO-A mtu=$mtu');
+    // The ATT MTU exchange is not a vendor frame and the sensor may ignore it.
+    // The app treats a refused negotiation as "keep the default MTU" rather
+    // than as a failed session, so this does the same.
+    var mtu = 0;
+    try {
+      mtu = await device.requestMtu(247, timeout: _writeWindow.inSeconds);
+      _emit('CBIO-A mtu=$mtu');
+    } on Object catch (error) {
+      run.noteError('mtu_failed');
+      _emit('CBIO-A mtu-default error=${error.runtimeType}');
+    }
 
     subscription = notify.onValueReceived.listen((bytes) {
       masked.add((elapsed(), List<int>.from(bytes)));
@@ -303,9 +314,7 @@ Future<void> _runSession(_SessionRun run) async {
         'plaintext=${_hex(plaintext)}',
       );
     });
-    await notify
-        .setNotifyValue(true, timeout: _subscribeWindow.inSeconds)
-        .timeout(_subscribeWindow + _writeWindow);
+    await notify.setNotifyValue(true, timeout: _subscribeWindow.inSeconds);
     _emit('CBIO-A notify-enabled=ff31');
 
     // The vendor's authentication address is the sensor address in reversed
@@ -352,13 +361,11 @@ Future<void> _runSession(_SessionRun run) async {
       run.wrote(kind);
       _emit('CBIO-A write n=$writes label=$label masked=${_hex(bytes)}');
       try {
-        await write!
-            .write(
-              bytes,
-              withoutResponse: false,
-              timeout: _writeWindow.inSeconds,
-            )
-            .timeout(_writeWindow);
+        await write!.write(
+          bytes,
+          withoutResponse: false,
+          timeout: _writeWindow.inSeconds,
+        );
         _emit('CBIO-A write-ok n=$writes label=$label');
       } on Object catch (error) {
         _emit(
@@ -547,20 +554,138 @@ Future<void> _runSession(_SessionRun run) async {
     run.noteError('unexpected_error');
     run.outcome = CbioSessionOutcome.failed;
   } finally {
-    try {
-      await subscription?.cancel().timeout(_teardownWindow);
-    } on Object {
-      // Best effort: the link is released below regardless.
+    await _releaseLink(run, device, subscription);
+  }
+}
+
+/// Stops the platform scanner without letting a pending plugin future block the
+/// caller. By the time this is usually reached the radio is already stopped;
+/// this only releases the platform scan registration.
+Future<void> _stopRadio() async {
+  try {
+    if (fbp.FlutterBluePlus.isScanningNow) {
+      await fbp.FlutterBluePlus.stopScan().timeout(_pluginCallWindow);
     }
+  } on Object {
+    // A scan the platform already stopped needs no second stop.
+  }
+}
+
+/// Clears the radio before a connect attempt.
+///
+/// Some Android Bluetooth stacks cannot bring up GATT while a BLE scan is
+/// active, and `flutter_blue_plus` serializes a scan that is still starting
+/// against the next connect. A scan that is already stopped is left alone.
+Future<void> _releaseBeforeConnect() async {
+  if (!fbp.FlutterBluePlus.isScanningNow) {
+    return;
+  }
+  _emit('CBIO-A connect-preflight=stop-scan');
+  await _stopRadio();
+}
+
+/// Whether an Android connect failure is the transient status-133 class the
+/// app transport retries once.
+bool _isRetryableAndroidConnect(Object error) {
+  final message = error.toString().toUpperCase();
+  return message.contains('133') || message.contains('ANDROID_SPECIFIC_ERROR');
+}
+
+/// Brings up the GATT link, retrying one status-133 failure.
+///
+/// The app's live sensor path connects only after the scanner is stopped and
+/// gives an Android stack one more attempt when it answers with the transient
+/// status-133 class.
+Future<void> _connectTarget(_SessionRun run, fbp.BluetoothDevice device) async {
+  Future<void> attempt() async {
+    await device.connect(
+      license: fbp.License.free,
+      timeout: _connectWindow,
+      // flutter_blue_plus defaults this to 512 and, on Android, appends a
+      // `requestMtu(512)` to the connect call itself. That exchange is not part
+      // of the app's working link setup, so the harness negotiates its own MTU
+      // after discovery exactly as the app does.
+      mtu: null,
+      autoConnect: false,
+    );
+  }
+
+  final attemptStarted = DateTime.now().toUtc();
+  try {
+    await attempt();
+    return;
+  } on Object catch (error) {
+    final waited = DateTime.now().toUtc().difference(attemptStarted);
+    if (!_isRetryableAndroidConnect(error) || waited > _connectWindow) {
+      run.noteError('connect_failed');
+      _emit(
+        'CBIO-A connect-failed error=${error.runtimeType} '
+        't=${waited.inMilliseconds}',
+      );
+      rethrow;
+    }
+    run.noteError('connect_failed');
+    _emit(
+      'CBIO-A connect-retry n=1 error=${error.runtimeType} '
+      't=${waited.inMilliseconds}',
+    );
+  }
+  await Future<void>.delayed(_connectRetryGap);
+  try {
+    await attempt();
+  } on Object catch (error) {
+    run.noteError('connect_failed');
+    _emit('CBIO-A connect-failed-after-retry error=${error.runtimeType}');
+    rethrow;
+  }
+}
+
+/// Releases the notify subscription and the GATT link, and only reports the
+/// link released once the plugin has actually finished the disconnect.
+///
+/// The plugin owns the disconnect timeout. Wrapping it in an outer Dart timeout
+/// used to abandon the plugin future while its operation was still in flight,
+/// which left the GATT client registered, kept the Android Bluetooth mutex held
+/// for the rest of the process, and made the next run's connect fail against a
+/// sensor that still saw itself connected.
+Future<void> _releaseLink(
+  _SessionRun run,
+  fbp.BluetoothDevice device,
+  StreamSubscription<List<int>>? subscription,
+) async {
+  try {
+    await subscription?.cancel().timeout(_teardownWindow);
+  } on Object {
+    // Best effort: the link is released below regardless.
+  }
+  if (!device.isConnected) {
+    // The link never came up, so there is no client to release.
+    run.gattReleased = true;
+    _emit('CBIO-A disconnect-skip not-connected');
+    return;
+  }
+  for (var attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      await device.disconnect().timeout(_teardownWindow);
-      _emit('CBIO-A disconnect-ok');
-      run.gattReleased = true;
-    } on Object {
-      _emit('CBIO-A disconnect-failed');
-      run.noteError('disconnect_failed');
+      await device.disconnect(timeout: _teardownWindow.inSeconds);
+      run.gattReleased = !device.isConnected;
+      _emit(
+        'CBIO-A disconnect-ok attempt=$attempt '
+        'connected=${device.isConnected}',
+      );
+      if (run.gattReleased) {
+        return;
+      }
+    } on Object catch (error) {
+      _emit(
+        'CBIO-A disconnect-failed attempt=$attempt '
+        'error=${error.runtimeType}',
+      );
+    }
+    if (attempt == 1) {
+      await Future<void>.delayed(_connectRetryGap);
     }
   }
+  run.noteError('disconnect_failed');
 }
 
 /// One bounded raw-plugin scan for the FF30 Cbio / SiSensing advertiser.
