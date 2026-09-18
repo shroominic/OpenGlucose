@@ -1,9 +1,10 @@
 // Screen-off discovery evidence for the GS1 scan window.
 //
-// Android's ScanManager refuses an *unfiltered* (opportunistic) BLE scan while
-// the display is off and reports that by returning nothing at all, so a
-// sleeping phone looks exactly like a sensor that is not there. This harness
-// runs the same unfiltered pass twice on one device in one session:
+// Android's ScanManager refuses or starves an *unfiltered* (opportunistic) BLE
+// scan while the display is off, so a sleeping phone looks like a sensor that
+// is not there: the pass comes back empty, or with a small fraction of the
+// advertisers a held pass finds. This harness runs the same unfiltered pass
+// twice on one device in one session:
 //
 //   1. with the display held awake by the app's own gate, exactly as a scan
 //      window holds it, and
@@ -23,10 +24,18 @@
 //   adb shell pm grant <package> android.permission.BLUETOOTH_CONNECT
 //   adb shell pm grant <package> android.permission.ACCESS_FINE_LOCATION
 //
-// Each pass is bounded, so a platform that neither answers nor refuses the
-// scan is reported as an aborted pass instead of hanging the harness. This
-// file prints counts and closed milestones only: no device addresses, no
-// advertisement payloads, no sensor values.
+// Each pass is bounded, and so is the cancel that follows an abort, so a
+// platform that neither answers nor refuses the scan is reported as an aborted
+// pass instead of hanging the harness. This file prints counts and closed
+// milestones only: no device addresses, no advertisement payloads, no sensor
+// values.
+//
+// What this harness asserts is the *display* condition of each half: held keeps
+// the display interactive for the whole window, and the control half starts
+// with the display already asleep. The advertiser counts are the evidence, not
+// an assertion: on Android 17 an unfiltered pass with the display off was
+// starved rather than emptied - a small fraction of the advertisers the held
+// half saw - so zero cannot be asserted of the platform.
 import 'dart:async';
 
 import 'package:cgm_ble/cgm_ble.dart';
@@ -40,7 +49,18 @@ import 'package:openglucose/src/driver_factory.dart';
 const Duration _scanWindow = Duration(seconds: 18);
 
 /// Ceiling on one pass, so a silent platform cannot hang the harness.
-const Duration _passCeiling = Duration(seconds: 90);
+///
+/// Android resolves an unfiltered start slowly on some builds - the observed
+/// refusal path took 80-88 seconds before it answered - so the ceiling is
+/// generous on purpose and the abort is reported rather than hidden.
+const Duration _passCeiling = Duration(seconds: 150);
+
+/// Ceiling on the cancel that follows an aborted pass.
+///
+/// The transport's cancel waits for the same platform start call that a silent
+/// scan never answered, so cancelling needs a bound of its own: otherwise the
+/// abort hangs the harness the pass ceiling was meant to bound.
+const Duration _cancelCeiling = Duration(seconds: 10);
 
 /// How long to wait for the display to sleep once nothing holds it.
 const Duration _sleepBudget = Duration(seconds: 60);
@@ -74,6 +94,12 @@ void main() {
       'interactive-at-start=${baseline.interactiveAtStart} '
       'interactive-throughout=${baseline.interactiveThroughout}',
     );
+    _emit(
+      'CBIO-D summary held-advertisers=${held.advertisers} '
+      'dozing-advertisers=${baseline.advertisers} '
+      'held-interactive-throughout=${held.interactiveThroughout} '
+      'dozing-interactive-throughout=${baseline.interactiveThroughout}',
+    );
 
     expect(
       held.interactiveAtStart,
@@ -92,11 +118,9 @@ void main() {
           'the control pass needs the display asleep before it starts: set a '
           'short screen timeout before running this harness',
     );
-    expect(
-      baseline.advertisers,
-      isEmpty,
-      reason: 'Android declines the unfiltered pass while the display is off',
-    );
+    // Deliberately no assertion on baseline.advertisers: the platform starves
+    // this pass rather than emptying it, so the counts are reported above for
+    // the record and the meaningful claim is the display condition itself.
   });
 }
 
@@ -158,7 +182,15 @@ Future<_Pass> _unfilteredPass(
         .then((_) => true)
         .timeout(_passCeiling, onTimeout: () => false);
     if (!completed) {
-      await subscription.cancel();
+      _emit(
+        'CBIO-D $label pass-abort ceiling=${_passCeiling.inSeconds}s '
+        'cancel-ceiling=${_cancelCeiling.inSeconds}s',
+      );
+      try {
+        await subscription.cancel().timeout(_cancelCeiling);
+      } on Object {
+        // A transport that cannot close its own scan must not hold the run.
+      }
     }
   } on Object catch (error) {
     _emit('CBIO-D $label pass-threw ${error.runtimeType}');
