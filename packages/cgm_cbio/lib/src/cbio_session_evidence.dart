@@ -13,6 +13,8 @@
 /// `unverified`.
 library;
 
+import 'dart:convert';
+
 /// Terminal state of one harness run.
 enum CbioSessionOutcome {
   /// The session ran every required step and produced its required evidence.
@@ -114,6 +116,155 @@ const Set<String> cbioSessionErrorReasons = <String>{
 
 /// Highest raw value the 10-bit packed glucose field can hold.
 const int cbioRawGlucoseMaximum = 0x3ff;
+
+/// Identity strings that must never appear in an evidence artifact: a Bluetooth
+/// address in colon or dash form, or a long hex run that could carry credential
+/// or vendor material.
+final List<RegExp> _forbiddenEvidencePatterns = <RegExp>[
+  RegExp(r'([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}'),
+  RegExp(r'[0-9A-Fa-f]{32,}'),
+];
+
+/// Validates one decoded evidence artifact as it is read back from a device log.
+///
+/// Pure and host-testable. An empty result means the artifact can be trusted as
+/// hardware evidence: schema and closed vocabularies hold, ranges are inside the
+/// observed envelope, timing is forward-moving, and no identity leaks.
+List<String> cbioSessionEvidenceArtifactViolations(Object? decoded) {
+  if (decoded is! Map<String, Object?>) return const ['artifact_not_an_object'];
+  final violations = <String>[];
+  if (decoded['schema'] != 'cbio.session-evidence/1') {
+    violations.add('unknown_schema');
+  }
+  final identity = decoded['identity'];
+  if (identity is! Map) {
+    violations.add('identity_missing');
+  } else {
+    for (final key in const [
+      'harness',
+      'harnessRevision',
+      'appPackage',
+      'appRevision',
+      'platform',
+    ]) {
+      final value = identity[key];
+      if (value is! String || value.trim().isEmpty) {
+        violations.add('identity_missing:$key');
+      }
+    }
+  }
+  final outcome = decoded['outcome'];
+  if (outcome is! String) {
+    violations.add('outcome_missing');
+  } else if (!CbioSessionOutcome.values.any((value) => value.wire == outcome)) {
+    violations.add('outcome_unknown');
+  }
+  if (decoded['unitStatus'] != 'unverified') {
+    violations.add('unit_status_claimed');
+  }
+  for (final key in const ['targetAcquired', 'gattReleased']) {
+    if (decoded[key] is! bool) violations.add('${key}_not_boolean');
+  }
+  final notifications = decoded['notifications'];
+  if (notifications is! int || notifications < 0) {
+    violations.add('notifications_not_a_count');
+  }
+  final writes = decoded['writes'];
+  if (writes is! Map) {
+    violations.add('writes_missing');
+  } else {
+    final known = <String>{for (final kind in CbioWriteKind.values) kind.wire};
+    for (final entry in writes.entries) {
+      if (!known.contains(entry.key)) {
+        violations.add('write_kind_unknown:${entry.key}');
+      }
+      if (entry.value is! int || (entry.value as int) < 0) {
+        violations.add('write_count_invalid:${entry.key}');
+      }
+    }
+  }
+  final errors = decoded['errors'];
+  if (errors is! Map) {
+    violations.add('errors_missing');
+  } else {
+    for (final entry in errors.entries) {
+      if (!cbioSessionErrorReasons.contains(entry.key)) {
+        violations.add('error_reason_unknown:${entry.key}');
+      }
+      if (entry.value is! int || (entry.value as int) < 0) {
+        violations.add('error_count_invalid:${entry.key}');
+      }
+    }
+  }
+  violations.addAll(_recordViolations(decoded['records']));
+  violations.addAll(_timingViolations(decoded));
+  final encoded = jsonEncode(decoded);
+  for (final pattern in _forbiddenEvidencePatterns) {
+    if (pattern.hasMatch(encoded)) violations.add('identity_leak');
+  }
+  return violations;
+}
+
+List<String> _recordViolations(Object? records) {
+  if (records is! Map) return const ['records_missing'];
+  final violations = <String>[];
+  for (final key in const ['glucose', 'raw']) {
+    final block = records[key];
+    if (block is! Map) {
+      violations.add('records_missing:$key');
+      continue;
+    }
+    final count = block['count'];
+    final first = block['firstIndex'];
+    final last = block['lastIndex'];
+    if (count is! int || count < 0) {
+      violations.add('record_count_invalid:$key');
+      continue;
+    }
+    if (count == 0) {
+      if (first != null || last != null) violations.add('empty_range:$key');
+      continue;
+    }
+    if (first is! int || last is! int || first < 0 || last < first) {
+      violations.add('record_range_invalid:$key');
+    }
+    if (last is int && last > 0xffff) {
+      violations.add('record_index_out_of_bounds:$key');
+    }
+  }
+  for (final key in const ['rawGlucoseMinimum', 'rawGlucoseMaximum']) {
+    final value = records[key];
+    if (value == null) continue;
+    if (value is! int || value < 0 || value > cbioRawGlucoseMaximum) {
+      violations.add('raw_glucose_outside_envelope:$key');
+    }
+  }
+  final minimum = records['rawGlucoseMinimum'];
+  final maximum = records['rawGlucoseMaximum'];
+  if (minimum is int && maximum is int && minimum > maximum) {
+    violations.add('raw_glucose_range_inverted');
+  }
+  return violations;
+}
+
+List<String> _timingViolations(Map<String, Object?> decoded) {
+  final violations = <String>[];
+  final started = DateTime.tryParse(decoded['startedAtUtc'] as String? ?? '');
+  final ended = DateTime.tryParse(decoded['endedAtUtc'] as String? ?? '');
+  if (started == null || ended == null) {
+    violations.add('timing_not_parsable');
+    return violations;
+  }
+  if (ended.isBefore(started)) violations.add('clock_moved_backwards');
+  final duration = decoded['durationMilliseconds'];
+  if (duration is! int || duration < 0) {
+    violations.add('duration_invalid');
+  } else if ((ended.difference(started).inMilliseconds - duration).abs() >
+      1000) {
+    violations.add('duration_disagrees_with_timestamps');
+  }
+  return violations;
+}
 
 /// Evidence for one device-backed GS1 session.
 ///
