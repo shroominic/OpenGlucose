@@ -40,7 +40,11 @@ full records, and current checkpoint. It has two states:
 
 The current checkpoint and rows commit in ONE atomic envelope; never write a
 separate pointer/checkpoint. Pending adoption is durably written only AFTER
-the old owner drains and the host commits selected-target identity, BEFORE BLE.
+the old owner drains and the host assigns selected-target identity IN MEMORY,
+BEFORE BLE. Existing durable selected-sensor promotion still occurs later under
+its unchanged verified-identity policy; no controller persistence hook is added.
+If a process dies before that promotion, an unused new-binding envelope remains
+private. It never supplies another binding's checkpoint or observations.
 `prepareTarget` performs validation reads only. Failed adoption opens no radio.
 
 On restart, valid observing state is authoritative over frozen legacy state;

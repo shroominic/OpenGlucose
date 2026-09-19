@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_cbio/src/cbio_history_state.dart';
+import 'package:cgm_cbio/src/cbio_full_record_state.dart';
 import 'package:cgm_cbio/src/cbio_private_state_owner.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
@@ -503,6 +504,44 @@ String? _privateCheckpoint(CbioGlucoseSession session) =>
 String _phaseOf(CgmSessionSnapshot snapshot) =>
     snapshot.metadata[cbioPhaseMetadataKey] ?? '';
 
+final class _FullStore implements CbioFullRecordStore {
+  String? legacy;
+  String? expectedLegacy;
+  String? full;
+  int legacyWrites = 0;
+  int writes = 0;
+  bool failFull = false;
+  Completer<void>? hold;
+  Completer<void>? started;
+  @override
+  Future<String?> read(String sensorKey) async => legacy;
+  @override
+  Future<void> write(String sensorKey, String envelope) async {
+    legacyWrites++;
+    legacy = envelope;
+  }
+
+  @override
+  Future<String?> readFullRecords(String sensorKey) async => full;
+  @override
+  Future<void> writeFullRecords(String sensorKey, String envelope) async {
+    writes++;
+    if (started?.isCompleted == false) started!.complete();
+    await hold?.future;
+    if (failFull) throw StateError('private-store-path');
+    full = envelope;
+  }
+
+  @override
+  String legacySha256(String legacyEnvelope) {
+    if (legacyEnvelope == expectedLegacy) return 'a' * 64;
+    throw StateError('Unexpected legacy fixture');
+  }
+}
+
+CbioFullRecordState _fullSaved(_FullStore store) =>
+    CbioFullRecordState.decode(store.full!, sensorKey: _sensor.storageKey);
+
 final class _PrivateStore implements CbioPrivateStateStore {
   String? envelope;
   bool failWrite = false;
@@ -527,6 +566,361 @@ Future<List<CgmReading>> _storedHistory(
 }
 
 void main() {
+  group('complete private inputs', () {
+    test(
+      'legacy bootstrap remains byte-identical after full-input suffix save',
+      () async {
+        final legacy = CbioHistoryState(
+          sensorKey: _sensor.storageKey,
+          checkpoint: CbioSessionCheckpoint(
+            sensorKey: _sensor.storageKey,
+            index: 1,
+            rawTime: 1000,
+          ).encode(),
+          history: const [
+            CgmReading(
+              valueMgdl: 6.4,
+              rawValue: 64,
+              sensorMinute: 1,
+              source: CgmRecordSource.raw,
+              isDisplayProvisional: true,
+            ),
+          ],
+        ).encode();
+        final store = _FullStore()
+          ..legacy = legacy
+          ..expectedLegacy = legacy;
+        final connection = _FakeConnection();
+        await _defaultResponder(
+          connection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 0,
+              currents: [64, 70],
+            ),
+          ],
+        );
+        final session = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await session.initialize();
+        await _pumpUntil(() => _rawCount(session).then((count) => count == 2));
+        await session.disconnect();
+        expect(store.legacy, legacy);
+        expect(store.legacyWrites, 0);
+        expect(_fullSaved(store).records.map((r) => r.rawTemperature), [
+          315,
+          315,
+        ]);
+        expect(
+          _fullSaved(store).bootstrapCheckpoint,
+          CbioSessionCheckpoint(
+            sensorKey: _sensor.storageKey,
+            index: 1,
+            rawTime: 1000,
+          ).encode(),
+        );
+        expect(
+          CbioSessionCheckpoint.decode(
+            _fullSaved(store).currentCheckpoint!,
+            _sensor.storageKey,
+          )!.index,
+          2,
+        );
+      },
+    );
+
+    test(
+      'restored same-index same-time witness cannot hide changed temperature',
+      () async {
+        final store = _FullStore();
+        final firstConnection = _FakeConnection();
+        await _defaultResponder(
+          firstConnection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 0,
+              currents: [64],
+              temperature: 315,
+            ),
+          ],
+        );
+        final first = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(firstConnection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await first.initialize();
+        await _pumpUntil(() => _rawCount(first).then((count) => count == 1));
+        await first.disconnect();
+        final saved = store.full;
+        final secondConnection = _FakeConnection();
+        await _defaultResponder(
+          secondConnection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 0,
+              currents: [64],
+              temperature: 325,
+            ),
+          ],
+        );
+        final second = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(secondConnection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await second.initialize();
+        await _pumpUntil(
+          () => second.currentSnapshot.stage == CgmSyncStage.error,
+        );
+        expect(
+          second.currentSnapshot.lastError,
+          CbioSessionFailure.conflictingHistory,
+        );
+        await second.disconnect();
+        expect(store.full, saved);
+        expect(second.currentSnapshot.latestReading, isNull);
+      },
+    );
+
+    test(
+      'prepare stays read-only and pending durability precedes BLE',
+      () async {
+        final store = _FullStore()
+          ..hold = Completer<void>()
+          ..started = Completer<void>();
+        final connection = _FakeConnection();
+        await _defaultResponder(connection);
+        final transport = _FakeTransport(connection);
+        final driver = CbioSensorDriver(
+          transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await driver.prepareTarget(_sensor);
+        expect(store.full, isNull);
+        expect(store.writes, 0);
+        final session = await driver.connect(_sensor);
+        await store.started!.future;
+        expect(transport.connects, 0);
+        store.hold!.complete();
+        await _pumpUntil(() => transport.connects == 1);
+        expect(_fullSaved(store).isPending, isTrue);
+        await session.disconnect();
+      },
+    );
+
+    test('failed adoption never opens BLE or writes lossy legacy', () async {
+      final store = _FullStore()..failFull = true;
+      final transport = _FakeTransport(_FakeConnection());
+      final driver = CbioSensorDriver(
+        transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+        privateStateStore: store,
+      );
+      final session = await driver.connect(_sensor);
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.error,
+      );
+      expect(transport.connects, 0);
+      expect(store.legacyWrites, 0);
+      expect(session.currentSnapshot.lastError, 'cbio.private-state.failed');
+      expect(
+        session
+            .currentSnapshot
+            .metadata[cgmAutomaticReconnectAllowedMetadataKey],
+        'false',
+      );
+      await session.disconnect();
+    });
+
+    test(
+      'two temperatures survive restart and authoritative witness resumes suffix',
+      () async {
+        final store = _FullStore();
+        final firstConnection = _FakeConnection();
+        await _defaultResponder(
+          firstConnection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 1,
+              currents: [64],
+              temperature: 315,
+            ),
+            _rawBatch(
+              startIndex: 2,
+              baseEpochSeconds: 1060,
+              baseReindex: 0,
+              currents: [64],
+              temperature: 325,
+            ),
+          ],
+        );
+        final first = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(firstConnection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await first.initialize();
+        await _pumpUntil(() => _rawCount(first).then((count) => count == 2));
+        await first.disconnect();
+        expect(store.full, isNotNull);
+        expect(_fullSaved(store).records.map((r) => r.rawTemperature), [
+          315,
+          325,
+        ]);
+        expect(store.legacyWrites, 0);
+        final secondConnection = _FakeConnection();
+        await _defaultResponder(
+          secondConnection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 2,
+              baseEpochSeconds: 1060,
+              baseReindex: 1,
+              currents: [64],
+              temperature: 325,
+            ),
+            _rawBatch(
+              startIndex: 3,
+              baseEpochSeconds: 1120,
+              baseReindex: 0,
+              currents: [72],
+              temperature: 326,
+            ),
+          ],
+        );
+        final second = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(secondConnection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await second.initialize();
+        await _pumpUntil(() => _rawCount(second).then((count) => count == 2));
+        await second.disconnect();
+        expect(_fullSaved(store).records.map((r) => r.rawTemperature), [
+          315,
+          325,
+          326,
+        ]);
+        final query = secondConnection.writes
+            .map(_unmaskWrite)
+            .firstWhere((w) => w[1] == 0x08);
+        expect(query[2] | (query[3] << 8), 2);
+        expect(second.currentSnapshot.history, isEmpty);
+        expect(second.currentSnapshot.rawHistory, isEmpty);
+        expect(second.currentSnapshot.latestReading, isNull);
+      },
+    );
+
+    test(
+      'changed-temperature duplicate before coalesced publication fails closed',
+      () async {
+        final store = _FullStore();
+        final connection = _FakeConnection();
+        await _defaultResponder(
+          connection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 0,
+              currents: [64],
+              temperature: 315,
+            ),
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 0,
+              currents: [64],
+              temperature: 325,
+            ),
+          ],
+        );
+        final session = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming.copyWith(
+            publishInterval: const Duration(seconds: 1),
+          ),
+          privateStateStore: store,
+        );
+        await session.initialize();
+        await _drainMicrotasks();
+        expect(
+          session.currentSnapshot.lastError,
+          CbioSessionFailure.conflictingHistory,
+        );
+        expect(_fullSaved(store).isPending, isTrue);
+        await session.disconnect();
+      },
+    );
+
+    test(
+      'explicit save failure pauses radio and cannot advance checkpoint',
+      () async {
+        final store = _FullStore();
+        final connection = _FakeConnection();
+        await _defaultResponder(
+          connection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 1000,
+              baseReindex: 0,
+              currents: [64],
+            ),
+          ],
+        );
+        final session = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await session.initialize();
+        await _pumpUntil(() => _rawCount(session).then((count) => count == 1));
+        final pending = store.full;
+        store.failFull = true;
+        await expectLater(session.flushPrivateState(), throwsException);
+        expect(session.currentSnapshot.lastError, 'cbio.private-state.failed');
+        expect(store.full, pending);
+        final writeCount = connection.writes.length;
+        await session.refreshLiveData();
+        expect(connection.writes.length, writeCount);
+        store.failFull = false;
+        await session.disconnect();
+        expect(_fullSaved(store).records, hasLength(1));
+        expect(store.legacyWrites, 0);
+      },
+    );
+  });
+
   test(
     'caller advertisement cannot become unverified glucose fallback',
     () async {

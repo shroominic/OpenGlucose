@@ -99,6 +99,7 @@ abstract final class CbioSessionFailure {
   static const String missingWitness = 'cbio.resume.witness-missing';
   static const String counterRestart = 'cbio.counter.restart';
   static const String conflictingHistory = 'cbio.history.conflicting';
+  static const String privateState = 'cbio.private-state.failed';
 }
 
 /// Whether a closed failure code is worth another automatic attempt.
@@ -115,6 +116,7 @@ bool cbioFailureAllowsAutomaticReconnect(String code) => switch (code) {
   CbioSessionFailure.missingWitness ||
   CbioSessionFailure.counterRestart ||
   CbioSessionFailure.conflictingHistory ||
+  CbioSessionFailure.privateState ||
   CbioSessionFailure.topology => false,
   _ => true,
 };
@@ -236,7 +238,7 @@ final class CbioGlucoseSession implements CgmSession {
        _privateStateStore = privateStateStore,
        _privateState = privateState,
        _inputCheckpoint = privateState != null
-           ? privateState.state?.checkpoint
+           ? privateState.resumeCheckpoint
            : privateStateStore == null
            ? sensor.metadata[cbioCheckpointMetadataKey]
            : null,
@@ -374,10 +376,15 @@ final class CbioGlucoseSession implements CgmSession {
         _privateStateStore ?? CbioMemoryPrivateStateStore(),
       );
       if (_privateStateStore != null) {
-        _inputCheckpoint = _privateState!.state?.checkpoint;
+        _inputCheckpoint = _privateState!.resumeCheckpoint;
       }
     }
     if (_closing) return;
+    if (_privateState!.usesFullRecords) {
+      await _privateState!.adoptFullRecords();
+      if (_closing) return;
+      _inputCheckpoint = _privateState!.resumeCheckpoint;
+    }
     _checkpoint = _inputCheckpoint == null
         ? null
         : CbioSessionCheckpoint.decode(_inputCheckpoint!, sensor.storageKey);
@@ -934,6 +941,28 @@ final class CbioGlucoseSession implements CgmSession {
         _anchor = checkpoint.anchor;
       }
     }
+    if (_privateState?.usesFullRecords ?? false) {
+      try {
+        final batch = parseCbioRawDataFrame(plaintext);
+        _privateState!.validateFullObservations([
+          for (final row in batch.records)
+            CbioRawGlucoseRecord(
+              index: row.processed.index,
+              rawTime: row.processed.rawTime,
+              reindex: row.processed.reindex,
+              rawTemperature: row.rawTemperature,
+              rawDump: row.rawDump,
+              rawPayload: row.rawPayload,
+              rawProcessed: row.processed.rawWord,
+            ),
+        ]);
+      } on CbioFrameException {
+        return;
+      } on FormatException {
+        _fail(CbioSessionFailure.conflictingHistory);
+        return;
+      }
+    }
     final status = _archive.ingest(plaintext);
     switch (status) {
       case CbioArchiveIngestStatus.accepted:
@@ -1132,32 +1161,44 @@ final class CbioGlucoseSession implements CgmSession {
     }
     void publish() {
       final anchor = _publishAnchor();
-      final history = _historyReadingsFor(anchor);
+      final fullInputs = _privateState?.usesFullRecords ?? false;
+      final history = fullInputs
+          ? const <CgmReading>[]
+          : _historyReadingsFor(anchor);
       final newest = _archive.records.lastOrNull;
-      final checkpoint =
+      final canAdvance =
           !_terminalFailure &&
-              newest != null &&
-              _archive.contiguous &&
-              _archive.oldestIndex == _historyStartIndex
+          newest != null &&
+          _archive.contiguous &&
+          _archive.oldestIndex == _historyStartIndex;
+      final checkpoint = canAdvance
           ? CbioSessionCheckpoint(
               sensorKey: sensor.storageKey,
               index: newest.index,
               rawTime: newest.rawTime,
               anchor: anchor,
             ).encode()
-          : _privateState?.state?.checkpoint ?? _inputCheckpoint;
+          : _privateState?.resumeCheckpoint ?? _inputCheckpoint;
       if (!_terminalFailure &&
           (_checkpoint == null || _witnessConfirmed) &&
           checkpoint != null &&
-          history.isNotEmpty) {
+          (fullInputs ? canAdvance : history.isNotEmpty)) {
         try {
-          _privateState?.accept(
-            CbioHistoryState(
-              sensorKey: sensor.storageKey,
-              checkpoint: checkpoint,
-              history: history,
-            ),
-          );
+          if (fullInputs) {
+            _privateState!.acceptFullRecords(
+              _archive.records,
+              admittedInputCheckpoint: _inputCheckpoint ?? '',
+              currentCheckpoint: checkpoint,
+            );
+          } else {
+            _privateState?.accept(
+              CbioHistoryState(
+                sensorKey: sensor.storageKey,
+                checkpoint: checkpoint,
+                history: history,
+              ),
+            );
+          }
           if (!_closing && !_linkDropped) {
             _privateSaveTimer ??= Timer(const Duration(milliseconds: 900), () {
               _privateSaveTimer = null;
@@ -1298,6 +1339,7 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   static String _failureCodeFor(Object error) => switch (error) {
+    CbioPrivateStateFailure() => CbioSessionFailure.privateState,
     CbioProtocolException() => CbioSessionFailure.topology,
     TimeoutException() => CbioSessionFailure.connect,
     _ => CbioSessionFailure.connect,
@@ -1324,7 +1366,12 @@ final class CbioGlucoseSession implements CgmSession {
   Future<void> flushPrivateState() async {
     _privateSaveTimer?.cancel();
     _privateSaveTimer = null;
-    await _privateState?.flush();
+    try {
+      await _privateState?.flush();
+    } on Object {
+      _fail(CbioSessionFailure.privateState);
+      rethrow;
+    }
   }
 
   @override
@@ -1379,6 +1426,7 @@ final class CbioGlucoseSession implements CgmSession {
   Future<void> disconnect() async {
     if (_closing) {
       await flushPrivateState();
+      await _privateState?.close();
       return;
     }
     // Publish the last coalesced acquisition into private state before closing.
@@ -1427,5 +1475,6 @@ final class CbioGlucoseSession implements CgmSession {
       await _logController.close();
     }
     await flushPrivateState();
+    await _privateState?.close();
   }
 }

@@ -165,6 +165,7 @@ class CbioSensorDriver implements CgmDriver {
   Future<CgmSession> connect(DiscoveredSensor sensor) async {
     await prepareTarget(sensor);
     await flushPrivateState();
+    await _session?.disconnect();
     // Reload after flushing: reconnecting the same sensor may advance its state.
     final privateState = await CbioPrivateStateOwner.load(
       sensor.storageKey,

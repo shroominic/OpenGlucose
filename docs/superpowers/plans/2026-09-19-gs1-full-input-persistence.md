@@ -4,7 +4,7 @@
 
 **Goal:** Durably preserve complete observed raw08 input privately without rewriting legacy blobs or publishing glucose.
 
-**Architecture:** Add an internal strict pending/observing envelope and one optional opaque storage capability. The driver-owned lifecycle adopts it only after selected-target commit and old-owner drain, then atomically stores admitted records with their current checkpoint. The existing restricted app adapter implements the optional capability; no core/UI protocol expands.
+**Architecture:** Add an internal strict pending/observing envelope and one optional opaque storage capability. The driver-owned lifecycle adopts it only after existing in-memory selected-target assignment and old-owner durable drain, then atomically stores admitted records with their current checkpoint. Existing later durable selected-sensor promotion is unchanged. The restricted app adapter implements the optional capability; no core/UI protocol expands.
 
 **Tech Stack:** Existing Dart3.11.4/Flutter3.41.6, cgm_cbio, cgm_ble fakes, restricted HealthStateStore and existing app crypto dependency.
 
@@ -17,7 +17,7 @@
 - No public normalized/raw output, UI/core/probe/newBLE/native changes.
 - No new dependencies, frameworks, builds, phone/radio, publication or subagents.
 - Fixed65535rows/4194304UTF8bytes/4096headerbytes; no silent truncation or raised existing budgets.
-- prepareTarget read-only. Adoption after old-owner drain and target commit, before BLE.
+- prepareTarget read-only. Adoption after old-owner durable drain and IN-MEMORY target assignment, before BLE. No new preconnect durable selected-sensor write.
 - Frozen originalv1 bytes. One atomic full envelope with its current checkpoint.
 - No counter-era inference, loosening witness/time guards or synthesized missing fields.
 - Full envelope and owner types remain package-internal and unexported.
@@ -169,6 +169,8 @@ expect(store.legacyEnvelope, originalLegacyBytes);
 - [ ] Run focused RED; implement read-only loading and exact digest/checkpoint
   validation, secure random captureId creation on first adoption, single-writer
   store+binding lease and atomic pending write before BLE initialization.
+  After acquiring the lease, revalidate latest full/legacy storage so a stale
+  prepared owner cannot overwrite another owner's completed durable revision.
 - [ ] Write failing owner admission/restart tests with two differing temperatures,
   exact current checkpoint and constant oldv1 bytes. Enforce same immutable
   lineage, first row/bootstrap provenance, identical-word duplicate equality,
@@ -187,8 +189,8 @@ expect(store.legacyEnvelope, originalLegacyBytes);
   after disconnect even if best-effort BLE cleanup fails.
 - [ ] Keep driver prepareTarget read-only. Its connect waits prior drain/close,
   reloads selected binding, then new session adopts before transport.connect.
-  Host-selected identity is already committed before driver.connect; task3 verifies
-  that ordering without altering controller behavior.
+  Host-selected identity is assigned IN MEMORY before driver.connect; task3
+  verifies that ordering without altering existing later durable promotion.
 - [ ] Run new/focused tests GREEN and whole package suite, scoped format/analyze,
   diffcheck. Commit task2 files as `fix: atomically persist admitted GS1 inputs`;
   send exact SHA and logs to chief and await review before task3.
@@ -225,10 +227,11 @@ expect(adapter.legacySha256(''),
 ```
 
 - [ ] Add integration tests using real driver/private adapter and delayed store:
-  prepareTarget does zero writes, failed old drain or selected-target commit
-  creates no pendingnewblob and no BLE, successful target commit precedes pending
-  and pending precedes BLE, restart selects new full checkpoint, originalv1 bytes
-  stay exact after successful/failed writes. Preserve existing controller ordering.
+  prepareTarget does zero writes, failed old drain creates no pendingnewblob
+  and no BLE, in-memory target assignment precedes pending and durable pending
+  precedes BLE, restart selects new full checkpoint, originalv1 bytes stay exact
+  after successful/failed writes. Existing later durable identity promotion is
+  unchanged; an orphan pending binding after process death never crosses bindings.
 - [ ] Cover actual restricted-file adapter where available: single envelope old
   or new after simulated interrupted replace; no checkpoint/row mixed state;
   existing backup-exclusion behavior reused. No phone tests.
