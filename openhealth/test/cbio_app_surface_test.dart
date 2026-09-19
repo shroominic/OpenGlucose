@@ -1,9 +1,11 @@
+import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/app_language_controller.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
@@ -103,6 +105,180 @@ Future<void> _pumpApp(
 }
 
 void main() {
+  const failures = [
+    (CbioSessionFailure.connect, 'Could not reach', '无法连接', 'GS1-L01'),
+    (CbioSessionFailure.topology, 'does not present', '不支持', 'GS1-L02'),
+    (CbioSessionFailure.authMaterial, 'could not read', '无法读取', 'GS1-L03'),
+    (CbioSessionFailure.authTimeout, 'did not answer', '未回应', 'GS1-L04'),
+    (CbioSessionFailure.authRejected, 'refused', '拒绝', 'GS1-L05'),
+    (CbioSessionFailure.write, 'refused a command', '拒绝了手机的指令', 'GS1-L06'),
+    (CbioSessionFailure.disconnected, 'disconnected', '已断开连接', 'GS1-L07'),
+    (
+      CbioSessionFailure.invalidResume,
+      'resume saved history',
+      '继续读取已保存的历史记录',
+      'GS1-H01',
+    ),
+    (
+      CbioSessionFailure.missingWitness,
+      'confirm this sensor',
+      '确认此传感器',
+      'GS1-H02',
+    ),
+    (
+      CbioSessionFailure.counterRestart,
+      'sequence changed',
+      '记录序列已改变',
+      'GS1-H03',
+    ),
+    (
+      'cbio.history.restore-invalid',
+      'Saved sensor history could not be read',
+      '无法读取已保存的传感器历史记录',
+      'GS1-H04',
+    ),
+    ('cbio.history.foreign', 'different sensor', '不同的传感器', 'GS1-H05'),
+    ('cbio.history.unconfirmed', 'not confirmed', '尚未确认', 'GS1-H06'),
+    ('cbio.history.conflicting', 'conflict', '冲突', 'GS1-H07'),
+    ('cbio.history.invalid', 'could not be verified', '无法验证', 'GS1-H08'),
+    (
+      automaticReconnectExhaustedCode,
+      'Automatic reconnect stopped',
+      '自动重连已停止',
+      'GS1-L08',
+    ),
+    (
+      sensorSyncStalledMessage,
+      'did not receive a readable sensor result during sync',
+      '同步期间未收到可读取的传感器结果',
+      'GS1-H09',
+    ),
+  ];
+  for (final language in ['en', 'zh-Hans']) {
+    for (final failure in failures) {
+      testWidgets('CBIO ${failure.$4} error overrides progress in $language', (
+        tester,
+      ) async {
+        final (controller, preferences) = await _controllerFor(
+          () {
+            final base = _snapshot(
+              stage: CgmSyncStage.error,
+              statusText: '<private-status> serial=secret',
+              history: _readings(3),
+              historySync: const CgmHistorySyncState(
+                inProgress: true,
+                storedCount: 3,
+                totalAvailable: 5,
+              ),
+            );
+            return base.copyWith(
+              lastError: failure.$1,
+              metadata: {
+                ...base.metadata,
+                ...BleFailure(
+                  kind: BleFailureKind.unexpected,
+                  operation: BleOperation.connect,
+                  diagnosticCode: 'secret-radio-detail',
+                ).toMetadata(),
+                cbioPhaseMetadataKey: CbioSessionPhase.history,
+                cgmSessionSyncStalledMetadataKey: 'true',
+                'private': 'secret-records',
+              },
+            );
+          },
+          language: language,
+        );
+        await _pumpApp(tester, controller, preferences);
+        final expected = language == 'en' ? failure.$2 : failure.$3;
+        expect(find.textContaining(expected), findsOneWidget);
+        expect(find.text(failure.$4), findsNothing);
+        expect(find.textContaining('secret'), findsNothing);
+        expect(cbioProgressTextForSnapshot(controller.snapshot!), isNull);
+        await tester.tap(find.byIcon(Icons.tune_rounded));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.text(language == 'en' ? 'Current sensor' : '当前传感器'),
+        );
+        await tester.pumpAndSettle();
+        expect(find.textContaining(expected), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('cbioSupportReference')),
+          180,
+          scrollable: find.byType(Scrollable).last,
+        );
+        expect(find.text(failure.$4), findsOneWidget);
+        expect(
+          find.text(language == 'en' ? 'Support reference' : '支持参考编号'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const ValueKey('historySyncProgress')), findsNothing);
+        expect(find.textContaining('secret'), findsNothing);
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.pump();
+      });
+    }
+    testWidgets('unknown CBIO failure stays generic and private in $language', (
+      tester,
+    ) async {
+      final (controller, preferences) = await _controllerFor(
+        () =>
+            _snapshot(
+              stage: CgmSyncStage.error,
+              statusText: 'private-status',
+              history: _readings(3),
+              historySync: const CgmHistorySyncState(inProgress: true),
+            ).copyWith(
+              lastError:
+                  'cbio.history.unconfirmed\n<script>secret serial raw=59</script>',
+            ),
+        language: language,
+      );
+      await _pumpApp(tester, controller, preferences);
+      final expected = language == 'en'
+          ? 'could not continue this sensor session'
+          : '无法继续此传感器会话';
+      expect(find.textContaining(expected), findsOneWidget);
+      expect(find.textContaining('secret'), findsNothing);
+      await tester.tap(find.byIcon(Icons.tune_rounded));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text(language == 'en' ? 'Current sensor' : '当前传感器'),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining(expected), findsOneWidget);
+      expect(find.byKey(const ValueKey('cbioSupportReference')), findsNothing);
+      expect(find.byKey(const ValueKey('historySyncProgress')), findsNothing);
+      expect(find.textContaining('secret'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.pump();
+    });
+  }
+  test('CBIO history code does not change non-CBIO error copy', () {
+    const sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'synthetic',
+      displayName: 'AiDEX',
+      storageKey: 'synthetic',
+      rssi: -60,
+      capabilities: CgmCapabilities(),
+    );
+    final snapshot = CgmSessionSnapshot(
+      sensor: sensor,
+      capabilities: sensor.capabilities,
+      stage: CgmSyncStage.error,
+      statusText: 'private',
+      lastError: 'cbio.history.unconfirmed',
+    );
+    for (final language in AppLanguage.values) {
+      expect(
+        primaryErrorTextForSnapshot(snapshot, language: language),
+        safeOperationFailureText('Connection', language: language),
+      );
+      expect(cbioProgressTextForSnapshot(snapshot), isNull);
+    }
+  });
   test('direct CBIO presentation remains raw-only without quality flags', () {
     const row = CgmReading(
       valueMgdl: 5.9,

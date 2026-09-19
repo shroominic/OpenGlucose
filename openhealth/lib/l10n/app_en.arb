@@ -6,6 +6,7 @@
   "rawSensorValueLabel": "Raw sensor value",
   "rawSensorHistorySaved": "View sensor details in Settings.",
   "rawSensorIndexLabel": "Sensor index",
+  "supportReference": "Support reference",
   "settings": "Settings",
   "cancel": "Cancel",
   "save": "Save",

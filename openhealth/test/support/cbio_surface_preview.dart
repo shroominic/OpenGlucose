@@ -42,7 +42,10 @@ Future<void> main() async {
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
     preferences: preferences,
-    driver: _PreviewDriver(stale: query['stale'] == 'true'),
+    driver: _PreviewDriver(
+      stale: query['stale'] == 'true',
+      failure: query['failure'] == 'history',
+    ),
   );
   await controller.initialize();
   if (!archiveRecovery) await controller.connect(_sensor);
@@ -84,8 +87,9 @@ const _sensor = DiscoveredSensor(
 );
 
 class _PreviewDriver implements CgmDriver {
-  _PreviewDriver({required this.stale});
+  _PreviewDriver({required this.stale, required this.failure});
   final bool stale;
+  final bool failure;
   @override
   String get driverId => 'cbio';
   @override
@@ -95,11 +99,11 @@ class _PreviewDriver implements CgmDriver {
   }) => const Stream.empty();
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async =>
-      _PreviewSession(stale: stale);
+      _PreviewSession(stale: stale, failure: failure);
 }
 
 class _PreviewSession implements CgmSession {
-  _PreviewSession({required bool stale}) {
+  _PreviewSession({required bool stale, required bool failure}) {
     final history = <CgmReading>[
       for (var index = 0; index < 3; index++)
         CgmReading(
@@ -113,11 +117,13 @@ class _PreviewSession implements CgmSession {
     currentSnapshot = CgmSessionSnapshot(
       sensor: _sensor,
       capabilities: _sensor.capabilities,
-      stage: CgmSyncStage.ready,
+      stage: failure ? CgmSyncStage.error : CgmSyncStage.ready,
+      lastError: failure ? 'cbio.history.unconfirmed' : null,
       statusText: 'Connected',
       latestReading: history.last,
       history: history,
       historySync: CgmHistorySyncState(
+        inProgress: failure,
         storedCount: history.length,
         lastSyncAt: DateTime.now().subtract(
           Duration(minutes: stale ? 60 : 1),

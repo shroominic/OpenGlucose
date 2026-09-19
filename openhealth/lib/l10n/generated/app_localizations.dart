@@ -134,6 +134,12 @@ abstract class AppLocalizations {
   /// **'Sensor index'**
   String get rawSensorIndexLabel;
 
+  /// No description provided for @supportReference.
+  ///
+  /// In en, this message translates to:
+  /// **'Support reference'**
+  String get supportReference;
+
   /// No description provided for @settings.
   ///
   /// In en, this message translates to:

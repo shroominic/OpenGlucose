@@ -945,7 +945,7 @@ String? primaryErrorTextForSnapshot(
         : userMessageForLibreConnectionFailure(snapshot.lastError);
   }
   if (isCbioSnapshot(snapshot)) {
-    return userMessageForCbioFailure(snapshot.lastError);
+    return userMessageForCbioFailure(snapshot.lastError, language: language);
   }
   final bleFailure = BleFailure.fromMetadata(snapshot.metadata);
   if (bleFailure != null) {
@@ -974,7 +974,9 @@ bool isCbioSnapshot(CgmSessionSnapshot snapshot) =>
 /// Returns null when the snapshot is not a CBio snapshot, carries no closed
 /// phase, or is failing, so the caller keeps the generic stage label.
 String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
-  if (!isCbioSnapshot(snapshot)) {
+  if (!isCbioSnapshot(snapshot) ||
+      snapshot.stage == CgmSyncStage.error ||
+      shouldShowPrimaryError(snapshot)) {
     return null;
   }
   return switch (snapshot.metadata[cbioPhaseMetadataKey]) {
@@ -988,34 +990,115 @@ String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
   };
 }
 
-/// The failure-card sentence for a closed CBio session code.
-///
-/// The session publishes machine codes. They are support codes, not copy: the
-/// failure card is the one place a user reads them, and `cbio.auth.rejected` is
-/// not a sentence. Each code keeps its own failure, because "the sensor refused
-/// this build's credential" and "the sensor is out of range" have different
-/// next steps.
-String userMessageForCbioFailure(String? code) => switch (code) {
-  CbioSessionFailure.authMaterial =>
-    'OpenGlucose could not read the link credential for this sensor. '
-        'Choose another sensor or update the app.',
-  CbioSessionFailure.authRejected =>
-    'The sensor refused the link credential this build uses. '
-        'Choose another sensor or update the app.',
-  CbioSessionFailure.authTimeout =>
-    'The sensor did not answer the link setup. Keep it close and try again.',
-  CbioSessionFailure.topology =>
-    'This sensor does not present the link OpenGlucose supports yet. '
-        'Choose another sensor.',
-  CbioSessionFailure.write =>
-    'The link refused a command from this phone. Keep the sensor close and '
-        'try again.',
-  CbioSessionFailure.disconnected =>
-    'The sensor disconnected. Keep it close and try again.',
-  CbioSessionFailure.connect =>
-    'Could not reach the sensor. Keep it close and try again.',
-  _ => 'OpenGlucose could not connect to this sensor.',
+/// One exact allowlist owns both localized copy and public support references.
+/// Neither arbitrary errors nor metadata become user-facing text. References
+/// are static categories, not identifiers, and are shown only in sensor details.
+const _cbioFailureCopy = <String, ({String en, String zh, String reference})>{
+  CbioSessionFailure.connect: (
+    en: 'Could not reach the sensor. Keep it close and try again.',
+    zh: '无法连接传感器。请将手机靠近传感器，然后重试。',
+    reference: 'GS1-L01',
+  ),
+  CbioSessionFailure.topology: (
+    en: 'This sensor does not present the link OpenGlucose supports yet. Choose another sensor.',
+    zh: 'OpenGlucose 暂不支持此传感器的连接方式。请选择其他传感器。',
+    reference: 'GS1-L02',
+  ),
+  CbioSessionFailure.authMaterial: (
+    en: 'OpenGlucose could not read the link credential for this sensor. Choose another sensor or update the app.',
+    zh: 'OpenGlucose 无法读取此传感器的连接凭据。请选择其他传感器或更新应用。',
+    reference: 'GS1-L03',
+  ),
+  CbioSessionFailure.authTimeout: (
+    en: 'The sensor did not answer the link setup. Keep it close and try again.',
+    zh: '传感器未回应连接设置。请将手机靠近传感器，然后重试。',
+    reference: 'GS1-L04',
+  ),
+  CbioSessionFailure.authRejected: (
+    en: 'The sensor refused the link credential this build uses. Choose another sensor or update the app.',
+    zh: '传感器拒绝了此版本使用的连接凭据。请选择其他传感器或更新应用。',
+    reference: 'GS1-L05',
+  ),
+  CbioSessionFailure.write: (
+    en: 'The link refused a command from this phone. Keep the sensor close and try again.',
+    zh: '传感器连接拒绝了手机的指令。请将手机靠近传感器，然后重试。',
+    reference: 'GS1-L06',
+  ),
+  CbioSessionFailure.disconnected: (
+    en: 'The sensor disconnected. Keep it close and try again.',
+    zh: '传感器已断开连接。请将手机靠近传感器，然后重试。',
+    reference: 'GS1-L07',
+  ),
+  CbioSessionFailure.invalidResume: (
+    en: 'OpenGlucose could not safely resume saved history. Update the app or contact support. Do not reset the sensor.',
+    zh: 'OpenGlucose 无法安全地继续读取已保存的历史记录。请更新应用或联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H01',
+  ),
+  CbioSessionFailure.missingWitness: (
+    en: 'OpenGlucose could not confirm this sensor matches the saved history. Keep the sensor close and try again. If this continues, contact support. Do not reset the sensor.',
+    zh: 'OpenGlucose 无法确认此传感器与已保存的历史记录匹配。请将手机靠近传感器，然后重试。如果问题持续，请联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H02',
+  ),
+  CbioSessionFailure.counterRestart: (
+    en: 'The sensor record sequence changed. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
+    zh: '传感器记录序列已改变。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H03',
+  ),
+  'cbio.history.restore-invalid': (
+    en: 'Saved sensor history could not be read. Update the app or contact support. Do not reset the sensor.',
+    zh: '无法读取已保存的传感器历史记录。请更新应用或联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H04',
+  ),
+  'cbio.history.foreign': (
+    en: 'The history belongs to a different sensor. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
+    zh: '历史记录属于不同的传感器。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H05',
+  ),
+  'cbio.history.unconfirmed': (
+    en: 'The sensor history was not confirmed. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
+    zh: '传感器历史记录尚未确认。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H06',
+  ),
+  'cbio.history.conflicting': (
+    en: 'New sensor records conflict with saved history. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
+    zh: '新的传感器记录与已保存的历史记录冲突。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H07',
+  ),
+  'cbio.history.invalid': (
+    en: 'Sensor history could not be verified. OpenGlucose stopped combining history. Update the app or contact support. Do not reset the sensor.',
+    zh: '无法验证传感器历史记录。OpenGlucose 已停止合并历史记录。请更新应用或联系支持人员。请勿重置传感器。',
+    reference: 'GS1-H08',
+  ),
+  'cgm.session.reconnectExhausted': (
+    en: 'Automatic reconnect stopped after repeated attempts. Keep the sensor close and try again.',
+    zh: '多次尝试后自动重连已停止。请将手机靠近传感器，然后重试。',
+    reference: 'GS1-L08',
+  ),
+  sensorSyncStalledMessage: (
+    en: 'OpenGlucose did not receive a readable sensor result during sync. Keep the sensor close and try again. If this continues, contact support.',
+    zh: 'OpenGlucose 在同步期间未收到可读取的传感器结果。请将手机靠近传感器，然后重试。如果问题持续，请联系支持人员。',
+    reference: 'GS1-H09',
+  ),
 };
+
+String userMessageForCbioFailure(
+  String? code, {
+  AppLanguage language = AppLanguage.english,
+}) {
+  final copy = _cbioFailureCopy[code];
+  return copy == null
+      ? _localized(
+          language,
+          'OpenGlucose could not continue this sensor session. Try again. If this continues, contact support. Do not reset the sensor.',
+          'OpenGlucose 无法继续此传感器会话。请重试。如果问题持续，请联系支持人员。请勿重置传感器。',
+        )
+      : _localized(language, copy.en, copy.zh);
+}
+
+String? cbioSupportReferenceForSnapshot(CgmSessionSnapshot snapshot) =>
+    isCbioSnapshot(snapshot) && shouldShowPrimaryError(snapshot)
+    ? _cbioFailureCopy[snapshot.lastError]?.reference
+    : null;
 
 /// The provisional marker every CBio surface shows.
 ///

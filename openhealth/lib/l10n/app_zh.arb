@@ -6,6 +6,7 @@
   "rawSensorValueLabel": "传感器原始值",
   "rawSensorHistorySaved": "在设置中查看传感器详情。",
   "rawSensorIndexLabel": "传感器索引",
+  "supportReference": "支持参考编号",
   "settings": "设置",
   "cancel": "取消",
   "save": "保存",

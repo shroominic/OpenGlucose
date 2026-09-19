@@ -27,6 +27,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get rawSensorIndexLabel => '传感器索引';
 
   @override
+  String get supportReference => '支持参考编号';
+
+  @override
   String get settings => '设置';
 
   @override

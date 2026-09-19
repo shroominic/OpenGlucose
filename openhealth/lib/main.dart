@@ -2834,6 +2834,10 @@ Widget _buildSensorSettingsPane(
   CgmAppController controller,
   CgmSessionSnapshot snapshot,
 ) {
+  final cbioError = isCbioSnapshot(snapshot)
+      ? primaryErrorTextForSnapshot(snapshot, language: context.appLanguage)
+      : null;
+  final cbioSupportReference = cbioSupportReferenceForSnapshot(snapshot);
   final sessionStart = snapshot.sessionInfo.sessionStart;
   final interruptedTransferState =
       snapshot.metadata[cgmBondTransferStateMetadataKey];
@@ -2850,6 +2854,19 @@ Widget _buildSensorSettingsPane(
   return ListView(
     padding: const EdgeInsets.all(20),
     children: <Widget>[
+      if (cbioError != null) ...<Widget>[
+        Text(cbioError, key: const ValueKey('cbioSessionError')),
+        const SizedBox(height: 10),
+        if (cbioSupportReference != null)
+          KeyedSubtree(
+            key: const ValueKey('cbioSupportReference'),
+            child: _KeyValueRow(
+              label: context.l10n.supportReference,
+              value: cbioSupportReference,
+            ),
+          ),
+        const SizedBox(height: 18),
+      ],
       if (!isCbioSnapshot(snapshot))
         SensorLifecycleCard(
           snapshot: snapshot,
@@ -2926,7 +2943,9 @@ Widget _buildSensorSettingsPane(
           ),
           key: const ValueKey('cbioClockState'),
         ),
-        if (snapshot.historySync.inProgress) ...<Widget>[
+        if (cbioError == null &&
+            snapshot.stage != CgmSyncStage.error &&
+            snapshot.historySync.inProgress) ...<Widget>[
           const SizedBox(height: 10),
           Text(
             historySyncProgressText(

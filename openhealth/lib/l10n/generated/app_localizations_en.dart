@@ -28,6 +28,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get rawSensorIndexLabel => 'Sensor index';
 
   @override
+  String get supportReference => 'Support reference';
+
+  @override
   String get settings => 'Settings';
 
   @override
