@@ -585,6 +585,106 @@ Future<List<CgmReading>> _storedHistory(
 }
 
 void main() {
+  group('private failure trace', () {
+    const enabled = bool.fromEnvironment('CBIO_FAILURE_TRACE');
+    for (final scenario in ['success', 'auth', 'write', 'witness']) {
+      test('$scenario emits only an opted-in closed failure', () async {
+        final output = <String>[];
+        await runZoned(
+          () async {
+            final connection = _FakeConnection();
+            await _defaultResponder(
+              connection,
+              authReply: scenario == 'auth' ? _authRejected : _authAccepted,
+              rawBatches: scenario == 'witness'
+                  ? [
+                      _rawBatch(
+                        startIndex: 2,
+                        baseEpochSeconds: 9000,
+                        baseReindex: 2,
+                        currents: [99],
+                      ),
+                    ]
+                  : [],
+            );
+            if (scenario == 'write') {
+              connection.onWrite = (_) async {
+                throw StateError(
+                  'private-native-detail ${_sensor.deviceId} '
+                  '${_syntheticCredentials.authMaterial}',
+                );
+              };
+            }
+            final session = await _privateSession(
+              sensor: scenario == 'witness'
+                  ? _withMetadata({
+                      cbioCheckpointMetadataKey: jsonEncode({
+                        'version': 1,
+                        'sensorKey': _sensor.storageKey,
+                        'index': 2,
+                        'rawTime': 1000,
+                      }),
+                    })
+                  : _sensor,
+              transport: _FakeTransport(connection),
+              credentials: _syntheticSource,
+              timing: _fastTiming,
+            );
+            await session.initialize();
+            await _pumpUntil(
+              () =>
+                  session.currentSnapshot.stage ==
+                  (scenario == 'success'
+                      ? CgmSyncStage.ready
+                      : CgmSyncStage.error),
+            );
+            if (scenario != 'success') {
+              await _pumpUntil(() => connection.disconnected);
+              await session.refreshLiveData();
+              await session.syncHistory();
+            }
+            await session.disconnect();
+          },
+          zoneSpecification: ZoneSpecification(
+            print: (self, parent, zone, line) => output.add(line),
+          ),
+        );
+        final expected = switch (scenario) {
+          'auth' => 'CBIO failure=cbio.auth.rejected',
+          'write' => 'CBIO failure=cbio.write.failed',
+          'witness' =>
+            'CBIO failure=cbio.counter.restart '
+                'counterFailureReason=witness-time-mismatch',
+          _ => null,
+        };
+        expect(output, enabled && expected != null ? [expected] : isEmpty);
+      });
+    }
+
+    test('a throwing trace sink cannot prevent terminal cleanup', () async {
+      await runZoned(
+        () async {
+          final connection = _FakeConnection();
+          await _defaultResponder(connection, authReply: _authRejected);
+          final session = await _privateSession(
+            sensor: _sensor,
+            transport: _FakeTransport(connection),
+            credentials: _syntheticSource,
+            timing: _fastTiming,
+          );
+          await session.initialize();
+          await _pumpUntil(() => connection.disconnected);
+          expect(session.currentSnapshot.lastError, 'cbio.auth.rejected');
+          expect(session.currentSnapshot.stage, CgmSyncStage.error);
+          await session.disconnect();
+        },
+        zoneSpecification: ZoneSpecification(
+          print: (self, parent, zone, line) => throw StateError('sink failed'),
+        ),
+      );
+    });
+  });
+
   group('throwing cleanup', () {
     for (final cleanup in ['disconnect', 'notification', 'both']) {
       test(

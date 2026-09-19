@@ -1280,6 +1280,7 @@ final class CbioGlucoseSession implements CgmSession {
     _counterFailureReason = code == CbioSessionFailure.counterRestart
         ? counterFailureReason
         : null;
+    _traceFailure(code);
     _settlePendingRead();
     _cancelTimers();
     if (!cbioFailureAllowsAutomaticReconnect(code)) {
@@ -1293,6 +1294,38 @@ final class CbioGlucoseSession implements CgmSession {
       force: true,
     );
     unawaited(_releaseConnectionAfterFailure());
+  }
+
+  void _traceFailure(String code) {
+    // Private diagnostic builds only. Never forward arbitrary strings from
+    // transport exceptions, status text, identifiers, or acquired records.
+    if (!const bool.fromEnvironment('CBIO_FAILURE_TRACE')) return;
+    final closedCode = switch (code) {
+      CbioSessionFailure.connect ||
+      CbioSessionFailure.topology ||
+      CbioSessionFailure.authMaterial ||
+      CbioSessionFailure.authTimeout ||
+      CbioSessionFailure.authRejected ||
+      CbioSessionFailure.write ||
+      CbioSessionFailure.disconnected ||
+      CbioSessionFailure.invalidResume ||
+      CbioSessionFailure.missingWitness ||
+      CbioSessionFailure.counterRestart ||
+      CbioSessionFailure.conflictingHistory ||
+      CbioSessionFailure.privateState => code,
+      _ => null,
+    };
+    if (closedCode == null) return;
+    final reason = _counterFailureReason;
+    try {
+      // ignore: avoid_print
+      print(
+        'CBIO failure=$closedCode'
+        '${reason == null ? '' : ' counterFailureReason=${reason.value}'}',
+      );
+    } on Object {
+      // Observation must not prevent publishing the failure or releasing BLE.
+    }
   }
 
   Future<void> _releaseConnectionAfterFailure() async {

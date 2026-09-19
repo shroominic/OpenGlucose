@@ -2,6 +2,11 @@
 
 ## 0.1.0
 
+- Add default-off `CBIO_FAILURE_TRACE` for private diagnostic builds. The first
+  terminal driver failure emits only its allowlisted code and optional closed
+  counter-failure category. Trace-output failure cannot interrupt terminal
+  cleanup. No public readings, failure guards or UI behavior change.
+
 - Add optional opaque `CbioFullRecordStore` capability for complete private
   raw08 observations. Hosts implement atomic full-envelope reads/writes and
   SHA256 over the exact UTF8 legacy envelope. The app adapter uses the existing

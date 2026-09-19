@@ -79,6 +79,21 @@ its empty, error and unknown-lifecycle states; it has no raw-value dashboard.
 See the [live record](../../docs/testing/cbio-gs1-glucose-live.md) and the
 [app integration record](../../docs/testing/cbio-gs1-app-live.md).
 
+For a private diagnostic build, `--dart-define=CBIO_FAILURE_TRACE=true` emits
+one process-output line at the first terminal driver failure. It contains only
+an allowlisted failure code and, when applicable, the closed counter-failure
+category. The flag defaults to false in every build mode. It emits no raw
+records, sensor identifiers, credentials or exception text and changes no
+failure/recovery guards. Omit the flag to disable it. This trace does not
+establish glucose decoding or explain failures from earlier launches.
+
+Verify the trace in both configurations from this package:
+
+```sh
+dart test test/cbio_glucose_session_test.dart
+dart run -DCBIO_FAILURE_TRACE=true test/cbio_glucose_session_test.dart
+```
+
 Dependencies are only the existing `cgm_core` and `cgm_ble` contracts. There
 is no Flutter, native binary, FFI, network, storage, or cryptography dependency.
 The implementation contains no vendor-derived algorithm or source.
