@@ -25,6 +25,9 @@ void main() {
     'missing-checkpoint',
     'conflicting-replay',
     'foreign-sensor',
+    'foreign-driver',
+    'foreign-driver-expired',
+    'foreign-driver-activation',
   ]) {
     test(
       'CBIO rejects incomplete or conflicting live state: $invalid',
@@ -68,9 +71,15 @@ void main() {
         );
         await controller.initialize();
         await controller.connect(sensor, allowSessionActivation: false);
+        final selectedBefore = store.getString('openHealth.lastSensor');
         session.emit(
           _testSnapshot(
-            invalid == 'foreign-sensor'
+            invalid.startsWith('foreign-driver')
+                ? _multiDriverSensor(
+                    driverId: 'aidex',
+                    storageKey: sensor.storageKey,
+                  )
+                : invalid == 'foreign-sensor'
                 ? _multiDriverSensor(driverId: 'cbio', storageKey: 'other')
                 : sensor,
             stage: CgmSyncStage.ready,
@@ -88,13 +97,28 @@ void main() {
             ],
             metadata: invalid == 'missing-checkpoint'
                 ? {cbioResumeStatusMetadataKey: CbioResumeStatus.fresh}
-                : metadata,
+                : {
+                    ...metadata,
+                    if (invalid == 'foreign-driver-activation')
+                      'activationRequired': 'true',
+                  },
+          ).copyWith(
+            sessionInfo: invalid == 'foreign-driver-expired'
+                ? CgmSessionInfo(
+                    sessionStart: DateTime.utc(2020),
+                    expectedLifetimeMinutes: 1,
+                  )
+                : const CgmSessionInfo(),
           ),
         );
         await _drainEventQueue();
         expect(controller.snapshot!.stage, CgmSyncStage.error);
         expect(controller.snapshot!.sensor.storageKey, sensor.storageKey);
+        expect(controller.snapshot!.sensor.driverId, sensor.driverId);
         expect(controller.snapshot!.history.single.rawValue, 60);
+        expect(controller.archivedSensors, isEmpty);
+        expect(store.getString('openHealth.lastSensor'), selectedBefore);
+        expect(session.disconnectCalls, 0);
         controller.dispose();
         await driver.close();
       },

@@ -774,9 +774,9 @@ class CgmAppController extends ChangeNotifier {
         ),
       );
       _session = session;
-      _snapshotSubscription = session.snapshots.listen((nextSnapshot) {
+      _snapshotSubscription = session.snapshots.listen((incomingSnapshot) {
         if (_syncStageStalled) {
-          if (nextSnapshot.stage == CgmSyncStage.syncing) {
+          if (incomingSnapshot.stage == CgmSyncStage.syncing) {
             // The bounded failure already replaced this stage. Keep the
             // terminal state until the driver reports data, an error, or a
             // disconnect.
@@ -784,11 +784,12 @@ class CgmAppController extends ChangeNotifier {
           }
           _syncStageStalled = false;
         }
-        final isErrorSnapshot = nextSnapshot.stage == CgmSyncStage.error;
+        final isErrorSnapshot = incomingSnapshot.stage == CgmSyncStage.error;
         if (isErrorSnapshot) {
           _debugAppSessionTrace('error-snapshot-received');
         }
-        _snapshot = _acceptSessionSnapshot(nextSnapshot);
+        _snapshot = _acceptSessionSnapshot(incomingSnapshot);
+        final nextSnapshot = _snapshot!;
         final nextHistory = _snapshot!.history;
         final reconnectingStage =
             nextSnapshot.stage == CgmSyncStage.disconnected ||
@@ -2187,7 +2188,9 @@ class CgmAppController extends ChangeNotifier {
   }
 
   CgmSessionSnapshot _acceptSessionSnapshot(CgmSessionSnapshot incoming) {
-    if (incoming.sensor.driverId != 'cbio' || isMockDriver) {
+    if (isMockDriver ||
+        (incoming.sensor.driverId != 'cbio' &&
+            _selectedSensor?.driverId != 'cbio')) {
       final history = isMockDriver
           ? incoming.history
           : _mergeHistory(_persistedHistory, incoming.history);
@@ -2210,18 +2213,14 @@ class CgmAppController extends ChangeNotifier {
     sensor: _selectedSensor ?? incoming.sensor,
     capabilities: _selectedSensor?.capabilities ?? incoming.capabilities,
     sessionInfo: _snapshot?.sessionInfo ?? const CgmSessionInfo(),
-    historySync: incoming.historySync,
+    historySync: _snapshot?.historySync ?? const CgmHistorySyncState(),
     history: _persistedHistory,
     latestReading: _persistedHistory.lastOrNull,
     stage: CgmSyncStage.error,
     statusText: 'Sensor history could not be reconciled',
     lastError: incoming.lastError ?? code,
     metadata: {
-      for (final entry in incoming.metadata.entries)
-        if (entry.key != cbioCheckpointMetadataKey &&
-            !entry.key.startsWith('cgm.cbio.clock.') &&
-            !entry.key.startsWith('cgm.cbio.resume.'))
-          entry.key: entry.value,
+      cbioLifecycleMetadataKey: 'unknown',
       cbioResumeStatusMetadataKey: CbioResumeStatus.failed,
       cgmAutomaticReconnectAllowedMetadataKey: 'false',
     },
