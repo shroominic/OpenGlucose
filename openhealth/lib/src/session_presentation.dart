@@ -84,6 +84,26 @@ bool liveSurfaceIsStale(DateTime? freshnessAt, {DateTime? now}) {
   return effectiveNow.difference(freshnessAt) > liveSurfaceStaleAfter;
 }
 
+String cbioFreshnessText(
+  CgmSessionSnapshot snapshot, {
+  CgmReading? reading,
+  DateTime? now,
+  AppLanguage language = AppLanguage.english,
+}) {
+  final freshness = liveSurfaceFreshnessAt(
+    snapshot: snapshot,
+    reading: reading,
+    now: now,
+  );
+  if (freshness == null) {
+    return _localized(language, 'Data freshness unavailable', '数据更新时间未知');
+  }
+  if (liveSurfaceIsStale(freshness, now: now)) {
+    return _localized(language, 'No recent sensor data', '暂无近期传感器数据');
+  }
+  return lastSyncText(freshness, now: now, language: language);
+}
+
 /// Local charts and explicit raw exports may retain provisional samples, with
 /// their quality flag. They are not inputs to wellness summaries or messaging.
 List<CgmReading> readingsForWellness(Iterable<CgmReading> readings) =>
@@ -506,15 +526,13 @@ String stageLabelForSnapshot(
       return _localized(language, 'Error', '出错');
     }
     if (snapshot.stage == CgmSyncStage.disconnected) {
-      return snapshot.latestReading != null || snapshot.history.isNotEmpty
-          ? _localized(language, 'Reconnecting', '正在重新连接')
-          : _localized(language, 'Disconnected', '已断开连接');
+      return _localized(language, 'Disconnected', '已断开连接');
     }
     if (snapshot.stage == CgmSyncStage.syncing) {
       return _localized(language, 'Fetching history', '正在获取历史数据');
     }
     return snapshot.stage == CgmSyncStage.ready
-        ? _localized(language, 'Live', '实时')
+        ? _localized(language, 'Connected', '已连接')
         : _localized(language, 'Connecting', '正在连接');
   }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
@@ -546,6 +564,13 @@ String stageLabelForSnapshot(
 }
 
 String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
+  if (isCbioSnapshot(snapshot) && snapshot.stage == CgmSyncStage.disconnected) {
+    return 'disconnected';
+  }
+  if (isCbioSnapshot(snapshot) && snapshot.stage == CgmSyncStage.ready) {
+    // A connected raw-data transport is not a glucose-quality/target status.
+    return 'connected';
+  }
   if (isLibreGen1Snapshot(snapshot)) {
     return switch (stageLabelForSnapshot(snapshot)) {
       'Error' || 'Disconnected' || 'Connection lost' => 'error',
@@ -1013,13 +1038,24 @@ String historyProvisionalNoticeForSnapshot(CgmSessionSnapshot snapshot) {
 }
 
 /// Progress or completion wording for a fetched sensor history.
-String historySyncProgressText(CgmHistorySyncState state) {
+String historySyncProgressText(
+  CgmHistorySyncState state, {
+  AppLanguage language = AppLanguage.english,
+}) {
   final stored = state.storedCount;
   final target = state.totalAvailable;
   if (target > 0 && stored < target) {
-    return 'Fetching sensor history: $stored of $target records';
+    return _localized(
+      language,
+      'Fetching sensor history: $stored of $target records',
+      '正在获取传感器历史记录：$stored / $target 条',
+    );
   }
-  return 'Fetching sensor history: $stored records';
+  return _localized(
+    language,
+    'Fetching sensor history: $stored records',
+    '正在获取传感器历史记录：$stored 条',
+  );
 }
 
 /// The CBio dashboard value: the sensor's unscaled raw integer.
@@ -1057,23 +1093,37 @@ int cbioMissingPositions(Iterable<CgmReading> readings) {
 /// positions they cover, and - when the envelope is not full - how many
 /// positions inside it never arrived. Positions are the protocol's own `index`
 /// counter, which advances one per stored minute; it is never a wall clock.
-String cbioStoredRangeText(Iterable<CgmReading> readings) {
+String cbioStoredRangeText(
+  Iterable<CgmReading> readings, {
+  AppLanguage language = AppLanguage.english,
+}) {
   final positions = <int>[
     for (final reading in readings)
       if (reading.sensorMinute != null) reading.sensorMinute!,
   ];
   if (positions.isEmpty) {
-    return '${readings.length} readings stored';
+    return _localized(
+      language,
+      '${readings.length} readings stored',
+      '已存储 ${readings.length} 条读数',
+    );
   }
   positions.sort();
-  final stored =
-      '${readings.length} readings stored · '
-      'sensor minutes ${positions.first}–${positions.last}';
+  final stored = _localized(
+    language,
+    '${readings.length} readings stored · '
+        'sensor minutes ${positions.first}–${positions.last}',
+    '已存储 ${readings.length} 条读数 · 传感器分钟 ${positions.first}–${positions.last}',
+  );
   final missing = cbioMissingPositions(readings);
   if (missing <= 0) {
     return stored;
   }
-  return '$stored · $missing positions not received';
+  return _localized(
+    language,
+    '$stored · $missing positions not received',
+    '$stored · 缺失 $missing 个位置',
+  );
 }
 
 /// The index-to-clock anchor a GS1 session published, or null when it has none.
@@ -1095,28 +1145,50 @@ String cbioClockStateText(
   CgmSessionSnapshot snapshot, {
   CgmReading? reading,
   DateTime? now,
+  AppLanguage language = AppLanguage.english,
 }) {
   if (!isCbioSnapshot(snapshot)) {
     return '';
   }
   final anchor = cbioAnchorForSnapshot(snapshot);
   if (anchor == null) {
-    return 'Sensor clock unsynced · ordered by sensor index, not by clock';
+    return _localized(
+      language,
+      'Sensor clock unsynced · ordered by sensor index, not by clock',
+      '传感器时钟未同步 · 按传感器索引排序，而非时间',
+    );
   }
   final latest = reading ?? snapshot.latestReading;
   // The line repeats the reading's own stamp, so a position the publisher left
   // untimed is never given a clock the anchor does not cover.
   if (latest == null ||
       clampedDisplayRecordedAt(latest.recordedAt, now: now) == null) {
-    return 'Sensor clock set by this app · this position has no anchored time';
+    return _localized(
+      language,
+      'Sensor clock set by this app · this position has no anchored time',
+      '传感器时钟由本应用设置 · 此位置没有锚定时间',
+    );
   }
-  return 'Sensor clock set by this app · latest '
-      '${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor)})';
+  return _localized(
+    language,
+    'Sensor clock set by this app · latest '
+        '${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor)})',
+    '传感器时钟由本应用设置 · 最新 ${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor, language: language)})',
+  );
 }
 
-String _anchorUncertaintyText(CbioIndexTimeAnchor anchor) {
+String _anchorUncertaintyText(
+  CbioIndexTimeAnchor anchor, {
+  AppLanguage language = AppLanguage.english,
+}) {
   final minutes = anchor.uncertainty.inMinutes;
-  return minutes >= 1 ? '±$minutes min' : '±${anchor.uncertainty.inSeconds} s';
+  return minutes >= 1
+      ? _localized(language, '±$minutes min', '±$minutes 分钟')
+      : _localized(
+          language,
+          '±${anchor.uncertainty.inSeconds} s',
+          '±${anchor.uncertainty.inSeconds} 秒',
+        );
 }
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter

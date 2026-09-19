@@ -7,6 +7,8 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_controller.dart';
 import 'package:openglucose/src/sensor_connection_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,10 +54,12 @@ CgmSessionSnapshot _snapshot({
 );
 
 Future<(CgmAppController, SharedPreferences)> _controllerFor(
-  CgmSessionSnapshot Function() build,
-) async {
+  CgmSessionSnapshot Function() build, {
+  String language = 'en',
+}) async {
   SharedPreferences.setMockInitialValues(<String, Object>{
     'openHealth.onboarding.completed': true,
+    'openHealth.appLanguage': language,
   });
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
@@ -80,12 +84,97 @@ Future<void> _pumpApp(
         writesAllowed: false,
       )..initialize(),
       preferences: preferences,
+      messageController: MessageController(
+        preferences: preferences,
+        messages: defaultMessageCatalog,
+      ),
     ),
   );
+  await tester.pump();
   await tester.pump();
 }
 
 void main() {
+  test('CBIO disconnected history does not promise a reconnect', () {
+    final snapshot = _snapshot(
+      stage: CgmSyncStage.disconnected,
+      statusText: 'Disconnected',
+      history: _readings(3),
+      historySync: const CgmHistorySyncState(),
+    );
+    expect(stageLabelForSnapshot(snapshot), 'Disconnected');
+  });
+  testWidgets('CBIO stale data stays visibly stale on the primary screen', (
+    tester,
+  ) async {
+    final (controller, preferences) = await _controllerFor(
+      () => _snapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'Live',
+        history: [
+          CgmReading(
+            valueMgdl: 5.9,
+            rawValue: 59,
+            source: CgmRecordSource.raw,
+            isDisplayProvisional: true,
+            recordedAt: DateTime.now().subtract(const Duration(hours: 1)),
+          ),
+        ],
+        historySync: const CgmHistorySyncState(storedCount: 1),
+      ),
+    );
+    await _pumpApp(tester, controller, preferences);
+    expect(find.text('No recent sensor data'), findsOneWidget);
+    expect(find.text('59'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await tester.pump();
+  });
+
+  for (final language in ['en', 'zh-Hans']) {
+    testWidgets('CBIO primary UI is simple and honest in $language', (
+      tester,
+    ) async {
+      final (controller, preferences) = await _controllerFor(
+        () => _snapshot(
+          stage: CgmSyncStage.ready,
+          statusText: 'Live',
+          history: _readings(3),
+          historySync: CgmHistorySyncState(
+            storedCount: 1,
+            lastSyncAt: DateTime.now(),
+          ),
+        ),
+        language: language,
+      );
+      await _pumpApp(tester, controller, preferences);
+      expect(
+        find.text(language == 'en' ? 'Raw sensor value' : '传感器原始值'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          language == 'en' ? 'Not a verified glucose reading.' : '并非经过验证的血糖读数。',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text(language == 'en' ? 'Connected' : '已连接'), findsOneWidget);
+      expect(find.byKey(const ValueKey('cbioStoredRange')), findsNothing);
+      expect(find.byKey(const ValueKey('cbioClockState')), findsNothing);
+      expect(find.byKey(const ValueKey('historyQualityNotice')), findsNothing);
+      expect(find.byKey(const ValueKey('historySyncComplete')), findsNothing);
+      expect(find.byKey(const ValueKey('sensorExpiryIndicator')), findsNothing);
+      expect(find.textContaining('index'), findsNothing);
+      expect(find.textContaining('Tap a point on the chart'), findsNothing);
+      expect(find.textContaining('mg/dL'), findsNothing);
+      expect(find.textContaining('mmol/L'), findsNothing);
+      expect(controller.snapshot!.history, hasLength(3));
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.pump();
+    });
+  }
+
   testWidgets('CBIO missing flags cannot enable glucose or wellness surfaces', (
     tester,
   ) async {
@@ -147,7 +236,7 @@ void main() {
       historyProvisionalNoticeForSnapshot(snapshot),
       cbioProvisionalUnitNotice,
     );
-    expect(stageLabelForSnapshot(snapshot), 'Live');
+    expect(stageLabelForSnapshot(snapshot), 'Connected');
   });
 
   test('a closed CBio failure reaches the user as a sentence', () {
@@ -203,7 +292,7 @@ void main() {
     );
   });
 
-  testWidgets('the dashboard names a hole in the stored history', (
+  testWidgets('sensor details retain holes without cluttering the dashboard', (
     tester,
   ) async {
     final readings = <CgmReading>[
@@ -230,6 +319,12 @@ void main() {
       ),
     );
     await _pumpApp(tester, controller, preferences);
+
+    expect(find.byKey(const ValueKey('cbioStoredRange')), findsNothing);
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
 
     expect(
       tester
@@ -373,49 +468,57 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.text('Raw sensor data. Not a verified glucose reading.'),
-      findsNWidgets(2),
+      find.text('Not a verified glucose reading.'),
+      findsOneWidget,
     );
     expect(find.text('3 readings'), findsOneWidget);
-    expect(find.text('Live'), findsOneWidget);
+    expect(find.text('Connected'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
     await tester.pump();
   });
 
-  testWidgets('the dashboard shows fetched-history progress while ingesting', (
-    tester,
-  ) async {
-    final (controller, preferences) = await _controllerFor(
-      () => _snapshot(
-        stage: CgmSyncStage.syncing,
-        statusText: 'Fetching sensor history',
-        history: _readings(1200),
-        historySync: const CgmHistorySyncState(
-          inProgress: true,
-          storedCount: 1200,
-          totalAvailable: 1520,
-          latestStoredOffset: 11169,
+  testWidgets(
+    'sensor details retain fetched-history progress while ingesting',
+    (
+      tester,
+    ) async {
+      final (controller, preferences) = await _controllerFor(
+        () => _snapshot(
+          stage: CgmSyncStage.syncing,
+          statusText: 'Fetching sensor history',
+          history: _readings(1200),
+          historySync: const CgmHistorySyncState(
+            inProgress: true,
+            storedCount: 1200,
+            totalAvailable: 1520,
+            latestStoredOffset: 11169,
+          ),
         ),
-      ),
-    );
-    await _pumpApp(tester, controller, preferences);
+      );
+      await _pumpApp(tester, controller, preferences);
+      expect(find.byKey(const ValueKey('historySyncProgress')), findsNothing);
+      expect(find.text('Fetching history'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.tune_rounded));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Current sensor'));
+      await tester.pumpAndSettle();
 
-    expect(
-      find.text('Fetching sensor history: 1200 of 1520 records'),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey<String>('historySyncProgress')),
-      findsOneWidget,
-    );
-    expect(find.text('Fetching history'), findsOneWidget);
+      expect(
+        find.text('Fetching sensor history: 1200 of 1520 records'),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('historySyncProgress')),
+        findsOneWidget,
+      );
 
-    await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-    await tester.pump();
-  });
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+      await tester.pump();
+    },
+  );
 
   testWidgets('the cbio value renders the raw integer without a unit', (
     tester,
@@ -465,7 +568,7 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('the cbio dashboard reports stored count and sensor range', (
+  testWidgets('the cbio details report stored count and sensor range', (
     tester,
   ) async {
     final (controller, preferences) = await _controllerFor(
@@ -481,6 +584,11 @@ void main() {
       ),
     );
     await _pumpApp(tester, controller, preferences);
+    expect(find.byKey(const ValueKey('cbioStoredRange')), findsNothing);
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
 
     expect(
       find.byKey(const ValueKey<String>('cbioStoredRange')),

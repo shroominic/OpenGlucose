@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/intl.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/app_language_controller.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -121,6 +122,15 @@ String _heroText(WidgetTester tester) => tester
     .join(' | ');
 
 void main() {
+  test('Chinese clock details localize the uncertainty unit', () {
+    expect(
+      cbioClockStateText(
+        _snapshot(anchored: true),
+        language: AppLanguage.simplifiedChinese,
+      ),
+      contains('±1 分钟'),
+    );
+  });
   test('an anchored snapshot hands the surface a usable clock', () {
     final snapshot = _snapshot(anchored: true);
     final anchor = cbioAnchorForSnapshot(snapshot);
@@ -185,7 +195,7 @@ void main() {
     );
   });
 
-  testWidgets('the hero renders the anchored time in the device zone', (
+  testWidgets('sensor details retain the anchored time in the device zone', (
     tester,
   ) async {
     final (controller, preferences) = await _controllerFor(
@@ -193,15 +203,16 @@ void main() {
     );
     await _pumpApp(tester, controller, preferences);
 
-    final hero = find.byKey(const ValueKey<String>('glucoseHeroCard'));
+    expect(find.byKey(const ValueKey('cbioClockState')), findsNothing);
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Current sensor'));
+    await tester.pumpAndSettle();
     final local = DateFormat('HH:mm').format(_anchorInstant.toLocal());
     expect(
-      find.descendant(
-        of: hero,
-        matching: find.text(
-          'Sensor clock set by this app · latest $local '
-          '(±1 min)',
-        ),
+      find.text(
+        'Sensor clock set by this app · latest $local '
+        '(±1 min)',
       ),
       findsOneWidget,
     );
@@ -209,7 +220,7 @@ void main() {
       expect(
         local,
         isNot(DateFormat('HH:mm').format(_anchorInstant)),
-        reason: 'the device zone, not UTC, is what the hero shows',
+        reason: 'the device zone, not UTC, is what sensor details show',
       );
     }
 
@@ -229,14 +240,19 @@ void main() {
       await _pumpApp(tester, controller, preferences);
 
       final heroText = _heroText(tester);
+      expect(find.byKey(const ValueKey('cbioClockState')), findsNothing);
+      expect(heroText, isNot(contains('--')));
+      expect(RegExp(r'\b\d{1,2}:\d{2}\b').hasMatch(heroText), isFalse);
+      await tester.tap(find.byIcon(Icons.tune_rounded));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Current sensor'));
+      await tester.pumpAndSettle();
       expect(
         find.text(
           'Sensor clock unsynced · ordered by sensor index, not by clock',
         ),
         findsOneWidget,
       );
-      expect(heroText, isNot(contains('--')));
-      expect(RegExp(r'\b\d{1,2}:\d{2}\b').hasMatch(heroText), isFalse);
 
       await tester.pumpWidget(const SizedBox.shrink());
       controller.dispose();

@@ -16,8 +16,16 @@ class AppLocalizationsEn extends AppLocalizations {
       'Glucose chart unavailable. Raw sensor data is stored, but glucose decoding is not yet verified.';
 
   @override
-  String get rawSensorValueNotice =>
-      'Raw sensor data. Not a verified glucose reading.';
+  String get rawSensorValueNotice => 'Not a verified glucose reading.';
+
+  @override
+  String get rawSensorValueLabel => 'Raw sensor value';
+
+  @override
+  String get rawSensorHistorySaved => 'View sensor details in Settings.';
+
+  @override
+  String get rawSensorIndexLabel => 'Sensor index';
 
   @override
   String get settings => 'Settings';

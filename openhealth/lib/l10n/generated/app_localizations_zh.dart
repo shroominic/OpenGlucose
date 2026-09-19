@@ -15,7 +15,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get rawSensorChartUnavailable => '血糖图表不可用。原始传感器数据已存储，但血糖解码尚未经过验证。';
 
   @override
-  String get rawSensorValueNotice => '原始传感器数据，并非经过验证的血糖读数。';
+  String get rawSensorValueNotice => '并非经过验证的血糖读数。';
+
+  @override
+  String get rawSensorValueLabel => '传感器原始值';
+
+  @override
+  String get rawSensorHistorySaved => '在设置中查看传感器详情。';
+
+  @override
+  String get rawSensorIndexLabel => '传感器索引';
 
   @override
   String get settings => '设置';

@@ -113,8 +113,26 @@ abstract class AppLocalizations {
   /// No description provided for @rawSensorValueNotice.
   ///
   /// In en, this message translates to:
-  /// **'Raw sensor data. Not a verified glucose reading.'**
+  /// **'Not a verified glucose reading.'**
   String get rawSensorValueNotice;
+
+  /// No description provided for @rawSensorValueLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw sensor value'**
+  String get rawSensorValueLabel;
+
+  /// No description provided for @rawSensorHistorySaved.
+  ///
+  /// In en, this message translates to:
+  /// **'View sensor details in Settings.'**
+  String get rawSensorHistorySaved;
+
+  /// No description provided for @rawSensorIndexLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Sensor index'**
+  String get rawSensorIndexLabel;
 
   /// No description provided for @settings.
   ///

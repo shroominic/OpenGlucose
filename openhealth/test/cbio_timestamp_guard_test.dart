@@ -121,10 +121,10 @@ void main() {
     expect(
       find.descendant(
         of: hero,
-        matching: find.text('Sensor raw value · index 10070'),
+        matching: find.text('Raw sensor value'),
       ),
       findsOneWidget,
-      reason: 'the protocol position is the honest label for the live value',
+      reason: 'the raw value must not claim a glucose unit or sensor clock',
     );
 
     final heroText = tester
@@ -142,14 +142,11 @@ void main() {
     );
     expect(heroText, isNot(contains('Latest reading at')));
 
-    // The 12 h axis agrees with the hero because the same timestamp-free
-    // readings reach it: `_axisLabel` renders `m<minute>`, never a clock.
-    final chart = tester.widget<CgmDashboardChart>(
-      find.byType(CgmDashboardChart),
-    );
-    expect(chart.readings, isNotEmpty);
+    // Raw data must not acquire glucose axes or a fabricated clock.
+    expect(find.byType(CgmDashboardChart), findsNothing);
+    expect(controller.visibleHistory, isNotEmpty);
     expect(
-      chart.readings.every((reading) => reading.recordedAt == null),
+      controller.visibleHistory.every((reading) => reading.recordedAt == null),
       isTrue,
       reason: 'no timestamped reading may reach the chart on the GS1 lane',
     );
