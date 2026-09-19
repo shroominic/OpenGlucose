@@ -61,20 +61,27 @@ Interfaces: consume Task1 owner transition; use a new `CbioGlucoseSession` with
 same sensor/transport/credentials/timing/clock and recovered private owner.
 No changes to `CgmSession` or host subscription APIs.
 
-- [ ] Add RED session regression with two fake connections: first same-index
+- [x] Add RED session regression with two fake connections: first same-index
   different-time witness, second fresh index1 batch. Assert first disconnect
   completes and recovery pending commit precedes second connect, original bytes
   unchanged, successor inputs persisted, no normalized reading.
-- [ ] Add delayed/throwing cleanup and write failures; assert connect count stays
+- [x] Add delayed/throwing cleanup and write failures; assert connect count stays
   one. Add close-during-transition and second-mismatch/restart cases.
-- [ ] Retain/await failure cleanup future and its success result. On eligible
+- [x] Retain/await failure cleanup future and its success result. On eligible
   mismatch only, drain, commit recovery, then create successor and forward its
   snapshots/logs. Close races check closing before connection and release owner
   only after transition settles. Old async tasks remain terminal and cannot
   mutate successor state or public output.
-- [ ] Run full package tests plus enabled trace session tests. Verify original
+- [x] Run full package tests plus enabled trace session tests. Verify original
   failure still logged once and successor failure cannot allocate another route.
-- [ ] Update README/changelog, compatibility and durable-history documentation
+- [x] Update README/changelog, compatibility and durable-history documentation
   to describe one-capsule opt-in capability, bounds and unsupported downgrade.
-- [ ] Format, analyze, run relevant app adapter/integration tests and diff checks;
+- [x] Format, analyze, run relevant app adapter/integration tests and diff checks;
   parent performs independent review before build/commit/phone operations.
+
+Task2 independently approved after fixing close during successor setup.
+Nine new RED close-race cases passed after immediate stop propagation and
+awaited initialization/cleanup, with 121 session and 14 real-host integration
+tests passing. Earlier full checks passed 356 package tests (2 existing skips),
+112 enabled-trace tests and 710 app tests; final post-fix whole-suite evidence
+is recorded in the task report. No build or physical validation is claimed.
