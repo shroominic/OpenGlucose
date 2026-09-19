@@ -80,3 +80,16 @@ not address raw-unit contamination in shared chart/export surfaces, discovery
 model admission, persisted counter eras, lifecycle/warmup semantics, artifact
 credential policy, compatibility documentation, native builds, or real-phone
 release verification.
+
+## Follow-up P1 race guard
+
+RED: a deterministic regression test forced the already-queued history idle
+and deadline callbacks to run after the transport drop had published the
+disconnected state. Before the guard, `_finishHistory` changed the session back
+to `ready`.
+
+GREEN: `_finishHistory` and the catch-up deadline callback now return when the
+session is closing, link-dropped, or terminally failed. The focused regression
+test passes (`dart test ... -n 'queued history timeout'`), and the package
+suite passes (`dart test`, `+140 ~2`). Format checking and
+`dart analyze --fatal-infos` also pass with no issues.

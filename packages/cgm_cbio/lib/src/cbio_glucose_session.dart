@@ -555,7 +555,7 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _finishHistory() {
-    if (_closing) {
+    if (_closing || _linkDropped || _terminalFailure) {
       return;
     }
     _historyDeadlineTimer?.cancel();
@@ -655,6 +655,9 @@ final class CbioGlucoseSession implements CgmSession {
     _catchUpTimer?.cancel();
     _catchUpTimer = Timer(timing.catchUpWindow, () {
       _catchUpTimer = null;
+      if (_closing || _linkDropped || _terminalFailure) {
+        return;
+      }
       _catchUpOpen = false;
       _emit(force: true);
     });

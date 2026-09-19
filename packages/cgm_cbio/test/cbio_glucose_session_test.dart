@@ -247,6 +247,36 @@ final class _FakeTransport implements BleTransport {
   }
 }
 
+final class _ManualTimer implements Timer {
+  _ManualTimer(this._onFire);
+
+  final void Function() _onFire;
+  var _active = true;
+
+  @override
+  bool get isActive => _active;
+
+  @override
+  int get tick => 0;
+
+  @override
+  void cancel() => _active = false;
+
+  void fire() {
+    if (!_active) {
+      return;
+    }
+    _active = false;
+    _onFire();
+  }
+
+  /// Simulates a callback that was already queued when cancellation happened.
+  void fireQueued() {
+    _active = false;
+    _onFire();
+  }
+}
+
 /// Counts how many times a session resolves vendor material.
 final class _CountingCredentialSource implements CbioCredentialSource {
   _CountingCredentialSource([this.credentials]);
@@ -990,6 +1020,55 @@ void main() {
   });
 
   group('CbioGlucoseSession fail-closed behaviour', () {
+    test(
+      'queued history timeout cannot resurrect a disconnected session',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        await _defaultResponder(connection);
+        final timers = <_ManualTimer>[];
+
+        await runZoned(
+          () async {
+            final session = CbioGlucoseSession(
+              sensor: _sensor,
+              transport: transport,
+              credentials: _syntheticSource,
+              timing: _fastTiming,
+            );
+            await session.initialize();
+            for (var index = 0; index < 100; index++) {
+              await Future<void>.value();
+            }
+            expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+            final historyTimers = timers
+                .where((timer) => timer.isActive)
+                .toList();
+            expect(historyTimers, hasLength(2));
+
+            connection.dropLink();
+            for (var index = 0; index < 10; index++) {
+              await Future<void>.value();
+            }
+            expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+
+            for (final timer in historyTimers) {
+              timer.fireQueued();
+            }
+            expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+            await session.disconnect();
+          },
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, callback) {
+              final timer = _ManualTimer(callback);
+              timers.add(timer);
+              return timer;
+            },
+          ),
+        );
+      },
+    );
+
     test(
       'initial history write failure is terminal and never becomes ready',
       () async {
