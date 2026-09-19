@@ -33,6 +33,7 @@ javac -d "$classes_dir" \
   "$main_java/NfcRfReadiness.java" \
   "$main_java/NfcRfTransactionLease.java" \
   "$main_java/NfcRfTransactionLeaseBinding.java" \
+  "$main_java/ProtocolCaptureSessionInitializer.java" \
   "$test_java/Libre2ActivationUiProofTest.java" \
   "$test_java/Libre2Gen1ReadTransactionTest.java" \
   "$test_java/Libre2NfcSetupAttemptTest.java" \
@@ -46,7 +47,8 @@ javac -d "$classes_dir" \
   "$test_java/NfcPublishedGrantEnvelopeTest.java" \
   "$test_java/NfcRfReadinessTest.java" \
   "$test_java/NfcRfTransactionLeaseTest.java" \
-  "$test_java/NfcRfTransactionLeaseBindingTest.java"
+  "$test_java/NfcRfTransactionLeaseBindingTest.java" \
+  "$test_java/ProtocolCaptureSessionInitializerTest.java"
 
 for test_class in \
   Libre2ActivationUiProofTest \
@@ -62,7 +64,8 @@ for test_class in \
   NfcPublishedGrantEnvelopeTest \
   NfcRfReadinessTest \
   NfcRfTransactionLeaseTest \
-  NfcRfTransactionLeaseBindingTest
+  NfcRfTransactionLeaseBindingTest \
+  ProtocolCaptureSessionInitializerTest
 do
   java -cp "$classes_dir" "com.aidex.aidex_flutter.$test_class"
 done

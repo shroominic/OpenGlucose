@@ -338,29 +338,23 @@ final class DebugProtocolCaptureBridge {
                 result.error("bad_args", "Invalid process session identifier.", null);
                 return;
               }
-              if (nfcAdapter == null) {
-                result.error("nfc_unavailable", "This device has no NFC adapter.", null);
-                return;
-              }
-              if (!hasNfcPermission()) {
-                result.error("nfc_permission_missing", "NFC capture permission is absent.", null);
-                return;
-              }
-              if (!nfcAdapter.isEnabled()) {
-                result.error("nfc_disabled", "NFC is disabled.", null);
-                return;
-              }
               try {
-                prepareCaptureDirectory(requestedProcessSessionId);
-                synchronized (rfAuthorizationLock) {
-                  captureRequested = true;
-                  rfAuthorizationGeneration += 1L;
-                }
-                updateReaderMode();
-                publishReaderStatusForEpoch(captureEpoch);
+                // This legacy channel method initializes the shared private
+                // BLE/NFC recorder. NFC capability gates reader mode and
+                // explicit NFC setup, not creation of the private session.
+                ProtocolCaptureSessionInitializer.initialize(
+                    () -> prepareCaptureDirectory(requestedProcessSessionId),
+                    () -> {
+                      synchronized (rfAuthorizationLock) {
+                        captureRequested = true;
+                        rfAuthorizationGeneration += 1L;
+                      }
+                    },
+                    this::updateReaderMode,
+                    () -> publishReaderStatusForEpoch(captureEpoch),
+                    this::stopNfcCapture);
                 result.success(null);
               } catch (IOException | RuntimeException error) {
-                stopNfcCapture();
                 result.error(
                     "restricted_storage_failed",
                     "Could not prepare private protocol capture storage.",
