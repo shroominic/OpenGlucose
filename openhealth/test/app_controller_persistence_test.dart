@@ -372,6 +372,150 @@ void main() {
     controller.dispose();
   });
 
+  for (final ageDays in [0, 30]) {
+    test(
+      'normalized CBIO restore follows shared lifecycle at age $ageDays',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = _multiDriverSensor(
+          driverId: 'cbio',
+          storageKey: 'synthetic-lifecycle',
+        );
+        final start = DateTime.now().subtract(
+          Duration(days: ageDays, hours: 2),
+        );
+        final reading = _reading(
+          valueMgdl: 123,
+          sensorMinute: 90,
+          recordedAt: start.add(const Duration(minutes: 90)),
+        );
+        final binding = base64Url
+            .encode(utf8.encode(jsonEncode(['cbio', sensor.storageKey])))
+            .replaceAll('=', '');
+        final store = _ControllableHealthStateStore(
+          initialValues: {
+            'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+            'openHealth.history.normalized.v1.$binding': jsonEncode([
+              reading.toJson(),
+            ]),
+          },
+        );
+        final driver = _ControlledDriver([], driverId: 'cbio');
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+          historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+        );
+        await controller.initialize();
+        if (ageDays == 0) {
+          expect(controller.snapshot!.sessionInfo.sessionStart, start);
+        } else {
+          expect(controller.snapshot, isNull);
+          expect(
+            controller.archivedSensors.single.reason,
+            SensorArchiveReason.expired,
+          );
+        }
+        controller.dispose();
+        await driver.close();
+      },
+    );
+  }
+  test('normalized CBIO expired snapshot follows shared retirement', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _multiDriverSensor(
+      driverId: 'cbio',
+      storageKey: 'synthetic-live-lifecycle',
+    );
+    final start = DateTime.now().subtract(const Duration(days: 30));
+    final session = _ControlledSession(
+      _testSnapshot(
+        sensor,
+        stage: CgmSyncStage.ready,
+        sessionInfo: CgmSessionInfo(sessionStart: start),
+      ),
+    );
+    final driver = _ControlledDriver([session], driverId: 'cbio');
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: _ControllableHealthStateStore(),
+      historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+    );
+    await controller.initialize();
+    await controller.connect(sensor);
+    await _drainEventQueue();
+    expect(controller.snapshot, isNull);
+    expect(
+      controller.archivedSensors.single.reason,
+      SensorArchiveReason.expired,
+    );
+    controller.dispose();
+    await driver.close();
+  });
+
+  for (final driverId in ['controlled', 'cbio']) {
+    test(
+      'private namespace leaves resume ownership to $driverId driver',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = DiscoveredSensor.fromJson({
+          ..._multiDriverSensor(
+            driverId: driverId,
+            storageKey: 'synthetic-private-resume',
+          ).toJson(),
+          'metadata': {'cgm.cbio.checkpoint': 'synthetic-private-witness'},
+        });
+        final reading = _reading(
+          valueMgdl: 123,
+          sensorMinute: 1,
+          recordedAt: DateTime.now(),
+        );
+        final binding = base64Url
+            .encode(utf8.encode(jsonEncode([driverId, sensor.storageKey])))
+            .replaceAll('=', '');
+        final store = _ControllableHealthStateStore(
+          initialValues: {
+            'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+            'openHealth.history.normalized.v1.$binding': jsonEncode([
+              reading.toJson(),
+            ]),
+          },
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready, history: [reading]),
+        );
+        final driver = _ControlledDriver([session], driverId: driverId);
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+          historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+        );
+        await controller.initialize();
+        await controller.connect(sensor);
+        expect(
+          driver.connectedSensors.single.metadata['cgm.cbio.checkpoint'],
+          'synthetic-private-witness',
+        );
+        expect(
+          driver.connectedSensors.single.metadata,
+          isNot(contains('resumeHistory')),
+        );
+        expect(
+          controller.snapshot!.sensor.metadata,
+          isNot(contains('cgm.cbio.checkpoint')),
+        );
+        controller.dispose();
+        await driver.close();
+      },
+    );
+  }
+
   // Raw checkpoint/merge/write regressions now run against the actual driver
   // and internal owner in cgm_cbio tests and cbio_real_session_controller_test.
   // Migration and native byte retention live in cbio_private_state_adapter_test.

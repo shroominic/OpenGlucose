@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
-import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -496,9 +495,7 @@ class CgmAppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final inferredStart = restoredSensor.driverId == 'cbio'
-        ? null
-        : inferSensorStart(_persistedHistory);
+    final inferredStart = inferSensorStart(_persistedHistory);
     if (_persistedSensorHasExpired(
       sensor: restoredSensor,
       history: _persistedHistory,
@@ -1978,7 +1975,6 @@ class CgmAppController extends ChangeNotifier {
     required DateTime? inferredStart,
     DateTime? now,
   }) {
-    if (sensor.driverId == 'cbio') return false;
     final reference = now ?? DateTime.now();
     final expectedLife = _expectedSensorLifetime(sensor);
     if (inferredStart != null &&
@@ -2006,7 +2002,6 @@ class CgmAppController extends ChangeNotifier {
   }
 
   bool _snapshotHasExpired(CgmSessionSnapshot value) {
-    if (value.sensor.driverId == 'cbio') return false;
     return computeSensorLifecycle(
       value,
       latestReading:
@@ -2761,15 +2756,10 @@ class CgmAppController extends ChangeNotifier {
       advertisement: sensor.advertisement,
       notes: sensor.notes,
       metadata: <String, String>{
-        for (final entry in sensor.metadata.entries)
-          if (sensor.driverId != 'cbio' ||
-              (entry.key != cbioCheckpointMetadataKey &&
-                  !entry.key.startsWith('cgm.cbio.clock.') &&
-                  !entry.key.startsWith('cgm.cbio.resume.')))
-            entry.key: entry.value,
+        ...sensor.metadata,
         cgmAllowSessionActivationMetadataKey: allowSessionActivation.toString(),
         if (hasFullEnoughPrefix &&
-            sensor.driverId != 'cbio') ...<String, String>{
+            _historyNamespace?.call(sensor) == null) ...<String, String>{
           _resumeOffsetMetadataKey: latestOffset.toString(),
           _resumeCountMetadataKey: resumableHistory.length.toString(),
           _resumeHistoryMetadataKey: jsonEncode(
