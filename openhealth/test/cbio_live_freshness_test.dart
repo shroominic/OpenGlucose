@@ -3,10 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/live_activity_payload.dart';
 
-/// The GS1 session publishes records the way the cbio driver does: every
-/// record carries the protocol's own minute counter and no epoch at all. A
-/// live surface therefore has one honest clock left — the moment this phone
-/// received the data — and it must never be reported as a sensor time.
+/// Explicit legacy raw fixtures test generic quality exclusion. Protocol raw
+/// records are now private, and their receipt times cannot make a normalized
+/// glucose surface fresh or supply a sensor timestamp.
 void main() {
   const sensor = DiscoveredSensor(
     driverId: 'cbio',
@@ -53,18 +52,18 @@ void main() {
     );
   }
 
-  test('cbio freshness is the receipt clock, not a missing sensor clock', () {
+  test('raw receipt freshness never stands in for normalized glucose time', () {
     final now = DateTime.utc(2026, 9, 18, 9);
     expect(reading.recordedAt, isNull);
 
     expect(
       payloadFor(now.subtract(const Duration(seconds: 30)), now).isStale,
-      isFalse,
-      reason: 'a batch accepted 30 s ago is a fresh surface',
+      isTrue,
+      reason: 'a recent raw batch is not a fresh glucose reading',
     );
     expect(
       payloadFor(now.subtract(const Duration(minutes: 9)), now).isStale,
-      isFalse,
+      isTrue,
     );
     expect(
       payloadFor(now.subtract(const Duration(minutes: 25)), now).isStale,

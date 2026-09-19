@@ -1,43 +1,97 @@
-import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 
-/// Deterministic fresh-session proof for UI-only synthetic records.
-///
-/// This fixture models an epoch-less counter era at 12000 + index * 60.
-/// A checkpoint stops at the first contiguous run, never after an unresolved
-/// hole. Anchored fixtures explicitly provide their app-clock evidence instead.
-/// Actual driver proof production is covered separately by the real-session
-/// fake-BLE/controller integration suite. This helper never repairs row flags.
-/// High starting indexes are intentionally compact UI abstractions: they model
-/// an already-populated in-memory session, not full fresh-radio retrieval from1.
-Map<String, String> syntheticCbioFreshMetadata(
-  DiscoveredSensor sensor,
-  List<CgmReading> history, {
-  CbioIndexTimeAnchor? anchor,
+/// Radio-free contract fixtures. Normalized records here are synthetic inputs,
+/// never evidence that GS1 glucose decoding has been verified.
+DiscoveredSensor syntheticSurfaceSensor([String driverId = 'cbio']) =>
+    DiscoveredSensor(
+      driverId: driverId,
+      deviceId: 'synthetic-surface-device',
+      displayName: 'Synthetic sensor',
+      storageKey: 'synthetic-surface-storage',
+      rssi: -40,
+      capabilities: const CgmCapabilities(
+        supportsDirectBle: true,
+        supportsHistory: true,
+      ),
+    );
+
+CgmSessionSnapshot syntheticSurfaceSnapshot({
+  String driverId = 'cbio',
+  List<CgmReading> readings = const [],
+  CgmSyncStage stage = CgmSyncStage.ready,
+  CgmSessionInfo sessionInfo = const CgmSessionInfo(warmupMinutes: 0),
+  CgmHistorySyncState historySync = const CgmHistorySyncState(),
+  String? lastError,
+  Map<String, String> metadata = const {},
 }) {
-  if (history.isEmpty) {
-    return {cbioResumeStatusMetadataKey: CbioResumeStatus.fresh};
-  }
-  final indexes = history.map((row) => row.sensorMinute!).toList()..sort();
-  var witness = indexes.first;
-  for (final index in indexes.skip(1)) {
-    if (index != witness + 1) break;
-    witness = index;
-  }
-  final checkpoint = CbioSessionCheckpoint(
-    sensorKey: sensor.storageKey,
-    index: witness,
-    rawTime: anchor == null
-        ? 12000 + witness * 60
-        : anchor.timeForIndex(witness).millisecondsSinceEpoch ~/ 1000,
-    anchor: anchor,
+  final sensor = syntheticSurfaceSensor(driverId);
+  return CgmSessionSnapshot(
+    sensor: sensor,
+    capabilities: sensor.capabilities,
+    stage: stage,
+    statusText: 'synthetic-private-status',
+    latestReading: readings.isEmpty ? null : readings.last,
+    history: readings,
+    sessionInfo: sessionInfo,
+    historySync: historySync,
+    lastError: lastError,
+    metadata: {
+      cgmAutomaticReconnectAllowedMetadataKey: 'false',
+      ...metadata,
+    },
   );
-  if (CbioSessionCheckpoint.decode(checkpoint.encode(), sensor.storageKey) ==
-      null) {
-    throw StateError('Synthetic CBIO fixture must have a valid bound witness');
-  }
-  return {
-    cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-    cbioCheckpointMetadataKey: checkpoint.encode(),
-  };
+}
+
+class SyntheticSurfaceDriver implements CgmDriver {
+  SyntheticSurfaceDriver(this.snapshot);
+  final CgmSessionSnapshot snapshot;
+
+  @override
+  String get driverId => snapshot.sensor.driverId;
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) => Stream.value(snapshot.sensor);
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async =>
+      _SyntheticSurfaceSession(snapshot);
+}
+
+class _SyntheticSurfaceSession implements CgmSession {
+  _SyntheticSurfaceSession(this.currentSnapshot);
+
+  @override
+  final CgmSessionSnapshot currentSnapshot;
+  @override
+  DiscoveredSensor get sensor => currentSnapshot.sensor;
+  @override
+  Stream<CgmLogEntry> get logs => const Stream.empty();
+  @override
+  Stream<CgmSessionSnapshot> get snapshots => const Stream.empty();
+  @override
+  CgmUnsafeAdmin? get unsafeAdmin => null;
+  @override
+  Future<void> disconnect() async {}
+  @override
+  Future<void> refresh() async {}
+  @override
+  Future<void> refreshLiveData() async {}
+  @override
+  Future<List<CgmCalibrationEntry>> fetchCalibrations() async => [];
+  @override
+  Future<List<CgmDiagnosticItem>> refreshDiagnostics() async => [];
+  @override
+  Future<void> submitCalibration({
+    required int glucoseMgdl,
+    int? sensorMinute,
+    DateTime? recordedAt,
+  }) async {}
+  @override
+  Future<void> syncHistory({
+    bool includeRawHistory = false,
+    int? requestedStartOffset,
+  }) async {}
 }

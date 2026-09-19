@@ -7,35 +7,39 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   for (final locale in <Locale>[const Locale('en'), const Locale('zh')]) {
-    testWidgets('raw history has no glucose chart in ${locale.languageCode}', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        _chartHarness(
-          locale: locale,
-          readings: const [
-            CgmReading(
-              valueMgdl: 5.9,
-              source: CgmRecordSource.raw,
-              sensorMinute: 120,
-              rawValue: 59,
-              isDisplayProvisional: true,
-            ),
-          ],
-          historySync: const CgmHistorySyncState(),
-        ),
-      );
-      expect(find.byKey(const ValueKey('rawSensorHistory')), findsOneWidget);
-      expect(find.textContaining('mg/dL'), findsNothing);
-      expect(find.textContaining('mmol/L'), findsNothing);
-      expect(
-        find.descendant(
-          of: find.byType(CgmDashboardChart),
-          matching: find.byType(CustomPaint),
-        ),
-        findsNothing,
-      );
-    });
+    testWidgets(
+      'raw-only history uses the shared empty chart in ${locale.languageCode}',
+      (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _chartHarness(
+            locale: locale,
+            readings: const [
+              CgmReading(
+                valueMgdl: 5.9,
+                source: CgmRecordSource.raw,
+                sensorMinute: 120,
+                rawValue: 59,
+                isDisplayProvisional: true,
+              ),
+            ],
+            historySync: const CgmHistorySyncState(),
+          ),
+        );
+        expect(find.byKey(const ValueKey('rawSensorHistory')), findsNothing);
+        expect(find.textContaining('Raw sensor history'), findsNothing);
+        expect(find.textContaining('59'), findsNothing);
+        expect(find.textContaining('5.9'), findsNothing);
+        expect(
+          find.descendant(
+            of: find.byType(CgmDashboardChart),
+            matching: find.byType(CustomPaint),
+          ),
+          findsWidgets,
+        );
+      },
+    );
   }
 
   testWidgets('mixed chart tooltips never select a raw-source value', (

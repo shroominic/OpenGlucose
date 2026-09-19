@@ -14,41 +14,46 @@ import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/ios_export_share.dart';
 import 'package:openglucose/src/sensor_archive.dart';
+import 'package:openglucose/src/persistence/cbio_private_state_adapter.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   for (final mixed in [false, true]) {
     testWidgets(
-      'home identifies recovery without a complete-history count mixed=$mixed',
+      'private raw archives remain retained but absent from shared home and archive mixed=$mixed',
       (tester) async {
         SharedPreferences.setMockInitialValues({
           'openHealth.onboarding.completed': true,
         });
         final preferences = await SharedPreferences.getInstance();
         const session = ArchivedSensorSession(
-          id: 'cbio-unreconciled:home',
-          historyKey: 'openHealth.history.v2.home',
-          storageKey: 'home',
+          id: 'cbio-unreconciled:WyJjYmlvIiwic3ludGhldGljIl0',
+          historyKey: 'openHealth.history.v2.WyJjYmlvIiwic3ludGhldGljIl0',
+          storageKey: 'synthetic',
           driverId: 'cbio',
-          deviceId: 'home',
-          displayName: 'Retained CBIO',
+          deviceId: 'synthetic',
+          displayName: 'Private raw CBIO archive',
           reason: SensorArchiveReason.disconnected,
           readingCount: 0,
           isUnreconciled: true,
         );
         final fixture = _archivedHistoryFixture();
+        final originalIndex = jsonEncode([
+          session.toJson(),
+          if (mixed) fixture.session.toJson(),
+        ]);
+        final store = _MemoryHealthStateStore({
+          if (mixed) ...fixture.values,
+          session.historyKey: '{unreadable private raw bytes',
+          'openHealth.sensorArchive': originalIndex,
+        });
+        // Same order as bootstrap: migrate privately before normal index load.
+        await CbioPrivateStateAdapter(store).migrateLegacyArchives();
         final controller = CgmAppController(
           preferences: preferences,
           driver: _NoSensorDriver(),
-          healthStateStore: _MemoryHealthStateStore({
-            if (mixed) ...fixture.values,
-            session.historyKey: '{',
-            'openHealth.sensorArchive': jsonEncode([
-              session.toJson(),
-              if (mixed) fixture.session.toJson(),
-            ]),
-          }),
+          healthStateStore: store,
         );
         await controller.initialize();
         await tester.pumpWidget(
@@ -62,84 +67,52 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        expect(find.text('History needs recovery'), findsOneWidget);
-        expect(find.text('Your glucose history'), findsNothing);
-        expect(find.textContaining('0 readings'), findsNothing);
+        expect(find.text('History needs recovery'), findsNothing);
         expect(
-          find.byKey(const ValueKey<String>('historicalRecoverySummary')),
-          findsOneWidget,
+          find.byKey(const ValueKey('historicalRecoverySummary')),
+          findsNothing,
+        );
+        expect(
+          find.text('Your glucose history'),
+          mixed ? findsOneWidget : findsNothing,
         );
         expect(controller.allHistoricalReadings.length, mixed ? 1 : 0);
+        expect(controller.archivedSensors.length, mixed ? 1 : 0);
+        await tester.tap(find.byTooltip('Settings'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Sensor archive'));
+        await tester.pumpAndSettle();
+        expect(find.text(session.displayName), findsNothing);
+        expect(
+          find.byKey(const ValueKey('archiveRecoveryNotice')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('exportArchivedSensorData')),
+          findsNothing,
+        );
+        if (mixed) {
+          expect(controller.archivedSensors.single.id, fixture.session.id);
+        }
+        expect(
+          store.getString(session.historyKey),
+          '{unreadable private raw bytes',
+        );
+        final manifest =
+            jsonDecode(
+                  store.getString(
+                    'openHealth.driverState.cbio.rawArchives.v1',
+                  )!,
+                )
+                as Map<String, dynamic>;
+        expect(manifest['archives'], [session.toJson()]);
+        expect(manifest['sourceIndexes'], [originalIndex]);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
         controller.dispose();
       },
     );
   }
-
-  testWidgets(
-    'malformed unreconciled CBIO archive opens recovery without empty export',
-    (tester) async {
-      SharedPreferences.setMockInitialValues({
-        'openHealth.onboarding.completed': true,
-      });
-      final preferences = await SharedPreferences.getInstance();
-      const session = ArchivedSensorSession(
-        id: 'cbio-unreconciled:fixture',
-        historyKey: 'openHealth.history.v2.fixture',
-        storageKey: 'fixture',
-        driverId: 'cbio',
-        deviceId: 'fixture',
-        displayName: 'Retained CBIO',
-        reason: SensorArchiveReason.disconnected,
-        readingCount: 0,
-        isUnreconciled: true,
-      );
-      final store = _MemoryHealthStateStore({
-        session.historyKey: '{',
-        'openHealth.sensorArchive': jsonEncode([session.toJson()]),
-      });
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: _NoSensorDriver(),
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await tester.pumpWidget(
-        OpenGlucoseApp(
-          controller: controller,
-          healthExport: HealthExportController(
-            preferences: preferences,
-            writesAllowed: false,
-          )..initialize(),
-          preferences: preferences,
-        ),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Settings'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Sensor archive'));
-      await tester.pumpAndSettle();
-      expect(find.text('History needs recovery'), findsOneWidget);
-      expect(find.textContaining('0 readings'), findsNothing);
-      await tester.tap(find.text('Retained CBIO'));
-      await tester.pumpAndSettle();
-      expect(find.text('History needs recovery'), findsWidgets);
-      expect(
-        find.byKey(const ValueKey<String>('archiveRecoveryNotice')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('exportArchivedSensorData')),
-        findsNothing,
-      );
-      expect(find.textContaining('0 readings'), findsNothing);
-      expect(tester.takeException(), isNull);
-      expect(store.getString(session.historyKey), '{');
-      await tester.pumpWidget(const SizedBox.shrink());
-      controller.dispose();
-    },
-  );
 
   testWidgets(
     'home connects inline and offers model help after empty Bluetooth search',
@@ -810,7 +783,10 @@ Future<void> _confirmCsvArchiveExport(WidgetTester tester) async {
 _archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
   final startedAt = DateTime(2026, 7, 1, 8);
   final endedAt = startedAt.add(const Duration(days: 15));
-  const historyKey = 'openHealth.history.archive.feedback-session';
+  final archiveId = base64Url
+      .encode(utf8.encode('aidex-test|aidex:feedback-archive|1'))
+      .replaceAll('=', '');
+  final historyKey = 'openHealth.history.archive.$archiveId';
   final readings = readingCount == null
       ? <CgmReading>[
           CgmReading(
@@ -838,7 +814,7 @@ _archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
           growable: false,
         );
   final session = ArchivedSensorSession(
-    id: 'feedback-session',
+    id: archiveId,
     historyKey: historyKey,
     storageKey: 'aidex:feedback-archive',
     driverId: 'aidex-test',

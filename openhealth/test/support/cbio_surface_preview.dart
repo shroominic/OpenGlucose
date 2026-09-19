@@ -1,7 +1,8 @@
-// Synthetic, radio-free visual fixture. Never used by the production entrypoint.
+// Synthetic, radio-free visual fixture. Never the production entrypoint.
+// Example: ?driver=cbio&lang=zh&unit=mmol&state=empty
+// Normalized numbers are test inputs, NOT verified GS1 decoding evidence.
 import 'dart:convert';
 
-import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
 import 'package:openglucose/main.dart';
@@ -10,6 +11,7 @@ import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
 import 'package:openglucose/src/messaging/message_controller.dart';
+import 'package:openglucose/src/persistence/sensor_state_identity.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -19,42 +21,70 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   WidgetsBinding.instance.ensureSemantics();
   final query = Uri.base.queryParameters;
-  final archiveRecovery = query['archive'] == 'recovery';
-  const archive = ArchivedSensorSession(
-    id: 'cbio-unreconciled:synthetic-preview',
-    historyKey: 'openHealth.history.v2.synthetic-preview',
-    storageKey: 'synthetic-preview',
-    driverId: 'cbio',
-    deviceId: 'synthetic-preview',
-    displayName: 'Synthetic CBIO archive',
+  final driver = switch (query['driver']) {
+    'aidex' => 'aidex',
+    'libre2-gen1' => 'libre2-gen1',
+    _ => 'cbio',
+  };
+  final now = DateTime.now();
+  final state = query['state'] ?? 'normal';
+  final readings = <CgmReading>[
+    if (state != 'empty' && state != 'warmup')
+      for (var index = 0; index < 30; index++)
+        CgmReading(
+          valueMgdl: 100.0 + index % 15,
+          sensorMinute: 100 + index,
+          source: CgmRecordSource.standard,
+          recordedAt: now.subtract(
+            Duration(
+              minutes: 30 - index + (state == 'stale' ? 60 : 0),
+            ),
+          ),
+        ),
+  ];
+  final snapshot = syntheticSurfaceSnapshot(
+    driverId: driver,
+    readings: readings,
+    stage: state == 'error' ? CgmSyncStage.error : CgmSyncStage.ready,
+    lastError: state == 'error' ? 'synthetic.failure' : null,
+    sessionInfo: state == 'warmup'
+        ? CgmSessionInfo(
+            sessionStart: now.subtract(const Duration(minutes: 30)),
+            warmupMinutes: 60,
+          )
+        : const CgmSessionInfo(),
+  );
+  final archive = ArchivedSensorSession(
+    id: 'synthetic-normalized-archive',
+    historyKey:
+        'openHealth.history.normalized.v1.${encodedSensorStateIdentity(snapshot.sensor)}.archive.synthetic',
+    storageKey: snapshot.sensor.storageKey,
+    driverId: driver,
+    deviceId: snapshot.sensor.deviceId,
+    displayName: 'Synthetic sensor archive',
     reason: SensorArchiveReason.disconnected,
-    readingCount: 0,
-    isUnreconciled: true,
+    readingCount: readings.length,
+    lastReadingAt: readings.isEmpty ? null : readings.last.recordedAt,
   );
   SharedPreferences.setMockInitialValues(<String, Object>{
     'openHealth.onboarding.completed': true,
     'openHealth.appLanguage': query['lang'] == 'zh' ? 'zh-Hans' : 'en',
-    if (archiveRecovery) ...{
-      archive.historyKey: '{',
+    if (query['archive'] == 'normalized') ...{
+      archive.historyKey: jsonEncode(
+        readings.map((reading) => reading.toJson()).toList(),
+      ),
       'openHealth.sensorArchive': jsonEncode([archive.toJson()]),
     },
   });
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
     preferences: preferences,
-    driver: _PreviewDriver(
-      stale: query['stale'] == 'true',
-      failure: switch (query['failure']) {
-        'history' => 'history',
-        'counter-a' => 'before-checkpoint',
-        'counter-b' => 'witness-time-mismatch',
-        'counter-c' => 'archive-time-conflict',
-        _ => null,
-      },
-    ),
+    driver: SyntheticSurfaceDriver(snapshot),
   );
   await controller.initialize();
-  if (!archiveRecovery) await controller.connect(_sensor);
+  if (query['archive'] != 'normalized') {
+    await controller.connect(snapshot.sensor);
+  }
   controller.updateDisplayPreferences(
     DisplayPreferences(
       unit: query['unit'] == 'mmol' ? GlucoseUnit.mmolL : GlucoseUnit.mgdl,
@@ -81,102 +111,4 @@ Future<void> main() async {
       ),
     ),
   );
-}
-
-const _sensor = DiscoveredSensor(
-  driverId: 'cbio',
-  deviceId: 'synthetic-preview-only',
-  displayName: 'SiBio GS1',
-  storageKey: 'synthetic-preview-only',
-  rssi: -60,
-  capabilities: CbioGlucoseSession.capabilities,
-);
-
-class _PreviewDriver implements CgmDriver {
-  _PreviewDriver({required this.stale, required this.failure});
-  final bool stale;
-  final String? failure;
-  @override
-  String get driverId => 'cbio';
-  @override
-  Stream<DiscoveredSensor> scan({
-    Duration? timeout,
-    bool allowDuplicates = true,
-  }) => const Stream.empty();
-  @override
-  Future<CgmSession> connect(DiscoveredSensor sensor) async =>
-      _PreviewSession(stale: stale, failure: failure);
-}
-
-class _PreviewSession implements CgmSession {
-  _PreviewSession({required bool stale, required String? failure}) {
-    final history = <CgmReading>[
-      for (var index = 0; index < 3; index++)
-        CgmReading(
-          valueMgdl: (57 + index) / 10,
-          rawValue: 57 + index,
-          sensorMinute: 100 + index,
-          source: CgmRecordSource.raw,
-          isDisplayProvisional: true,
-        ),
-    ];
-    currentSnapshot = CgmSessionSnapshot(
-      sensor: _sensor,
-      capabilities: _sensor.capabilities,
-      stage: failure != null ? CgmSyncStage.error : CgmSyncStage.ready,
-      lastError: failure == null
-          ? null
-          : failure == 'history'
-          ? 'cbio.history.unconfirmed'
-          : CbioSessionFailure.counterRestart,
-      statusText: 'Connected',
-      latestReading: history.last,
-      history: history,
-      historySync: CgmHistorySyncState(
-        inProgress: failure != null,
-        storedCount: history.length,
-        lastSyncAt: DateTime.now().subtract(
-          Duration(minutes: stale ? 60 : 1),
-        ),
-      ),
-      metadata: {
-        ...syntheticCbioFreshMetadata(_sensor, history),
-        cgmAutomaticReconnectAllowedMetadataKey: 'false',
-        cbioPhaseMetadataKey: CbioSessionPhase.live,
-        if (failure != null && failure != 'history')
-          'cgm.cbio.resume.counterFailureReason': failure,
-      },
-    );
-  }
-  @override
-  DiscoveredSensor get sensor => _sensor;
-  @override
-  late final CgmSessionSnapshot currentSnapshot;
-  @override
-  Stream<CgmLogEntry> get logs => const Stream.empty();
-  @override
-  Stream<CgmSessionSnapshot> get snapshots => const Stream.empty();
-  @override
-  CgmUnsafeAdmin? get unsafeAdmin => null;
-  @override
-  Future<void> disconnect() async {}
-  @override
-  Future<void> refresh() async {}
-  @override
-  Future<void> refreshLiveData() async {}
-  @override
-  Future<List<CgmCalibrationEntry>> fetchCalibrations() async => [];
-  @override
-  Future<List<CgmDiagnosticItem>> refreshDiagnostics() async => [];
-  @override
-  Future<void> submitCalibration({
-    required int glucoseMgdl,
-    int? sensorMinute,
-    DateTime? recordedAt,
-  }) async {}
-  @override
-  Future<void> syncHistory({
-    bool includeRawHistory = false,
-    int? requestedStartOffset,
-  }) async {}
 }

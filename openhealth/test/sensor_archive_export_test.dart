@@ -86,7 +86,7 @@ void main() {
     expect(dataRow, contains(',2,,72,4.000,broadcast,,700,,false'));
   });
 
-  test('CBIO exports leave glucose cells blank even without quality flags', () {
+  test('explicit raw-quality archives leave glucose cells blank', () {
     final cbioSession = ArchivedSensorSession.fromJson({
       ...session.toJson(),
       'driverId': 'cbio',
@@ -94,7 +94,7 @@ void main() {
     const readings = [
       CgmReading(
         valueMgdl: 5.9,
-        source: CgmRecordSource.vendor,
+        source: CgmRecordSource.raw,
         sensorMinute: 120,
         rawValue: 59,
       ),
@@ -116,6 +116,38 @@ void main() {
     expect(sheet, isNot(contains('<c r="G2"')));
     expect(sheet, isNot(contains('<c r="H2"')));
     expect(sheet, contains('<c r="K2" s="2"><v>59</v></c>'));
+  });
+
+  test('normalized GS1 archive uses the shared glucose export contract', () {
+    final normalizedSession = ArchivedSensorSession.fromJson({
+      ...session.toJson(),
+      'driverId': 'cbio',
+      'historyKey': 'openHealth.history.normalized.v1.synthetic.archive.1',
+    });
+    final readings = [
+      CgmReading(
+        valueMgdl: 108,
+        source: CgmRecordSource.standard,
+        recordedAt: DateTime.utc(2026, 9, 19, 12),
+      ),
+    ];
+    final row = buildArchivedSensorCsv(
+      session: normalizedSession,
+      readings: readings,
+    ).split('\r\n')[1].split(',');
+    expect(row[6], '108');
+    expect(row[7], '6.000');
+    final sheet = _archiveText(
+      ZipDecoder().decodeBytes(
+        buildArchivedSensorXlsx(
+          session: normalizedSession,
+          readings: readings,
+        ),
+      ),
+      'xl/worksheets/sheet1.xml',
+    );
+    expect(sheet, contains('<c r="G2" s="3"><v>108</v></c>'));
+    expect(sheet, contains('<c r="H2" s="4"><v>6.000</v></c>'));
   });
 
   test('metadata-only archives still produce a data row', () {
