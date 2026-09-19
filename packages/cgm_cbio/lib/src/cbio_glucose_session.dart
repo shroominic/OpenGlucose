@@ -128,7 +128,7 @@ final class CbioSessionTiming {
     this.catchUpWindow = const Duration(seconds: 20),
     this.liveEdgeWindow = const Duration(minutes: 3),
     this.publishInterval = const Duration(milliseconds: 400),
-    this.maxReadsPerSession = 480,
+    this.maxReadsPerSession,
     this.maxFrameBytes = 512,
   });
 
@@ -155,8 +155,9 @@ final class CbioSessionTiming {
   /// Coalescing window for snapshot publication.
   final Duration publishInterval;
 
-  /// Hard ceiling on reads inside one session. The clock frame is not a read.
-  final int maxReadsPerSession;
+  /// Optional bench ceiling. Production sessions have no lifetime read cap.
+  /// The clock frame is not a read. Null leaves paced reads unlimited.
+  final int? maxReadsPerSession;
 
   /// Ceiling for one reassembly buffer, in bytes.
   final int maxFrameBytes;
@@ -192,6 +193,15 @@ final class CbioSessionTiming {
       maxFrameBytes: maxFrameBytes ?? this.maxFrameBytes,
     );
   }
+}
+
+/// One coalesced read generation; null cursor is resolved when executed.
+final class _PendingRead {
+  _PendingRead(this.index, this.catchUp);
+
+  int? index;
+  bool catchUp;
+  final done = Completer<void>();
 }
 
 /// One authenticated GS1 session: history ingest plus live polling.
@@ -275,7 +285,8 @@ final class CbioGlucoseSession implements CgmSession {
   Timer? _liveResponseTimer;
   Timer? _catchUpTimer;
   Timer? _publishTimer;
-  Future<void> _readQueue = Future<void>.value();
+  _PendingRead? _activeRead;
+  _PendingRead? _pendingRead;
   Future<void>? _initialization;
   Completer<void>? _liveWindow;
   DateTime? _lastSyncAt;
@@ -604,15 +615,22 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _scheduleLivePoll() {
-    if (_closing || _budgetExhausted) {
+    if (_readsStopped || _activeRead != null || _liveTimer != null) {
       return;
     }
-    _liveTimer?.cancel();
     _liveTimer = Timer(timing.livePollInterval, () {
       _liveTimer = null;
-      unawaited(_pollLive());
+      if (_readsStopped) return;
+      if (_pendingRead != null) {
+        _startPendingRead();
+      } else if (_stage == CgmSyncStage.ready) {
+        unawaited(_pollLive());
+      }
     });
   }
+
+  bool get _readsStopped =>
+      _closing || _linkDropped || _terminalFailure || _budgetExhausted;
 
   /// One bounded live read at the first index this session has not seen.
   Future<void> _pollLive() async {
@@ -623,18 +641,55 @@ final class CbioGlucoseSession implements CgmSession {
       _publishBudgetState();
       return;
     }
-    await _readFrom(_nextIndex(), label: 'live-read');
+    await _enqueueRead();
   }
 
   int _nextIndex() => (_archive.newestIndex ?? 0) + 1;
 
-  Future<void> _readFrom(int index, {required String label}) =>
-      _enqueueRead(() => _performRead(index, label: label));
+  Future<void> _enqueueRead({int? index, bool catchUp = false}) {
+    if (_readsStopped) return Future<void>.value();
+    final active = _activeRead;
+    if (active != null && (index == null || index >= active.index!)) {
+      return active.done.future;
+    }
+    final pending = _pendingRead ??= _PendingRead(index, catchUp);
+    if (index != null && (pending.index == null || index < pending.index!)) {
+      pending.index = index;
+    }
+    pending.catchUp = pending.catchUp || catchUp;
+    if (active == null && _liveTimer == null) _startPendingRead();
+    return pending.done.future;
+  }
 
-  Future<void> _enqueueRead(Future<void> Function() operation) {
-    final next = _readQueue.then((_) => operation());
-    _readQueue = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    return next;
+  void _startPendingRead() {
+    if (_readsStopped || _activeRead != null) return;
+    final request = _pendingRead;
+    if (request == null) return;
+    _pendingRead = null;
+    request.index ??= _nextIndex();
+    _activeRead = request;
+    unawaited(_runRead(request));
+  }
+
+  Future<void> _runRead(_PendingRead request) async {
+    try {
+      if (request.catchUp) {
+        await _performCatchUp(request.index!);
+      } else {
+        await _performRead(request.index!, label: 'live-read');
+      }
+    } on Object catch (error, stack) {
+      _liveWindow = null;
+      if (!request.done.isCompleted) request.done.completeError(error, stack);
+    } finally {
+      if (!request.done.isCompleted) request.done.complete();
+      if (identical(_activeRead, request)) _activeRead = null;
+      if (_readsStopped) _settlePendingRead();
+      if (!_readsStopped &&
+          (_stage == CgmSyncStage.ready || _pendingRead != null)) {
+        _scheduleLivePoll();
+      }
+    }
   }
 
   Future<void> _performRead(int index, {required String label}) async {
@@ -647,12 +702,12 @@ final class CbioGlucoseSession implements CgmSession {
       label: label,
       isRead: true,
     );
+    // A late platform result must neither replace a terminal failure nor arm
+    // a response timer after the link was closed.
+    if (_closing || _linkDropped || _terminalFailure) return;
     if (wrote != CbioFrameWrite.sent) {
       _liveWindow = null;
       _requireWritten(wrote);
-      if (wrote == CbioFrameWrite.budgetExhausted) {
-        _publishBudgetState();
-      }
       return;
     }
     _liveResponseTimer?.cancel();
@@ -672,11 +727,10 @@ final class CbioGlucoseSession implements CgmSession {
       return;
     }
     _emit(force: true);
-    _scheduleLivePoll();
   }
 
-  Future<void> _catchUp(int startIndex) =>
-      _enqueueRead(() => _performCatchUp(startIndex));
+  Future<void> _catchUp(int? startIndex) =>
+      _enqueueRead(index: startIndex, catchUp: true);
 
   Future<void> _performCatchUp(int startIndex) async {
     if (_closing || _linkDropped || _terminalFailure) {
@@ -693,12 +747,15 @@ final class CbioGlucoseSession implements CgmSession {
       _emit(force: true);
     });
     _emit(force: true);
-    await _performRead(startIndex, label: 'sync-read');
-    _catchUpOpen = false;
-    _catchUpTimer?.cancel();
-    _catchUpTimer = null;
-    if (!_closing && !_linkDropped && !_terminalFailure) {
-      _emit(force: true);
+    try {
+      await _performRead(startIndex, label: 'sync-read');
+    } finally {
+      _catchUpOpen = false;
+      _catchUpTimer?.cancel();
+      _catchUpTimer = null;
+      if (!_closing && !_linkDropped && !_terminalFailure) {
+        _emit(force: true);
+      }
     }
   }
 
@@ -885,7 +942,8 @@ final class CbioGlucoseSession implements CgmSession {
       _log(CgmLogLevel.error, 'cbio.write.blocked:$label');
       return CbioFrameWrite.blocked;
     }
-    if (isRead && _readsUsed >= timing.maxReadsPerSession) {
+    final maxReads = timing.maxReadsPerSession;
+    if (isRead && maxReads != null && _readsUsed >= maxReads) {
       _budgetExhausted = true;
       _log(CgmLogLevel.warning, 'cbio.read.budget');
       return CbioFrameWrite.budgetExhausted;
@@ -915,6 +973,9 @@ final class CbioGlucoseSession implements CgmSession {
     }
     if (outcome == CbioFrameWrite.failed) {
       _fail(CbioSessionFailure.write);
+    }
+    if (outcome == CbioFrameWrite.budgetExhausted) {
+      _publishBudgetState();
     }
     return false;
   }
@@ -1119,11 +1180,12 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _publishBudgetState() {
-    if (_stage == CgmSyncStage.ready) {
+    if (!_closing && !_linkDropped && !_terminalFailure) {
       _setPhase(
-        CbioSessionPhase.live,
-        CgmSyncStage.ready,
-        'Live updates paused. Read budget reached.',
+        _phase,
+        _stage,
+        'Sensor reads paused. Read budget reached.',
+        force: true,
       );
     }
   }
@@ -1185,6 +1247,12 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _settlePendingRead() {
+    for (final request in [_activeRead, _pendingRead]) {
+      if (request != null && !request.done.isCompleted) {
+        request.done.complete();
+      }
+    }
+    _pendingRead = null;
     _liveResponseTimer?.cancel();
     _liveResponseTimer = null;
     final pending = _liveWindow;
@@ -1230,8 +1298,6 @@ final class CbioGlucoseSession implements CgmSession {
     if (_closing || _linkDropped || _stage != CgmSyncStage.ready) {
       return;
     }
-    _liveTimer?.cancel();
-    _liveTimer = null;
     await _pollLive();
   }
 
@@ -1243,7 +1309,7 @@ final class CbioGlucoseSession implements CgmSession {
     if (_closing || _linkDropped) {
       return;
     }
-    await _catchUp(requestedStartOffset ?? _nextIndex());
+    await _catchUp(requestedStartOffset);
   }
 
   @override
@@ -1292,11 +1358,7 @@ final class CbioGlucoseSession implements CgmSession {
     }
     _closing = true;
     _cancelTimers();
-    final live = _liveWindow;
-    if (live != null && !live.isCompleted) {
-      live.complete();
-    }
-    _liveWindow = null;
+    _settlePendingRead();
     try {
       await _notificationSubscription?.cancel();
     } on Object {

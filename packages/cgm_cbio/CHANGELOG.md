@@ -2,6 +2,16 @@
 
 ## 0.1.0
 
+- Remove the default cumulative 480-read lifetime stop from production
+  sessions. `CbioSessionTiming.maxReadsPerSession` is now nullable (null means
+  unlimited); explicit finite bench caps still pause reads without declaring
+  transport failure. `copyWith` retains a configured cap when omitted/null.
+  Per-write and response deadlines remain bounded. Manual and automatic
+  reads share a duration-timer cooldown; overlapping requests coalesce into
+  one active operation and at most one pending earliest-cursor catch-up.
+  Live cursors resolve when executed. Disconnect, counter-era failure, and
+  late platform results cannot strand callers or restart polling.
+
 - Publish explicit fresh/pending/confirmed/failed resume status and exact
   confirmed input-checkpoint binding for the host's durable merge boundary.
   Proof is emitted only after sensor witness matching, never copied from

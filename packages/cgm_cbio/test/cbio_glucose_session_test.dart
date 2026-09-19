@@ -279,6 +279,64 @@ final class _ManualTimer implements Timer {
   }
 }
 
+Future<void> _drainMicrotasks() async {
+  for (var i = 0; i < 100; i++) {
+    await Future<void>.value();
+  }
+}
+
+Future<void> _withManualReadySession(
+  Future<void> Function(
+    CbioGlucoseSession,
+    _FakeConnection,
+    List<_ManualTimer>,
+    void Function(DateTime),
+  )
+  body, {
+  CbioSessionTiming timing = _fastTiming,
+}) async {
+  final timers = <_ManualTimer>[];
+  var now = DateTime.utc(2026, 9, 19);
+  final connection = _FakeConnection();
+  await _defaultResponder(connection);
+  await runZoned(
+    () async {
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: _FakeTransport(connection),
+        credentials: _syntheticSource,
+        timing: timing,
+        clock: () => now,
+      );
+      try {
+        await session.initialize();
+        await _drainMicrotasks();
+        timers
+            .singleWhere(
+              (t) => t.isActive && t.duration == _fastTiming.historyIdleWindow,
+            )
+            .fire();
+        await _drainMicrotasks();
+        expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+        await body(session, connection, timers, (value) => now = value);
+      } finally {
+        await session.disconnect();
+      }
+    },
+    zoneSpecification: ZoneSpecification(
+      createTimer: (self, parent, zone, duration, callback) {
+        final timer = _ManualTimer(duration, callback);
+        timers.add(timer);
+        return timer;
+      },
+    ),
+  );
+}
+
+void _fireTimer(List<_ManualTimer> timers, Duration duration) => timers
+    .singleWhere((timer) => timer.isActive && timer.duration == duration)
+    .fire();
+
 /// Counts how many times a session resolves vendor material.
 final class _CountingCredentialSource implements CbioCredentialSource {
   _CountingCredentialSource([this.credentials]);
@@ -1150,6 +1208,9 @@ void main() {
                 final second = session.syncHistory().then(
                   (_) => settledCallers++,
                 );
+                if (timerKind == 'catch-up') {
+                  _fireTimer(timers, timing.livePollInterval);
+                }
                 await drainMicrotasks();
                 expect(settledCallers, 0);
                 final queuedTimer = switch (timerKind) {
@@ -1328,7 +1389,7 @@ void main() {
       expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
     });
 
-    test('overlapping refreshes are serialized and both settle', () async {
+    test('overlapping refreshes are coalesced and both settle', () async {
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
@@ -1347,10 +1408,322 @@ void main() {
       final first = session.refreshLiveData();
       final second = session.refreshLiveData();
       await Future.wait(<Future<void>>[first, second]);
-      expect(connection.writes.length, before + 2);
+      expect(connection.writes.length, before + 1);
       expect(session.currentSnapshot.stage, CgmSyncStage.ready);
       await session.disconnect();
     });
+
+    test('default paced polling continues beyond 1000 no-data ticks', () async {
+      await _withManualReadySession((
+        session,
+        connection,
+        timers,
+        setClock,
+      ) async {
+        final initial = connection.writes.length;
+        for (var tick = 0; tick < 1001; tick++) {
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          expect(
+            connection.writes.length,
+            initial + tick + 1,
+            reason: 'production tick $tick must not exhaust a lifetime cap',
+          );
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+        }
+        expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      });
+    });
+
+    test(
+      'manual bursts and wall-clock jumps cannot bypass polling pace',
+      () async {
+        await _withManualReadySession((
+          session,
+          connection,
+          timers,
+          setClock,
+        ) async {
+          final initial = connection.writes.length;
+          var settled = 0;
+          final callers = <Future<void>>[];
+          for (var i = 0; i < 100; i++) {
+            setClock(DateTime.utc(i.isEven ? 2036 : 2016));
+            callers.add(session.refreshLiveData().then((_) => settled++));
+          }
+          await _drainMicrotasks();
+          expect(connection.writes.length, initial);
+          expect(settled, 0);
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          expect(connection.writes.length, initial + 1);
+          for (var i = 0; i < 100; i++) {
+            callers.add(session.refreshLiveData().then((_) => settled++));
+          }
+          await _drainMicrotasks();
+          expect(connection.writes.length, initial + 1);
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+          expect(settled, 200);
+          await Future.wait(callers);
+          expect(connection.writes.length, initial + 1);
+          expect(timers.where((t) => t.isActive), hasLength(1));
+        });
+      },
+    );
+
+    test('default polling ingests new records beyond 1000 ticks', () async {
+      await _withManualReadySession((
+        session,
+        connection,
+        timers,
+        setClock,
+      ) async {
+        var next = 1;
+        connection.onWrite = (frame) async {
+          expect(frame[1], 0x08);
+          expect(frame[2] | frame[3] << 8, next);
+          connection.emitPlaintext(
+            _rawBatch(
+              startIndex: next,
+              baseEpochSeconds: 100000 + next * 60,
+              baseReindex: next,
+              currents: [59],
+            ),
+          );
+          next++;
+        };
+        for (var tick = 0; tick < 1001; tick++) {
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+          expect(session.currentSnapshot.history.length, tick + 1);
+          expect(session.currentSnapshot.lastError, isNull);
+        }
+      });
+    });
+
+    test(
+      'coalesced catch-up preserves earliest cursor and defers live cursor',
+      () async {
+        await _withManualReadySession((
+          session,
+          connection,
+          timers,
+          setClock,
+        ) async {
+          final callers = [
+            session.syncHistory(requestedStartOffset: 20),
+            session.syncHistory(requestedStartOffset: 5),
+            session.syncHistory(requestedStartOffset: 12),
+          ];
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          expect(_unmaskWrite(connection.writes.last)[2], 5);
+          final earlier = session.syncHistory(requestedStartOffset: 2);
+          final earliest = session.syncHistory(requestedStartOffset: 1);
+          final current = session.refreshLiveData();
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+          await Future.wait([...callers, current]);
+          final before = connection.writes.length;
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          expect(connection.writes.length, before + 1);
+          expect(_unmaskWrite(connection.writes.last)[2], 1);
+          connection.emitPlaintext(
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 100000,
+              baseReindex: 1,
+              currents: [59, 60, 61],
+            ),
+          );
+          await _drainMicrotasks();
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+          await Future.wait([earlier, earliest]);
+          final deferred = session.refreshLiveData();
+          connection.emitPlaintext(
+            _rawBatch(
+              startIndex: 4,
+              baseEpochSeconds: 100180,
+              baseReindex: 4,
+              currents: [62],
+            ),
+          );
+          await _drainMicrotasks();
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          expect(_unmaskWrite(connection.writes.last)[2], 5);
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+          await deferred;
+        });
+      },
+    );
+
+    for (final terminal in ['disconnect', 'drop', 'counter restart']) {
+      for (final lateError in [false, true]) {
+        test(
+          'late write (error=$lateError) cannot revive $terminal or strand coalesced callers',
+          () async {
+            await _withManualReadySession((
+              session,
+              connection,
+              timers,
+              setClock,
+            ) async {
+              connection.emitPlaintext(
+                _rawBatch(
+                  startIndex: 1,
+                  baseEpochSeconds: 100000,
+                  baseReindex: 1,
+                  currents: [59],
+                ),
+              );
+              await _drainMicrotasks();
+              final write = Completer<void>();
+              connection.onWrite = (_) => write.future;
+              var settled = 0;
+              final first = session.refreshLiveData().then((_) => settled++);
+              _fireTimer(timers, _fastTiming.livePollInterval);
+              await _drainMicrotasks();
+              final second = session
+                  .syncHistory(requestedStartOffset: 1)
+                  .then((_) => settled++);
+              switch (terminal) {
+                case 'disconnect':
+                  await session.disconnect();
+                case 'drop':
+                  connection.dropLink();
+                case 'counter restart':
+                  connection.emitPlaintext(
+                    _rawBatch(
+                      startIndex: 1,
+                      baseEpochSeconds: 200000,
+                      baseReindex: 1,
+                      currents: [60],
+                    ),
+                  );
+              }
+              await _drainMicrotasks();
+              expect(settled, 2);
+              await Future.wait([first, second]);
+              final writes = connection.writes.length;
+              final count = timers.length;
+              final errorAtTerminal = session.currentSnapshot.lastError;
+              if (lateError) {
+                write.completeError(StateError('late transport error'));
+              } else {
+                write.complete();
+              }
+              await _drainMicrotasks();
+              expect(connection.writes.length, writes);
+              expect(timers.length, count);
+              expect(timers.where((t) => t.isActive), isEmpty);
+              expect(session.currentSnapshot.lastError, errorAtTerminal);
+              expect(
+                session.currentSnapshot.stage,
+                terminal == 'counter restart'
+                    ? CgmSyncStage.error
+                    : CgmSyncStage.disconnected,
+              );
+            });
+          },
+        );
+      }
+    }
+
+    test(
+      'opt-in bench cap pauses without failure and settles refresh callers',
+      () async {
+        await _withManualReadySession((
+          session,
+          connection,
+          timers,
+          setClock,
+        ) async {
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          _fireTimer(timers, _fastTiming.liveResponseWindow);
+          await _drainMicrotasks();
+          final writes = connection.writes.length;
+          var settled = 0;
+          final first = session.refreshLiveData().then((_) => settled++);
+          final second = session
+              .syncHistory(requestedStartOffset: 1)
+              .then((_) => settled++);
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          expect(settled, 2);
+          await Future.wait([first, second]);
+          expect(connection.writes.length, writes);
+          expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+          expect(session.currentSnapshot.lastError, isNull);
+          expect(session.currentSnapshot.statusText, contains('paused'));
+          expect(timers.where((t) => t.isActive), isEmpty);
+          await session.refreshLiveData();
+          expect(connection.writes.length, writes);
+        }, timing: _fastTiming.copyWith(maxReadsPerSession: 3));
+      },
+    );
+
+    for (final terminal in ['disconnect', 'drop']) {
+      test('queued cooldown is inert after $terminal', () async {
+        await _withManualReadySession((
+          session,
+          connection,
+          timers,
+          setClock,
+        ) async {
+          final cooldown = timers.singleWhere(
+            (t) => t.isActive && t.duration == _fastTiming.livePollInterval,
+          );
+          var settled = false;
+          final pending = session.refreshLiveData().then((_) => settled = true);
+          if (terminal == 'disconnect') {
+            await session.disconnect();
+          } else {
+            connection.dropLink();
+          }
+          await _drainMicrotasks();
+          expect(settled, isTrue);
+          await pending;
+          final count = timers.length;
+          final writes = connection.writes.length;
+          cooldown.fireQueued();
+          await _drainMicrotasks();
+          expect(timers.length, count);
+          expect(connection.writes.length, writes);
+          expect(timers.where((t) => t.isActive), isEmpty);
+        });
+      });
+    }
+
+    test(
+      'invalid catch-up cursor rejects its caller without an unhandled task',
+      () async {
+        await _withManualReadySession((
+          session,
+          connection,
+          timers,
+          setClock,
+        ) async {
+          final before = connection.writes.length;
+          final result = expectLater(
+            session.syncHistory(requestedStartOffset: -1),
+            throwsArgumentError,
+          );
+          _fireTimer(timers, _fastTiming.livePollInterval);
+          await _drainMicrotasks();
+          await result;
+          expect(connection.writes.length, before);
+        });
+      },
+    );
 
     test('stops reading once the read budget is spent', () async {
       final connection = _FakeConnection();
@@ -1374,6 +1747,7 @@ void main() {
         reason: 'an exhausted read budget blocks the raw history read',
       );
       expect(session.currentSnapshot.stage, isNot(CgmSyncStage.error));
+      expect(session.currentSnapshot.statusText, contains('paused'));
       await session.disconnect();
     });
 
