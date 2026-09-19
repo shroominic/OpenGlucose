@@ -18,9 +18,124 @@ import 'package:openglucose/src/health_state_store_io.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
 import 'package:openglucose/src/sensor_archive.dart';
+import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'CBIO counter reason is closed and cannot survive stale or foreign snapshots',
+    () async {
+      const reasonKey = 'cgm.cbio.resume.counterFailureReason';
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'cbio',
+        storageKey: 'reason-test',
+      );
+      const row = CgmReading(
+        valueMgdl: 6,
+        rawValue: 60,
+        sensorMinute: 1,
+        source: CgmRecordSource.raw,
+        isDisplayProvisional: true,
+      );
+      final metadata = {
+        cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
+        cbioCheckpointMetadataKey: CbioSessionCheckpoint(
+          sensorKey: sensor.storageKey,
+          index: 1,
+          rawTime: 1000,
+        ).encode(),
+        cgmAutomaticReconnectAllowedMetadataKey: 'false',
+      };
+      CgmSessionSnapshot incoming(
+        CgmSyncStage stage,
+        String code,
+        String reason, {
+        DiscoveredSensor? identity,
+      }) => _testSnapshot(
+        identity ?? sensor,
+        stage: stage,
+        history: [row],
+        metadata: {...metadata, reasonKey: reason},
+      ).copyWith(lastError: code);
+      final session = _ControlledSession(
+        incoming(
+          CgmSyncStage.ready,
+          CbioSessionFailure.counterRestart,
+          'before-checkpoint',
+        ),
+      );
+      final driver = _ControlledDriver([session], driverId: 'cbio');
+      final store = _ControllableHealthStateStore();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      await controller.initialize();
+      await controller.connect(sensor, allowSessionActivation: false);
+      expect(controller.snapshot!.metadata[reasonKey], isNull);
+      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), isNull);
+      session.emit(
+        incoming(
+          CgmSyncStage.error,
+          CbioSessionFailure.counterRestart,
+          'before-checkpoint\nsecret=59',
+        ),
+      );
+      await _drainEventQueue();
+      expect(controller.snapshot!.metadata[reasonKey], isNull);
+      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), 'GS1-H03');
+      session.emit(
+        incoming(
+          CgmSyncStage.error,
+          CbioSessionFailure.counterRestart,
+          'before-checkpoint',
+        ),
+      );
+      await _drainEventQueue();
+      expect(controller.snapshot!.metadata[reasonKey], 'before-checkpoint');
+      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), 'GS1-H03A');
+      session.emit(
+        incoming(
+          CgmSyncStage.error,
+          CbioSessionFailure.write,
+          'before-checkpoint',
+        ),
+      );
+      await _drainEventQueue();
+      expect(controller.snapshot!.metadata[reasonKey], isNull);
+      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), 'GS1-L06');
+      for (final foreign in [
+        _multiDriverSensor(driverId: 'aidex', storageKey: sensor.storageKey),
+        _multiDriverSensor(driverId: 'cbio', storageKey: 'foreign'),
+      ]) {
+        session.emit(
+          incoming(
+            CgmSyncStage.error,
+            CbioSessionFailure.counterRestart,
+            'before-checkpoint',
+            identity: foreign,
+          ),
+        );
+        await _drainEventQueue();
+        expect(controller.snapshot!.metadata[reasonKey], isNull);
+        expect(
+          cbioSupportReferenceForSnapshot(controller.snapshot!),
+          'GS1-H03',
+        );
+      }
+      expect(controller.snapshot!.history.single.rawValue, 60);
+      await controller.disconnect(clearSelection: false);
+      expect(
+        store.getString('openHealth.lastSensor'),
+        isNot(contains(reasonKey)),
+      );
+      controller.dispose();
+      await driver.close();
+    },
+  );
   for (final invalid in [
     'missing-checkpoint',
     'conflicting-replay',
@@ -317,6 +432,7 @@ void main() {
           'cgm.cbio.clock.anchor': 'stale',
           cbioResumeStatusMetadataKey: CbioResumeStatus.confirmed,
           cbioConfirmedCheckpointMetadataKey: 'stale',
+          'cgm.cbio.resume.counterFailureReason': 'before-checkpoint',
           'serial': 'preserved',
         },
       });

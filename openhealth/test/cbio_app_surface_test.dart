@@ -105,6 +105,34 @@ Future<void> _pumpApp(
 }
 
 void main() {
+  test(
+    'counter support reference never uses missing unknown or stale reasons',
+    () {
+      final error = _snapshot(
+        stage: CgmSyncStage.error,
+        statusText: 'ignored',
+        history: [],
+        historySync: const CgmHistorySyncState(),
+      ).copyWith(lastError: CbioSessionFailure.counterRestart);
+      for (final reason in [null, 'secret=59', 'before-checkpoint\nprivate']) {
+        final snapshot = error.copyWith(
+          metadata: {'cgm.cbio.resume.counterFailureReason': ?reason},
+        );
+        expect(cbioSupportReferenceForSnapshot(snapshot), 'GS1-H03');
+      }
+      final stale = error.copyWith(
+        stage: CgmSyncStage.disconnected,
+        metadata: {'cgm.cbio.resume.counterFailureReason': 'before-checkpoint'},
+      );
+      expect(cbioSupportReferenceForSnapshot(stale), 'GS1-H03');
+      expect(
+        cbioSupportReferenceForSnapshot(
+          stale.copyWith(stage: CgmSyncStage.ready),
+        ),
+        isNull,
+      );
+    },
+  );
   const failures = [
     (CbioSessionFailure.connect, 'Could not reach', '无法连接', 'GS1-L01'),
     (CbioSessionFailure.topology, 'does not present', '不支持', 'GS1-L02'),
@@ -127,8 +155,8 @@ void main() {
     ),
     (
       CbioSessionFailure.counterRestart,
-      'sequence changed',
-      '记录序列已改变',
+      'record sequence could not be confirmed',
+      '无法确认传感器记录序列',
       'GS1-H03',
     ),
     (

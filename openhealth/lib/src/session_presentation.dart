@@ -1040,8 +1040,8 @@ const _cbioFailureCopy = <String, ({String en, String zh, String reference})>{
     reference: 'GS1-H02',
   ),
   CbioSessionFailure.counterRestart: (
-    en: 'The sensor record sequence changed. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
-    zh: '传感器记录序列已改变。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
+    en: 'The sensor record sequence could not be confirmed. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
+    zh: '无法确认传感器记录序列。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
     reference: 'GS1-H03',
   ),
   'cbio.history.restore-invalid': (
@@ -1095,10 +1095,21 @@ String userMessageForCbioFailure(
       : _localized(language, copy.en, copy.zh);
 }
 
-String? cbioSupportReferenceForSnapshot(CgmSessionSnapshot snapshot) =>
-    isCbioSnapshot(snapshot) && shouldShowPrimaryError(snapshot)
-    ? _cbioFailureCopy[snapshot.lastError]?.reference
-    : null;
+String? cbioSupportReferenceForSnapshot(CgmSessionSnapshot snapshot) {
+  if (!isCbioSnapshot(snapshot) || !shouldShowPrimaryError(snapshot)) {
+    return null;
+  }
+  if (snapshot.stage == CgmSyncStage.error &&
+      snapshot.lastError == CbioSessionFailure.counterRestart) {
+    return switch (snapshot.metadata['cgm.cbio.resume.counterFailureReason']) {
+      'before-checkpoint' => 'GS1-H03A',
+      'witness-time-mismatch' => 'GS1-H03B',
+      'archive-time-conflict' => 'GS1-H03C',
+      _ => 'GS1-H03',
+    };
+  }
+  return _cbioFailureCopy[snapshot.lastError]?.reference;
+}
 
 /// The provisional marker every CBio surface shows.
 ///

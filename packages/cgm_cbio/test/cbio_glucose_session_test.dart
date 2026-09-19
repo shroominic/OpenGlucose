@@ -430,6 +430,42 @@ String _phaseOf(CgmSessionSnapshot snapshot) =>
     snapshot.metadata[cbioPhaseMetadataKey] ?? '';
 
 void main() {
+  test(
+    'caller counter-failure reason never survives ready or later link loss',
+    () async {
+      const reasonKey = 'cgm.cbio.resume.counterFailureReason';
+      final connection = _FakeConnection();
+      await _defaultResponder(
+        connection,
+        rawBatches: [
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: 1000,
+            baseReindex: 1,
+            currents: [64],
+          ),
+        ],
+      );
+      final session = CbioGlucoseSession(
+        sensor: _withMetadata({reasonKey: 'before-checkpoint'}),
+        transport: _FakeTransport(connection),
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      expect(session.currentSnapshot.metadata[reasonKey], isNull);
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.ready,
+      );
+      expect(session.currentSnapshot.metadata[reasonKey], isNull);
+      connection.dropLink();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.disconnected,
+      );
+      expect(session.currentSnapshot.metadata[reasonKey], isNull);
+      await session.disconnect();
+    },
+  );
   group('CbioGlucoseSession lifecycle', () {
     test(
       'authenticates with the vendor frames and never writes anything else',

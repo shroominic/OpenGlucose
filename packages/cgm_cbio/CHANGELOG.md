@@ -2,6 +2,11 @@
 
 ## 0.1.0
 
+- Distinguish the three existing counter-confirmation guards with a closed,
+  ephemeral failure category for host support presentation. Caller metadata
+  cannot provide the category; the failure gates, checkpoint format and
+  transport behavior are unchanged. No record values or identifiers are added.
+
 - Remove the default cumulative 480-read lifetime stop from production
   sessions. `CbioSessionTiming.maxReadsPerSession` is now nullable (null means
   unlimited); explicit finite bench caps still pause reads without declaring

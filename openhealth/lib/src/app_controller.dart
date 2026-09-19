@@ -2199,10 +2199,21 @@ class CgmAppController extends ChangeNotifier {
         latestReading: incoming.latestReading ?? history.lastOrNull,
       );
     }
+    // Only the current bound CBIO terminal failure may carry this closed,
+    // ephemeral category. Never retain caller, unknown or stale values.
+    const reasonKey = 'cgm.cbio.resume.counterFailureReason';
+    final reason = _cbioCounterFailureReason(incoming);
+    final sanitized = incoming.copyWith(
+      metadata: {
+        for (final entry in incoming.metadata.entries)
+          if (entry.key != reasonKey) entry.key: entry.value,
+        reasonKey: ?reason,
+      },
+    );
     try {
-      return _acceptCbioSnapshot(incoming);
+      return _acceptCbioSnapshot(sanitized);
     } on Object {
-      return _rejectCbioSnapshot(incoming, 'cbio.history.invalid');
+      return _rejectCbioSnapshot(sanitized, 'cbio.history.invalid');
     }
   }
 
@@ -2222,9 +2233,27 @@ class CgmAppController extends ChangeNotifier {
     metadata: {
       cbioLifecycleMetadataKey: 'unknown',
       cbioResumeStatusMetadataKey: CbioResumeStatus.failed,
+      'cgm.cbio.resume.counterFailureReason': ?_cbioCounterFailureReason(
+        incoming,
+      ),
       cgmAutomaticReconnectAllowedMetadataKey: 'false',
     },
   );
+
+  String? _cbioCounterFailureReason(CgmSessionSnapshot incoming) {
+    if (incoming.sensor.driverId != 'cbio' ||
+        !_sameStoredSensor(_selectedSensor, incoming.sensor) ||
+        incoming.stage != CgmSyncStage.error ||
+        incoming.lastError != CbioSessionFailure.counterRestart) {
+      return null;
+    }
+    return switch (incoming.metadata['cgm.cbio.resume.counterFailureReason']) {
+      'before-checkpoint' => 'before-checkpoint',
+      'witness-time-mismatch' => 'witness-time-mismatch',
+      'archive-time-conflict' => 'archive-time-conflict',
+      _ => null,
+    };
+  }
 
   CgmSessionSnapshot _acceptCbioSnapshot(CgmSessionSnapshot incoming) {
     if (!_sameStoredSensor(_selectedSensor, incoming.sensor)) {

@@ -44,7 +44,13 @@ Future<void> main() async {
     preferences: preferences,
     driver: _PreviewDriver(
       stale: query['stale'] == 'true',
-      failure: query['failure'] == 'history',
+      failure: switch (query['failure']) {
+        'history' => 'history',
+        'counter-a' => 'before-checkpoint',
+        'counter-b' => 'witness-time-mismatch',
+        'counter-c' => 'archive-time-conflict',
+        _ => null,
+      },
     ),
   );
   await controller.initialize();
@@ -89,7 +95,7 @@ const _sensor = DiscoveredSensor(
 class _PreviewDriver implements CgmDriver {
   _PreviewDriver({required this.stale, required this.failure});
   final bool stale;
-  final bool failure;
+  final String? failure;
   @override
   String get driverId => 'cbio';
   @override
@@ -103,7 +109,7 @@ class _PreviewDriver implements CgmDriver {
 }
 
 class _PreviewSession implements CgmSession {
-  _PreviewSession({required bool stale, required bool failure}) {
+  _PreviewSession({required bool stale, required String? failure}) {
     final history = <CgmReading>[
       for (var index = 0; index < 3; index++)
         CgmReading(
@@ -117,13 +123,17 @@ class _PreviewSession implements CgmSession {
     currentSnapshot = CgmSessionSnapshot(
       sensor: _sensor,
       capabilities: _sensor.capabilities,
-      stage: failure ? CgmSyncStage.error : CgmSyncStage.ready,
-      lastError: failure ? 'cbio.history.unconfirmed' : null,
+      stage: failure != null ? CgmSyncStage.error : CgmSyncStage.ready,
+      lastError: failure == null
+          ? null
+          : failure == 'history'
+          ? 'cbio.history.unconfirmed'
+          : CbioSessionFailure.counterRestart,
       statusText: 'Connected',
       latestReading: history.last,
       history: history,
       historySync: CgmHistorySyncState(
-        inProgress: failure,
+        inProgress: failure != null,
         storedCount: history.length,
         lastSyncAt: DateTime.now().subtract(
           Duration(minutes: stale ? 60 : 1),
@@ -133,6 +143,8 @@ class _PreviewSession implements CgmSession {
         ...syntheticCbioFreshMetadata(_sensor, history),
         cgmAutomaticReconnectAllowedMetadataKey: 'false',
         cbioPhaseMetadataKey: CbioSessionPhase.live,
+        if (failure != null && failure != 'history')
+          'cgm.cbio.resume.counterFailureReason': failure,
       },
     );
   }

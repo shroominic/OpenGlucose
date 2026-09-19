@@ -195,6 +195,16 @@ final class CbioSessionTiming {
   }
 }
 
+/// Closed in-memory causes; no record fields or caller strings are retained.
+enum _CounterFailureReason {
+  beforeCheckpoint('before-checkpoint'),
+  witnessTimeMismatch('witness-time-mismatch'),
+  archiveTimeConflict('archive-time-conflict');
+
+  const _CounterFailureReason(this.value);
+  final String value;
+}
+
 /// One coalesced read generation; null cursor is resolved when executed.
 final class _PendingRead {
   _PendingRead(this.index, this.catchUp);
@@ -263,6 +273,7 @@ final class CbioGlucoseSession implements CgmSession {
   final DateTime Function() _clock;
   final CbioSessionCheckpoint? _checkpoint;
   bool _witnessConfirmed = false;
+  _CounterFailureReason? _counterFailureReason;
   final CbioHistoryArchive _archive = CbioHistoryArchive();
   final StreamController<CgmSessionSnapshot> _snapshotController =
       StreamController<CgmSessionSnapshot>.broadcast();
@@ -858,6 +869,7 @@ final class CbioGlucoseSession implements CgmSession {
       )) {
         _fail(
           CbioSessionFailure.counterRestart,
+          counterFailureReason: _CounterFailureReason.beforeCheckpoint,
           statusText:
               'Sensor counter changed. Saved history preserved; recovery required.',
         );
@@ -878,6 +890,7 @@ final class CbioGlucoseSession implements CgmSession {
         if (witnesses.single.processed.rawTime != checkpoint.rawTime) {
           _fail(
             CbioSessionFailure.counterRestart,
+            counterFailureReason: _CounterFailureReason.witnessTimeMismatch,
             statusText:
                 'Sensor counter changed. Saved history preserved; recovery required.',
           );
@@ -908,6 +921,7 @@ final class CbioGlucoseSession implements CgmSession {
         );
         _fail(
           CbioSessionFailure.counterRestart,
+          counterFailureReason: _CounterFailureReason.archiveTimeConflict,
           statusText:
               'Sensor counter changed. Saved history preserved; recovery required.',
         );
@@ -1155,6 +1169,11 @@ final class CbioGlucoseSession implements CgmSession {
               : _witnessConfirmed
               ? CbioResumeStatus.confirmed
               : CbioResumeStatus.pending,
+          if (_terminalFailure &&
+              _lastError == CbioSessionFailure.counterRestart &&
+              _counterFailureReason != null)
+            'cgm.cbio.resume.counterFailureReason':
+                _counterFailureReason!.value,
           if (_witnessConfirmed && !_terminalFailure)
             cbioConfirmedCheckpointMetadataKey:
                 sensor.metadata[cbioCheckpointMetadataKey]!,
@@ -1199,11 +1218,18 @@ final class CbioGlucoseSession implements CgmSession {
     );
   }
 
-  void _fail(String code, {String statusText = 'Connection failed'}) {
+  void _fail(
+    String code, {
+    String statusText = 'Connection failed',
+    _CounterFailureReason? counterFailureReason,
+  }) {
     if (_terminalFailure || _closing) {
       return;
     }
     _terminalFailure = true;
+    _counterFailureReason = code == CbioSessionFailure.counterRestart
+        ? counterFailureReason
+        : null;
     _settlePendingRead();
     _cancelTimers();
     if (!cbioFailureAllowsAutomaticReconnect(code)) {
