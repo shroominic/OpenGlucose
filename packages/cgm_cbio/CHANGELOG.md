@@ -2,6 +2,21 @@
 
 ## 0.1.0
 
+- Add optional opaque `CbioFullRecordStore` capability for complete private
+  raw08 observations. Hosts implement atomic full-envelope reads/writes and
+  SHA256 over the exact UTF8 legacy envelope. The app adapter uses the existing
+  restricted history-blob store; original raw-v1 bytes/checkpoint are frozen.
+  One pending/observing envelope preserves all seven observed integer fields
+  and its authoritative current checkpoint under one acquisition captureId.
+  Read-only preparation precedes old-owner drain and existing in-memory target
+  selection; pending adoption must commit before BLE. No pre-connect durable
+  selection write is added. Failed storage pauses acquisition without falling
+  back or advancing durable progress; retries retain dirty state. Bounds are
+  65535 rows, 4194304 UTF8 bytes and a 4096-byte header, with no truncation or
+  rotation. Legacy-only hosts retain their incomplete compatibility path.
+  Internal codec/owner remain unexported. No decoder, glucose, sensor-era,
+  model/lifecycle or physical-device readiness is established.
+
 - Add optional restricted private-state storage and read-only target preparation
   with durable handoff flushing. Raw-v1 archives retain their existing codec;
   failed writes stay dirty and retryable. Driver-owned raw acquisition and

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/health_state_store.dart';
@@ -10,10 +11,95 @@ const _indexKey = 'openHealth.sensorArchive';
 const _manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
 const _binding = 'WyJjYmlvIiwic3ludGhldGljIl0';
 const _rawKey = 'openHealth.history.cbio.v1.$_binding';
+const _fullKey = 'openHealth.history.cbio.fullRecords.v1.$_binding';
 const _legacyKey = 'openHealth.history.v2.$_binding';
 const _normalizedKey = 'openHealth.history.normalized.v1.$_binding';
 
 void main() {
+  test(
+    'full capability stores opaque bytes only in the bound private blob',
+    () async {
+      final before = {
+        _rawKey: ' original legacy bytes\n',
+        _normalizedKey: '[]',
+        _indexKey: '[{"id":"unchanged"}]',
+      };
+      final store = _Store(before);
+      final adapter = CbioPrivateStateAdapter(store);
+      expect(adapter, isA<CbioFullRecordStore>());
+      await adapter.writeFullRecords('synthetic', ' opaque full envelope\n');
+      expect(store.values, {...before, _fullKey: ' opaque full envelope\n'});
+      expect(
+        await adapter.readFullRecords('synthetic'),
+        ' opaque full envelope\n',
+      );
+      expect(await adapter.read('synthetic'), before[_rawKey]);
+      expect(await adapter.readFullRecords('foreign'), isNull);
+      await adapter.writeFullRecords('foreign', 'separate binding');
+      expect(
+        await adapter.readFullRecords('synthetic'),
+        ' opaque full envelope\n',
+      );
+      expect(await adapter.readFullRecords('foreign'), 'separate binding');
+    },
+  );
+
+  test(
+    'full read preserves malformed present bytes without legacy fallback',
+    () async {
+      final adapter = CbioPrivateStateAdapter(
+        _Store({
+          _rawKey: 'legacy',
+          _fullKey: '{malformed',
+        }),
+      );
+      expect(await adapter.readFullRecords('synthetic'), '{malformed');
+      expect(await adapter.readFullRecords('missing'), isNull);
+    },
+  );
+
+  test('full routes reject empty bindings', () async {
+    final store = _Store({});
+    final adapter = CbioPrivateStateAdapter(store);
+    await expectLater(adapter.readFullRecords(''), throwsArgumentError);
+    expect(() => adapter.writeFullRecords('', 'opaque'), throwsArgumentError);
+    expect(store.values, isEmpty);
+  });
+
+  test('legacy digest hashes exact UTF8 bytes without normalization', () {
+    final adapter = CbioPrivateStateAdapter(_Store({}));
+    expect(
+      adapter.legacySha256(''),
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+    expect(
+      adapter.legacySha256('abc'),
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(
+      adapter.legacySha256('abc\n'),
+      'edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb',
+    );
+    expect(
+      adapter.legacySha256('é'),
+      '4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c',
+    );
+  });
+
+  test('failed full write leaves every previous route untouched', () async {
+    final before = {
+      _fullKey: 'old full',
+      _rawKey: ' legacy\n',
+      _indexKey: '[]',
+    };
+    final store = _Store(before)..failKey = _fullKey;
+    await expectLater(
+      CbioPrivateStateAdapter(store).writeFullRecords('synthetic', 'new full'),
+      throwsStateError,
+    );
+    expect(store.values, before);
+  });
+
   test('empty private sensor keys cannot create unbound routes', () async {
     final adapter = CbioPrivateStateAdapter(_Store({}));
     await expectLater(adapter.read(''), throwsArgumentError);

@@ -4,15 +4,38 @@ CBIO history is diagnostic raw sensor data, not validated body glucose. This
 storage change does not enable glucose alerts, treatment guidance, or wellness
 analytics, and it does not establish sensor start/expiry from raw timestamps.
 
-## Atomic state
+## Atomic complete-input state
 
-The active restricted key is `openHealth.history.cbio.v1.<identity>`, where
-`identity` is unpadded base64url of JSON `[driverId, storageKey]`. Its version-1
-JSON envelope contains `schemaVersion`, `driverId`, `storageKey`, `checkpoint`,
-and `history`. The checkpoint and raw rows are captured together before any
-debounce/async boundary and replaced as one native history blob. Native storage
-uses the existing `.next`/`.previous` atomic replacement, backup exclusion,
-rollback, and commit-only cache. A failed write retains the prior complete pair.
+The app implements optional `CbioFullRecordStore` with the new restricted key
+`openHealth.history.cbio.fullRecords.v1.<identity>`, where `identity` is unpadded
+base64url of JSON `[driverId, storageKey]`. It reuses the existing `.next`/
+`.previous` native history-blob replacement, backup exclusion, rollback and
+commit-only cache. Rows and current checkpoint are one atomic envelope, never
+separate writes. A failed write leaves the prior complete envelope authoritative.
+
+The internal closed schema binds version1, driver `cbio`, profile
+`raw08-observed`, sensorKey, random128bit captureId and bootstrap provenance.
+The captureId is an acquisition lineage, not a physical sensor-era identifier.
+It cannot rotate or repair itself after counter/time conflicts.
+
+- Pending has no rows or current checkpoint. Its bootstrap is either explicit
+  fresh provenance or the exact original legacy checkpoint plus lowercase
+  SHA256 of the original legacy UTF8 envelope, including whitespace.
+- Observing contains the contiguous admitted prefix as seven-integer tuples
+  `[index, rawTime, reindex, rawTemperature, rawDump, rawPayload, rawProcessed]`,
+  its immutable first observation and matching final-row current checkpoint.
+  First observation is fresh index1 or the exact admitted legacy witness.
+  Reindex is response-relative: preserve its first observed value, not a later
+  replay value. Index/time and the four raw words must match before duplicate
+  suppression. RawTime is not reinterpreted as a wall-clock timestamp.
+
+The original `openHealth.history.cbio.v1.<identity>` envelope/checkpoint remains
+byte-for-byte frozen once the capability is selected. Its old CgmReading rows
+lost temperature and other fields: never invent those fields, re-encode old
+rows as complete, dual-write v1, or fall back to its writer on error. Legacy-only
+custom stores retain the earlier incomplete compatibility path. Observing full
+state is authoritative on restart; pending revalidates its exact legacy digest
+and checkpoint (or absence for fresh). Malformed present full state fails closed.
 
 The private driver owner, not the shared host controller, saves and restores
 this envelope. The selected-sensor pointer is not checkpoint authority. Private
@@ -23,17 +46,34 @@ only after exact restored input-checkpoint confirmation and re-reading the
 matching witness. This proof is not public snapshot metadata. Merely having
 the same counter index, or a pending/failed/older producer, is insufficient.
 
-Live rows beyond a gap can be saved with an earlier safe witness while history
-retrieval continues. Saved timestamps are not rewritten by replay. CBIO history
-uses sensor-index order even when new rows have no wall-clock anchor.
+Only a complete admitted contiguous candidate may advance the full checkpoint.
+Existing time/witness/read guards remain unchanged; no automatic backfill is
+added. Complete preservation does not establish decoder readiness.
+
+Bounds are fixed at 65535 rows, 4194304 UTF8 envelope bytes and 4096 header bytes.
+There is no truncation, eviction, cap increase or segment rollover. Exceeding a
+bound fails before commit. A write failure pauses acquisition and polling and
+retains the dirty candidate for explicit drain/retry; it never advances durable
+progress. There is one live owner per store+binding and serialized writer, not a
+cross-process lock. Close releases ownership only after successful drain.
+Native string reads are not an OS pre-allocation memory guard. Atomic
+primary/next/previous files can require 12 MiB plus frozen legacy; actual
+device/storage headroom is UNKNOWN.
 
 ## Handoff and archives
 
-A sensor switch prepares and validates the target before rebinding active
-state. The old immutable observed pair must then flush successfully; otherwise
+A sensor switch prepares and validates the target read-only before rebinding
+active state. The old immutable observed envelope must flush successfully; otherwise
 the old identity, durable pointer, and unsaved in-memory suffix remain available
 for retry. No new radio connection begins on a failed flush. Same-sensor retry
-reloads the just-flushed checkpoint before committing its input state.
+reloads the just-flushed checkpoint before committing its input state. The
+existing controller assigns selected target IN MEMORY after drain. The new
+session then commits pending adoption before BLE; no new pre-connect durable
+selected-sensor write is introduced. Existing verified-identity durable
+promotion remains later. A crash before promotion can leave an unused private
+pending envelope; it never becomes another binding's bootstrap or observations.
+Adoption re-reads storage after acquiring its lease so stale read-only preparation
+cannot overwrite a newer revision.
 
 Raw envelopes and legacy archive descriptors remain private. The adapter copies
 original index/descriptors durably into
@@ -51,8 +91,9 @@ Preserving private raw bytes is not proof of decoded glucose or completed histor
 
 ## Rollback / downgrade
 
-An older app does not understand the new CBIO envelope key and cannot resume it.
-Its old legacy-list data may be stale; do not treat an older app's display as the
+An older app does not understand the fullRecords key and cannot resume it.
+Its frozen raw-v1 checkpoint and older legacy lists may be stale; do not treat
+an older app's display as the
 new history or allow it to overwrite the current state. Downgrading is not a
 supported resume/recovery procedure. Keep a compatible build and the complete
 restricted store when investigating recovery. No migration deletes legacy data.
@@ -67,6 +108,7 @@ flutter test test/cbio_history_state_test.dart \
   test/app_controller_persistence_test.dart \
   test/cbio_real_session_controller_test.dart \
   test/cbio_private_state_adapter_test.dart \
+  test/cbio_full_record_integration_test.dart \
   test/health_state_store_io_test.dart \
   test/home_archive_feedback_test.dart
 ```
@@ -74,6 +116,8 @@ flutter test test/cbio_history_state_test.dart \
 Run `dart test` from `packages/cgm_cbio/` for private owner/session coverage.
 Together these cover exact witness admission, era isolation, failed save/handoff
 and retry, corrupt-target preparation, actual-driver/native-store restart,
-interrupted rename/manifest migration and immutable legacy bytes. Shared UI
+interrupted full-envelope rename/manifest migration, native backup exclusion,
+immutable legacy bytes, pending-before-BLE, binding isolation and exact full-word
+restart checkpoint authority. Shared UI
 tests verify normalized fixtures and absence of raw/recovery presentation.
 Physical-phone release validation remains a separate integration gate.

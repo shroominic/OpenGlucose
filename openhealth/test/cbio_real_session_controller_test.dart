@@ -65,8 +65,12 @@ void main() {
       await first.disconnect(clearSelection: false);
       final original = await CbioPrivateStateAdapter(
         firstStore,
-      ).read(_sensor.storageKey);
+      ).readFullRecords(_sensor.storageKey);
       expect(original, isNotNull);
+      expect(
+        await CbioPrivateStateAdapter(firstStore).read(_sensor.storageKey),
+        isNull,
+      );
       first.dispose();
       final secondStore = store();
       final radio = _Radio(
@@ -81,7 +85,9 @@ void main() {
       await _until(() => radio.rawQueryStarts.isNotEmpty);
       expect(radio.rawQueryStarts.first, 3);
       expect(
-        await CbioPrivateStateAdapter(secondStore).read(_sensor.storageKey),
+        await CbioPrivateStateAdapter(
+          secondStore,
+        ).readFullRecords(_sensor.storageKey),
         original,
       );
       radio.releaseRawResponse();
@@ -89,7 +95,9 @@ void main() {
       _expectNoPublicRaw(second);
       await second.disconnect(clearSelection: false);
       expect(
-        await CbioPrivateStateAdapter(secondStore).read(_sensor.storageKey),
+        await CbioPrivateStateAdapter(
+          secondStore,
+        ).readFullRecords(_sensor.storageKey),
         original,
       );
       second.dispose();
@@ -114,16 +122,26 @@ void main() {
       _expectNoPublicRaw(first);
       await first.disconnect(clearSelection: false);
       final key = store.values.keys.singleWhere(
-        (key) => key.startsWith('openHealth.history.cbio.v1.'),
+        (key) => key.startsWith('openHealth.history.cbio.fullRecords.v1.'),
       );
       final original = store.getString(key)!;
       final saved = jsonDecode(original) as Map;
       expect(
-        (saved['history'] as List).map((row) => (row as Map)['rawValue']),
-        [64, 80, 97],
+        saved['records'],
+        [
+          [1, 12000, 5, 315, 0, 64, 0],
+          [2, 12060, 4, 315, 0, 80, 0],
+          [3, 12120, 3, 315, 0, 97, 0],
+        ],
+      );
+      expect(
+        store.values.keys.any(
+          (key) => key.startsWith('openHealth.history.cbio.v1.'),
+        ),
+        isFalse,
       );
       final witness = CbioSessionCheckpoint.decode(
-        saved['checkpoint'] as String,
+        saved['currentCheckpoint'] as String,
         _sensor.storageKey,
       )!;
       expect(witness.index, 3);
@@ -172,12 +190,17 @@ void main() {
       if (outcome == 'confirmed') {
         final updated = jsonDecode(store.getString(key)!) as Map;
         expect(
-          (updated['history'] as List).map((row) => (row as Map)['rawValue']),
-          [64, 80, 97, 101],
+          updated['records'],
+          [
+            [1, 12000, 5, 315, 0, 64, 0],
+            [2, 12060, 4, 315, 0, 80, 0],
+            [3, 12120, 3, 315, 0, 97, 0],
+            [4, 12180, 4, 315, 0, 101, 0],
+          ],
         );
         expect(
           CbioSessionCheckpoint.decode(
-            updated['checkpoint'] as String,
+            updated['currentCheckpoint'] as String,
             _sensor.storageKey,
           )!.index,
           4,
@@ -186,6 +209,12 @@ void main() {
         expect(store.getString(key), original);
       }
       expect(restored.archivedSensors, isEmpty);
+      expect(
+        store.values.keys.any(
+          (key) => key.startsWith('openHealth.history.cbio.v1.'),
+        ),
+        isFalse,
+      );
       restored.dispose();
     });
   }

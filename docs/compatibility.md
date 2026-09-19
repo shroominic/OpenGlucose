@@ -127,6 +127,33 @@ historical `/10` engineering representation is verified mg/dL or mmol/L.
 Synthetic normalized UI fixtures prove presentation parity, not actual decoding
 or production glucose support.
 
+The additive optional `CbioFullRecordStore` interface extends the existing
+opaque `CbioPrivateStateStore` with `readFullRecords`, `writeFullRecords`, and
+`legacySha256` (lowercase SHA256 over the exact original UTF8 envelope). Hosts
+without this capability retain their legacy compatibility path, which does not
+preserve all raw08 inputs. The app implements it using its existing crypto
+dependency and restricted history-blob store, without a new public raw API.
+
+For capable stores, original `openHealth.history.cbio.v1.<identity>` bytes and
+checkpoint are frozen, never migrated into fabricated full rows or dual-written.
+The separate `openHealth.history.cbio.fullRecords.v1.<identity>` key stores one
+pending/observing envelope, all seven observed integer fields, and the current
+authoritative checkpoint atomically. Its captureId identifies an acquisition,
+not a physical sensor era. Pending adoption records exact legacy SHA256 and
+bootstrap checkpoint or explicit fresh provenance; observing state preserves
+the first witnessed prefix and first-observed response-relative reindex.
+Preparation is read-only. Old-owner drain and existing in-memory target selection
+precede durable pending adoption, which precedes BLE. Durable selected-sensor
+promotion remains later and unchanged. An unused pending binding cannot supply
+another binding's checkpoint. Malformed present state never falls back to v1.
+
+The fixed bounds are 65535 rows, 4194304 UTF8 envelope bytes and 4096 header
+bytes. There is no eviction, truncation, cap increase, automatic backfill or
+lineage rotation. Failed writes pause acquisition and retain dirty candidates
+without advancing durable progress. Native atomic replacement may require
+12 MiB plus frozen legacy data; actual device/storage headroom is unknown.
+These additions preserve input, not decoder readiness or calibrated glucose.
+
 The driver owns raw checkpoint/history in a versioned restricted envelope and
 requires exact input-witness proof before merging a resumed suffix. The app's
 private-state adapter preserves original legacy blobs/indexes and durably copies

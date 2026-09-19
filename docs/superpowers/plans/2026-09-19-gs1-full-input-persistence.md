@@ -200,8 +200,12 @@ expect(store.legacyEnvelope, originalLegacyBytes);
 **Files:**
 - Modify `openhealth/lib/src/persistence/cbio_private_state_adapter.dart`
 - Modify `openhealth/test/cbio_private_state_adapter_test.dart`
-- Modify `openhealth/test/app_controller_persistence_test.dart`
-- Modify `openhealth/test/sensor_connection_flow_test.dart`
+- Create `openhealth/test/cbio_full_record_integration_test.dart` (real
+  controller/driver/adapter handoff; existing controller/UI suites unchanged)
+- Modify `openhealth/test/health_state_store_io_test.dart` (full-blob atomic
+  recovery and backup exclusion)
+- Modify `openhealth/test/cbio_real_session_controller_test.dart` (existing
+  real-native restart/privacy assertions follow the newly selected full route)
 - Modify `packages/cgm_cbio/CHANGELOG.md`
 - Modify `docs/compatibility.md`
 - Modify `docs/testing/cbio-gs1-durable-history.md`
@@ -252,3 +256,15 @@ compatibility in task3. No sensor-era recovery or decoder is introduced. Interfa
 names above are authoritative for all tasks. User's inline/no-subagent execution
 choice is already explicit; do not ask again. Stop for chief's plan review BEFORE
 task1 code and at each commit boundary. No completion claim before final evidence.
+
+## Execution record
+
+- Task1: implemented at `228030d`, independently accepted; 58 codec tests.
+- Task2: implemented at `cdfdde8`, first-observed reindex correction at
+  `9af6bbd`, independently accepted; 299 package tests plus two existing
+  material-dependent skips, package analysis clean.
+- Task3: adapter and real controller/native-store tests implemented; the focused
+  test-file map above replaces changes to shared controller/UI test files.
+  Existing real-session tests now assert the full route and seven-word rows,
+  retaining prior privacy and witness-failure coverage. Independent final
+  review is required before root integration into existing PR209.

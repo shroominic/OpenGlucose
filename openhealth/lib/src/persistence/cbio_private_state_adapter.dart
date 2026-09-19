@@ -2,17 +2,34 @@ import 'dart:convert';
 
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:crypto/crypto.dart' as crypto;
 
 import '../health_state_store.dart';
 import 'sensor_state_identity.dart';
 
 /// Opaque package state and legacy raw archives, never normalized glucose.
-class CbioPrivateStateAdapter implements CbioPrivateStateStore {
+class CbioPrivateStateAdapter implements CbioFullRecordStore {
   CbioPrivateStateAdapter(this._store);
 
   final HealthStateStore _store;
   static const _manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
   static const _indexKey = 'openHealth.sensorArchive';
+
+  @override
+  Future<String?> readFullRecords(String sensorKey) async => _store.getString(
+    'openHealth.history.cbio.fullRecords.v1.${_binding('cbio', sensorKey)}',
+  );
+
+  @override
+  Future<void> writeFullRecords(String sensorKey, String envelope) =>
+      _store.setString(
+        'openHealth.history.cbio.fullRecords.v1.${_binding('cbio', sensorKey)}',
+        envelope,
+      );
+
+  @override
+  String legacySha256(String legacyEnvelope) =>
+      crypto.sha256.convert(utf8.encode(legacyEnvelope)).toString();
 
   @override
   Future<String?> read(String sensorKey) async => _store.getString(
