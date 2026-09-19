@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
-import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,14 +12,243 @@ import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/cgm_driver_registry.dart';
 import 'package:openglucose/src/demo_driver.dart';
 import 'package:openglucose/src/health_state_store.dart';
-import 'package:openglucose/src/health_state_store_io.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/messaging/message_context_builder.dart';
 import 'package:openglucose/src/sensor_archive.dart';
-import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  for (final foreign in ['driverId', 'storageKey', 'deviceId']) {
+    test(
+      'foreign $foreign snapshot cannot activate retire or rebind selected sensor',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = _multiDriverSensor(
+          driverId: 'controlled',
+          storageKey: 'selected',
+        );
+        final session = _ControlledSession(
+          _testSnapshot(sensor, stage: CgmSyncStage.ready),
+        );
+        final driver = _ControlledDriver([session]);
+        final store = _ControllableHealthStateStore();
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+          historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+        );
+        await controller.initialize();
+        await controller.connect(sensor);
+        final pointer = store.getString('openHealth.lastSensor');
+        session.emit(
+          CgmSessionSnapshot(
+            stage: CgmSyncStage.ready,
+            statusText: 'ready',
+            sensor: DiscoveredSensor.fromJson({
+              ...sensor.toJson(),
+              foreign: 'foreign',
+            }),
+            capabilities: sensor.capabilities,
+            sessionInfo: const CgmSessionInfo(sessionStopped: true),
+            metadata: const {'activationRequired': 'true'},
+          ),
+        );
+        await _drainEventQueue();
+        expect(controller.snapshot!.stage, CgmSyncStage.error);
+        expect(controller.snapshot!.sensor.storageKey, 'selected');
+        expect(controller.snapshot!.metadata['activationRequired'], isNull);
+        expect(controller.archivedSensors, isEmpty);
+        expect(store.getString('openHealth.lastSensor'), pointer);
+        expect(session.disconnectCalls, 0);
+        await controller.disconnect(clearSelection: false);
+        controller.dispose();
+        await driver.close();
+      },
+    );
+  }
+  test(
+    'held old pointer removal completes before new selection persists',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final old = _multiDriverSensor(driverId: 'controlled', storageKey: 'old');
+      final next = _multiDriverSensor(
+        driverId: 'controlled',
+        storageKey: 'new',
+      );
+      final driver = _ControlledDriver([
+        _ControlledSession(_testSnapshot(old, stage: CgmSyncStage.ready)),
+        _ControlledSession(_testSnapshot(next, stage: CgmSyncStage.ready)),
+      ]);
+      final store = _HeldRemoveStore();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: store,
+      );
+      await controller.initialize();
+      await controller.connect(old);
+      final disconnecting = controller.disconnect();
+      await store.entered.future;
+      final connecting = controller.connect(next);
+      await _drainEventQueue();
+      expect(driver.connectedSensors, hasLength(1));
+      store.release.complete();
+      await Future.wait([disconnecting, connecting]);
+      expect(controller.snapshot?.sensor.storageKey, 'new');
+      expect(
+        (jsonDecode(store.getString('openHealth.lastSensor')!)
+            as Map)['storageKey'],
+        'new',
+      );
+      await controller.disconnect(clearSelection: false);
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  for (final restoring in [false, true]) {
+    test(
+      'initial private-route projection hides raw metadata and fallback restoring=$restoring',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final sensor = DiscoveredSensor.fromJson({
+          ..._multiDriverSensor(
+            driverId: 'controlled',
+            storageKey: 'initial',
+          ).toJson(),
+          'metadata': {
+            'cgm.cbio.checkpoint': 'private-state',
+            'cgm.cbio.clock.anchor': '12000',
+          },
+          'advertisement': const CgmAdvertisement(
+            payloadHex: 'synthetic',
+            displayValueMgdl: 59,
+          ).toJson(),
+        });
+        final driver = _HeldConnectDriver([
+          _ControlledSession(_testSnapshot(sensor, stage: CgmSyncStage.ready)),
+        ]);
+        final store = _ControllableHealthStateStore(
+          initialValues: {
+            if (restoring) 'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+          },
+        );
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          healthStateStore: store,
+          historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+        );
+        await controller.initialize();
+        Future<void>? connecting;
+        if (!restoring) {
+          connecting = controller.connect(sensor);
+          await driver.entered.future;
+        }
+        expect(
+          controller.snapshot!.metadata.keys.where(
+            (key) => key.startsWith('cgm.cbio.'),
+          ),
+          isEmpty,
+        );
+        expect(controller.snapshot!.sensor.metadata, isEmpty);
+        expect(controller.snapshot!.lastAdvertisement, isNull);
+        expect(controller.snapshot!.sensor.advertisement, isNull);
+        driver.release.complete();
+        if (connecting != null) {
+          await connecting;
+          expect(
+            driver.connectedSensors.single.metadata['cgm.cbio.checkpoint'],
+            'private-state',
+          );
+        }
+        await controller.disconnect(clearSelection: false);
+        controller.dispose();
+        await driver.close();
+      },
+    );
+  }
+  test(
+    'stale disconnect after held scan cancellation cannot close newer session',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'controlled',
+        storageKey: 'new',
+      );
+      final session = _ControlledSession(
+        _testSnapshot(sensor, stage: CgmSyncStage.ready),
+      );
+      final driver = _HeldScanDriver([session]);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+      );
+      await controller.initialize();
+      final scan = controller.scan();
+      await driver.listening.future;
+      final disconnecting = controller.disconnect();
+      await driver.cancelling.future;
+      final connecting = controller.connect(sensor);
+      await _drainEventQueue();
+      expect(driver.connectedSensors, isEmpty);
+      driver.release.complete();
+      await disconnecting;
+      await connecting;
+      await scan;
+      expect(controller.snapshot?.sensor.storageKey, 'new');
+      expect(session.disconnectCalls, 0);
+      await controller.disconnect(clearSelection: false);
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test('superseded preparation connects only newest queued target', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final first = _multiDriverSensor(
+      driverId: 'controlled',
+      storageKey: 'first',
+    );
+    final latest = _multiDriverSensor(
+      driverId: 'controlled',
+      storageKey: 'latest',
+    );
+    final driver = _ControlledDriver([
+      _ControlledSession(_testSnapshot(latest, stage: CgmSyncStage.ready)),
+    ]);
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      prepareTarget: (sensor) async {
+        if (sensor.storageKey == 'first') {
+          entered.complete();
+          await release.future;
+        }
+      },
+    );
+    await controller.initialize();
+    final pending = controller.connect(first);
+    await entered.future;
+    final newest = controller.connect(latest);
+    release.complete();
+    await Future.wait([pending, newest]);
+    expect(driver.connectedSensors.map((sensor) => sensor.storageKey), [
+      'latest',
+    ]);
+    expect(controller.snapshot?.sensor.storageKey, 'latest');
+    await controller.disconnect(clearSelection: false);
+    controller.dispose();
+    await driver.close();
+  });
   for (final failAt in ['prepare', 'flush']) {
     test(
       'private handoff $failAt failure retains selection and retries',
@@ -145,924 +372,10 @@ void main() {
     controller.dispose();
   });
 
-  test(
-    'CBIO counter reason is closed and cannot survive stale or foreign snapshots',
-    () async {
-      const reasonKey = 'cgm.cbio.resume.counterFailureReason';
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'reason-test',
-      );
-      const row = CgmReading(
-        valueMgdl: 6,
-        rawValue: 60,
-        sensorMinute: 1,
-        source: CgmRecordSource.raw,
-        isDisplayProvisional: true,
-      );
-      final metadata = {
-        cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-        cbioCheckpointMetadataKey: CbioSessionCheckpoint(
-          sensorKey: sensor.storageKey,
-          index: 1,
-          rawTime: 1000,
-        ).encode(),
-        cgmAutomaticReconnectAllowedMetadataKey: 'false',
-      };
-      CgmSessionSnapshot incoming(
-        CgmSyncStage stage,
-        String code,
-        String reason, {
-        DiscoveredSensor? identity,
-      }) => _testSnapshot(
-        identity ?? sensor,
-        stage: stage,
-        history: [row],
-        metadata: {...metadata, reasonKey: reason},
-      ).copyWith(lastError: code);
-      final session = _ControlledSession(
-        incoming(
-          CgmSyncStage.ready,
-          CbioSessionFailure.counterRestart,
-          'before-checkpoint',
-        ),
-      );
-      final driver = _ControlledDriver([session], driverId: 'cbio');
-      final store = _ControllableHealthStateStore();
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      expect(controller.snapshot!.metadata[reasonKey], isNull);
-      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), isNull);
-      session.emit(
-        incoming(
-          CgmSyncStage.error,
-          CbioSessionFailure.counterRestart,
-          'before-checkpoint\nsecret=59',
-        ),
-      );
-      await _drainEventQueue();
-      expect(controller.snapshot!.metadata[reasonKey], isNull);
-      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), 'GS1-H03');
-      session.emit(
-        incoming(
-          CgmSyncStage.error,
-          CbioSessionFailure.counterRestart,
-          'before-checkpoint',
-        ),
-      );
-      await _drainEventQueue();
-      expect(controller.snapshot!.metadata[reasonKey], 'before-checkpoint');
-      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), 'GS1-H03A');
-      session.emit(
-        incoming(
-          CgmSyncStage.error,
-          CbioSessionFailure.write,
-          'before-checkpoint',
-        ),
-      );
-      await _drainEventQueue();
-      expect(controller.snapshot!.metadata[reasonKey], isNull);
-      expect(cbioSupportReferenceForSnapshot(controller.snapshot!), 'GS1-L06');
-      for (final foreign in [
-        _multiDriverSensor(driverId: 'aidex', storageKey: sensor.storageKey),
-        _multiDriverSensor(driverId: 'cbio', storageKey: 'foreign'),
-      ]) {
-        session.emit(
-          incoming(
-            CgmSyncStage.error,
-            CbioSessionFailure.counterRestart,
-            'before-checkpoint',
-            identity: foreign,
-          ),
-        );
-        await _drainEventQueue();
-        expect(controller.snapshot!.metadata[reasonKey], isNull);
-        expect(
-          cbioSupportReferenceForSnapshot(controller.snapshot!),
-          'GS1-H03',
-        );
-      }
-      expect(controller.snapshot!.history.single.rawValue, 60);
-      await controller.disconnect(clearSelection: false);
-      expect(
-        store.getString('openHealth.lastSensor'),
-        isNot(contains(reasonKey)),
-      );
-      controller.dispose();
-      await driver.close();
-    },
-  );
-  for (final invalid in [
-    'missing-checkpoint',
-    'conflicting-replay',
-    'foreign-sensor',
-    'foreign-driver',
-    'foreign-driver-expired',
-    'foreign-driver-activation',
-  ]) {
-    test(
-      'CBIO rejects incomplete or conflicting live state: $invalid',
-      () async {
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final preferences = await SharedPreferences.getInstance();
-        final sensor = _multiDriverSensor(
-          driverId: 'cbio',
-          storageKey: 'validation',
-        );
-        const row = CgmReading(
-          valueMgdl: 6,
-          rawValue: 60,
-          sensorMinute: 1,
-          source: CgmRecordSource.raw,
-          isDisplayProvisional: true,
-        );
-        final checkpoint = CbioSessionCheckpoint(
-          sensorKey: sensor.storageKey,
-          index: 1,
-          rawTime: 1000,
-        ).encode();
-        final metadata = {
-          cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-          cbioCheckpointMetadataKey: checkpoint,
-        };
-        final session = _ControlledSession(
-          _testSnapshot(
-            sensor,
-            stage: CgmSyncStage.ready,
-            history: [row],
-            metadata: metadata,
-          ),
-        );
-        final driver = _ControlledDriver([session], driverId: 'cbio');
-        final store = _ControllableHealthStateStore();
-        final controller = CgmAppController(
-          preferences: preferences,
-          driver: driver,
-          healthStateStore: store,
-        );
-        await controller.initialize();
-        await controller.connect(sensor, allowSessionActivation: false);
-        final selectedBefore = store.getString('openHealth.lastSensor');
-        session.emit(
-          _testSnapshot(
-            invalid.startsWith('foreign-driver')
-                ? _multiDriverSensor(
-                    driverId: 'aidex',
-                    storageKey: sensor.storageKey,
-                  )
-                : invalid == 'foreign-sensor'
-                ? _multiDriverSensor(driverId: 'cbio', storageKey: 'other')
-                : sensor,
-            stage: CgmSyncStage.ready,
-            history: [
-              if (invalid == 'conflicting-replay')
-                const CgmReading(
-                  valueMgdl: 7,
-                  rawValue: 70,
-                  sensorMinute: 1,
-                  source: CgmRecordSource.raw,
-                  isDisplayProvisional: true,
-                )
-              else
-                row,
-            ],
-            metadata: invalid == 'missing-checkpoint'
-                ? {cbioResumeStatusMetadataKey: CbioResumeStatus.fresh}
-                : {
-                    ...metadata,
-                    if (invalid == 'foreign-driver-activation')
-                      'activationRequired': 'true',
-                  },
-          ).copyWith(
-            sessionInfo: invalid == 'foreign-driver-expired'
-                ? CgmSessionInfo(
-                    sessionStart: DateTime.utc(2020),
-                    expectedLifetimeMinutes: 1,
-                  )
-                : const CgmSessionInfo(),
-          ),
-        );
-        await _drainEventQueue();
-        expect(controller.snapshot!.stage, CgmSyncStage.error);
-        expect(controller.snapshot!.sensor.storageKey, sensor.storageKey);
-        expect(controller.snapshot!.sensor.driverId, sensor.driverId);
-        expect(controller.snapshot!.history.single.rawValue, 60);
-        expect(controller.archivedSensors, isEmpty);
-        expect(store.getString('openHealth.lastSensor'), selectedBefore);
-        expect(session.disconnectCalls, 0);
-        controller.dispose();
-        await driver.close();
-      },
-    );
-  }
-
-  test(
-    'CBIO failed flush blocks handoff and retry preserves unsaved pair',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final a = _multiDriverSensor(driverId: 'cbio', storageKey: 'flush-a');
-      final b = _multiDriverSensor(driverId: 'cbio', storageKey: 'flush-b');
-      CgmReading reading(int index) => CgmReading(
-        valueMgdl: 6,
-        source: CgmRecordSource.raw,
-        sensorMinute: index,
-        rawValue: 60,
-        isDisplayProvisional: true,
-      );
-      String checkpoint(int index) => CbioSessionCheckpoint(
-        sensorKey: a.storageKey,
-        index: index,
-        rawTime: 1000 + index * 60,
-      ).encode();
-      CgmSessionSnapshot state(int index) => _testSnapshot(
-        a,
-        stage: CgmSyncStage.ready,
-        history: [for (var i = 1; i <= index; i++) reading(i)],
-        metadata: {
-          cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-          cbioCheckpointMetadataKey: checkpoint(index),
-        },
-      );
-      final session = _ControlledSession(state(1));
-      final driver = _ControlledDriver([
-        session,
-        _ControlledSession(_testSnapshot(b, stage: CgmSyncStage.connecting)),
-      ], driverId: 'cbio');
-      final store = _ControllableHealthStateStore();
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await controller.connect(a, allowSessionActivation: false);
-      final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(a)}';
-      final durable = store.getString(key);
-      final selected = store.getString('openHealth.lastSensor');
-      session.emit(state(2));
-      await _drainEventQueue();
-      store.failSetPrefix = key;
-      await controller.connect(b, allowSessionActivation: false);
-      expect(driver.connectedSensors, hasLength(1));
-      expect(controller.snapshot!.sensor.storageKey, a.storageKey);
-      expect(controller.snapshot!.history, hasLength(2));
-      expect(store.getString(key), durable);
-      expect(store.getString('openHealth.lastSensor'), selected);
-      store.failSetPrefix = null;
-      await controller.connect(b, allowSessionActivation: false);
-      expect(driver.connectedSensors, hasLength(2));
-      expect(controller.snapshot!.sensor.storageKey, b.storageKey);
-      expect(
-        (jsonDecode(store.getString(key)!) as Map)['checkpoint'],
-        checkpoint(2),
-      );
-      expect(
-        (jsonDecode(store.getString(key)!) as Map)['history'],
-        hasLength(2),
-      );
-      controller.dispose();
-      await driver.close();
-    },
-  );
-
-  test(
-    'CBIO corrupt target does not rebind active state before valid handoff',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final a = _multiDriverSensor(driverId: 'cbio', storageKey: 'valid-a');
-      final b = _multiDriverSensor(driverId: 'cbio', storageKey: 'corrupt-b');
-      final c = _multiDriverSensor(driverId: 'cbio', storageKey: 'valid-c');
-      final driver = _ControlledDriver([
-        _ControlledSession(
-          _testSnapshot(
-            a,
-            stage: CgmSyncStage.ready,
-            history: [
-              const CgmReading(
-                valueMgdl: 6,
-                source: CgmRecordSource.raw,
-                sensorMinute: 1,
-                rawValue: 60,
-                isDisplayProvisional: true,
-              ),
-            ],
-            metadata: {
-              cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-              cbioCheckpointMetadataKey: CbioSessionCheckpoint(
-                sensorKey: a.storageKey,
-                index: 1,
-                rawTime: 1000,
-              ).encode(),
-            },
-          ),
-        ),
-        _ControlledSession(_testSnapshot(c, stage: CgmSyncStage.connecting)),
-      ], driverId: 'cbio');
-      final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(b)}';
-      final store = _ControllableHealthStateStore(initialValues: {key: '{'});
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await controller.connect(a, allowSessionActivation: false);
-      await controller.connect(b, allowSessionActivation: false);
-      expect(controller.snapshot!.sensor.storageKey, a.storageKey);
-      await controller.connect(c, allowSessionActivation: false);
-      expect(driver.connectedSensors.map((sensor) => sensor.storageKey), [
-        a.storageKey,
-        c.storageKey,
-      ]);
-      expect(controller.snapshot!.sensor.storageKey, c.storageKey);
-      expect(controller.snapshot!.history, isEmpty);
-      expect(store.getString(key), '{');
-      controller.dispose();
-      await driver.close();
-    },
-  );
-
-  for (final raw in ['{}', '{', '[null]']) {
-    test(
-      'CBIO malformed legacy remains discoverable after switching: $raw',
-      () async {
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final preferences = await SharedPreferences.getInstance();
-        final sensor = _multiDriverSensor(
-          driverId: 'cbio',
-          storageKey: 'legacy-malformed',
-        );
-        final key = _historyStateKey(sensor);
-        final store = _ControllableHealthStateStore(initialValues: {key: raw});
-        final driver = _ControlledDriver([
-          _ControlledSession(
-            _testSnapshot(sensor, stage: CgmSyncStage.connecting),
-          ),
-        ], driverId: 'cbio');
-        final controller = CgmAppController(
-          preferences: preferences,
-          driver: driver,
-          healthStateStore: store,
-        );
-        await controller.initialize();
-        await controller.connect(sensor, allowSessionActivation: false);
-        await controller.disconnect(clearSelection: true);
-        final retained = controller.archivedSensors.singleWhere(
-          (entry) => entry.isUnreconciled,
-        );
-        expect(retained.historyKey, key);
-        expect(retained.readingCount, 0);
-        expect(controller.readingsForArchivedSensor(retained), isEmpty);
-        expect(controller.displayReadingsForArchivedSensor(retained), isEmpty);
-        expect(store.getString(key), raw);
-        controller.dispose();
-        await driver.close();
-      },
-    );
-  }
-
-  test(
-    'CBIO controller recreates from native file pair without legacy metadata authority',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final directory = await Directory.systemTemp.createTemp(
-        'cbio-controller-',
-      );
-      addTearDown(() => directory.delete(recursive: true));
-      FileHealthStateStore store() => FileHealthStateStore(
-        legacyPreferences: preferences,
-        directoryProvider: () async => directory,
-        requiresBackupExclusion: false,
-      );
-      final base = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'native-restart',
-      );
-      final sensor = DiscoveredSensor.fromJson({
-        ...base.toJson(),
-        'metadata': {
-          cbioCheckpointMetadataKey: 'stale',
-          'cgm.cbio.clock.anchor': 'stale',
-          cbioResumeStatusMetadataKey: CbioResumeStatus.confirmed,
-          cbioConfirmedCheckpointMetadataKey: 'stale',
-          'cgm.cbio.resume.counterFailureReason': 'before-checkpoint',
-          'serial': 'preserved',
-        },
-      });
-      final checkpoint = CbioSessionCheckpoint(
-        sensorKey: sensor.storageKey,
-        index: 1,
-        rawTime: 1000,
-      ).encode();
-      final driver = _ControlledDriver([
-        _ControlledSession(
-          _testSnapshot(
-            sensor,
-            stage: CgmSyncStage.ready,
-            history: [
-              const CgmReading(
-                valueMgdl: 6,
-                rawValue: 60,
-                sensorMinute: 1,
-                source: CgmRecordSource.raw,
-                isDisplayProvisional: true,
-              ),
-            ],
-            metadata: {
-              cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-              cbioCheckpointMetadataKey: checkpoint,
-            },
-          ),
-        ),
-      ], driverId: 'cbio');
-      final firstStore = store();
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: firstStore,
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      await controller.disconnect(clearSelection: false);
-      final selected =
-          jsonDecode(firstStore.getString('openHealth.lastSensor')!) as Map;
-      expect(
-        (selected['metadata'] as Map).keys.where(
-          (key) => key.toString().startsWith('cgm.cbio.'),
-        ),
-        isEmpty,
-      );
-      controller.dispose();
-      await driver.close();
-      final restartedDriver = _ControlledDriver([
-        _ControlledSession(
-          _testSnapshot(sensor, stage: CgmSyncStage.connecting),
-        ),
-      ], driverId: 'cbio');
-      final restored = CgmAppController(
-        preferences: preferences,
-        driver: restartedDriver,
-        healthStateStore: store(),
-      );
-      await restored.initialize();
-      expect(restored.snapshot!.history, hasLength(1));
-      expect(restored.snapshot!.sessionInfo.sessionStart, isNull);
-      await restored.connect(sensor, allowSessionActivation: false);
-      final supplied = restartedDriver.connectedSensors.single.metadata;
-      expect(supplied[cbioCheckpointMetadataKey], checkpoint);
-      expect(supplied[cbioResumeStatusMetadataKey], isNull);
-      expect(supplied['serial'], 'preserved');
-      restored.dispose();
-      await restartedDriver.close();
-    },
-  );
-
-  test(
-    'CBIO archive never combines counter eras with the same display time',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-eras',
-      );
-      CgmSessionSnapshot snapshot(int rawTime, int rawValue) => _testSnapshot(
-        sensor,
-        stage: CgmSyncStage.ready,
-        history: [
-          CgmReading(
-            valueMgdl: rawValue / 10,
-            source: CgmRecordSource.raw,
-            sensorMinute: 1,
-            rawValue: rawValue,
-            recordedAt: DateTime.utc(2026, 1, 1),
-            isDisplayProvisional: true,
-          ),
-        ],
-        metadata: {
-          cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-          cbioCheckpointMetadataKey: CbioSessionCheckpoint(
-            sensorKey: sensor.storageKey,
-            index: 1,
-            rawTime: rawTime,
-          ).encode(),
-        },
-      );
-      final driver = _ControlledDriver([
-        _ControlledSession(snapshot(1000, 60)),
-        _ControlledSession(snapshot(2000, 70)),
-      ], driverId: 'cbio');
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: _ControllableHealthStateStore(),
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      await controller.disconnect(clearSelection: true);
-      await controller.connect(sensor, allowSessionActivation: false);
-      await controller.disconnect(clearSelection: true);
-      expect(controller.archivedSensors, hasLength(2));
-      expect(
-        controller.archivedSensors
-            .map(
-              (entry) =>
-                  controller.readingsForArchivedSensor(entry).single.rawValue,
-            )
-            .toSet(),
-        {60, 70},
-      );
-      controller.dispose();
-      await driver.close();
-    },
-  );
-
-  test(
-    'CBIO gap snapshots persist the paired earlier witness before disconnect',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-gap',
-      );
-      const first = CgmReading(
-        valueMgdl: 6,
-        source: CgmRecordSource.raw,
-        rawValue: 60,
-        sensorMinute: 1,
-        isDisplayProvisional: true,
-      );
-      const later = CgmReading(
-        valueMgdl: 7,
-        source: CgmRecordSource.raw,
-        rawValue: 70,
-        sensorMinute: 3,
-        isDisplayProvisional: true,
-      );
-      final checkpoint = CbioSessionCheckpoint(
-        sensorKey: sensor.storageKey,
-        index: 1,
-        rawTime: 1000,
-      ).encode();
-      final metadata = {
-        cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-        cbioCheckpointMetadataKey: checkpoint,
-      };
-      final session = _ControlledSession(
-        _testSnapshot(
-          sensor,
-          stage: CgmSyncStage.ready,
-          history: [first],
-          metadata: metadata,
-        ),
-      );
-      final driver = _ControlledDriver([session], driverId: 'cbio');
-      final store = _ControllableHealthStateStore();
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      session.emit(
-        _testSnapshot(
-          sensor,
-          stage: CgmSyncStage.ready,
-          history: [first, later],
-          metadata: metadata,
-        ).copyWith(historySync: const CgmHistorySyncState(inProgress: true)),
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 1000));
-      final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(sensor)}';
-      final saved = jsonDecode(store.getString(key)!) as Map;
-      expect(saved['history'], hasLength(2));
-      expect(saved['checkpoint'], checkpoint);
-      controller.dispose();
-      await driver.close();
-    },
-  );
-  test(
-    'CBIO malformed live checkpoint cannot escape stream fail-closed boundary',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-live-invalid',
-      );
-      final session = _ControlledSession(
-        _testSnapshot(sensor, stage: CgmSyncStage.connecting),
-      );
-      final driver = _ControlledDriver([session], driverId: 'cbio');
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: _ControllableHealthStateStore(),
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      session.emit(
-        _testSnapshot(
-          sensor,
-          stage: CgmSyncStage.ready,
-          history: [
-            const CgmReading(
-              valueMgdl: 6,
-              rawValue: 60,
-              sensorMinute: 1,
-              source: CgmRecordSource.raw,
-              isDisplayProvisional: true,
-            ),
-          ],
-          metadata: {
-            cbioCheckpointMetadataKey: '{',
-            cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-          },
-        ),
-      );
-      await _drainEventQueue();
-      expect(controller.snapshot!.stage, CgmSyncStage.error);
-      expect(controller.snapshot!.latestReading, isNull);
-      controller.dispose();
-      await driver.close();
-    },
-  );
-  test('CBIO replay cannot move already saved timestamps', () async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    final preferences = await SharedPreferences.getInstance();
-    final sensor = _multiDriverSensor(
-      driverId: 'cbio',
-      storageKey: 'synthetic-time',
-    );
-    final original = CgmReading(
-      valueMgdl: 6,
-      source: CgmRecordSource.raw,
-      rawValue: 60,
-      sensorMinute: 1,
-      isDisplayProvisional: true,
-      recordedAt: DateTime.utc(2026, 1, 1),
-    );
-    final checkpoint = const CbioSessionCheckpoint(
-      sensorKey: 'synthetic-time',
-      index: 1,
-      rawTime: 1000,
-    ).encode();
-    final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(sensor)}';
-    final store = _ControllableHealthStateStore(
-      initialValues: {
-        'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-        key: jsonEncode({
-          'schemaVersion': 1,
-          'driverId': 'cbio',
-          'storageKey': sensor.storageKey,
-          'checkpoint': checkpoint,
-          'history': [original.toJson()],
-        }),
-      },
-    );
-    final driver = _ControlledDriver([
-      _ControlledSession(
-        _testSnapshot(
-          sensor,
-          stage: CgmSyncStage.ready,
-          history: [original.copyWith(recordedAt: DateTime.utc(2026, 1, 2))],
-          metadata: {
-            cbioCheckpointMetadataKey: checkpoint,
-            cbioResumeStatusMetadataKey: CbioResumeStatus.confirmed,
-            cbioConfirmedCheckpointMetadataKey: checkpoint,
-          },
-        ),
-      ),
-    ], driverId: 'cbio');
-    final controller = CgmAppController(
-      preferences: preferences,
-      driver: driver,
-      healthStateStore: store,
-    );
-    await controller.initialize();
-    await controller.connect(sensor, allowSessionActivation: false);
-    expect(controller.snapshot!.history.single.recordedAt, original.recordedAt);
-    await controller.disconnect(clearSelection: false);
-    controller.dispose();
-    await driver.close();
-  });
-
-  for (final invalid in ['{', 'foreign']) {
-    test('CBIO invalid durable envelope stays untouched: $invalid', () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-invalid',
-      );
-      final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(sensor)}';
-      final stored = invalid == '{'
-          ? invalid
-          : jsonEncode({
-              'schemaVersion': 1,
-              'driverId': 'cbio',
-              'storageKey': 'other-sensor',
-              'checkpoint': '{}',
-              'history': <Object?>[],
-            });
-      final store = _ControllableHealthStateStore(
-        initialValues: {
-          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-          key: stored,
-        },
-      );
-      final driver = _ControlledDriver([], driverId: 'cbio');
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      expect(controller.snapshot!.stage, CgmSyncStage.error);
-      await controller.connect(sensor, allowSessionActivation: false);
-      expect(driver.connectedSensors, isEmpty);
-      expect(store.getString(key), stored);
-      controller.dispose();
-      await driver.close();
-    });
-  }
-
-  test(
-    'CBIO failed paired write retains old bytes and selected history',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-failure',
-      );
-      const old = CgmReading(
-        valueMgdl: 6,
-        source: CgmRecordSource.raw,
-        rawValue: 60,
-        sensorMinute: 1,
-        isDisplayProvisional: true,
-      );
-      const next = CgmReading(
-        valueMgdl: 7,
-        source: CgmRecordSource.raw,
-        rawValue: 70,
-        sensorMinute: 2,
-        isDisplayProvisional: true,
-      );
-      final before = const CbioSessionCheckpoint(
-        sensorKey: 'synthetic-failure',
-        index: 1,
-        rawTime: 1000,
-      ).encode();
-      final after = const CbioSessionCheckpoint(
-        sensorKey: 'synthetic-failure',
-        index: 2,
-        rawTime: 1060,
-      ).encode();
-      final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(sensor)}';
-      final stored = jsonEncode({
-        'schemaVersion': 1,
-        'driverId': 'cbio',
-        'storageKey': sensor.storageKey,
-        'checkpoint': before,
-        'history': [old.toJson()],
-      });
-      final store = _ControllableHealthStateStore(
-        failSetPrefix: key,
-        initialValues: {
-          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-          key: stored,
-        },
-      );
-      final driver = _ControlledDriver([
-        _ControlledSession(
-          _testSnapshot(
-            sensor,
-            stage: CgmSyncStage.ready,
-            history: [old, next],
-            metadata: {
-              cbioCheckpointMetadataKey: after,
-              cbioResumeStatusMetadataKey: CbioResumeStatus.confirmed,
-              cbioConfirmedCheckpointMetadataKey: before,
-            },
-          ),
-        ),
-      ], driverId: 'cbio');
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      await controller.disconnect(clearSelection: true);
-      expect(store.getString(key), stored);
-      expect(store.getString('openHealth.lastSensor'), isNotNull);
-      expect(controller.snapshot!.history, hasLength(2));
-      expect(controller.archivedSensors, isEmpty);
-      controller.dispose();
-      await driver.close();
-    },
-  );
-  for (final proof in ['absent', 'pending', 'failed', 'foreign', 'confirmed']) {
-    test('CBIO restored merge requires driver proof: $proof', () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-proof',
-      );
-      const old = CgmReading(
-        valueMgdl: 6,
-        source: CgmRecordSource.raw,
-        rawValue: 60,
-        sensorMinute: 1,
-        isDisplayProvisional: true,
-      );
-      const next = CgmReading(
-        valueMgdl: 7,
-        source: CgmRecordSource.raw,
-        rawValue: 70,
-        sensorMinute: 2,
-        isDisplayProvisional: true,
-      );
-      final before = const CbioSessionCheckpoint(
-        sensorKey: 'synthetic-proof',
-        index: 1,
-        rawTime: 1000,
-      ).encode();
-      final after = const CbioSessionCheckpoint(
-        sensorKey: 'synthetic-proof',
-        index: 2,
-        rawTime: 1060,
-      ).encode();
-      final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(sensor)}';
-      final initial = jsonEncode({
-        'schemaVersion': 1,
-        'driverId': 'cbio',
-        'storageKey': sensor.storageKey,
-        'checkpoint': before,
-        'history': [old.toJson()],
-      });
-      final store = _ControllableHealthStateStore(
-        initialValues: {
-          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-          key: initial,
-        },
-      );
-      final metadata = <String, String>{
-        cbioCheckpointMetadataKey: after,
-        if (proof != 'absent')
-          cbioResumeStatusMetadataKey: proof == 'foreign' ? 'confirmed' : proof,
-        if (proof == 'foreign' || proof == 'confirmed')
-          cbioConfirmedCheckpointMetadataKey: proof == 'confirmed'
-              ? before
-              : after,
-      };
-      final driver = _ControlledDriver([
-        _ControlledSession(
-          _testSnapshot(
-            sensor,
-            stage: CgmSyncStage.ready,
-            history: [next],
-            metadata: metadata,
-          ),
-        ),
-      ], driverId: 'cbio');
-      final controller = CgmAppController(
-        preferences: preferences,
-        driver: driver,
-        healthStateStore: store,
-      );
-      await controller.initialize();
-      await controller.connect(sensor, allowSessionActivation: false);
-      await _drainEventQueue();
-      expect(
-        controller.snapshot!.history.map((r) => r.rawValue),
-        proof == 'confirmed' ? [60, 70] : [60],
-      );
-      await controller.disconnect(clearSelection: false);
-      final saved = jsonDecode(store.getString(key)!) as Map;
-      expect(saved['checkpoint'], proof == 'confirmed' ? after : before);
-      if (proof != 'confirmed') expect(store.getString(key), initial);
-      controller.dispose();
-      await driver.close();
-    });
-  }
-
+  // Raw checkpoint/merge/write regressions now run against the actual driver
+  // and internal owner in cgm_cbio tests and cbio_real_session_controller_test.
+  // Migration and native byte retention live in cbio_private_state_adapter_test.
+  // The host has no raw proof authority; retain its negative ingress boundary.
   test(
     'CBIO older producer cannot leak an unconfirmed latest raw record',
     () async {
@@ -1093,6 +406,7 @@ void main() {
         preferences: preferences,
         driver: driver,
         healthStateStore: _ControllableHealthStateStore(),
+        historyNamespace: (_) => 'openHealth.history.normalized.v1.',
       );
       await controller.initialize();
       await controller.connect(sensor, allowSessionActivation: false);
@@ -1100,141 +414,6 @@ void main() {
       expect(controller.snapshot!.latestReading, isNull);
       controller.dispose();
       await driver.close();
-    },
-  );
-  test('CBIO history and checkpoint restore as one bound state', () async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    final preferences = await SharedPreferences.getInstance();
-    final store = _ControllableHealthStateStore();
-    final sensor = _multiDriverSensor(
-      driverId: 'cbio',
-      storageKey: 'synthetic-gs1',
-    );
-    final history = [
-      for (var index = 1; index <= 3; index++)
-        CgmReading(
-          valueMgdl: 6,
-          source: CgmRecordSource.raw,
-          sensorMinute: index,
-          rawValue: 60,
-          isDisplayProvisional: true,
-          recordedAt: DateTime.utc(2020, 1, 1, 0, index),
-        ),
-    ];
-    final checkpoint = CbioSessionCheckpoint(
-      sensorKey: sensor.storageKey,
-      index: 3,
-      rawTime: 1000,
-    ).encode();
-    final firstSession = _ControlledSession(
-      _testSnapshot(
-        sensor,
-        stage: CgmSyncStage.ready,
-        history: history,
-        metadata: {
-          cbioCheckpointMetadataKey: checkpoint,
-          cbioResumeStatusMetadataKey: CbioResumeStatus.fresh,
-        },
-      ),
-    );
-    final driver = _ControlledDriver([firstSession], driverId: 'cbio');
-    final controller = CgmAppController(
-      preferences: preferences,
-      driver: driver,
-      healthStateStore: store,
-    );
-    await controller.initialize();
-    await controller.connect(sensor, allowSessionActivation: false);
-    await _drainEventQueue();
-    final key = 'openHealth.history.cbio.v1.${_encodedStateIdentity(sensor)}';
-    expect(store.getString(key), isNotNull);
-    final state = jsonDecode(store.getString(key)!) as Map;
-    expect(state['checkpoint'], checkpoint);
-    expect(state['history'], hasLength(3));
-    expect(store.getString(_historyStateKey(sensor)), isNull);
-    await controller.disconnect(clearSelection: false);
-    controller.dispose();
-    await driver.close();
-
-    final nextDriver = _ControlledDriver([
-      _ControlledSession(_testSnapshot(sensor, stage: CgmSyncStage.connecting)),
-    ], driverId: 'cbio');
-    final restored = CgmAppController(
-      preferences: preferences,
-      driver: nextDriver,
-      healthStateStore: store,
-    );
-    await restored.initialize();
-    expect(restored.snapshot?.sensor, isNotNull);
-    expect(restored.snapshot!.sessionInfo.sessionStart, isNull);
-    expect(restored.archivedSensors, isEmpty);
-    await restored.connect(sensor, allowSessionActivation: false);
-    expect(
-      nextDriver.connectedSensors.single.metadata[cbioCheckpointMetadataKey],
-      checkpoint,
-    );
-    expect(
-      restored.snapshot!.history.map((r) => r.recordedAt),
-      history.map((r) => r.recordedAt),
-    );
-    await restored.disconnect(clearSelection: true);
-    expect(restored.archivedSensors, hasLength(1));
-    final archived = restored.archivedSensors.single;
-    expect(archived.startedAt, isNull);
-    expect(restored.readingsForArchivedSensor(archived), hasLength(3));
-    expect(
-      (jsonDecode(store.getString(archived.historyKey)!) as Map)['checkpoint'],
-      checkpoint,
-    );
-    restored.dispose();
-    await nextDriver.close();
-  });
-
-  test(
-    'CBIO legacy raw history stays immutable and separately discoverable',
-    () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{});
-      final preferences = await SharedPreferences.getInstance();
-      final sensor = _multiDriverSensor(
-        driverId: 'cbio',
-        storageKey: 'synthetic-legacy',
-      );
-      final legacy = jsonEncode([
-        const CgmReading(
-          valueMgdl: 5.9,
-          source: CgmRecordSource.raw,
-          rawValue: 59,
-          sensorMinute: 1,
-          isDisplayProvisional: true,
-        ).toJson(),
-      ]);
-      final store = _ControllableHealthStateStore(
-        initialValues: {
-          'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-          _historyStateKey(sensor): legacy,
-        },
-      );
-      for (var launch = 0; launch < 2; launch++) {
-        final driver = _ControlledDriver([], driverId: 'cbio');
-        final controller = CgmAppController(
-          preferences: preferences,
-          driver: driver,
-          healthStateStore: store,
-        );
-        await controller.initialize();
-        expect(controller.snapshot!.history, isEmpty);
-        expect(controller.archivedSensors, hasLength(1));
-        final archived = controller.archivedSensors.single;
-        expect(
-          controller.readingsForArchivedSensor(archived).single.rawValue,
-          59,
-        );
-        expect(controller.displayReadingsForArchivedSensor(archived), isEmpty);
-        expect(controller.allHistoricalReadings, isEmpty);
-        expect(store.getString(_historyStateKey(sensor)), legacy);
-        controller.dispose();
-        await driver.close();
-      }
     },
   );
   test(
@@ -4333,6 +3512,19 @@ class _ControllableHealthStateStore implements HealthStateStore {
   }
 }
 
+class _HeldRemoveStore extends _ControllableHealthStateStore {
+  final entered = Completer<void>();
+  final release = Completer<void>();
+  @override
+  Future<void> remove(String key) async {
+    if (key == 'openHealth.lastSensor' && !entered.isCompleted) {
+      entered.complete();
+      await release.future;
+    }
+    await super.remove(key);
+  }
+}
+
 class _GatedSelectionHealthStateStore extends _ControllableHealthStateStore {
   final started = Completer<void>();
   final release = Completer<void>();
@@ -4414,6 +3606,39 @@ Future<void> _drainEventQueue() async {
   for (var index = 0; index < 12; index += 1) {
     await Future<void>.delayed(Duration.zero);
   }
+}
+
+class _HeldConnectDriver extends _ControlledDriver {
+  _HeldConnectDriver(super._sessions);
+  final entered = Completer<void>();
+  final release = Completer<void>();
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) async {
+    entered.complete();
+    await release.future;
+    return super.connect(sensor);
+  }
+}
+
+class _HeldScanDriver extends _ControlledDriver {
+  _HeldScanDriver(super._sessions) {
+    stream = StreamController<DiscoveredSensor>(
+      onListen: listening.complete,
+      onCancel: () {
+        cancelling.complete();
+        return release.future;
+      },
+    );
+  }
+  final listening = Completer<void>();
+  final cancelling = Completer<void>();
+  final release = Completer<void>();
+  late final StreamController<DiscoveredSensor> stream;
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) => stream.stream;
 }
 
 class _ControlledDriver implements CgmDriver {

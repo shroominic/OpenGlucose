@@ -1,15 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter/material.dart';
-import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
-import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store.dart';
+import 'package:openglucose/src/health_state_store_io.dart';
+import 'package:openglucose/src/driver_factory.dart';
+import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/persistence/cbio_private_state_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // Deliberately synthetic material and identity; never contacts hardware.
@@ -39,272 +41,197 @@ const _timing = CbioSessionTiming(
 );
 
 void main() {
-  for (final failure in const [
-    ('before-checkpoint', 'GS1-H03A'),
-    ('witness-time-mismatch', 'GS1-H03B'),
-    ('archive-time-conflict', 'GS1-H03C'),
+  test(
+    'native store restart keeps raw bytes private and rechecks exact witness',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final directory = await Directory.systemTemp.createTemp(
+        'cbio-private-restart-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      FileHealthStateStore store() => FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+      final firstStore = store();
+      final first = await _open(
+        firstStore,
+        _Radio(startIndex: 1, rawTime: 12000, currents: [64, 80, 97]),
+      );
+      await first.connect(_sensor, allowSessionActivation: false);
+      await _until(() => first.snapshot?.stage == CgmSyncStage.ready);
+      await first.disconnect(clearSelection: false);
+      final original = await CbioPrivateStateAdapter(
+        firstStore,
+      ).read(_sensor.storageKey);
+      expect(original, isNotNull);
+      first.dispose();
+      final secondStore = store();
+      final radio = _Radio(
+        startIndex: 3,
+        rawTime: 12120,
+        currents: [97],
+        deferRawResponse: true,
+      );
+      final second = await _open(secondStore, radio);
+      _expectNoPublicRaw(second);
+      await second.connect(_sensor, allowSessionActivation: false);
+      await _until(() => radio.rawQueryStarts.isNotEmpty);
+      expect(radio.rawQueryStarts.first, 3);
+      expect(
+        await CbioPrivateStateAdapter(secondStore).read(_sensor.storageKey),
+        original,
+      );
+      radio.releaseRawResponse();
+      await _until(() => second.snapshot?.stage == CgmSyncStage.ready);
+      _expectNoPublicRaw(second);
+      await second.disconnect(clearSelection: false);
+      expect(
+        await CbioPrivateStateAdapter(secondStore).read(_sensor.storageKey),
+        original,
+      );
+      second.dispose();
+    },
+  );
+  for (final outcome in [
+    'confirmed',
+    'before-checkpoint',
+    'witness-time-mismatch',
+    'archive-time-conflict',
+    'payload-conflict',
   ]) {
-    testWidgets('real ${failure.$1} guard reaches host and sensor details', (
-      tester,
-    ) async {
-      final result = await tester.runAsync(
-        () => _restoreCounterFailure(failure.$1),
+    test('real raw driver remains private through restart: $outcome', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final store = _MemoryStore();
+      final first = await _open(
+        store,
+        _Radio(startIndex: 1, rawTime: 12000, currents: [64, 80, 97]),
       );
-      final (controller, preferences, store, historyKey, durableBefore) =
-          result!;
-      expect(controller.snapshot!.stage, CgmSyncStage.error);
-      expect(controller.snapshot!.lastError, CbioSessionFailure.counterRestart);
+      await first.connect(_sensor, allowSessionActivation: false);
+      await _until(() => first.snapshot?.stage == CgmSyncStage.ready);
+      _expectNoPublicRaw(first);
+      await first.disconnect(clearSelection: false);
+      final key = store.values.keys.singleWhere(
+        (key) => key.startsWith('openHealth.history.cbio.v1.'),
+      );
+      final original = store.getString(key)!;
+      final saved = jsonDecode(original) as Map;
       expect(
-        controller.snapshot!.metadata['cgm.cbio.resume.counterFailureReason'],
-        failure.$1,
+        (saved['history'] as List).map((row) => (row as Map)['rawValue']),
+        [64, 80, 97],
       );
-      expect(
-        controller.snapshot!.metadata[cgmAutomaticReconnectAllowedMetadataKey],
-        'false',
-      );
-      expect(controller.snapshot!.history.map((row) => row.rawValue), [
-        64,
-        80,
-        97,
-      ]);
-      expect(store.getString(historyKey), durableBefore);
-      await tester.pumpWidget(
-        OpenGlucoseApp(
-          controller: controller,
-          preferences: preferences,
-          healthExport: HealthExportController(
-            preferences: preferences,
-            writesAllowed: false,
-          )..initialize(),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.textContaining('record sequence could not be confirmed'),
-        findsOneWidget,
-      );
-      expect(find.text(failure.$2), findsNothing);
-      await tester.tap(find.byIcon(Icons.tune_rounded));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Current sensor'));
-      await tester.pumpAndSettle();
-      expect(find.text(failure.$2), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.runAsync(() => controller.disconnect(clearSelection: false));
-      expect(store.getString(historyKey), durableBefore);
-      expect(
-        store.values.values.any(
-          (value) =>
-              value.contains('counterFailureReason') ||
-              value.contains(failure.$1),
-        ),
-        isFalse,
-      );
-      controller.dispose();
-      await tester.pump();
-    });
-  }
-  for (final witnessMatches in [true, false]) {
-    test(
-      'real CBIO producer crosses host fresh and resumed proof gates matches=$witnessMatches',
-      () async {
-        SharedPreferences.setMockInitialValues(<String, Object>{});
-        final preferences = await SharedPreferences.getInstance();
-        final store = _MemoryStore();
-        final firstRadio = _Radio(
-          startIndex: 1,
-          rawTime: 12000,
-          currents: [64, 80, 97],
-        );
-        final first = CgmAppController(
-          preferences: preferences,
-          healthStateStore: store,
-          driver: CbioSensorDriver(
-            _Transport(firstRadio),
-            credentials: CbioStaticCredentialSource(_credentials),
-            timing: _timing,
-          ),
-        );
-        await first.initialize();
-        await first.connect(_sensor, allowSessionActivation: false);
-        await _until(
-          () =>
-              first.snapshot?.stage == CgmSyncStage.ready &&
-              first.snapshot?.history.length == 3,
-        );
-        expect(
-          first.snapshot!.metadata[cbioResumeStatusMetadataKey],
-          CbioResumeStatus.fresh,
-        );
-        expect(first.snapshot!.history.map((row) => row.rawValue), [
-          64,
-          80,
-          97,
-        ]);
-        expect(
-          first.snapshot!.history.every(
-            (row) =>
-                row.isDisplayProvisional && row.source == CgmRecordSource.raw,
-          ),
-          isTrue,
-        );
-        expect(first.allHistoricalReadings, isEmpty);
-        await first.disconnect(clearSelection: false);
-        final historyKey = store.values.keys.singleWhere(
-          (key) => key.startsWith('openHealth.history.cbio.v1.'),
-        );
-        final durableBefore = store.getString(historyKey)!;
-        final checkpoint =
-            (jsonDecode(durableBefore) as Map)['checkpoint'] as String;
-        final decoded = CbioSessionCheckpoint.decode(
-          checkpoint,
-          _sensor.storageKey,
-        )!;
-        expect(decoded.index, 3);
-        expect(decoded.rawTime, 12120);
-        first.dispose();
+      final witness = CbioSessionCheckpoint.decode(
+        saved['checkpoint'] as String,
+        _sensor.storageKey,
+      )!;
+      expect(witness.index, 3);
+      expect(witness.rawTime, 12120);
+      first.dispose();
 
-        final secondRadio = _Radio(
-          startIndex: 3,
-          rawTime: witnessMatches ? 12120 : 90000,
-          currents: [97, 101],
-          deferRawResponse: true,
-        );
-        final second = CgmAppController(
-          preferences: preferences,
-          healthStateStore: store,
-          driver: CbioSensorDriver(
-            _Transport(secondRadio),
-            credentials: CbioStaticCredentialSource(_credentials),
-            timing: _timing,
-          ),
-        );
-        await second.initialize();
-        await second.connect(_sensor, allowSessionActivation: false);
-        await _until(() => secondRadio.rawQueryStarts.isNotEmpty);
+      final radio = _Radio(
+        startIndex: outcome == 'before-checkpoint' ? 1 : 3,
+        rawTime: outcome == 'witness-time-mismatch'
+            ? 90000
+            : outcome == 'before-checkpoint'
+            ? 12000
+            : 12120,
+        currents: outcome == 'confirmed'
+            ? [97, 101]
+            : outcome == 'payload-conflict'
+            ? [99]
+            : [97],
+        deferRawResponse: true,
+      );
+      final restored = await _open(store, radio);
+      _expectNoPublicRaw(restored);
+      await restored.connect(_sensor, allowSessionActivation: false);
+      await _until(() => radio.rawQueryStarts.isNotEmpty);
+      expect(radio.rawQueryStarts.first, 3);
+      expect(store.getString(key), original);
+      _expectNoPublicRaw(restored);
+      radio.releaseRawResponse();
+      if (outcome == 'archive-time-conflict') {
+        await _until(() => restored.snapshot?.stage == CgmSyncStage.ready);
+        radio.injectRawResponse(startIndex: 3, rawTime: 90000, currents: [97]);
+      }
+      await _until(
+        () =>
+            restored.snapshot?.stage ==
+            (outcome == 'confirmed' ? CgmSyncStage.ready : CgmSyncStage.error),
+      );
+      _expectNoPublicRaw(restored);
+      if (outcome != 'confirmed') {
         expect(
-          second.snapshot!.metadata[cbioResumeStatusMetadataKey],
-          CbioResumeStatus.pending,
+          restored.snapshot!.metadata[cgmAutomaticReconnectAllowedMetadataKey],
+          'false',
+        );
+      }
+      await restored.disconnect(clearSelection: false);
+      if (outcome == 'confirmed') {
+        final updated = jsonDecode(store.getString(key)!) as Map;
+        expect(
+          (updated['history'] as List).map((row) => (row as Map)['rawValue']),
+          [64, 80, 97, 101],
         );
         expect(
-          second.snapshot!.metadata[cbioConfirmedCheckpointMetadataKey],
-          isNull,
+          CbioSessionCheckpoint.decode(
+            updated['checkpoint'] as String,
+            _sensor.storageKey,
+          )!.index,
+          4,
         );
-        expect(second.snapshot!.history.map((row) => row.rawValue), [
-          64,
-          80,
-          97,
-        ]);
-        expect(store.getString(historyKey), durableBefore);
-        secondRadio.releaseRawResponse();
-        await _until(
-          () =>
-              second.snapshot?.stage ==
-              (witnessMatches ? CgmSyncStage.ready : CgmSyncStage.error),
-        );
-        expect(
-          secondRadio.rawQueryStarts.first,
-          3,
-          reason: 'the real producer must reread the persisted witness',
-        );
-        if (witnessMatches) {
-          expect(
-            second.snapshot!.metadata[cbioResumeStatusMetadataKey],
-            CbioResumeStatus.confirmed,
-          );
-          expect(
-            second.snapshot!.metadata[cbioConfirmedCheckpointMetadataKey],
-            checkpoint,
-          );
-          expect(second.snapshot!.history.map((row) => row.sensorMinute), [
-            1,
-            2,
-            3,
-            4,
-          ]);
-          expect(second.snapshot!.history.map((row) => row.rawValue), [
-            64,
-            80,
-            97,
-            101,
-          ]);
-          await second.disconnect(clearSelection: false);
-          final saved = jsonDecode(store.getString(historyKey)!) as Map;
-          expect(saved['history'], hasLength(4));
-          expect(
-            CbioSessionCheckpoint.decode(
-              saved['checkpoint'] as String,
-              _sensor.storageKey,
-            )!.index,
-            4,
-          );
-        } else {
-          expect(second.snapshot!.history.map((row) => row.rawValue), [
-            64,
-            80,
-            97,
-          ]);
-          await second.disconnect(clearSelection: false);
-          expect(store.getString(historyKey), durableBefore);
-        }
-        expect(second.allHistoricalReadings, isEmpty);
-        second.dispose();
-      },
-    );
+      } else {
+        expect(store.getString(key), original);
+      }
+      expect(restored.archivedSensors, isEmpty);
+      restored.dispose();
+    });
   }
 }
 
-Future<(CgmAppController, SharedPreferences, _MemoryStore, String, String)>
-_restoreCounterFailure(String reason) async {
-  SharedPreferences.setMockInitialValues({
-    'openHealth.onboarding.completed': true,
-    'openHealth.appLanguage': 'en',
-  });
+void _expectNoPublicRaw(CgmAppController controller) {
+  final snapshot = controller.snapshot!;
+  expect(snapshot.sessionInfo.sessionStart, isNull);
+  expect(snapshot.sessionInfo.elapsedMinutes, isNull);
+  expect(computeWarmupStatus(snapshot), isNull);
+  expect(computeSensorLifecycle(snapshot).phase, SensorLifecyclePhase.unknown);
+  expect(snapshot.latestReading, isNull);
+  expect(snapshot.history, isEmpty);
+  expect(snapshot.rawHistory, isEmpty);
+  expect(snapshot.historySync.storedCount, 0);
+  expect(controller.allHistoricalReadings, isEmpty);
+  expect(controller.displayLatestReading, isNull);
+  expect(
+    snapshot.metadata.keys.where(
+      (key) => key.contains('checkpoint') || key.contains('clock.'),
+    ),
+    isEmpty,
+  );
+}
+
+Future<CgmAppController> _open(HealthStateStore store, _Radio radio) async {
   final preferences = await SharedPreferences.getInstance();
-  final store = _MemoryStore();
-  CgmAppController build(_Radio radio) => CgmAppController(
+  final adapter = CbioPrivateStateAdapter(store);
+  await store.initialize();
+  await adapter.migrateLegacyArchives();
+  final driver = CbioSensorDriver(
+    _Transport(radio),
+    credentials: CbioStaticCredentialSource(_credentials),
+    timing: _timing,
+    privateStateStore: adapter,
+  );
+  final controller = CgmAppController(
     preferences: preferences,
     healthStateStore: store,
-    driver: CbioSensorDriver(
-      _Transport(radio),
-      credentials: CbioStaticCredentialSource(_credentials),
-      timing: _timing,
-    ),
+    driver: driver,
+    prepareTarget: (sensor) => prepareDefaultDriverTarget(driver, sensor),
+    flushPrivateState: () => flushDefaultDriverPrivateState(driver),
+    historyNamespace: defaultDriverHistoryNamespace,
   );
-  final first = build(
-    _Radio(startIndex: 1, rawTime: 12000, currents: [64, 80, 97]),
-  );
-  await first.initialize();
-  await first.connect(_sensor, allowSessionActivation: false);
-  await _until(
-    () =>
-        first.snapshot?.stage == CgmSyncStage.ready &&
-        first.snapshot?.history.length == 3,
-  );
-  await first.disconnect(clearSelection: false);
-  final historyKey = store.values.keys.singleWhere(
-    (key) => key.startsWith('openHealth.history.cbio.v1.'),
-  );
-  final durableBefore = store.getString(historyKey)!;
-  first.dispose();
-  final radio = _Radio(
-    startIndex: reason == 'before-checkpoint' ? 2 : 3,
-    rawTime: reason == 'before-checkpoint'
-        ? 12060
-        : reason == 'witness-time-mismatch'
-        ? 90000
-        : 12120,
-    currents: reason == 'before-checkpoint' ? [80, 97] : [97],
-  );
-  final second = build(radio);
-  await second.initialize();
-  await second.connect(_sensor, allowSessionActivation: false);
-  if (reason == 'archive-time-conflict') {
-    await _until(() => second.snapshot?.stage == CgmSyncStage.ready);
-    radio.injectRawResponse(startIndex: 3, rawTime: 90000, currents: [97]);
-  }
-  await _until(() => second.snapshot?.stage == CgmSyncStage.error);
-  return (second, preferences, store, historyKey, durableBefore);
+  await controller.initialize();
+  return controller;
 }
 
 Future<void> _until(bool Function() condition) async {

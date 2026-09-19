@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cgm_cbio/src/cbio_history_state.dart';
 import 'package:cgm_cbio/src/cbio_private_state_owner.dart';
@@ -49,6 +50,23 @@ CbioHistoryState _state(int index, int raw) => CbioHistoryState(
 );
 
 void main() {
+  for (final field in ['storageKey', 'driverId']) {
+    test(
+      'foreign $field cannot load or mutate a valid private envelope',
+      () async {
+        final payload =
+            jsonDecode(_state(1, 60).encode()) as Map<String, dynamic>;
+        payload[field] = 'foreign';
+        final original = jsonEncode(payload);
+        final store = _Store()..value = original;
+        await expectLater(
+          CbioPrivateStateOwner.load('synthetic', store),
+          throwsA(isA<CbioPrivateStateFailure>()),
+        );
+        expect(store.value, original);
+      },
+    );
+  }
   test(
     'flush drains accepted revisions without overlapping durable writes',
     () async {
