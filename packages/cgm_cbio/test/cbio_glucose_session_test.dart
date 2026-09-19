@@ -514,6 +514,26 @@ Future<List<CgmReading>> _storedHistory(
 
 void main() {
   test(
+    'caller advertisement cannot become unverified glucose fallback',
+    () async {
+      final sensor = DiscoveredSensor.fromJson({
+        ..._sensor.toJson(),
+        'advertisement': const CgmAdvertisement(
+          payloadHex: 'synthetic',
+          displayValueMgdl: 59,
+        ).toJson(),
+      });
+      final session = await _privateSession(
+        sensor: sensor,
+        transport: _FakeTransport(_FakeConnection()),
+      );
+      expect(session.currentSnapshot.sensor.advertisement, isNull);
+      expect(session.currentSnapshot.lastAdvertisement, isNull);
+      expect(session.currentSnapshot.latestReading, isNull);
+      await session.disconnect();
+    },
+  );
+  test(
     'driver preparation is read only and rejects malformed saved state',
     () async {
       final store = _PrivateStore()..envelope = '{invalid';

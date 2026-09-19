@@ -277,6 +277,7 @@ final class CbioGlucoseSession implements CgmSession {
   static DiscoveredSensor _publicSensor(DiscoveredSensor sensor) =>
       DiscoveredSensor.fromJson({
         ...sensor.toJson(),
+        'advertisement': null,
         'metadata': {
           for (final entry in sensor.metadata.entries)
             if (entry.key != cbioCheckpointMetadataKey &&
