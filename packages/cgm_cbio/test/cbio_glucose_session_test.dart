@@ -248,8 +248,9 @@ final class _FakeTransport implements BleTransport {
 }
 
 final class _ManualTimer implements Timer {
-  _ManualTimer(this._onFire);
+  _ManualTimer(this.duration, this._onFire);
 
+  final Duration duration;
   final void Function() _onFire;
   var _active = true;
 
@@ -1060,7 +1061,7 @@ void main() {
           },
           zoneSpecification: ZoneSpecification(
             createTimer: (self, parent, zone, duration, callback) {
-              final timer = _ManualTimer(callback);
+              final timer = _ManualTimer(duration, callback);
               timers.add(timer);
               return timer;
             },
@@ -1068,6 +1069,136 @@ void main() {
         );
       },
     );
+
+    // Omitting a terminal guard must not revive the session, publish another
+    // snapshot, or arm a new poll when an already-queued callback arrives.
+    for (final timerKind in ['history idle', 'history deadline', 'catch-up']) {
+      for (final terminal in [
+        'write failure',
+        'transport drop',
+        'explicit close',
+      ]) {
+        test('queued $timerKind is inert after $terminal', () async {
+          final connection = _FakeConnection();
+          final transport = _FakeTransport(connection);
+          await _defaultResponder(connection);
+          final timers = <_ManualTimer>[];
+          final snapshots = <CgmSessionSnapshot>[];
+          const timing = _fastTiming;
+
+          Future<void> drainMicrotasks() async {
+            for (var index = 0; index < 100; index++) {
+              await Future<void>.value();
+            }
+          }
+
+          await runZoned(
+            () async {
+              final session = CbioGlucoseSession(
+                sensor: _sensor,
+                transport: transport,
+                credentials: _syntheticSource,
+                timing: timing,
+              );
+              final subscription = session.snapshots.listen(snapshots.add);
+              try {
+                await session.initialize();
+                await drainMicrotasks();
+                expect(session.currentSnapshot.stage, CgmSyncStage.syncing);
+                final idle = timers.singleWhere(
+                  (timer) =>
+                      timer.isActive &&
+                      timer.duration == timing.historyIdleWindow,
+                );
+                final deadline = timers.singleWhere(
+                  (timer) =>
+                      timer.isActive && timer.duration == timing.historyWindow,
+                );
+                if (timerKind == 'catch-up') {
+                  idle.fire();
+                  await drainMicrotasks();
+                  expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+                }
+
+                final failingWrite = Completer<void>();
+                connection.onWrite = (_) async {
+                  if (terminal == 'write failure') {
+                    await failingWrite.future;
+                  }
+                };
+                var settledCallers = 0;
+                final first = session.syncHistory().then(
+                  (_) => settledCallers++,
+                );
+                final second = session.syncHistory().then(
+                  (_) => settledCallers++,
+                );
+                await drainMicrotasks();
+                expect(settledCallers, 0);
+                final queuedTimer = switch (timerKind) {
+                  'history idle' => idle,
+                  'history deadline' => deadline,
+                  _ => timers.singleWhere(
+                    (timer) =>
+                        timer.isActive &&
+                        timer.duration == timing.catchUpWindow,
+                  ),
+                };
+                expect(queuedTimer.isActive, isTrue);
+
+                switch (terminal) {
+                  case 'write failure':
+                    failingWrite.completeError(
+                      StateError('synthetic write failure'),
+                    );
+                  case 'transport drop':
+                    connection.dropLink();
+                  case 'explicit close':
+                    await session.disconnect();
+                }
+                await drainMicrotasks();
+                expect(
+                  settledCallers,
+                  2,
+                  reason: 'active and queued callers settle',
+                );
+                await Future.wait([first, second]);
+                final expectedStage = terminal == 'write failure'
+                    ? CgmSyncStage.error
+                    : CgmSyncStage.disconnected;
+                expect(session.currentSnapshot.stage, expectedStage);
+                expect(queuedTimer.isActive, isFalse);
+                expect(timers.where((timer) => timer.isActive), isEmpty);
+                final terminalError = session.currentSnapshot.lastError;
+                final writesAtTerminal = connection.writes.length;
+                final timersAtTerminal = timers.length;
+                final snapshotsAtTerminal = snapshots.length;
+
+                queuedTimer.fireQueued();
+                await drainMicrotasks();
+
+                expect(session.currentSnapshot.stage, expectedStage);
+                expect(session.currentSnapshot.lastError, terminalError);
+                expect(snapshots, hasLength(snapshotsAtTerminal));
+                expect(connection.writes, hasLength(writesAtTerminal));
+                expect(timers, hasLength(timersAtTerminal));
+                expect(timers.where((timer) => timer.isActive), isEmpty);
+              } finally {
+                await session.disconnect();
+                await subscription.cancel();
+              }
+            },
+            zoneSpecification: ZoneSpecification(
+              createTimer: (self, parent, zone, duration, callback) {
+                final timer = _ManualTimer(duration, callback);
+                timers.add(timer);
+                return timer;
+              },
+            ),
+          );
+        });
+      }
+    }
 
     test(
       'initial history write failure is terminal and never becomes ready',

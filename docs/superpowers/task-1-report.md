@@ -93,3 +93,36 @@ session is closing, link-dropped, or terminally failed. The focused regression
 test passes (`dart test ... -n 'queued history timeout'`), and the package
 suite passes (`dart test`, `+140 ~2`). Format checking and
 `dart analyze --fatal-infos` also pass with no issues.
+
+## Follow-up P2 terminal callback regression matrix
+
+Nine deterministic cases now exercise each queued history-idle, history-deadline,
+and catch-up callback after write failure, transport drop, and explicit close.
+The timer double records its duration so each case selects the intended callback.
+Every case also starts an active and a queued history caller, verifies both settle
+at termination, then forces the cancelled callback to run. The assertions require
+the same terminal stage/error, no extra snapshots, no new timer, no active timer,
+and no additional transport writes.
+
+Mutation RED: temporarily removing both callback guards with `apply_patch`
+made six cases fail for the expected reasons: history callbacks returned to
+`ready` after failure/drop, and catch-up callbacks emitted an extra terminal
+snapshot. The three explicit-close cases still passed because the existing
+publication and polling helpers independently reject closed sessions. Both
+production guards were restored exactly; this follow-up changes no production
+code.
+
+GREEN after restoration, from `packages/cgm_cbio` with the pinned SDK:
+
+```text
+dart test test/cbio_glucose_session_test.dart -n 'is inert after' --reporter expanded
+9 passed
+dart format --output=none --set-exit-if-changed lib test
+dart analyze --fatal-infos
+No issues found!
+dart test --reporter expanded
+149 passed, 2 existing vendor-material-injection skips
+```
+
+This closes the reviewed callback coverage gap only. It does not establish
+calibrated glucose, full lifecycle, or device-backed release readiness.
