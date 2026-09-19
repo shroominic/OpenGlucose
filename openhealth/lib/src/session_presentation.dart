@@ -1022,7 +1022,7 @@ String historySyncProgressText(CgmHistorySyncState state) {
   return 'Fetching sensor history: $stored records';
 }
 
-/// The CBio dashboard value: the sensor's raw field divided by ten.
+/// The CBio dashboard value: the sensor's unscaled raw integer.
 ///
 /// No glucose unit is attached, because the protocol's scale is unverified.
 /// The number the harness reads out of the same `0x08` field is the same
@@ -1032,7 +1032,7 @@ String? cbioProvisionalValueText(CgmReading? reading) {
   if (raw == null) {
     return null;
   }
-  return (raw / 10).toStringAsFixed(1);
+  return raw.toString();
 }
 
 /// Sensor positions inside the stored span that this phone never received.

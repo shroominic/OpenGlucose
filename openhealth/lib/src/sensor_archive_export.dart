@@ -172,22 +172,35 @@ List<List<String>> _exportRows(
   ];
 }
 
-List<String> _rowFor(ArchivedSensorSession session, CgmReading? reading) =>
-    <String>[
-      _safeText(session.reason.name),
-      _utcTimestamp(session.startedAt),
-      _utcTimestamp(session.endedAt),
-      _utcTimestamp(session.lastReadingAt),
-      session.readingCount.toString(),
-      _utcTimestamp(reading?.recordedAt),
-      if (reading == null) '' else _decimal(reading.valueMgdl),
-      if (reading == null) '' else (reading.valueMgdl / 18).toStringAsFixed(3),
-      _safeText(reading?.source.name ?? ''),
-      reading?.sensorMinute?.toString() ?? '',
-      reading?.rawValue?.toString() ?? '',
-      reading?.qualifier?.toString() ?? '',
-      reading?.isDisplayProvisional.toString() ?? '',
-    ];
+List<String> _rowFor(
+  ArchivedSensorSession session,
+  CgmReading? reading,
+) => <String>[
+  _safeText(session.reason.name),
+  _utcTimestamp(session.startedAt),
+  _utcTimestamp(session.endedAt),
+  _utcTimestamp(session.lastReadingAt),
+  session.readingCount.toString(),
+  _utcTimestamp(reading?.recordedAt),
+  if (!_hasGlucoseValue(session, reading)) '' else _decimal(reading!.valueMgdl),
+  if (!_hasGlucoseValue(session, reading))
+    ''
+  else
+    (reading!.valueMgdl / 18).toStringAsFixed(3),
+  _safeText(reading?.source.name ?? ''),
+  reading?.sensorMinute?.toString() ?? '',
+  reading?.rawValue?.toString() ?? '',
+  reading?.qualifier?.toString() ?? '',
+  reading?.isDisplayProvisional.toString() ?? '',
+];
+
+// Preserve diagnostic rows and raw fields, but do not assign glucose units to
+// an algorithm input. Session identity also contains legacy CBIO rows whose
+// quality flags were not saved by an earlier build.
+bool _hasGlucoseValue(ArchivedSensorSession session, CgmReading? reading) =>
+    session.driverId != 'cbio' &&
+    reading != null &&
+    reading.source != CgmRecordSource.raw;
 
 /// Stops spreadsheet applications from evaluating exported labels as formulas.
 /// Numeric measurement columns remain numeric.

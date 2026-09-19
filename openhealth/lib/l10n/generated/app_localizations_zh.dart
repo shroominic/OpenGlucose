@@ -12,6 +12,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get appTitle => 'OpenGlucose';
 
   @override
+  String get rawSensorChartUnavailable => '血糖图表不可用。原始传感器数据已存储，但血糖解码尚未经过验证。';
+
+  @override
+  String get rawSensorValueNotice => '原始传感器数据，并非经过验证的血糖读数。';
+
+  @override
   String get settings => '设置';
 
   @override

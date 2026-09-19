@@ -10,6 +10,13 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep CBIO raw sensor values out of glucose charts, target ranges, native live
+  values, wellness summaries and glucose export columns, including restored
+  CBIO records with missing quality flags. Show the unscaled raw integer without
+  a glucose unit; preserve stored raw records and diagnostic export fields.
+
 ### Added
 
 - Add the `cgm_cbio` GS1 live driver and app surface: `FF30` discovery mapping,

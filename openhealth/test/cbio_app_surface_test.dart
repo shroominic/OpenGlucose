@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/sensor_connection_screen.dart';
@@ -85,6 +86,48 @@ Future<void> _pumpApp(
 }
 
 void main() {
+  testWidgets('CBIO missing flags cannot enable glucose or wellness surfaces', (
+    tester,
+  ) async {
+    final (controller, preferences) = await _controllerFor(
+      () => _snapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'Live',
+        history: [
+          CgmReading(
+            valueMgdl: 5.9,
+            source: CgmRecordSource.vendor,
+            sensorMinute: 120,
+            rawValue: 59,
+            recordedAt: DateTime.now(),
+          ),
+        ],
+        historySync: const CgmHistorySyncState(storedCount: 1),
+      ),
+    );
+    await _pumpApp(tester, controller, preferences);
+    expect(controller.allHistoricalReadings, isEmpty);
+    expect(find.byKey(const ValueKey('rawSensorHistory')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('dashboardPatternsSection')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('provisionalReadingNotice')),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(() => controller.disconnect(clearSelection: true));
+    expect(controller.archivedSensors, hasLength(1));
+    expect(controller.allHistoricalReadings, isEmpty);
+    expect(
+      controller.readingsForArchivedSensor(controller.archivedSensors.single),
+      hasLength(1),
+    );
+    controller.dispose();
+    await tester.pump();
+  });
+
   test('the CBio unit marker is the provisional-unit notice', () {
     final snapshot = _snapshot(
       stage: CgmSyncStage.ready,
@@ -329,7 +372,10 @@ void main() {
       find.byKey(const ValueKey<String>('provisionalReadingNotice')),
       findsOneWidget,
     );
-    expect(find.text(cbioProvisionalUnitNotice), findsNWidgets(2));
+    expect(
+      find.text('Raw sensor data. Not a verified glucose reading.'),
+      findsNWidgets(2),
+    );
     expect(find.text('3 readings'), findsOneWidget);
     expect(find.text('Live'), findsOneWidget);
 
@@ -371,12 +417,10 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('the cbio value renders as sensor raw / 10, without a unit', (
+  testWidgets('the cbio value renders the raw integer without a unit', (
     tester,
   ) async {
-    // The GS1 field is a raw counter that independent clients read as tenths
-    // of a millimole. Until a reference measurement verifies the scale, the
-    // dashboard must not present the number as mg/dL or mmol/L.
+    // Preserve the unscaled raw field. It is not a verified glucose value.
     final (controller, preferences) = await _controllerFor(
       () => _snapshot(
         stage: CgmSyncStage.ready,
@@ -394,7 +438,7 @@ void main() {
     final hero = find.byKey(const ValueKey<String>('glucoseHeroCard'));
     expect(hero, findsOneWidget);
     expect(
-      find.descendant(of: hero, matching: find.text('5.7')),
+      find.descendant(of: hero, matching: find.text('57')),
       findsOneWidget,
     );
     expect(
@@ -405,6 +449,16 @@ void main() {
       find.descendant(of: hero, matching: find.textContaining('mmol')),
       findsNothing,
     );
+    controller.updateDisplayPreferences(
+      const DisplayPreferences(unit: GlucoseUnit.mmolL),
+    );
+    await tester.pump();
+    expect(
+      find.descendant(of: hero, matching: find.text('57')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('mmol/L'), findsNothing);
+    expect(find.byKey(const ValueKey('rawSensorHistory')), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();

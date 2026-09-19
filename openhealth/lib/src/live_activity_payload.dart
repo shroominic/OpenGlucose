@@ -70,7 +70,8 @@ bool shouldPublishLiveActivity({
   DateTime? now,
 }) {
   final reading = currentReadingForSnapshot(snapshot, latestReading);
-  if (reading?.isDisplayProvisional == true ||
+  if (isCbioSnapshot(snapshot) ||
+      reading?.isDisplayProvisional == true ||
       reading?.source == CgmRecordSource.raw) {
     return false;
   }
@@ -112,7 +113,8 @@ LiveActivityPayload buildLiveActivityPayload({
     now: effectiveNow,
   );
   final isStale = liveSurfaceIsStale(freshnessAt, now: effectiveNow);
-  if (reading?.isDisplayProvisional == true ||
+  if (isCbioSnapshot(snapshot) ||
+      reading?.isDisplayProvisional == true ||
       reading?.source == CgmRecordSource.raw) {
     return LiveActivityPayload(
       sensorName: liveSurfaceBrandName,

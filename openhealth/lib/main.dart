@@ -882,8 +882,10 @@ class _DashboardView extends StatelessWidget {
     final l10n = context.l10n;
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
-    final wellnessHistory = readingsForWellness(history);
-    final showWellness = history.isEmpty || wellnessHistory.isNotEmpty;
+    final wellnessHistory = controller.visibleWellnessHistory;
+    final showWellness =
+        !isCbioSnapshot(snapshot) &&
+        (history.isEmpty || wellnessHistory.isNotEmpty);
     final warmup = computeWarmupStatus(
       snapshot,
       latestReading: controller.displayLatestReading,
@@ -1014,11 +1016,14 @@ class _DashboardView extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 12),
-                        if (history.any(
-                          (reading) => reading.isDisplayProvisional,
-                        )) ...<Widget>[
+                        if (isCbioSnapshot(snapshot) ||
+                            history.any(
+                              (reading) => reading.isDisplayProvisional,
+                            )) ...<Widget>[
                           Text(
-                            historyProvisionalNoticeForSnapshot(snapshot),
+                            isCbioSnapshot(snapshot)
+                                ? l10n.rawSensorValueNotice
+                                : historyProvisionalNoticeForSnapshot(snapshot),
                             key: ValueKey<String>('historyQualityNotice'),
                           ),
                           const SizedBox(height: 8),
@@ -1058,6 +1063,7 @@ class _DashboardView extends StatelessWidget {
                             readings: history,
                             preferences: preferences,
                             historySync: snapshot.historySync,
+                            rawDiagnosticsOnly: isCbioSnapshot(snapshot),
                           ),
                         ),
                       ],
@@ -1301,11 +1307,14 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   ),
                 ),
               ],
-              if (latest?.isDisplayProvisional == true) ...<Widget>[
+              if (isCbioSnapshot(snapshot) ||
+                  latest?.isDisplayProvisional == true) ...<Widget>[
                 const SizedBox(height: 6),
                 Text(
-                  provisionalReadingNoticeForSnapshot(snapshot) ??
-                      'Provisional reading. Not yet verified.',
+                  isCbioSnapshot(snapshot)
+                      ? context.l10n.rawSensorValueNotice
+                      : provisionalReadingNoticeForSnapshot(snapshot) ??
+                            'Provisional reading. Not yet verified.',
                   key: const ValueKey<String>('provisionalReadingNotice'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFFC7E4DD),
@@ -2210,7 +2219,9 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
     final session = widget.session;
     final rawReadings = controller.readingsForArchivedSensor(session);
     final readings = controller.displayReadingsForArchivedSensor(session);
-    final wellnessReadings = readingsForWellness(readings);
+    final wellnessReadings = session.driverId == 'cbio'
+        ? const <CgmReading>[]
+        : readingsForWellness(readings);
     final theme = Theme.of(context);
     var recapAnchor = session.lastReadingAt;
     for (final reading in readings) {
@@ -2292,6 +2303,7 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
                     readings: readings,
                     preferences: controller.displayPreferences,
                     historySync: const CgmHistorySyncState(),
+                    rawDiagnosticsOnly: session.driverId == 'cbio',
                   ),
                 ),
               ),

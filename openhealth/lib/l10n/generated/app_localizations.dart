@@ -104,6 +104,18 @@ abstract class AppLocalizations {
   /// **'OpenGlucose'**
   String get appTitle;
 
+  /// No description provided for @rawSensorChartUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Glucose chart unavailable. Raw sensor data is stored, but glucose decoding is not yet verified.'**
+  String get rawSensorChartUnavailable;
+
+  /// No description provided for @rawSensorValueNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw sensor data. Not a verified glucose reading.'**
+  String get rawSensorValueNotice;
+
   /// No description provided for @settings.
   ///
   /// In en, this message translates to:

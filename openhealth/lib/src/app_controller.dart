@@ -276,18 +276,21 @@ class CgmAppController extends ChangeNotifier {
     }
 
     for (final session in _archivedSensors) {
+      if (session.driverId == 'cbio') continue;
       addAll(displayReadingsForArchivedSensor(session));
     }
     final current = snapshot;
     if (current != null) {
-      addAll(
-        readingsAfterWarmup(
-          current.history,
-          sessionStart: current.sessionInfo.sessionStart,
-          warmupMinutes: current.sessionInfo.warmupMinutes,
-        ),
-      );
-    } else {
+      if (!isCbioSnapshot(current)) {
+        addAll(
+          readingsAfterWarmup(
+            current.history,
+            sessionStart: current.sessionInfo.sessionStart,
+            warmupMinutes: current.sessionInfo.warmupMinutes,
+          ),
+        );
+      }
+    } else if (_selectedSensor?.driverId != 'cbio') {
       addAll(
         readingsAfterWarmup(
           _persistedHistory,
@@ -371,6 +374,13 @@ class CgmAppController extends ChangeNotifier {
     }
     return history.skip(crop).toList(growable: false);
   }
+
+  /// Raw-only CBIO sessions stay outside health/analytics boundaries even when
+  /// restored legacy records omit their individual quality flags.
+  List<CgmReading> get visibleWellnessHistory =>
+      snapshot?.sensor.driverId == 'cbio'
+      ? const <CgmReading>[]
+      : readingsForWellness(visibleHistory);
 
   List<CgmLogEntry> get logs => List<CgmLogEntry>.unmodifiable(_logs.reversed);
 

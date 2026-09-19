@@ -15,11 +15,16 @@ class CgmDashboardChart extends StatefulWidget {
     required this.readings,
     required this.preferences,
     required this.historySync,
+    this.rawDiagnosticsOnly = false,
   });
 
   final List<CgmReading> readings;
   final DisplayPreferences preferences;
   final CgmHistorySyncState historySync;
+
+  /// Known raw-only sessions must not become glucose after legacy restore,
+  /// even if an old record is missing its raw/provisional quality flags.
+  final bool rawDiagnosticsOnly;
 
   @override
   State<CgmDashboardChart> createState() => _CgmDashboardChartState();
@@ -43,6 +48,14 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
     final theme = Theme.of(context);
     final localeName = _dateLocaleName(context);
     final samples = _buildSamples(widget.readings);
+    if (widget.rawDiagnosticsOnly ||
+        (samples.isEmpty && widget.readings.isNotEmpty)) {
+      return Align(
+        key: const ValueKey('rawSensorHistory'),
+        alignment: Alignment.topLeft,
+        child: Text(context.l10n.rawSensorChartUnavailable),
+      );
+    }
     final timeframes = _visibleTimeframes(samples);
     final effectiveTimeframe = _effectiveTimeframeMinutes(timeframes);
     final loading = samples.isEmpty && widget.historySync.inProgress;
@@ -171,6 +184,9 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
     final samples = <_ReadingSample>[];
     var fallbackMinute = 0;
     for (final reading in readings) {
+      if (reading.source == CgmRecordSource.raw) {
+        continue;
+      }
       final minute = reading.sensorMinute ?? fallbackMinute;
       fallbackMinute = minute + 1;
       samples.add(

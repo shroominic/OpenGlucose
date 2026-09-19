@@ -12,6 +12,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get appTitle => 'OpenGlucose';
 
   @override
+  String get rawSensorChartUnavailable =>
+      'Glucose chart unavailable. Raw sensor data is stored, but glucose decoding is not yet verified.';
+
+  @override
+  String get rawSensorValueNotice =>
+      'Raw sensor data. Not a verified glucose reading.';
+
+  @override
   String get settings => 'Settings';
 
   @override

@@ -1,6 +1,8 @@
 {
   "@@locale": "zh",
   "appTitle": "OpenGlucose",
+  "rawSensorChartUnavailable": "血糖图表不可用。原始传感器数据已存储，但血糖解码尚未经过验证。",
+  "rawSensorValueNotice": "原始传感器数据，并非经过验证的血糖读数。",
   "settings": "设置",
   "cancel": "取消",
   "save": "保存",
