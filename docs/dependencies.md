@@ -93,32 +93,40 @@ changes.
 
 ## Cbio GS1 interoperability package
 
-`cgm_cbio` uses only the existing in-repository `cgm_core` and `cgm_ble`
-contracts, plus the existing `lints` and `test` development tools. The package
-is MIT, unpublished, and has no native components, permissions, network
-destinations, telemetry, build scripts, or persistent data. Offline resolution
-uses the local Pub cache; no new external package is introduced. The app
-manifest and lockfile are unchanged. Library lockfiles stay uncommitted.
+`cgm_cbio` 0.1.0 uses the in-repository `cgm_core` and `cgm_ble` contracts,
+plus `lints` and `test` development tools. The unpublished package introduces
+no external runtime dependency, vendor-native algorithm binary, FFI, network
+destination or telemetry. Its live driver uses the app's existing BLE
+transport and permissions. Durable raw-history/checkpoint storage is owned by
+the host controller and existing restricted native store, not the package.
+Library lockfiles remain uncommitted.
 
-The package does carry interoperability material that is **not** authored by
-OpenGlucose contributors: a per-frame stream masking constant and the link
-material for the GS1 protocol, both derived from a shipped third-party sensor
-application and cross-checked against an independent open-source client. The
-derivation record is kept in
-[testing/cbio-gs1-auth-material.md](testing/cbio-gs1-auth-material.md) and
-references the artifact rather than restating the bytes.
+Real vendor link material is not supplied as a committed default.
+`CbioCredentialSource` resolves it from injected values; tests use synthetic
+material. The app currently uses `CbioDefineCredentialSource`, implemented
+with Dart `String.fromEnvironment` constants. Supplying a private
+`--dart-define`/`--dart-define-from-file` at build time therefore embeds those
+values in the resulting artifact. Source exclusion is not runtime provisioning
+and does not make a configured APK safe to redistribute. Builds without
+configured material omit the CBIO driver from the platform registry.
+The historical derivation record is
+[testing/cbio-gs1-auth-material.md](testing/cbio-gs1-auth-material.md); do not
+copy credential bytes into documentation, tests, logs or release metadata.
 
-Two reviews stay open and gate any distribution of this package:
+Distribution gates remain open: rights/notices and artifact inventory for
+vendor-derived material, approved provisioning/distribution policy, and
+signing provenance for configured artifacts. A source canary/secret check
+does not prove an APK contains no embedded values. There is no approved
+vendor-algorithm binary or calibrated-glucose implementation in this package;
+external reference repositories do not themselves grant redistribution rights.
 
-1. redistribution and notice terms for the derived material, together with the
-   inventory step described in [NOTICE.md](../NOTICE.md); and
-2. how the material reaches a build at all, since today it is a committed
-   source constant present in every artifact built from this branch.
-
-Remove the package and its workspace enumeration to roll back; no sensor or
-storage migration is needed.
-Exact-model protocol and licensing review are still required before adding
-any vendor-derived implementation.
+Disabling credential configuration prevents new CBIO registrations but is
+not a data rollback. Preserve the versioned restricted checkpoint/history
+envelopes and separate legacy recovery archives; older apps cannot resume the
+new state. See [durable history and recovery](testing/cbio-gs1-durable-history.md).
+Do not remove the package or clear storage as a substitute for a reviewed
+migration. Exact-model, lifecycle and glucose-algorithm validation are still
+required before claiming production sensor compatibility.
 
 ## Private Libre Gen1 receiver integration
 

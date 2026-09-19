@@ -1,10 +1,11 @@
-/// Runtime-injected vendor material for the authenticated GS1 link.
+/// Caller-supplied vendor material for the authenticated GS1 link.
 ///
-/// This package compiles no vendor key material. The 16-byte RC4 stream key,
+/// This repository supplies no real vendor-material defaults. The RC4 key,
 /// the 16-byte link credential carried inside the authentication frame, and the
 /// five-byte sensor authentication prompt are supplied from outside the
-/// repository at run time, and every entry point that needs them fails closed
-/// when they are absent or malformed.
+/// repository. The define source uses compile-time constants, so configured
+/// builds embed those values; caller-injected map/static sources are separate
+/// mechanisms. Entry points fail closed when values are absent or malformed.
 ///
 /// The extraction procedure and the artifact digests are recorded in
 /// `docs/testing/cbio-gs1-auth-material.md`. That record deliberately does not
@@ -106,7 +107,8 @@ final class CbioCredentials {
   ///
   /// The prompt is a sensor notification, not a credential, but it is derived
   /// from the same stream key and is injected with the rest of the material so
-  /// that no vendor-derived byte is compiled into this package.
+  /// that no real-material default is committed to this package. Values
+  /// supplied through the define source are still embedded in its artifacts.
   final List<int> authenticationTrigger;
 
   @override

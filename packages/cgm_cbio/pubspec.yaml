@@ -1,5 +1,5 @@
 name: cgm_cbio
-description: Target-unverified Cbio GS1 live driver with offline frame inspection; vendor material is injected, never compiled.
+description: Target-unverified Cbio GS1 raw-data live driver with offline frame inspection and caller-supplied vendor material.
 publish_to: none
 version: 0.1.0
 

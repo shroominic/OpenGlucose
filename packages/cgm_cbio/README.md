@@ -65,12 +65,16 @@ The sensor answers one `06 08` request with a stream of `08` batches pushed to
 the same characteristic, so history is an ingest problem rather than a
 request/response pair. The session ingests that stream under a bounded window,
 publishes `CgmHistorySyncState` progress, replays the witness from the app's
-persisted checkpoint before accepting a resumed suffix, and then polls once
-a minute at the first unseen index. A legacy `resumeOffset` alone does not
-authorize skipping records. Every
-emitted reading is `CgmRecordSource.raw` with `isDisplayProvisional` set, and
-`cbioProvisionalUnitNotice` is the marker the UI shows: the raw field divided
-by ten is plausible but no reference measurement has confirmed the scale.
+persisted checkpoint before accepting a resumed suffix, and then polls with a
+one-minute cooldown after each bounded operation at the first unseen index.
+Manual requests share that pacing and overlapping requests coalesce. Production
+sessions have no cumulative lifetime read cap; an explicit nullable
+`maxReadsPerSession` remains available for capped bench runs. A legacy
+`resumeOffset` alone does not authorize skipping records. Every emitted reading
+is `CgmRecordSource.raw` with `isDisplayProvisional` set. The `/10` field is an
+engineering input to the vendor's stateful algorithm, not verified glucose.
+The app renders the unscaled raw integer without a glucose unit and explicitly
+states that it is not a verified glucose reading.
 
 See the [live record](../../docs/testing/cbio-gs1-glucose-live.md) and the
 [app integration record](../../docs/testing/cbio-gs1-app-live.md).
@@ -104,7 +108,8 @@ not select firmware, send queries, or authorize a live read.
 and preserves its raw byte without an active/inactive enum.
 `parseCbioStartAckFrame` checks an explicitly expected `07` activation or `03`
 clock-update ACK and retains unknown result/status values. These inspect bytes
-only. The package contains no activation/clock builder or live write path.
+only; these parsers do not authorize writes. The separate live session has a
+clock builder/write path, but no activation builder or activation write path.
 
 `buildCbioGlucoseQuery` and `buildCbioInformationQuery` reproduce the vendor's
 recovered V120 read frames (`06 0A LE16(index) 00 00 C` and `03 F0 selector C`).
@@ -130,7 +135,7 @@ The inspection does not decrypt, reassemble, or hold a key; a keyed stream
 cipher stays untestable here. See the
 [reply framing record](../../docs/testing/cbio-gs1-reply-decode.md).
 
-## Vendor material is injected, never compiled
+## Vendor material: source exclusion versus artifact embedding
 
 The vendor link needs three values that this package does **not** carry: the
 16-byte RC4 stream key, the 16-byte link credential inside the authentication
@@ -144,7 +149,13 @@ holds the three values and never renders them in `toString`; a
 `CbioCredentialUnavailable` when they are absent or malformed.
 `CbioMapCredentialSource` reads them from a supplied string map (a process
 environment) and `CbioDefineCredentialSource` from `--dart-define` values.
-There is no compiled default.
+There is no committed real-material default. The map/static sources can be
+supplied by their caller, but the app's current define source uses compile-time
+constants: material provided through `--dart-define` is embedded in the built
+artifact. This is not runtime-only secret provisioning. Excluding private
+values from Git does not establish distribution rights or make configured
+APKs safe to redistribute; artifact and provisioning policy remain release
+gates. See [dependency policy](../../docs/dependencies.md).
 
 `cbioRc4Keystream`, `maskCbioFrame`, `unmaskCbioFrame`, and every builder in
 `cbio_vendor_frames.dart` take the key and material as required arguments, so a
