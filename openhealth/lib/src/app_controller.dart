@@ -421,12 +421,9 @@ class CgmAppController extends ChangeNotifier {
     return history.skip(crop).toList(growable: false);
   }
 
-  /// Raw-only CBIO sessions stay outside health/analytics boundaries even when
-  /// restored legacy records omit their individual quality flags.
+  /// Only normalized, non-provisional records enter wellness analytics.
   List<CgmReading> get visibleWellnessHistory =>
-      snapshot?.sensor.driverId == 'cbio'
-      ? const <CgmReading>[]
-      : readingsForWellness(visibleHistory);
+      readingsForWellness(visibleHistory);
 
   List<CgmLogEntry> get logs => List<CgmLogEntry>.unmodifiable(_logs.reversed);
 

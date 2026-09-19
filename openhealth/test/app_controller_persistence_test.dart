@@ -464,6 +464,10 @@ void main() {
         controller.allHistoricalReadings.map((reading) => reading.valueMgdl),
         [123],
       );
+      expect(
+        controller.visibleWellnessHistory.map((reading) => reading.valueMgdl),
+        [123],
+      );
       await controller.disconnect();
       expect(controller.archivedSensors, hasLength(1));
       expect(
