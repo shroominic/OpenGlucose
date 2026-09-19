@@ -47,7 +47,7 @@ The public API of a package is the surface exported from its top-level library:
 - `package:cgm_core/cgm_core.dart`
 - `package:cgm_ble/cgm_ble.dart`
 - `package:cgm_aidex/cgm_aidex.dart`
-- `package:cgm_cbio/cgm_cbio.dart` (raw-data live session; calibrated glucose unverified)
+- `package:cgm_cbio/cgm_cbio.dart` (private raw acquisition; normalized glucose unavailable)
 - `package:cgm_libre2/cgm_libre2.dart`
 - `package:cgm_libre2_glucose/cgm_libre2_glucose.dart` (separate GPL bench decoder)
 - `package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart`
@@ -105,8 +105,10 @@ last-verified release/date. A shared name, service UUID, or demo-driver result
 alone is not compatibility evidence. Protocol changes should remain tolerant
 of unknown data while failing safely on malformed or unauthenticated input.
 
-`cgm_cbio` 0.1.0 now implements an authenticated raw-data live session with
-direct BLE, history, raw-history and diagnostic capabilities. The normal
+`cgm_cbio` 0.1.0 implements authenticated direct-BLE raw acquisition in private
+driver state. Its public normalized snapshot has no latest reading, empty
+history and rawHistory, zero/unknown history counters, and no decoded-history
+or raw-history capability. The normal
 platform registry includes it only when its vendor credential source is
 configured; builds without those values omit it. `FF30` discovery still
 identifies an unverified Cbio / SiSensing candidate, not an exact model or
@@ -115,22 +117,30 @@ calibrated glucose compatibility remain unverified.
 
 The permitted session writes are authentication, clock synchronization and
 read queries. Activation, reset, calibration, threshold, key-registration and
-firmware operations are not enabled. Published samples remain raw and
-provisional. The dashboard renders their raw integer without a glucose unit;
-CBIO data is excluded from glucose charts, wellness analytics and live glucose
-surfaces, and raw exports leave glucose columns blank. Neither the raw integer
-nor its historical `/10` engineering representation is verified mg/dL or
-mmol/L. This is containment, not production glucose support.
+firmware operations are not enabled. Raw samples, checkpoint/clock details and
+acquisition counters remain inside the driver and restricted private storage;
+they are not published as `CgmReading` values, advertisement glucose, or public
+diagnostics. GS1 uses the unchanged shared normalized AiDEX/Libre2 presentation,
+including its empty, error and unknown-lifecycle states. There is no GS1 raw-value,
+support-reference or recovery dashboard. Neither the raw integer nor its
+historical `/10` engineering representation is verified mg/dL or mmol/L.
+Synthetic normalized UI fixtures prove presentation parity, not actual decoding
+or production glucose support.
 
-The host saves CBIO checkpoint/history together in a versioned restricted
-envelope, requires exact driver-confirmed input-witness proof before merging a
-resumed suffix, and retains legacy data as a separate recovery archive.
+The driver owns raw checkpoint/history in a versioned restricted envelope and
+requires exact input-witness proof before merging a resumed suffix. The app's
+private-state adapter preserves original legacy blobs/indexes and durably copies
+their descriptors into a private migration manifest before changing public
+routes. Shared normalized history uses a separate sensor-bound namespace.
 Malformed state and counter-era conflicts fail closed without deleting the
 old data. Downgrades do not understand this envelope and are not a supported
 recovery path. See [durable history and recovery](testing/cbio-gs1-durable-history.md).
 Sensor start, warmup, activation and expiry are not inferred from raw history.
-Legacy non-null lifecycle fields are not evidence; typed unknown lifecycle
-representation remains an open contract correction.
+The actual driver publishes null start/elapsed values, so the shared lifecycle
+policy displays unknown without inventing sensor age or expiry. Legacy non-null
+defaults are not evidence of a verified lifecycle. Normalized synthetic GS1
+records follow the same lifecycle policy as other sensors; actual model/lifecycle
+verification remains incomplete.
 
 Production polling has no cumulative lifetime read cap. Individual operations
 remain bounded, manual/automatic requests are paced and coalesced, and an
@@ -140,6 +150,9 @@ screen-off or reconnect reliability on a physical phone. Historical
 [offline evidence](testing/cbio-gs1-offline.md) is not the current driver boundary;
 the [release-readiness plan](superpowers/plans/2026-09-19-cbio-release-readiness.md)
 records remaining decoder, model, lifecycle, artifact and device gates.
+The shared UI also retains inherited narrow hero overflow and Chinese timeframe
+segment clipping observed in control sensors; presentation parity is not a
+claim that those baseline layout limitations are resolved.
 
 `cgm_libre2` includes a target-unverified, explicitly bootstrapped Gen1 BLE
 receiver. Android private debug builds can use a journaled NFC streaming

@@ -14,11 +14,13 @@ debounce/async boundary and replaced as one native history blob. Native storage
 uses the existing `.next`/`.previous` atomic replacement, backup exclusion,
 rollback, and commit-only cache. A failed write retains the prior complete pair.
 
-The selected-sensor pointer is not checkpoint authority. Stale checkpoint,
-clock, and resume-proof metadata is stripped from that pointer. On reconnect,
-only the envelope checkpoint is supplied to the driver. Existing and incoming
-rows can merge only when the driver publishes `confirmed` with the exact
-restored input checkpoint after re-reading the matching witness. Merely having
+The private driver owner, not the shared host controller, saves and restores
+this envelope. The selected-sensor pointer is not checkpoint authority. Private
+checkpoint, clock and resume metadata is removed from public projections; the
+driver rejects forged caller state. On reconnect, only the private envelope
+checkpoint is authoritative. Existing and incoming rows merge inside the driver
+only after exact restored input-checkpoint confirmation and re-reading the
+matching witness. This proof is not public snapshot metadata. Merely having
 the same counter index, or a pending/failed/older producer, is insufficient.
 
 Live rows beyond a gap can be saved with an earlier safe witness while history
@@ -33,15 +35,19 @@ the old identity, durable pointer, and unsaved in-memory suffix remain available
 for retry. No new radio connection begins on a failed flush. Same-sensor retry
 reloads the just-flushed checkpoint before committing its input state.
 
-CBIO archives retain an envelope. Archive identity includes the checkpoint so
-different counter eras sharing a display timestamp do not overwrite one another.
+Raw envelopes and legacy archive descriptors remain private. The adapter copies
+original index/descriptors durably into
+`openHealth.driverState.cbio.rawArchives.v1` before removing their public routes.
+Original blobs and qualified legacy lists are preserved byte-for-byte, never
+deleted or merged into a new raw era. Malformed or colliding state fails closed;
+interrupted/repeated migration retries without discarding original data.
 
-Legacy qualified list keys are never modified or merged into a new CBIO era.
-They have a separate `cbio-unreconciled:` archive entry with `isUnreconciled`.
-The UI labels these as history needing recovery, never as a successful empty
-session. Readable legacy raw rows remain available for raw export with glucose
-columns blank. Malformed original bytes remain in restricted storage with the
-recovery entry; opening the entry is safe and offers no empty-success export.
+Shared history uses `openHealth.history.normalized.v1.<identity>`, not raw-v1.
+Until a verified decoder exists, public latest/history/rawHistory remain empty,
+normalized history counters zero/unknown and history capabilities false. Shared
+AiDEX/Libre2 UI has no GS1 recovery/raw/export surface. Future verified normalized
+records use the same history, lifecycle, chart and export policy as other sensors.
+Preserving private raw bytes is not proof of decoded glucose or completed history.
 
 ## Rollback / downgrade
 
@@ -50,8 +56,7 @@ Its old legacy-list data may be stale; do not treat an older app's display as th
 new history or allow it to overwrite the current state. Downgrading is not a
 supported resume/recovery procedure. Keep a compatible build and the complete
 restricted store when investigating recovery. No migration deletes legacy data.
-If an older app rewrites an archive manifest without the new boolean, the
-`cbio-unreconciled:` ID still preserves the recovery classification on upgrade.
+Do not edit legacy archive descriptors or private manifests to force admission.
 
 ## Automated checks
 
@@ -60,11 +65,15 @@ Run from `openhealth/` with the pinned Flutter toolchain:
 ```
 flutter test test/cbio_history_state_test.dart \
   test/app_controller_persistence_test.dart \
+  test/cbio_real_session_controller_test.dart \
+  test/cbio_private_state_adapter_test.dart \
   test/health_state_store_io_test.dart \
   test/home_archive_feedback_test.dart
 ```
 
-These cover exact producer-proof admission, era isolation, failed save/handoff
-and retry, corrupt-target prepare failure, native file restart and interrupted
-rename recovery, immutable legacy data, and tapping a malformed recovery entry.
+Run `dart test` from `packages/cgm_cbio/` for private owner/session coverage.
+Together these cover exact witness admission, era isolation, failed save/handoff
+and retry, corrupt-target preparation, actual-driver/native-store restart,
+interrupted rename/manifest migration and immutable legacy bytes. Shared UI
+tests verify normalized fixtures and absence of raw/recovery presentation.
 Physical-phone release validation remains a separate integration gate.

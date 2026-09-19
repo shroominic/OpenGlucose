@@ -8,6 +8,11 @@
   restored records no longer populate any public glucose reading field.
   Empty normalized output is an interim safety boundary, not verified glucose
   support. No decoder, clock protocol, activation or lifecycle claim is added.
+  This supersedes the earlier host-owned persistence and public resume/support
+  metadata entries below: raw acquisition/proof/clock state is private, public
+  normalized history counters are zero/unknown, and decoded/raw history
+  capabilities remain false. Generic stage and closed failure tokens remain;
+  the app uses its shared sensor presentation without GS1 diagnostic UI.
 
 - Distinguish the three existing counter-confirmation guards with a closed,
   ephemeral failure category for host support presentation. Caller metadata
