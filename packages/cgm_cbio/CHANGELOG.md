@@ -2,6 +2,12 @@
 
 ## 0.1.0
 
+- Harden the authenticated session boundary: resolve the serial characteristic
+  from its discovered service (including opaque iOS identifiers), release the
+  GATT link on terminal topology/auth/write failures, surface history/live
+  write failures as terminal states, and serialize overlapping reads so every
+  caller settles without reviving a closed session.
+
 - Add `CbioSessionEvidence`, `CbioSessionOutcome`, and `CbioWriteKind`: a pure,
   host-tested record of one device-backed session (outcome, classified write
   kinds, record counts and index ranges, bounded timing, closed error taxonomy,

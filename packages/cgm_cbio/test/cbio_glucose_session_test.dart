@@ -141,6 +141,7 @@ final class _FakeConnection implements BleConnection {
   final StreamController<List<int>> _notifications =
       StreamController<List<int>>.broadcast();
   final List<List<int>> writes = <List<int>>[];
+  final List<BleCharacteristicRef> serialReads = <BleCharacteristicRef>[];
 
   /// Invoked with each plaintext command the session writes.
   Future<void> Function(List<int> plaintext)? onWrite;
@@ -173,6 +174,7 @@ final class _FakeConnection implements BleConnection {
 
   @override
   Future<List<int>> read(BleCharacteristicRef characteristic) async {
+    serialReads.add(characteristic);
     if (CbioUuids.canonical(characteristic.characteristicUuid) ==
         CbioUuids.canonical(serialUuid)) {
       return serial;
@@ -375,6 +377,12 @@ void main() {
         expect(auth.sublist(0, 3), <int>[0x19, 0x01, 0x00]);
         expect(auth.sublist(3, 9), _serialOctets);
         expect(auth.length, 26);
+        expect(connection.serialReads, hasLength(1));
+        expect(
+          connection.serialReads.single.serviceUuid,
+          '0000180a-0000-1000-8000-00805f9b34fb',
+          reason: 'serial reads must use the discovered service UUID',
+        );
         final clocks = plaintext.where((frame) => frame[1] == 0x03).toList();
         expect(clocks, hasLength(1));
         await session.disconnect();
@@ -409,6 +417,42 @@ void main() {
       },
     );
 
+    test(
+      'uses the discovered serial on an opaque iOS device identifier',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        await _defaultResponder(connection);
+
+        final session = CbioGlucoseSession(
+          sensor: const DiscoveredSensor(
+            driverId: 'cbio',
+            deviceId: 'A4E7D0B1-4CB4-4A0A-9B6A-OPAQUE',
+            displayName: 'Cbio / SiSensing candidate',
+            storageKey: 'ios:opaque',
+            rssi: -60,
+            capabilities: CbioGlucoseSession.capabilities,
+          ),
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        await _pumpUntil(
+          () => connection.writes
+              .map(_unmaskWrite)
+              .any((frame) => frame[1] == 0x01),
+        );
+
+        final auth = connection.writes
+            .map(_unmaskWrite)
+            .firstWhere((frame) => frame[1] == 0x01);
+        expect(auth.sublist(3, 9), _serialOctets);
+        expect(session.currentSnapshot.stage, isNot(CgmSyncStage.error));
+        await session.disconnect();
+      },
+    );
+
     test('a rejected authentication stops before any read is sent', () async {
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
@@ -428,6 +472,7 @@ void main() {
       final plaintext = connection.writes.map(_unmaskWrite).toList();
       expect(plaintext.map((frame) => frame[1]), <int>[0x01]);
       expect(session.currentSnapshot.lastError, 'cbio.auth.rejected');
+      await _pumpUntil(() => connection.disconnected);
       await session.disconnect();
     });
 
@@ -538,6 +583,7 @@ void main() {
           session.currentSnapshot.metadata[cbioPhaseMetadataKey],
           CbioSessionPhase.failed,
         );
+        await _pumpUntil(() => connection.disconnected);
         await session.disconnect();
       },
     );
@@ -944,6 +990,141 @@ void main() {
   });
 
   group('CbioGlucoseSession fail-closed behaviour', () {
+    test(
+      'initial history write failure is terminal and never becomes ready',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        connection.onWrite = (plaintext) async {
+          if (plaintext[1] == 0x01) {
+            connection.emitPlaintext(_authAccepted);
+          } else if (plaintext[1] == 0x08) {
+            throw StateError('history write failed');
+          }
+        };
+
+        final session = CbioGlucoseSession(
+          sensor: _sensor,
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        await _pumpUntil(
+          () => session.currentSnapshot.stage == CgmSyncStage.error,
+        );
+        expect(session.currentSnapshot.lastError, CbioSessionFailure.write);
+        await Future<void>.delayed(const Duration(milliseconds: 180));
+        expect(session.currentSnapshot.stage, CgmSyncStage.error);
+        expect(connection.disconnected, isTrue);
+        await session.disconnect();
+      },
+    );
+
+    test('live write failure settles refresh and stays terminal', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      await _defaultResponder(connection);
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.ready,
+      );
+      connection.onWrite = (_) async {
+        throw StateError('live write failed');
+      };
+
+      await session.refreshLiveData();
+      expect(session.currentSnapshot.lastError, CbioSessionFailure.write);
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(session.currentSnapshot.stage, CgmSyncStage.error);
+      expect(connection.disconnected, isTrue);
+      await session.disconnect();
+    });
+
+    test('topology failure releases an established GATT connection', () async {
+      final connection = _FakeConnection(
+        services: const <BleService>[
+          BleService(
+            uuid: CbioUuids.service,
+            characteristics: <BleCharacteristicRef>[],
+          ),
+        ],
+      );
+      final transport = _FakeTransport(connection);
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.error,
+      );
+      expect(session.currentSnapshot.lastError, CbioSessionFailure.topology);
+      await _pumpUntil(() => connection.disconnected);
+      expect(connection.disconnected, isTrue);
+      await session.disconnect();
+    });
+
+    test('disconnect settles an outstanding live read', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      await _defaultResponder(connection);
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming.copyWith(
+          liveResponseWindow: const Duration(seconds: 5),
+        ),
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.ready,
+      );
+      connection.onWrite = (_) async {};
+      final refresh = session.refreshLiveData();
+      await _pumpUntil(() => connection.writes.length >= 4);
+      await session.disconnect();
+      await refresh;
+      expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+    });
+
+    test('overlapping refreshes are serialized and both settle', () async {
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      await _defaultResponder(connection);
+
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.ready,
+      );
+      final before = connection.writes.length;
+      final first = session.refreshLiveData();
+      final second = session.refreshLiveData();
+      await Future.wait(<Future<void>>[first, second]);
+      expect(connection.writes.length, before + 2);
+      expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      await session.disconnect();
+    });
+
     test('stops reading once the read budget is spent', () async {
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);

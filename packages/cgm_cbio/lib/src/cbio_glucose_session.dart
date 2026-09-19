@@ -250,6 +250,7 @@ final class CbioGlucoseSession implements CgmSession {
   BleConnection? _connection;
   BleCharacteristicRef? _receive;
   BleCharacteristicRef? _command;
+  BleCharacteristicRef? _serial;
   StreamSubscription<List<int>>? _notificationSubscription;
   StreamSubscription<BleConnectionState>? _connectionSubscription;
   Completer<int>? _authReply;
@@ -259,6 +260,7 @@ final class CbioGlucoseSession implements CgmSession {
   Timer? _liveResponseTimer;
   Timer? _catchUpTimer;
   Timer? _publishTimer;
+  Future<void> _readQueue = Future<void>.value();
   Future<void>? _initialization;
   Completer<void>? _liveWindow;
   DateTime? _lastSyncAt;
@@ -276,6 +278,7 @@ final class CbioGlucoseSession implements CgmSession {
   bool _automaticReconnectAllowed = true;
   bool _closing = false;
   bool _linkDropped = false;
+  bool _terminalFailure = false;
 
   @override
   CgmSessionSnapshot get currentSnapshot => _snapshot;
@@ -446,14 +449,24 @@ final class CbioGlucoseSession implements CgmSession {
       return null;
     }
     try {
+      // Some Android stacks omit the standard 2A25 entry from the service
+      // list even though the vendor endpoint answers it. Keep the discovered
+      // GS1 service context rather than fabricating an empty service UUID; a
+      // failed or non-six-byte response still takes the validated MAC fallback.
+      final serialCharacteristic =
+          _serial ??
+          (_command == null
+              ? null
+              : BleCharacteristicRef(
+                  serviceUuid: _command!.serviceUuid,
+                  characteristicUuid: CbioUuids.serial,
+                  properties: const BleCharacteristicProperties(read: true),
+                ));
+      if (serialCharacteristic == null) {
+        throw StateError('serial characteristic not discovered');
+      }
       final serial = await connection
-          .read(
-            BleCharacteristicRef(
-              serviceUuid: '',
-              characteristicUuid: CbioUuids.serial,
-              properties: const BleCharacteristicProperties(read: true),
-            ),
-          )
+          .read(serialCharacteristic)
           .timeout(timing.writeTimeout);
       if (serial.length == 6) {
         _log(CgmLogLevel.debug, 'cbio.address.serial');
@@ -509,16 +522,28 @@ final class CbioGlucoseSession implements CgmSession {
       'Fetching sensor history',
       force: true,
     );
-    unawaited(
-      _sendMasked(
+    unawaited(_startHistoryRead(startIndex));
+  }
+
+  Future<void> _startHistoryRead(int startIndex) async {
+    try {
+      final outcome = await _sendMasked(
         buildMaskedCbioRawQuery(startIndex, key: _streamKey),
         label: 'raw-history',
         isRead: true,
-      ),
-    );
-    _historyDeadlineTimer?.cancel();
-    _historyDeadlineTimer = Timer(timing.historyWindow, _finishHistory);
-    _restartHistoryIdleTimer();
+      );
+      if (!_requireWritten(outcome) ||
+          _closing ||
+          _linkDropped ||
+          _terminalFailure) {
+        return;
+      }
+      _historyDeadlineTimer?.cancel();
+      _historyDeadlineTimer = Timer(timing.historyWindow, _finishHistory);
+      _restartHistoryIdleTimer();
+    } on Object {
+      _fail(CbioSessionFailure.write);
+    }
   }
 
   void _restartHistoryIdleTimer() {
@@ -572,7 +597,19 @@ final class CbioGlucoseSession implements CgmSession {
 
   int _nextIndex() => (_archive.newestIndex ?? 0) + 1;
 
-  Future<void> _readFrom(int index, {required String label}) async {
+  Future<void> _readFrom(int index, {required String label}) =>
+      _enqueueRead(() => _performRead(index, label: label));
+
+  Future<void> _enqueueRead(Future<void> Function() operation) {
+    final next = _readQueue.then((_) => operation());
+    _readQueue = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
+
+  Future<void> _performRead(int index, {required String label}) async {
+    if (_closing || _linkDropped || _terminalFailure) {
+      return;
+    }
     final window = _liveWindow = Completer<void>();
     final wrote = await _sendMasked(
       buildMaskedCbioRawQuery(index, key: _streamKey),
@@ -581,6 +618,7 @@ final class CbioGlucoseSession implements CgmSession {
     );
     if (wrote != CbioFrameWrite.sent) {
       _liveWindow = null;
+      _requireWritten(wrote);
       if (wrote == CbioFrameWrite.budgetExhausted) {
         _publishBudgetState();
       }
@@ -596,14 +634,23 @@ final class CbioGlucoseSession implements CgmSession {
       }
     });
     await window.future;
-    if (_closing || _linkDropped) {
+    if (_closing ||
+        _linkDropped ||
+        _terminalFailure ||
+        _stage != CgmSyncStage.ready) {
       return;
     }
     _emit(force: true);
     _scheduleLivePoll();
   }
 
-  Future<void> _catchUp(int startIndex) async {
+  Future<void> _catchUp(int startIndex) =>
+      _enqueueRead(() => _performCatchUp(startIndex));
+
+  Future<void> _performCatchUp(int startIndex) async {
+    if (_closing || _linkDropped || _terminalFailure) {
+      return;
+    }
     _catchUpOpen = true;
     _catchUpTimer?.cancel();
     _catchUpTimer = Timer(timing.catchUpWindow, () {
@@ -612,11 +659,13 @@ final class CbioGlucoseSession implements CgmSession {
       _emit(force: true);
     });
     _emit(force: true);
-    await _readFrom(startIndex, label: 'sync-read');
+    await _performRead(startIndex, label: 'sync-read');
     _catchUpOpen = false;
     _catchUpTimer?.cancel();
     _catchUpTimer = null;
-    _emit(force: true);
+    if (!_closing && !_linkDropped && !_terminalFailure) {
+      _emit(force: true);
+    }
   }
 
   void _onConnectionState(BleConnectionState state) {
@@ -630,6 +679,7 @@ final class CbioGlucoseSession implements CgmSession {
       return;
     }
     _linkDropped = true;
+    _settlePendingRead();
     _cancelTimers();
     _setPhase(
       CbioSessionPhase.disconnected,
@@ -728,7 +778,7 @@ final class CbioGlucoseSession implements CgmSession {
     required String label,
     required bool isRead,
   }) async {
-    if (_closing) {
+    if (_closing || _linkDropped || _terminalFailure) {
       return CbioFrameWrite.unavailable;
     }
     final connection = _connection;
@@ -793,16 +843,20 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _locateCharacteristics(List<BleService> services) {
+    _receive = null;
+    _command = null;
+    _serial = null;
     final serviceUuid = CbioUuids.canonical(CbioUuids.service);
     for (final service in services) {
-      if (CbioUuids.canonical(service.uuid) != serviceUuid) {
-        continue;
-      }
       for (final characteristic in service.characteristics) {
         final uuid = CbioUuids.canonical(characteristic.characteristicUuid);
-        if (uuid == CbioUuids.canonical(CbioUuids.receive)) {
+        if (uuid == CbioUuids.serial && _serial == null) {
+          _serial = characteristic.copyWith(serviceUuid: service.uuid);
+        } else if (CbioUuids.canonical(service.uuid) != serviceUuid) {
+          continue;
+        } else if (uuid == CbioUuids.receive) {
           _receive = characteristic;
-        } else if (uuid == CbioUuids.canonical(CbioUuids.command)) {
+        } else if (uuid == CbioUuids.command) {
           _command = characteristic;
         }
       }
@@ -953,6 +1007,11 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _fail(String code, {String statusText = 'Connection failed'}) {
+    if (_terminalFailure || _closing) {
+      return;
+    }
+    _terminalFailure = true;
+    _settlePendingRead();
     _cancelTimers();
     if (!cbioFailureAllowsAutomaticReconnect(code)) {
       _automaticReconnectAllowed = false;
@@ -964,6 +1023,44 @@ final class CbioGlucoseSession implements CgmSession {
       error: code,
       force: true,
     );
+    unawaited(_releaseConnectionAfterFailure());
+  }
+
+  Future<void> _releaseConnectionAfterFailure() async {
+    final notifications = _notificationSubscription;
+    _notificationSubscription = null;
+    final states = _connectionSubscription;
+    _connectionSubscription = null;
+    final connection = _connection;
+    _connection = null;
+    _receive = null;
+    _command = null;
+    _serial = null;
+    try {
+      await notifications?.cancel();
+    } on Object {
+      // Failure cleanup is best effort and must not replace the terminal code.
+    }
+    try {
+      await states?.cancel();
+    } on Object {
+      // Failure cleanup is best effort and must not replace the terminal code.
+    }
+    try {
+      await connection?.disconnect();
+    } on Object {
+      // Failure cleanup is best effort and must not replace the terminal code.
+    }
+  }
+
+  void _settlePendingRead() {
+    _liveResponseTimer?.cancel();
+    _liveResponseTimer = null;
+    final pending = _liveWindow;
+    _liveWindow = null;
+    if (pending != null && !pending.isCompleted) {
+      pending.complete();
+    }
   }
 
   static String _failureCodeFor(Object error) => switch (error) {
@@ -1094,6 +1191,7 @@ final class CbioGlucoseSession implements CgmSession {
     _connection = null;
     _receive = null;
     _command = null;
+    _serial = null;
     _authReply = null;
     _stage = CgmSyncStage.disconnected;
     _phase = CbioSessionPhase.disconnected;
