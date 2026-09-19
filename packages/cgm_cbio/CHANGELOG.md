@@ -2,6 +2,11 @@
 
 ## 0.1.0
 
+- Publish explicit fresh/pending/confirmed/failed resume status and exact
+  confirmed input-checkpoint binding for the host's durable merge boundary.
+  Proof is emitted only after sensor witness matching, never copied from
+  caller metadata, and absent after terminal failure.
+
 - Add a versioned, sensor-bound resume checkpoint with counter-witness replay
   and validated clock-anchor provenance. Legacy offsets no longer skip history
   without evidence; malformed state, a missing witness, or a changed counter

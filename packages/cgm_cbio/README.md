@@ -19,6 +19,13 @@ remain intact. Recovery must preserve the old archive; never silently delete
 the checkpoint, reset/activate the sensor, or merge another counter era.
 Records below a restored witness are also refused: a suffix-only restore has
 no evidence to classify those positions as earlier backfill versus a reset.
+`cbioResumeStatusMetadataKey` reports `fresh`, `pending`, `confirmed`, or
+`failed`. Only `confirmed` includes `cbioConfirmedCheckpointMetadataKey`, the
+exact input checkpoint whose witness the driver observed. Hosts must match
+that proof to the restored archive before merging its records with a suffix;
+a checkpoint string or matching index alone is not reconciliation evidence.
+Valid disconnect preserves the proof. Pending and terminal-failed snapshots
+never carry it, and caller-provided proof metadata is never trusted.
 Legacy `resumeOffset` alone no longer authorizes skipping history. A host with
 legacy archived data and no checkpoint must keep that archive separate until
 its era has been reconciled; blindly merging the fresh full read is unsafe.

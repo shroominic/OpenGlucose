@@ -1625,8 +1625,28 @@ void main() {
           timing: _fastTiming,
           clock: () => then.add(const Duration(hours: 1)),
         );
+        expect(
+          restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
+          'pending',
+        );
+        expect(
+          restored
+              .currentSnapshot
+              .metadata['cgm.cbio.resume.confirmedCheckpoint'],
+          isNull,
+        );
         await restored.initialize();
         await _pumpUntil(() => restored.currentSnapshot.history.isNotEmpty);
+        expect(
+          restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
+          'confirmed',
+        );
+        expect(
+          restored
+              .currentSnapshot
+              .metadata['cgm.cbio.resume.confirmedCheckpoint'],
+          metadata[cbioCheckpointMetadataKey],
+        );
         final query = connection.writes
             .map(_unmaskWrite)
             .firstWhere((frame) => frame[1] == 0x08);
@@ -1648,6 +1668,16 @@ void main() {
         final advancedCheckpoint =
             restored.currentSnapshot.metadata[cbioCheckpointMetadataKey];
         await restored.disconnect();
+        expect(
+          restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
+          'confirmed',
+        );
+        expect(
+          restored
+              .currentSnapshot
+              .metadata['cgm.cbio.resume.confirmedCheckpoint'],
+          metadata[cbioCheckpointMetadataKey],
+        );
         expect(
           restored.currentSnapshot.metadata[cbioCheckpointMetadataKey],
           advancedCheckpoint,
@@ -1740,6 +1770,16 @@ void main() {
           () => session.currentSnapshot.stage == CgmSyncStage.error,
         );
         expect(session.currentSnapshot.history, isEmpty);
+        expect(
+          session.currentSnapshot.metadata['cgm.cbio.resume.status'],
+          'failed',
+        );
+        expect(
+          session
+              .currentSnapshot
+              .metadata['cgm.cbio.resume.confirmedCheckpoint'],
+          isNull,
+        );
         expect(
           session.currentSnapshot.metadata['cgm.cbio.checkpoint'],
           checkpoint,

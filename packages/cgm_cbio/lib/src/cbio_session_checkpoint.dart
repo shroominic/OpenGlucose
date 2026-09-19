@@ -9,6 +9,16 @@ import 'cbio_index_time_anchor.dart';
 
 const String cbioCheckpointMetadataKey = 'cgm.cbio.checkpoint';
 const String cbioLifecycleMetadataKey = 'cgm.cbio.lifecycle';
+const String cbioResumeStatusMetadataKey = 'cgm.cbio.resume.status';
+const String cbioConfirmedCheckpointMetadataKey =
+    'cgm.cbio.resume.confirmedCheckpoint';
+
+abstract final class CbioResumeStatus {
+  static const fresh = 'fresh';
+  static const pending = 'pending';
+  static const confirmed = 'confirmed';
+  static const failed = 'failed';
+}
 
 /// A witness is evidence for one counter era, not an activation timestamp.
 /// The session must read this exact position again before accepting a suffix.

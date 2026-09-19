@@ -217,9 +217,13 @@ final class CbioGlucoseSession implements CgmSession {
            warmupMinutes: 0,
            expectedLifetimeMinutes: 15 * 24 * 60,
          ),
-         metadata: const <String, String>{
+         metadata: <String, String>{
            cbioPhaseMetadataKey: CbioSessionPhase.connecting,
            cbioLifecycleMetadataKey: 'unknown',
+           cbioResumeStatusMetadataKey:
+               sensor.metadata.containsKey(cbioCheckpointMetadataKey)
+               ? CbioResumeStatus.pending
+               : CbioResumeStatus.fresh,
          },
        );
 
@@ -1077,11 +1081,22 @@ final class CbioGlucoseSession implements CgmSession {
         historySync: _historySyncState,
         metadata: <String, String>{
           for (final entry in sensor.metadata.entries)
-            if (!entry.key.startsWith('cgm.cbio.clock.'))
+            if (!entry.key.startsWith('cgm.cbio.clock.') &&
+                !entry.key.startsWith('cgm.cbio.resume.'))
               entry.key: entry.value,
           cbioPhaseMetadataKey: _phase,
           cbioLifecycleMetadataKey: 'unknown',
           cbioCheckpointMetadataKey: ?checkpoint,
+          cbioResumeStatusMetadataKey: _terminalFailure
+              ? CbioResumeStatus.failed
+              : _checkpoint == null
+              ? CbioResumeStatus.fresh
+              : _witnessConfirmed
+              ? CbioResumeStatus.confirmed
+              : CbioResumeStatus.pending,
+          if (_witnessConfirmed && !_terminalFailure)
+            cbioConfirmedCheckpointMetadataKey:
+                sensor.metadata[cbioCheckpointMetadataKey]!,
           'cgm.cbio.unit': 'provisional',
           ...?anchor?.toMetadata(),
           if (!_automaticReconnectAllowed)
