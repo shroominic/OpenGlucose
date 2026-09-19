@@ -117,7 +117,7 @@ void main() {
       timers.last
         ..fire()
         ..fire();
-      await pumpEventQueue(times: 40);
+      await _pumpUntil(() => _healthyStatuses(statuses).length >= 3);
 
       final healthyBeforeConnect = _healthyStatuses(statuses);
       expect(healthyBeforeConnect.length, greaterThanOrEqualTo(3));
@@ -364,6 +364,28 @@ const Set<String> _statusKeys = <String>{
   'heartbeatMonotonicMicroseconds',
   'stopping',
 };
+
+/// Pumps the event loop until [condition] holds, or [timeout] elapses.
+///
+/// The status writer commits through real asynchronous work, so a fixed number
+/// of event-loop turns is not a bound the runner honours under load: a loaded
+/// host can leave the list short of the count the assertions below expect. This
+/// waits on the condition instead and gives up after [timeout], so a real hang
+/// still fails on the assertion that follows with the real evidence.
+Future<void> _pumpUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (true) {
+    // Always give the writer at least one turn, then stop as soon as the
+    // condition holds instead of spending a fixed budget.
+    await pumpEventQueue(times: 5);
+    if (condition() || DateTime.now().isAfter(deadline)) {
+      return;
+    }
+  }
+}
 
 List<Map<String, Object?>> _healthyStatuses(
   List<Map<String, Object?>> statuses,

@@ -216,5 +216,105 @@ void main() {
       expect(parsed.consumedSlots, 0);
       expect(parsed.indexedRecords, isEmpty);
     });
+
+    test('rejects explicit layouts that do not match the history opcode', () {
+      final invalidHints = <({int opcode, YuwellHistoryRecordLayout layout})>[
+        (
+          opcode: YuwellCt5Commands.alternateHistoryCommand,
+          layout: YuwellHistoryRecordLayout.compact11,
+        ),
+        (
+          opcode: YuwellCt5Commands.alternateHistoryCommand,
+          layout: YuwellHistoryRecordLayout.voltage15,
+        ),
+        (
+          opcode: YuwellCt5Commands.historyCommand,
+          layout: YuwellHistoryRecordLayout.alert17,
+        ),
+      ];
+
+      for (final invalid in invalidHints) {
+        final length = switch (invalid.layout) {
+          YuwellHistoryRecordLayout.compact11 => 11,
+          YuwellHistoryRecordLayout.voltage15 => 15,
+          YuwellHistoryRecordLayout.alert17 => 17,
+        };
+        final frame = appendYuwellSum8(<int>[
+          invalid.opcode,
+          0,
+          0,
+          ...YuwellCt5ByteTransform.encode(
+            List<int>.filled(length, 0xfc),
+            key: 0,
+          ),
+        ]);
+
+        expect(
+          () => YuwellHistoryFrame.parse(
+            frame,
+            cipher: 0,
+            expectedLayout: invalid.layout,
+          ),
+          throwsA(isA<YuwellProtocolFormatException>()),
+          reason: '${invalid.opcode.toRadixString(16)} ${invalid.layout}',
+        );
+      }
+    });
+
+    test('preserves valid explicit layouts and empty terminators', () {
+      final cases =
+          <({int opcode, YuwellHistoryRecordLayout? layout, int clearLength})>[
+            (
+              opcode: YuwellCt5Commands.alternateHistoryCommand,
+              layout: YuwellHistoryRecordLayout.alert17,
+              clearLength: 17,
+            ),
+            (
+              opcode: YuwellCt5Commands.historyCommand,
+              layout: YuwellHistoryRecordLayout.compact11,
+              clearLength: 11,
+            ),
+            (
+              opcode: YuwellCt5Commands.historyCommand,
+              layout: YuwellHistoryRecordLayout.voltage15,
+              clearLength: 15,
+            ),
+            (
+              opcode: YuwellCt5Commands.historyCommand,
+              layout: YuwellHistoryRecordLayout.compact11,
+              clearLength: 165,
+            ),
+            (
+              opcode: YuwellCt5Commands.historyCommand,
+              layout: YuwellHistoryRecordLayout.voltage15,
+              clearLength: 165,
+            ),
+            (
+              opcode: YuwellCt5Commands.historyCommand,
+              layout: null,
+              clearLength: 0,
+            ),
+          ];
+
+      for (final value in cases) {
+        final clear = List<int>.filled(value.clearLength, 0xfc);
+        final frame = appendYuwellSum8(<int>[
+          value.opcode,
+          0,
+          0,
+          ...YuwellCt5ByteTransform.encode(clear, key: 0),
+        ]);
+
+        final parsed = YuwellHistoryFrame.parse(
+          frame,
+          cipher: 0,
+          expectedLayout: value.layout,
+        );
+
+        expect(parsed.layout, value.layout);
+        expect(parsed.terminated, isTrue);
+        expect(parsed.indexedRecords, isEmpty);
+      }
+    });
   });
 }

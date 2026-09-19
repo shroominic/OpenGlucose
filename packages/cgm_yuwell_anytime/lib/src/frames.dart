@@ -225,6 +225,18 @@ final class YuwellHistoryFrame {
     }
 
     final layout = expectedLayout ?? _inferLayout(frame.first, clear.length);
+    final layoutMatchesOpcode = switch (frame.first) {
+      YuwellCt5Commands.alternateHistoryCommand =>
+        layout == YuwellHistoryRecordLayout.alert17,
+      YuwellCt5Commands.historyCommand =>
+        layout != YuwellHistoryRecordLayout.alert17,
+      _ => false,
+    };
+    if (!layoutMatchesOpcode) {
+      throw const YuwellProtocolFormatException(
+        'history payload layout does not match opcode',
+      );
+    }
     final recordLength = switch (layout) {
       YuwellHistoryRecordLayout.compact11 => 11,
       YuwellHistoryRecordLayout.voltage15 => 15,

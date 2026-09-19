@@ -341,11 +341,13 @@ final class YuwellAnytimeSession implements CgmSession {
   Future<void> _writeTail = Future<void>.value();
   Future<void>? _initialization;
   Future<void>? _historyFuture;
+  Future<void>? _publicHistoryFuture;
   YuwellSessionCredentials? _credentials;
   YuwellUnresolvedWriteIntent? _unresolvedIntent;
   YuwellHistoryRecordLayout? _recordLayout;
   String? _firmware;
   bool _closing = false;
+  bool _initializationFinished = false;
   bool _writeWithoutResponse = false;
   bool _autoHistoryStarted = false;
   bool _historySawSessionComplete = false;
@@ -384,6 +386,8 @@ final class YuwellAnytimeSession implements CgmSession {
       if (!_closing) await _cleanupAfterInitializationFailure();
       _releaseLease();
       Error.throwWithStackTrace(failure, stackTrace);
+    } finally {
+      _initializationFinished = true;
     }
   }
 
@@ -1111,7 +1115,9 @@ final class YuwellAnytimeSession implements CgmSession {
     // Saved CT5 sessions enter ready state only after the exact reviewed
     // check-ID -> date -> history -> status -> low-power sequence completes.
     _autoHistoryStarted = true;
-    await syncHistory();
+    // Initialization owns this internal history leg. Calling the public
+    // syncHistory() here would wait for initialization and deadlock itself.
+    await _syncHistoryCoalesced();
   }
 
   Future<void> _readBindingStatusForDiagnostic() async {
@@ -1630,7 +1636,7 @@ final class YuwellAnytimeSession implements CgmSession {
 
   Future<void> _autoSyncHistory() async {
     try {
-      await syncHistory();
+      await _syncHistoryCoalesced();
     } catch (_) {
       _log(CgmLogLevel.warning, 'yuwell.history.auto-failed');
     }
@@ -1649,6 +1655,38 @@ final class YuwellAnytimeSession implements CgmSession {
     bool includeRawHistory = false,
     int? requestedStartOffset,
   }) {
+    final inFlight = _publicHistoryFuture;
+    if (inFlight != null) return inFlight;
+
+    // Public callers must not race the current connection's authentication or
+    // setup-date write. Initialization uses the private coalesced leg above
+    // so its own setup history remains part of the existing chain.
+    final queuedDuringInitialization = !_initializationFinished;
+    late final Future<void> operation;
+    operation = (_initialization ?? initialize())
+        .then<void>((_) async {
+          if (queuedDuringInitialization) {
+            // Saved-session setup has already completed its internal history
+            // leg when initialization resolves. Fresh activation starts the
+            // same leg from _publishReady; await either one if still active
+            // instead of launching a redundant history/low-power exchange.
+            await _historyFuture;
+            return;
+          }
+          await _syncHistoryCoalesced(
+            requestedStartOffset: requestedStartOffset,
+          );
+        })
+        .whenComplete(() {
+          if (identical(_publicHistoryFuture, operation)) {
+            _publicHistoryFuture = null;
+          }
+        });
+    _publicHistoryFuture = operation;
+    return operation;
+  }
+
+  Future<void> _syncHistoryCoalesced({int? requestedStartOffset}) {
     final inFlight = _historyFuture;
     if (inFlight != null) return inFlight;
     late final Future<void> operation;

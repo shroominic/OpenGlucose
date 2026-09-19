@@ -9,5 +9,9 @@
   topology checks, notify-before-write flow, secure credential/journal
   interfaces, crash-safe activation recovery, immediate live ACKs, and private
   MTU-aware history synchronization.
+- Gate public refresh/history calls on current-connection authentication and
+  setup-date completion while preserving the internal setup history chain.
+- Reject explicit history layouts that conflict with their response opcode,
+  including ambiguous base-opcode payload lengths.
 - Keep all transmitter glucose private until physical differential validation;
   pre-V1150 firmware and all unsafe administrative operations fail closed.

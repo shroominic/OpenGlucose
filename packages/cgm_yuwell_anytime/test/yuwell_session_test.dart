@@ -1640,6 +1640,151 @@ void main() {
       expect(fixture.connection.opcodeWriteCount(0x0f), 2);
     });
 
+    test(
+      'gates public history requests until saved-session auth and date finish',
+      () async {
+        final checkIdStarted = Completer<void>();
+        final releaseCheckId = Completer<void>();
+        final dateStarted = Completer<void>();
+        final releaseDate = Completer<void>();
+        final fixture = _Fixture(
+          credentials: _activeCredentials(),
+          historyRecordCount: 1,
+          checkIdResponseStarted: checkIdStarted,
+          checkIdResponseRelease: releaseCheckId.future,
+          dateResponseStarted: dateStarted,
+          dateResponseRelease: releaseDate.future,
+        );
+        final session = await fixture.connect();
+
+        final initialization = session.initialize();
+        await checkIdStarted.future;
+        final refresh = session.refresh();
+        final refreshLiveData = session.refreshLiveData();
+        final syncHistory = session.syncHistory();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(fixture.connection.opcodeWriteCount(0x47), 0);
+        expect(fixture.connection.opcodeWriteCount(0x0f), 0);
+        expect(
+          fixture.journal.events.where((event) => event.startsWith('prepare:')),
+          isEmpty,
+        );
+        expect(session.currentSnapshot.stage, isNot(CgmSyncStage.ready));
+        expect(session.currentSnapshot.latestReading, isNull);
+
+        releaseCheckId.complete();
+        await dateStarted.future;
+        await Future<void>.delayed(Duration.zero);
+
+        expect(fixture.connection.opcodeWriteCount(0x47), 0);
+        expect(fixture.connection.opcodeWriteCount(0x0f), 0);
+        expect(session.currentSnapshot.stage, isNot(CgmSyncStage.ready));
+
+        releaseDate.complete();
+        await initialization;
+        await Future.wait<void>(<Future<void>>[
+          refresh,
+          refreshLiveData,
+          syncHistory,
+        ]);
+
+        expect(fixture.connection.opcodeWriteCount(0x47), 2);
+        expect(fixture.connection.opcodeWriteCount(0x0f), 1);
+        expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+      },
+    );
+
+    test(
+      'rejected saved-session auth fails public history without a write',
+      () async {
+        final checkIdStarted = Completer<void>();
+        final releaseCheckId = Completer<void>();
+        final fixture = _Fixture(
+          credentials: _activeCredentials(),
+          checkIdAccepted: false,
+          checkIdResponseStarted: checkIdStarted,
+          checkIdResponseRelease: releaseCheckId.future,
+        );
+        final session = await fixture.connect();
+
+        final initialization = session.initialize();
+        await checkIdStarted.future;
+        final refresh = session.refresh();
+        final initializationExpectation = expectLater(
+          initialization,
+          throwsA(_failure(YuwellSessionFailureKind.authenticationRejected)),
+        );
+        final refreshExpectation = expectLater(
+          refresh,
+          throwsA(_failure(YuwellSessionFailureKind.authenticationRejected)),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(fixture.connection.opcodeWriteCount(0x47), 0);
+        expect(fixture.connection.opcodeWriteCount(0x0f), 0);
+
+        releaseCheckId.complete();
+        await initializationExpectation;
+        await refreshExpectation;
+        expect(fixture.connection.opcodeWriteCount(0x47), 0);
+        expect(fixture.connection.opcodeWriteCount(0x0f), 0);
+        expect(
+          fixture.journal.events.where((event) => event.startsWith('prepare:')),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'disconnect while saved-session auth is pending fails public history',
+      () async {
+        final checkIdStarted = Completer<void>();
+        final releaseCheckId = Completer<void>();
+        final fixture = _Fixture(
+          credentials: _activeCredentials(),
+          checkIdResponseStarted: checkIdStarted,
+          checkIdResponseRelease: releaseCheckId.future,
+        );
+        final session = await fixture.connect();
+
+        final initialization = session.initialize();
+        await checkIdStarted.future;
+        final refresh = session.refresh();
+        final initializationExpectation = expectLater(
+          initialization,
+          throwsA(_failure(YuwellSessionFailureKind.disconnected)),
+        );
+        final refreshExpectation = expectLater(
+          refresh,
+          throwsA(_failure(YuwellSessionFailureKind.disconnected)),
+        );
+        // The explicit close fails the transport's pending completer before it
+        // can be observed by the expectation futures; retain a sink for the
+        // duplicate asynchronous error path as well.
+        unawaited(
+          initialization.then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          ),
+        );
+        unawaited(
+          refresh.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+        );
+        // Let the scripted write return so _sendAndWait is observing its
+        // response completer before the explicit close fails that completer.
+        await Future<void>.delayed(Duration.zero);
+        final disconnect = session.disconnect();
+        releaseCheckId.complete();
+        await disconnect;
+
+        await initializationExpectation;
+        await refreshExpectation;
+        expect(fixture.connection.opcodeWriteCount(0x47), 0);
+        expect(fixture.connection.opcodeWriteCount(0x0f), 0);
+        expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+      },
+    );
+
     test('ACKs and rejects base live frames on V1150', () async {
       final fixture = _Fixture(credentials: _activeCredentials());
       final session = await fixture.connect();
@@ -2000,6 +2145,10 @@ final class _Fixture {
     Duration ackDelay = Duration.zero,
     Duration historyResponseDelay = Duration.zero,
     Duration lowPowerResponseDelay = Duration.zero,
+    Completer<void>? checkIdResponseStarted,
+    Future<void>? checkIdResponseRelease,
+    Completer<void>? dateResponseStarted,
+    Future<void>? dateResponseRelease,
     List<int> historyRecordBytes = _recordBytes,
     List<List<int>>? historySlots,
     List<int>? versionResponse,
@@ -2025,6 +2174,10 @@ final class _Fixture {
          ackDelay: ackDelay,
          historyResponseDelay: historyResponseDelay,
          lowPowerResponseDelay: lowPowerResponseDelay,
+         checkIdResponseStarted: checkIdResponseStarted,
+         checkIdResponseRelease: checkIdResponseRelease,
+         dateResponseStarted: dateResponseStarted,
+         dateResponseRelease: dateResponseRelease,
          historyRecordBytes: historyRecordBytes,
          historySlots: historySlots,
          versionResponse: versionResponse,
@@ -2341,6 +2494,10 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     required this.ackDelay,
     required this.historyResponseDelay,
     required this.lowPowerResponseDelay,
+    required this.checkIdResponseStarted,
+    required this.checkIdResponseRelease,
+    required this.dateResponseStarted,
+    required this.dateResponseRelease,
     required this.historyRecordBytes,
     required this.historySlots,
     this.versionResponse,
@@ -2362,6 +2519,10 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
   final Duration ackDelay;
   final Duration historyResponseDelay;
   final Duration lowPowerResponseDelay;
+  final Completer<void>? checkIdResponseStarted;
+  final Future<void>? checkIdResponseRelease;
+  final Completer<void>? dateResponseStarted;
+  final Future<void>? dateResponseRelease;
   final List<int> historyRecordBytes;
   final List<List<int>>? historySlots;
   final List<int>? versionResponse;
@@ -2472,6 +2633,38 @@ final class _ScriptedConnection implements BleConnection, BleNegotiatedMtu {
     }
     if (opcode == dropResponseOpcode) {
       return;
+    }
+    if (opcode == 0x31) {
+      final started = checkIdResponseStarted;
+      if (started != null && !started.isCompleted) started.complete();
+      final release = checkIdResponseRelease;
+      if (release != null) {
+        final response = _response(immutable);
+        unawaited(
+          release.then<void>((_) {
+            if (response != null && !_notifications.isClosed) {
+              _notifications.add(response);
+            }
+          }),
+        );
+        return;
+      }
+    }
+    if (opcode == 0x03) {
+      final started = dateResponseStarted;
+      if (started != null && !started.isCompleted) started.complete();
+      final release = dateResponseRelease;
+      if (release != null) {
+        final response = _response(immutable);
+        unawaited(
+          release.then<void>((_) {
+            if (response != null && !_notifications.isClosed) {
+              _notifications.add(response);
+            }
+          }),
+        );
+        return;
+      }
     }
     final response = _response(immutable);
     if (response != null) {
