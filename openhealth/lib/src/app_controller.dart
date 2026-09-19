@@ -2199,7 +2199,7 @@ class CgmAppController extends ChangeNotifier {
       return CgmSessionSnapshot(
         stage: incoming.stage,
         statusText: incoming.statusText,
-        sensor: incoming.sensor,
+        sensor: _publicSensor(incoming.sensor),
         capabilities: incoming.capabilities,
         latestReading: latest ?? normalized.lastOrNull,
         history: normalized,
