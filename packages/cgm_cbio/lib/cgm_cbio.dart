@@ -16,3 +16,4 @@ export 'src/cbio_queries.dart';
 export 'src/cbio_reply_inspection.dart';
 export 'src/cbio_session_evidence.dart';
 export 'src/cbio_session_checkpoint.dart';
+export 'src/cbio_private_state.dart';
