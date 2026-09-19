@@ -926,8 +926,20 @@ void main() {
             output,
             const bool.fromEnvironment('CBIO_FAILURE_TRACE')
                 ? [
+                    'CBIO milestone=cbio.connect.started',
+                    'CBIO milestone=cbio.ff31.subscribed',
+                    'CBIO milestone=cbio.auth.ok',
+                    'CBIO milestone=cbio.clock.set',
                     'CBIO failure=cbio.counter.restart counterFailureReason=witness-time-mismatch',
-                    if (rejectSuccessor) 'CBIO failure=cbio.auth.rejected',
+                    'CBIO milestone=cbio.connect.started',
+                    'CBIO milestone=cbio.ff31.subscribed',
+                    if (rejectSuccessor)
+                      'CBIO failure=cbio.auth.rejected'
+                    else ...[
+                      'CBIO milestone=cbio.auth.ok',
+                      'CBIO milestone=cbio.clock.set',
+                      'CBIO milestone=cbio.write.raw-history',
+                    ],
                   ]
                 : isEmpty,
           );
@@ -1487,78 +1499,235 @@ void main() {
   group('private failure trace', () {
     const enabled = bool.fromEnvironment('CBIO_FAILURE_TRACE');
     for (final scenario in ['success', 'auth', 'write', 'witness']) {
-      test('$scenario emits only an opted-in closed failure', () async {
-        final output = <String>[];
+      test(
+        '$scenario emits only opted-in closed milestones and failure',
+        () async {
+          final output = <String>[];
+          await runZoned(
+            () async {
+              final connection = _FakeConnection();
+              await _defaultResponder(
+                connection,
+                authReply: scenario == 'auth' ? _authRejected : _authAccepted,
+                rawBatches: scenario == 'witness'
+                    ? [
+                        _rawBatch(
+                          startIndex: 2,
+                          baseEpochSeconds: 9000,
+                          baseReindex: 2,
+                          currents: [99],
+                        ),
+                      ]
+                    : scenario == 'success'
+                    ? [
+                        _rawBatch(
+                          startIndex: 1,
+                          baseEpochSeconds: 1000,
+                          baseReindex: 0,
+                          currents: [99],
+                        ),
+                      ]
+                    : [],
+              );
+              if (scenario == 'write') {
+                connection.onWrite = (_) async {
+                  throw StateError(
+                    'private-native-detail ${_sensor.deviceId} '
+                    '${_syntheticCredentials.authMaterial}',
+                  );
+                };
+              }
+              final session = await _privateSession(
+                sensor: scenario == 'witness'
+                    ? _withMetadata({
+                        cbioCheckpointMetadataKey: jsonEncode({
+                          'version': 1,
+                          'sensorKey': _sensor.storageKey,
+                          'index': 2,
+                          'rawTime': 1000,
+                        }),
+                      })
+                    : _sensor,
+                transport: _FakeTransport(connection),
+                credentials: _syntheticSource,
+                timing: _fastTiming,
+              );
+              await session.initialize();
+              await _pumpUntil(
+                () =>
+                    session.currentSnapshot.stage ==
+                    (scenario == 'success'
+                        ? CgmSyncStage.ready
+                        : CgmSyncStage.error),
+              );
+              if (scenario != 'success') {
+                await _pumpUntil(() => connection.disconnected);
+                await session.refreshLiveData();
+                await session.syncHistory();
+              }
+              await session.disconnect();
+            },
+            zoneSpecification: ZoneSpecification(
+              print: (self, parent, zone, line) => output.add(line),
+            ),
+          );
+          final expected = switch (scenario) {
+            'auth' => 'CBIO failure=cbio.auth.rejected',
+            'write' => 'CBIO failure=cbio.write.failed',
+            'witness' =>
+              'CBIO failure=cbio.counter.restart '
+                  'counterFailureReason=witness-time-mismatch',
+            _ => null,
+          };
+          expect(
+            output,
+            enabled
+                ? [
+                    'CBIO milestone=cbio.connect.started',
+                    'CBIO milestone=cbio.ff31.subscribed',
+                    if (scenario == 'success' || scenario == 'witness') ...[
+                      'CBIO milestone=cbio.auth.ok',
+                      'CBIO milestone=cbio.clock.set',
+                    ],
+                    if (scenario == 'success')
+                      'CBIO milestone=cbio.write.raw-history',
+                    ?expected,
+                  ]
+                : isEmpty,
+          );
+        },
+      );
+    }
+
+    for (final stage in ['before-subscription', 'auth-wait', 'history']) {
+      test(
+        'drop at $stage traces once without native details or a terminal failure',
+        () async {
+          final output = <String>[];
+          await runZoned(
+            () async {
+              final connection = _FakeConnection();
+              await _defaultResponder(connection);
+              final setupGate = Completer<void>();
+              final entered = Completer<void>();
+              if (stage == 'before-subscription') {
+                connection.onSetup = (operation) async {
+                  if (operation == 'notify') {
+                    entered.complete();
+                    await setupGate.future;
+                  }
+                };
+              } else if (stage == 'auth-wait') {
+                connection.onWrite = (frame) async {
+                  if (frame[1] == 1) entered.complete();
+                };
+              }
+              final session = await _privateSession(
+                sensor: _sensor,
+                transport: _FakeTransport(connection),
+                credentials: _syntheticSource,
+                timing: _fastTiming.copyWith(
+                  livePollInterval: const Duration(hours: 1),
+                ),
+              );
+              final initialization = session.initialize();
+              if (stage == 'history') {
+                await initialization;
+                await _pumpUntil(
+                  () => session.currentSnapshot.stage == CgmSyncStage.ready,
+                );
+              } else {
+                await entered.future;
+              }
+              if (stage == 'auth-wait') {
+                connection._notifications.addError(
+                  StateError(
+                    'private-notification-detail ${_sensor.deviceId} ${_syntheticCredentials.authMaterial}',
+                  ),
+                );
+              }
+              connection.dropLink();
+              connection.dropLink();
+              await _drainMicrotasks();
+              expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
+              expect(
+                session.currentSnapshot.lastError,
+                CbioSessionFailure.disconnected,
+              );
+              final closing = session.disconnect();
+              if (!setupGate.isCompleted) setupGate.complete();
+              await initialization;
+              await closing;
+              expect(connection.disconnectCompleted, isTrue);
+            },
+            zoneSpecification: ZoneSpecification(
+              print: (self, parent, zone, line) => output.add(line),
+            ),
+          );
+          expect(
+            output,
+            enabled
+                ? [
+                    'CBIO milestone=cbio.connect.started',
+                    if (stage != 'before-subscription')
+                      'CBIO milestone=cbio.ff31.subscribed',
+                    if (stage == 'history') ...[
+                      'CBIO milestone=cbio.auth.ok',
+                      'CBIO milestone=cbio.clock.set',
+                      'CBIO milestone=cbio.write.raw-history',
+                    ],
+                    'CBIO milestone=cbio.disconnected',
+                  ]
+                : isEmpty,
+          );
+        },
+      );
+    }
+
+    test(
+      'throwing milestone sink cannot stop successful acquisition or transport drop',
+      () async {
         await runZoned(
           () async {
             final connection = _FakeConnection();
             await _defaultResponder(
               connection,
-              authReply: scenario == 'auth' ? _authRejected : _authAccepted,
-              rawBatches: scenario == 'witness'
-                  ? [
-                      _rawBatch(
-                        startIndex: 2,
-                        baseEpochSeconds: 9000,
-                        baseReindex: 2,
-                        currents: [99],
-                      ),
-                    ]
-                  : [],
+              rawBatches: [
+                _rawBatch(
+                  startIndex: 1,
+                  baseEpochSeconds: 1000,
+                  baseReindex: 0,
+                  currents: [99],
+                ),
+              ],
             );
-            if (scenario == 'write') {
-              connection.onWrite = (_) async {
-                throw StateError(
-                  'private-native-detail ${_sensor.deviceId} '
-                  '${_syntheticCredentials.authMaterial}',
-                );
-              };
-            }
             final session = await _privateSession(
-              sensor: scenario == 'witness'
-                  ? _withMetadata({
-                      cbioCheckpointMetadataKey: jsonEncode({
-                        'version': 1,
-                        'sensorKey': _sensor.storageKey,
-                        'index': 2,
-                        'rawTime': 1000,
-                      }),
-                    })
-                  : _sensor,
+              sensor: _sensor,
               transport: _FakeTransport(connection),
               credentials: _syntheticSource,
-              timing: _fastTiming,
+              timing: _fastTiming.copyWith(
+                livePollInterval: const Duration(hours: 1),
+              ),
             );
             await session.initialize();
             await _pumpUntil(
-              () =>
-                  session.currentSnapshot.stage ==
-                  (scenario == 'success'
-                      ? CgmSyncStage.ready
-                      : CgmSyncStage.error),
+              () => session.currentSnapshot.stage == CgmSyncStage.ready,
             );
-            if (scenario != 'success') {
-              await _pumpUntil(() => connection.disconnected);
-              await session.refreshLiveData();
-              await session.syncHistory();
-            }
+            expect(await _rawCount(session), 1);
+            expect(session.currentSnapshot.latestReading, isNull);
+            connection.dropLink();
+            await _drainMicrotasks();
+            expect(session.currentSnapshot.stage, CgmSyncStage.disconnected);
             await session.disconnect();
+            expect(connection.disconnectCompleted, isTrue);
           },
           zoneSpecification: ZoneSpecification(
-            print: (self, parent, zone, line) => output.add(line),
+            print: (self, parent, zone, line) =>
+                throw StateError('sink failed'),
           ),
         );
-        final expected = switch (scenario) {
-          'auth' => 'CBIO failure=cbio.auth.rejected',
-          'write' => 'CBIO failure=cbio.write.failed',
-          'witness' =>
-            'CBIO failure=cbio.counter.restart '
-                'counterFailureReason=witness-time-mismatch',
-          _ => null,
-        };
-        expect(output, enabled && expected != null ? [expected] : isEmpty);
-      });
-    }
+      },
+    );
 
     test('a throwing trace sink cannot prevent terminal cleanup', () async {
       await runZoned(

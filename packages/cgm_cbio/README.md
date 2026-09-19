@@ -117,12 +117,33 @@ See the [live record](../../docs/testing/cbio-gs1-glucose-live.md) and the
 [app integration record](../../docs/testing/cbio-gs1-app-live.md).
 
 For a private diagnostic build, `--dart-define=CBIO_FAILURE_TRACE=true` emits
-one process-output line at the first terminal driver failure. It contains only
-an allowlisted failure code and, when applicable, the closed counter-failure
-category. The flag defaults to false in every build mode. It emits no raw
-records, sensor identifiers, credentials or exception text and changes no
-failure/recovery guards. Omit the flag to disable it. This trace does not
-establish glucose decoding or explain failures from earlier launches.
+the existing `CBIO failure=<closed-code>` line at the first terminal driver
+failure, including the closed counter-failure category when applicable. It
+also emits exactly these allowed lifecycle milestone tokens:
+
+```text
+CBIO milestone=cbio.connect.started
+CBIO milestone=cbio.ff31.subscribed
+CBIO milestone=cbio.auth.ok
+CBIO milestone=cbio.clock.set
+CBIO milestone=cbio.write.raw-history
+CBIO milestone=cbio.disconnected
+```
+
+`connect.started` marks an attempt, not an established link. Subscription,
+authentication and clock milestones reflect their existing completion events;
+`write.raw-history` marks write completion while the session remains active,
+not returned records or a confirmed witness. `disconnected` marks the driver's
+accepted transport drop, including notification-stream errors; it does not
+identify native status8 or its cause. Repeated drop callbacks emit only once,
+and forwarding successor logs does not duplicate their milestone output.
+
+The flag defaults to false in every build mode. Output has no raw records,
+sensor identifiers, credentials, timing payloads or arbitrary exception/log
+text. A throwing trace sink cannot interrupt acquisition or cleanup. Omit the
+flag to disable all trace output. UI, BLE setup, polling and failure/recovery
+guards are unchanged. This trace does not establish glucose decoding or explain
+failures from earlier launches.
 
 Verify the trace in both configurations from this package:
 

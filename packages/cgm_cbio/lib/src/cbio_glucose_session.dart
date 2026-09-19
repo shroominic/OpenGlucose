@@ -834,6 +834,7 @@ final class CbioGlucoseSession implements CgmSession {
       return;
     }
     _linkDropped = true;
+    _traceMilestone(CbioSessionFailure.disconnected);
     _settlePendingRead();
     _cancelTimers();
     _setPhase(
@@ -1282,6 +1283,7 @@ final class CbioGlucoseSession implements CgmSession {
     if (_logController.isClosed) {
       return;
     }
+    _traceMilestone(message);
     _logController.add(
       CgmLogEntry(timestamp: _clock().toUtc(), level: level, message: message),
     );
@@ -1353,6 +1355,27 @@ final class CbioGlucoseSession implements CgmSession {
     _snapshot = successor.currentSnapshot;
     _snapshotController.add(_snapshot);
     await successor.initialize();
+  }
+
+  void _traceMilestone(String message) {
+    if (!const bool.fromEnvironment('CBIO_FAILURE_TRACE')) return;
+    final token = switch (message) {
+      'cbio.connect.started' ||
+      'cbio.ff31.subscribed' ||
+      'cbio.auth.ok' ||
+      'cbio.clock.set' ||
+      'cbio.write.raw-history' ||
+      CbioSessionFailure.disconnected => message,
+      _ => null,
+    };
+    if (token == null) return;
+    try {
+      // Closed milestones only; never print other log text or native details.
+      // ignore: avoid_print
+      print('CBIO milestone=$token');
+    } on Object {
+      // Observation cannot interrupt acquisition or transport-drop handling.
+    }
   }
 
   void _traceFailure(String code) {

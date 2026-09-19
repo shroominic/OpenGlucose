@@ -2,6 +2,14 @@
 
 ## 0.1.0
 
+- Extend default-off `CBIO_FAILURE_TRACE` with six closed lifecycle milestones:
+  connect attempt, FF31 subscription, authentication accepted, clock write,
+  raw-history write completion and accepted transport drop. Preserve existing
+  failure lines. Repeated drop callbacks and successor log forwarding do not
+  duplicate milestones; arbitrary log/exception text, identifiers, raw records
+  and timing payloads are excluded. Trace-sink exceptions cannot affect
+  acquisition or cleanup. No UI, BLE setup, retry or persistence change.
+
 - Add optional `CbioRecoveryStore` for one independent raw acquisition after
   the exact witness-time-mismatch failure. Await successful old subscription
   cancellation and GATT disconnect, drain private state, then atomically select
