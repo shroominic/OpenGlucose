@@ -70,11 +70,11 @@ one-minute cooldown after each bounded operation at the first unseen index.
 Manual requests share that pacing and overlapping requests coalesce. Production
 sessions have no cumulative lifetime read cap; an explicit nullable
 `maxReadsPerSession` remains available for capped bench runs. A legacy
-`resumeOffset` alone does not authorize skipping records. Every emitted reading
-is `CgmRecordSource.raw` with `isDisplayProvisional` set. The `/10` field is an
-engineering input to the vendor's stateful algorithm, not verified glucose.
-The app renders the unscaled raw integer without a glucose unit and explicitly
-states that it is not a verified glucose reading.
+`resumeOffset` alone does not authorize skipping records. Raw payloads and their
+historical `/10` representation remain private algorithm inputs, not verified
+glucose. The public session emits no latest reading and empty `history` and
+`rawHistory`. GS1 uses the unchanged shared AiDEX/Libre2 presentation, including
+its empty, error and unknown-lifecycle states; it has no raw-value dashboard.
 
 See the [live record](../../docs/testing/cbio-gs1-glucose-live.md) and the
 [app integration record](../../docs/testing/cbio-gs1-app-live.md).
