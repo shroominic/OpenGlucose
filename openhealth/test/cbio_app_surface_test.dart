@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
+import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store.dart';
@@ -60,6 +61,7 @@ CgmSessionSnapshot _snapshot({
 Future<(CgmAppController, SharedPreferences)> _controllerFor(
   CgmSessionSnapshot Function() build, {
   String language = 'en',
+  DiscoveredSensor sensor = _sensor,
 }) async {
   SharedPreferences.setMockInitialValues(<String, Object>{
     'openHealth.onboarding.completed': true,
@@ -68,10 +70,10 @@ Future<(CgmAppController, SharedPreferences)> _controllerFor(
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
     preferences: preferences,
-    driver: _CbioSurfaceDriver(build),
+    driver: _SurfaceDriver(build, driverId: sensor.driverId),
   );
   await controller.initialize();
-  await controller.connect(_sensor);
+  await controller.connect(sensor);
   return (controller, preferences);
 }
 
@@ -95,7 +97,9 @@ Future<void> _pumpApp(
     ),
   );
   await tester.pump();
-  await tester.pump();
+  // The messaging bridge runs post-frame and its host animates in. A second
+  // zero-duration pump can assert before the eligible tip is rendered.
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -198,6 +202,15 @@ void main() {
       expect(find.byKey(const ValueKey('sensorExpiryIndicator')), findsNothing);
       expect(find.textContaining('index'), findsNothing);
       expect(find.textContaining('Tap a point on the chart'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('messageCard-tip.tapReading')),
+        findsNothing,
+      );
+      expect(find.byType(CgmDashboardChart), findsNothing);
+      expect(
+        preferences.getStringList('openHealth.messaging.dismissed'),
+        isNull,
+      );
       expect(find.textContaining('mg/dL'), findsNothing);
       expect(find.textContaining('mmol/L'), findsNothing);
       expect(controller.snapshot!.history, hasLength(3));
@@ -206,6 +219,51 @@ void main() {
       await tester.pump();
     });
   }
+
+  testWidgets('AiDEX chart retains its undismissed chart tip', (tester) async {
+    const sensor = DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: 'synthetic-aidex-tip',
+      displayName: 'Synthetic AiDEX',
+      storageKey: 'synthetic-aidex-tip',
+      rssi: -60,
+      capabilities: CgmCapabilities(supportsHistory: true),
+    );
+    final history = [
+      CgmReading(
+        valueMgdl: 110,
+        source: CgmRecordSource.vendor,
+        sensorMinute: 120,
+        recordedAt: DateTime.now(),
+      ),
+    ];
+    final (controller, preferences) = await _controllerFor(
+      () => CgmSessionSnapshot(
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        stage: CgmSyncStage.ready,
+        statusText: 'Connected',
+        latestReading: history.last,
+        history: history,
+      ),
+      sensor: sensor,
+    );
+    await _pumpApp(tester, controller, preferences);
+    expect(
+      find.byKey(const ValueKey('messageCard-tip.tapReading')),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(
+      find.byType(CgmDashboardChart),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.byType(CgmDashboardChart), findsOneWidget);
+    expect(preferences.getStringList('openHealth.messaging.dismissed'), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    await tester.pump();
+  });
 
   testWidgets('CBIO missing flags cannot enable glucose or wellness surfaces', (
     tester,
@@ -643,13 +701,13 @@ void main() {
   });
 }
 
-final class _CbioSurfaceDriver implements CgmDriver {
-  _CbioSurfaceDriver(this.build);
+final class _SurfaceDriver implements CgmDriver {
+  _SurfaceDriver(this.build, {required this.driverId});
 
   final CgmSessionSnapshot Function() build;
 
   @override
-  String get driverId => 'cbio';
+  final String driverId;
 
   @override
   Stream<DiscoveredSensor> scan({

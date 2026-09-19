@@ -19,7 +19,10 @@ MessageContext buildMessageContext(
   return MessageContext(
     hasSession: hasSession,
     isWarmingUp: warmup?.phase == WarmupPhase.warming,
-    hasReadings: latest != null,
+    // CBIO raw records do not populate a glucose chart. They must not enable
+    // glucose-reading tips merely because a raw diagnostic value is visible.
+    hasReadings:
+        latest != null && snapshot != null && !isCbioSnapshot(snapshot),
     now: now ?? DateTime.now(),
   );
 }

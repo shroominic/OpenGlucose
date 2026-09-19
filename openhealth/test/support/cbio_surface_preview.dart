@@ -8,6 +8,8 @@ import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/messaging/message_catalog.dart';
+import 'package:openglucose/src/messaging/message_controller.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -62,6 +64,10 @@ Future<void> main() async {
             writesAllowed: false,
           )..initialize(),
           preferences: preferences,
+          messageController: MessageController(
+            preferences: preferences,
+            messages: defaultMessageCatalog,
+          ),
         ),
       ),
     ),
