@@ -60,6 +60,42 @@ Native string reads are not an OS pre-allocation memory guard. Atomic
 primary/next/previous files can require 12 MiB plus frozen legacy; actual
 device/storage headroom is UNKNOWN.
 
+## One independent recovery capture
+
+The app also implements optional `CbioRecoveryStore`. Its atomic
+`openHealth.history.cbio.recovery.v1.<identity>` envelope selects one fresh
+capture under the unchanged sensor binding. Schema1/profile `raw08-recovery`
+records the closed reason `witness-time-mismatch`, exact UTF8 SHA256 references
+to original fullRecords and nullable legacy strings, and one embedded fresh
+full-record state. Predecessor strings remain solely at their original keys;
+every load and selection checks their retained bytes. Neither original key is
+rewritten by recovery. No predecessor rows/checkpoint/clock anchor are merged.
+
+The unchanged exact witness-time guard first publishes its terminal failure.
+The old notification and connection-state subscriptions must cancel and actual
+GATT disconnect must finish successfully. The leased owner then drains private
+writes, revalidates originals and absence of recovery, and atomically commits
+the pending capsule before any successor radio connection. A separate session
+uses fresh protocol state and raw index1; the original host-facing session
+forwards its snapshots, logs and method calls. Close waits for transition and
+cleanup to settle before releasing ownership. Closing before the next connect
+prevents it; a committed pending selection remains selected across restart.
+
+Capsule presence consumes the single budget, even while pending. Restart
+resumes the same captureId and only its checkpoint, with exact witness matching.
+Malformed presence, changed originals and a second mismatch stop without
+another route or retry loop. Legacy/full-only stores retain their prior failure
+behavior. Cleanup and storage failures forbid the successor and preserve the
+original failure; a committed-but-reported-failed write is recognized on reload.
+
+Fresh bounds remain 65535 rows, 4194304 UTF8 bytes and a 4096-byte header;
+recovery metadata is bounded to 4096 bytes and the whole capsule to 4198400 bytes.
+Overflow fails before writing, without truncation or rotation. Atomic files
+need additional space alongside the immutable originals; device headroom is
+unknown. Raw seven-field persistence still publishes no normalized glucose.
+Every new session retains the existing clock write, so a later reconnect may
+fail the exact witness guard again; the one-capsule budget is not replenished.
+
 ## Handoff and archives
 
 A sensor switch prepares and validates the target read-only before rebinding
@@ -91,7 +127,8 @@ Preserving private raw bytes is not proof of decoded glucose or completed histor
 
 ## Rollback / downgrade
 
-An older app does not understand the fullRecords key and cannot resume it.
+An older app may understand neither the fullRecords key nor the selected
+recovery capsule and cannot safely resume that route.
 Its frozen raw-v1 checkpoint and older legacy lists may be stale; do not treat
 an older app's display as the
 new history or allow it to overwrite the current state. Downgrading is not a
@@ -114,6 +151,13 @@ flutter test test/cbio_history_state_test.dart \
 ```
 
 Run `dart test` from `packages/cgm_cbio/` for private owner/session coverage.
+Run `dart run -DCBIO_FAILURE_TRACE=true test/cbio_glucose_session_test.dart`
+there as well to check the original failure is traced exactly once and successor
+failures retain their own closed code. The successor suite covers two distinct
+fake links, delayed/throwing cleanup, pending-before-connect ordering, close
+races, stale callbacks, failed-close retry and restart budget retention. The
+real app-controller/driver/adapter integration verifies that the first terminal
+snapshot leaves existing subscriptions attached through fresh acquisition.
 Together these cover exact witness admission, era isolation, failed save/handoff
 and retry, corrupt-target preparation, actual-driver/native-store restart,
 interrupted full-envelope rename/manifest migration, native backup exclusion,

@@ -330,6 +330,12 @@ final class CbioGlucoseSession implements CgmSession {
   _PendingRead? _activeRead;
   _PendingRead? _pendingRead;
   Future<void>? _initialization;
+  Future<bool>? _failureCleanup;
+  Future<void>? _recoveryTransition;
+  Future<void>? _disconnecting;
+  CbioGlucoseSession? _successor;
+  StreamSubscription<CgmSessionSnapshot>? _successorSnapshots;
+  StreamSubscription<CgmLogEntry>? _successorLogs;
   Completer<void>? _liveWindow;
   String _phase = CbioSessionPhase.connecting;
   String _statusText = 'Connecting to the GS1 sensor';
@@ -411,6 +417,7 @@ final class CbioGlucoseSession implements CgmSession {
       return;
     }
     _resolved = credentials;
+    if (_closing) return;
     _log(CgmLogLevel.info, 'cbio.connect.started');
     final connection = await _transport
         .connect(sensor.deviceId, timeout: timing.connectTimeout)
@@ -420,19 +427,19 @@ final class CbioGlucoseSession implements CgmSession {
       _onConnectionState,
       onError: (_) => _onTransportDrop(),
     );
-    if (_closing) {
-      await connection.disconnect();
-      return;
-    }
+    if (_closing) return;
     try {
       await connection.requestMtu(247).timeout(timing.writeTimeout);
     } on Object {
+      if (_closing) return;
       // The MTU exchange is an ATT-level negotiation, not a vendor frame.
       _log(CgmLogLevel.debug, 'cbio.mtu.default');
     }
+    if (_closing) return;
     final services = await connection.discoverServices().timeout(
       timing.discoveryTimeout,
     );
+    if (_closing) return;
     _locateCharacteristics(services);
     final receive = _receive;
     final command = _command;
@@ -454,6 +461,7 @@ final class CbioGlucoseSession implements CgmSession {
         .notifications(receive)
         .listen(_onNotification, onError: (_) => _onTransportDrop());
     await connection.setNotify(receive, true).timeout(timing.writeTimeout);
+    if (_closing) return;
     _log(CgmLogLevel.info, 'cbio.ff31.subscribed');
 
     if (!await _authenticate()) {
@@ -497,6 +505,7 @@ final class CbioGlucoseSession implements CgmSession {
       return false;
     }
     final octets = await _resolveAddressOctets();
+    if (_closing) return false;
     if (octets == null) {
       _fail(CbioSessionFailure.authMaterial);
       return false;
@@ -524,6 +533,7 @@ final class CbioGlucoseSession implements CgmSession {
       return false;
     }
     _authReply = null;
+    if (_closing) return false;
     if (result != 1) {
       _fail(CbioSessionFailure.authRejected);
       return false;
@@ -559,11 +569,13 @@ final class CbioGlucoseSession implements CgmSession {
       final serial = await connection
           .read(serialCharacteristic)
           .timeout(timing.writeTimeout);
+      if (_closing) return null;
       if (serial.length == 6) {
         _log(CgmLogLevel.debug, 'cbio.address.serial');
         return serial;
       }
     } on Object {
+      if (_closing) return null;
       _log(CgmLogLevel.debug, 'cbio.address.serial-unavailable');
     }
     final parts = sensor.deviceId.split(':');
@@ -818,7 +830,7 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _onTransportDrop() {
-    if (_closing || _linkDropped) {
+    if (_closing || _linkDropped || _terminalFailure) {
       return;
     }
     _linkDropped = true;
@@ -1027,9 +1039,15 @@ final class CbioGlucoseSession implements CgmSession {
       await connection
           .write(command, masked, withoutResponse: false)
           .timeout(timing.writeTimeout);
+      if (_closing || _linkDropped || _terminalFailure) {
+        return CbioFrameWrite.unavailable;
+      }
       _log(CgmLogLevel.info, 'cbio.write.$label');
       return CbioFrameWrite.sent;
     } on Object {
+      if (_closing || _linkDropped || _terminalFailure) {
+        return CbioFrameWrite.unavailable;
+      }
       _log(CgmLogLevel.error, 'cbio.write.failed:$label');
       return CbioFrameWrite.failed;
     }
@@ -1156,10 +1174,11 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _emit({bool force = false}) {
-    if (_snapshotController.isClosed) {
+    if (_snapshotController.isClosed || _successor != null) {
       return;
     }
     void publish() {
+      if (_snapshotController.isClosed || _successor != null) return;
       final anchor = _publishAnchor();
       final fullInputs = _privateState?.usesFullRecords ?? false;
       final history = fullInputs
@@ -1293,7 +1312,47 @@ final class CbioGlucoseSession implements CgmSession {
       error: code,
       force: true,
     );
-    unawaited(_releaseConnectionAfterFailure());
+    _failureCleanup ??= _releaseConnectionAfterFailure();
+    if (code == CbioSessionFailure.counterRestart &&
+        counterFailureReason == _CounterFailureReason.witnessTimeMismatch &&
+        (_privateState?.canRecoverWitnessMismatch ?? false)) {
+      _recoveryTransition ??= _recoverAfterWitnessMismatch();
+    }
+  }
+
+  Future<void> _recoverAfterWitnessMismatch() async {
+    // Old terminal state is never reset. Only successful, completed cleanup
+    // authorizes a new acquisition, and the pending capsule precedes its BLE.
+    if (!await _failureCleanup! || _closing) return;
+    final owner = _privateState!;
+    try {
+      await owner.recoverWitnessMismatch();
+    } on Object {
+      // Keep the exact original failure; a failed write cannot authorize BLE.
+      return;
+    }
+    if (_closing) return;
+    final successor = CbioGlucoseSession(
+      sensor: sensor,
+      transport: _transport,
+      credentials: _credentials,
+      timing: timing,
+      clock: _clock,
+      privateState: owner,
+    );
+    _successor = successor;
+    _privateState = null; // Ownership now belongs solely to the new session.
+    _successorSnapshots = successor.snapshots.listen((snapshot) {
+      if (_closing || _snapshotController.isClosed) return;
+      _snapshot = snapshot;
+      _snapshotController.add(snapshot);
+    });
+    _successorLogs = successor.logs.listen((entry) {
+      if (!_closing && !_logController.isClosed) _logController.add(entry);
+    });
+    _snapshot = successor.currentSnapshot;
+    _snapshotController.add(_snapshot);
+    await successor.initialize();
   }
 
   void _traceFailure(String code) {
@@ -1328,7 +1387,8 @@ final class CbioGlucoseSession implements CgmSession {
     }
   }
 
-  Future<void> _releaseConnectionAfterFailure() async {
+  Future<bool> _releaseConnectionAfterFailure() async {
+    var succeeded = true;
     final notifications = _notificationSubscription;
     _notificationSubscription = null;
     final states = _connectionSubscription;
@@ -1341,18 +1401,19 @@ final class CbioGlucoseSession implements CgmSession {
     try {
       await notifications?.cancel();
     } on Object {
-      // Failure cleanup is best effort and must not replace the terminal code.
+      succeeded = false;
     }
     try {
       await states?.cancel();
     } on Object {
-      // Failure cleanup is best effort and must not replace the terminal code.
+      succeeded = false;
     }
     try {
       await connection?.disconnect();
     } on Object {
-      // Failure cleanup is best effort and must not replace the terminal code.
+      succeeded = false;
     }
+    return succeeded;
   }
 
   void _settlePendingRead() {
@@ -1397,6 +1458,8 @@ final class CbioGlucoseSession implements CgmSession {
 
   /// Drains private writes without exposing protocol records to the host.
   Future<void> flushPrivateState() async {
+    final successor = _successor;
+    if (successor != null) return successor.flushPrivateState();
     _privateSaveTimer?.cancel();
     _privateSaveTimer = null;
     try {
@@ -1412,6 +1475,9 @@ final class CbioGlucoseSession implements CgmSession {
 
   @override
   Future<void> refreshLiveData() async {
+    if (_closing) return;
+    final successor = _successor;
+    if (successor != null) return successor.refreshLiveData();
     if (_closing || _linkDropped || _stage != CgmSyncStage.ready) {
       return;
     }
@@ -1423,6 +1489,14 @@ final class CbioGlucoseSession implements CgmSession {
     bool includeRawHistory = false,
     int? requestedStartOffset,
   }) async {
+    if (_closing) return;
+    final successor = _successor;
+    if (successor != null) {
+      return successor.syncHistory(
+        includeRawHistory: includeRawHistory,
+        requestedStartOffset: requestedStartOffset,
+      );
+    }
     if (_closing || _linkDropped) {
       return;
     }
@@ -1446,48 +1520,44 @@ final class CbioGlucoseSession implements CgmSession {
 
   @override
   Future<List<CgmDiagnosticItem>> refreshDiagnostics() async =>
-      <CgmDiagnosticItem>[
-        CgmDiagnosticItem(
-          key: 'cgm.session',
-          title: 'Sensor connection',
-          summary: _statusText,
-          fields: <String, String>{'phase': _phase, 'failure': ?_lastError},
-        ),
-      ];
+      _successor != null
+      ? _successor!.refreshDiagnostics()
+      : <CgmDiagnosticItem>[
+          CgmDiagnosticItem(
+            key: 'cgm.session',
+            title: 'Sensor connection',
+            summary: _statusText,
+            fields: <String, String>{'phase': _phase, 'failure': ?_lastError},
+          ),
+        ];
 
   @override
-  Future<void> disconnect() async {
-    if (_closing) {
-      await flushPrivateState();
-      await _privateState?.close();
-      return;
-    }
+  Future<void> disconnect() => _disconnecting ??= _disconnect().whenComplete(
+    () => _disconnecting = null,
+  );
+
+  void _requestClose() {
+    if (_closing) return;
     // Publish the last coalesced acquisition into private state before closing.
     _emit(force: true);
     _closing = true;
     _cancelTimers();
     _settlePendingRead();
-    try {
-      await _notificationSubscription?.cancel();
-    } on Object {
-      // Best effort; the link is released below regardless.
-    }
-    _notificationSubscription = null;
-    try {
-      await _connectionSubscription?.cancel();
-    } on Object {
-      // Best effort.
-    }
-    _connectionSubscription = null;
-    try {
-      await _connection?.disconnect();
-    } on Object {
-      // Best effort: a native description must never leak.
-    }
-    _connection = null;
-    _receive = null;
-    _command = null;
-    _serial = null;
+    final authReply = _authReply;
+    if (authReply != null && !authReply.isCompleted) authReply.complete(0);
+    // Stop the successor synchronously, without releasing its owner or link
+    // while initialization is still awaiting a native operation.
+    _successor?._requestClose();
+  }
+
+  Future<void> _disconnect() async {
+    _requestClose();
+    await _initialization;
+    await _recoveryTransition;
+    await (_failureCleanup ??= _releaseConnectionAfterFailure());
+    await _successor?.disconnect();
+    await _successorSnapshots?.cancel();
+    await _successorLogs?.cancel();
     _authReply = null;
     _stage = CgmSyncStage.disconnected;
     _phase = CbioSessionPhase.disconnected;

@@ -2,6 +2,20 @@
 
 ## 0.1.0
 
+- Add optional `CbioRecoveryStore` for one independent raw acquisition after
+  the exact witness-time-mismatch failure. Await successful old subscription
+  cancellation and GATT disconnect, drain private state, then atomically select
+  one pending recovery capsule before opening a separate session at raw index1.
+  Existing subscribers and session calls follow the successor; close races and
+  stale predecessor callbacks cannot authorize or alter it. Frozen legacy and
+  fullRecords bytes remain at their original keys with exact SHA256 references.
+  Capsule presence consumes the only budget across restart; a second mismatch,
+  corrupt state or cleanup/write failure stops without another route. Fresh
+  state retains the 65535-row/4MiB/4096-byte-header bounds; recovery metadata is
+  at most 4096 bytes and the complete capsule at most 4198400 bytes. Legacy/full
+  stores without the capability retain their existing behavior. Downgrading
+  after selection is unsupported. No normalized glucose or UI changes.
+
 - Add default-off `CBIO_FAILURE_TRACE` for private diagnostic builds. The first
   terminal driver failure emits only its allowlisted code and optional closed
   counter-failure category. Trace-output failure cannot interrupt terminal

@@ -154,6 +154,28 @@ without advancing durable progress. Native atomic replacement may require
 12 MiB plus frozen legacy data; actual device/storage headroom is unknown.
 These additions preserve input, not decoder readiness or calibrated glucose.
 
+The additive `CbioRecoveryStore` capability extends `CbioFullRecordStore` with
+atomic `readRecovery`/`writeRecovery`; the app uses the separate restricted
+`openHealth.history.cbio.recovery.v1.<identity>` key. Only the existing exact
+witness-time-mismatch guard authorizes one independent acquisition after
+successful notification/state cancellation, GATT disconnect and private drain.
+A pending capsule must commit before the successor connects at raw index1.
+Original fullRecords and legacy bytes stay immutable at their existing keys,
+validated against exact UTF8 SHA256 references. No old rows/checkpoint/anchor
+enter the fresh capture. Existing host session subscriptions/methods continue
+through forwarding; no controller or shared domain API changes are required.
+
+Presence selects this route and consumes its sole budget across restart, even
+while pending. Malformed state, changed originals and a second witness mismatch
+fail closed; there is no lineage rotation. Fresh state keeps the bounds above;
+recovery metadata is limited to 4096 UTF8 bytes and the complete capsule to
+4198400 bytes. Failure never truncates state. Legacy/full-only stores keep their
+previous contract. Older builds ignore the new route, so downgrade after
+selection is unsupported; retain the complete restricted store and roll forward.
+Each new session still clock-writes and rechecks its own exact witness: another
+mismatch can stop acquisition. This capability establishes neither continuity
+with the predecessor nor calibrated glucose or physical reconnect reliability.
+
 The driver owns raw checkpoint/history in a versioned restricted envelope and
 requires exact input-witness proof before merging a resumed suffix. The app's
 private-state adapter preserves original legacy blobs/indexes and durably copies

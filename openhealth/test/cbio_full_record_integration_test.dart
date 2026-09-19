@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/health_state_store.dart';
@@ -14,6 +15,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 const _fullKey =
     'openHealth.history.cbio.fullRecords.v1.WyJjYmlvIiwic3ludGhldGljIl0';
 const _legacyKey = 'openHealth.history.cbio.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+const _recoveryKey =
+    'openHealth.history.cbio.recovery.v1.WyJjYmlvIiwic3ludGhldGljIl0';
 const _nextKey = 'openHealth.history.cbio.fullRecords.v1.WyJjYmlvIiwibmV4dCJd';
 const _pointerKey = 'openHealth.lastSensor';
 final _credentials = CbioCredentials(
@@ -82,6 +85,87 @@ String _legacy() =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'unchanged controller retains terminal session while guarded recovery acquires fresh inputs',
+    () async {
+      final legacy = _legacy();
+      final store = _Store()..values[_legacyKey] = legacy;
+      final release = Completer<void>();
+      final first = _Link([_row(1, 9000, 315, 0)])..disconnectHold = release;
+      final second = _Link([_row(1, 2000, 321, 0)]);
+      final transport = _Transport([first, second]);
+      final driver = _driver(store, transport);
+      final controller = await _controller(store, driver);
+      final errors = <CgmSessionSnapshot>[];
+      controller.addListener(() {
+        final snapshot = controller.snapshot;
+        if (snapshot?.stage == CgmSyncStage.error) errors.add(snapshot!);
+      });
+      try {
+        await controller.connect(_sensor());
+        await _until(() => controller.snapshot?.stage == CgmSyncStage.error);
+        final full = store.values[_fullKey]!;
+        expect(
+          controller.snapshot?.lastError,
+          CbioSessionFailure.counterRestart,
+        );
+        expect(
+          controller
+              .snapshot
+              ?.metadata[cgmAutomaticReconnectAllowedMetadataKey],
+          'false',
+        );
+        expect(transport.connects, 1);
+        expect(store.values[_recoveryKey], isNull);
+        store.beforeWrite = (key, value) async {
+          if (key == _recoveryKey &&
+              ((jsonDecode(value) as Map)['active'] as Map)['state'] ==
+                  'pending') {
+            expect(first.disconnectCompleted, isTrue);
+            expect(transport.connects, 1);
+            expect(store.values[_fullKey], full);
+          }
+        };
+        transport.beforeConnect = () {
+          expect(first.disconnectCompleted, isTrue);
+          expect(
+            (_saved(store, _recoveryKey)['active'] as Map)['state'],
+            'pending',
+          );
+        };
+        release.complete();
+        await _until(() => controller.snapshot?.stage == CgmSyncStage.ready);
+        await driver.flushPrivateState();
+        expect(transport.connects, 2);
+        expect(errors, isNotEmpty);
+        expect(second.queries.first, 1);
+        expect(controller.snapshot?.latestReading, isNull);
+        expect(controller.snapshot?.history, isEmpty);
+        expect(controller.snapshot?.rawHistory, isEmpty);
+        expect(controller.snapshot?.lastError, isNull);
+        expect(store.values[_fullKey], full);
+        expect(store.values[_legacyKey], legacy);
+        final recovery = _saved(store, _recoveryKey);
+        expect(
+          recovery['predecessorFullSha256'],
+          sha256.convert(utf8.encode(full)).toString(),
+        );
+        expect(
+          recovery['predecessorLegacySha256'],
+          sha256.convert(utf8.encode(legacy)).toString(),
+        );
+        expect((recovery['active'] as Map)['records'], [
+          [1, 2000, 0, 321, 7, 64, 5],
+        ]);
+      } finally {
+        if (!release.isCompleted) release.complete();
+        await controller.disconnect(clearSelection: false);
+        controller.dispose();
+      }
+      expect(second.disconnectCompleted, isTrue);
+    },
+  );
 
   test('read-only prepare cannot adopt or open radio', () async {
     final store = _Store()..values[_legacyKey] = _legacy();
@@ -342,6 +426,7 @@ class _Transport implements BleTransport {
   _Transport(this.links);
   final List<_Link> links;
   int connects = 0;
+  void Function()? beforeConnect;
   @override
   Stream<BleScanResult> scan({
     Duration? timeout,
@@ -352,7 +437,10 @@ class _Transport implements BleTransport {
   Future<BleConnection> connect(
     String deviceId, {
     Duration timeout = const Duration(seconds: 10),
-  }) async => links[connects++];
+  }) async {
+    beforeConnect?.call();
+    return links[connects++];
+  }
 }
 
 List<int> _row(int index, int time, int temperature, int reindex) {
@@ -384,6 +472,8 @@ class _Link implements BleConnection {
   _Link(this.rows);
   final List<List<int>> rows;
   final queries = <int>[];
+  Completer<void>? disconnectHold;
+  bool disconnectCompleted = false;
   final _states = StreamController<BleConnectionState>.broadcast();
   final _notifications = StreamController<List<int>>.broadcast();
   @override
@@ -463,7 +553,9 @@ class _Link implements BleConnection {
   Future<void> removeBond() async {}
   @override
   Future<void> disconnect() async {
+    await disconnectHold?.future;
     await _states.close();
     await _notifications.close();
+    disconnectCompleted = true;
   }
 }

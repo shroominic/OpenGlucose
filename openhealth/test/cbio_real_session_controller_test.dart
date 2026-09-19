@@ -162,7 +162,10 @@ void main() {
             : [97],
         deferRawResponse: true,
       );
-      final restored = await _open(store, radio);
+      final recoveryRadio = outcome == 'witness-time-mismatch'
+          ? _Radio(startIndex: 1, rawTime: 2000, currents: [88])
+          : null;
+      final restored = await _open(store, radio, recoveryRadio: recoveryRadio);
       _expectNoPublicRaw(restored);
       await restored.connect(_sensor, allowSessionActivation: false);
       await _until(() => radio.rawQueryStarts.isNotEmpty);
@@ -177,10 +180,12 @@ void main() {
       await _until(
         () =>
             restored.snapshot?.stage ==
-            (outcome == 'confirmed' ? CgmSyncStage.ready : CgmSyncStage.error),
+            (outcome == 'confirmed' || outcome == 'witness-time-mismatch'
+                ? CgmSyncStage.ready
+                : CgmSyncStage.error),
       );
       _expectNoPublicRaw(restored);
-      if (outcome != 'confirmed') {
+      if (outcome != 'confirmed' && outcome != 'witness-time-mismatch') {
         expect(
           restored.snapshot!.metadata[cgmAutomaticReconnectAllowedMetadataKey],
           'false',
@@ -207,6 +212,17 @@ void main() {
         );
       } else {
         expect(store.getString(key), original);
+      }
+      if (recoveryRadio != null) {
+        expect(recoveryRadio.rawQueryStarts.first, 1);
+        final recoveryKey = store.values.keys.singleWhere(
+          (key) => key.startsWith('openHealth.history.cbio.recovery.v1.'),
+        );
+        final recovery = jsonDecode(store.getString(recoveryKey)!) as Map;
+        final active = recovery['active'] as Map;
+        expect(active['records'], [
+          [1, 2000, 1, 315, 0, 88, 0],
+        ]);
       }
       expect(restored.archivedSensors, isEmpty);
       expect(
@@ -240,13 +256,17 @@ void _expectNoPublicRaw(CgmAppController controller) {
   );
 }
 
-Future<CgmAppController> _open(HealthStateStore store, _Radio radio) async {
+Future<CgmAppController> _open(
+  HealthStateStore store,
+  _Radio radio, {
+  _Radio? recoveryRadio,
+}) async {
   final preferences = await SharedPreferences.getInstance();
   final adapter = CbioPrivateStateAdapter(store);
   await store.initialize();
   await adapter.migrateLegacyArchives();
   final driver = CbioSensorDriver(
-    _Transport(radio),
+    _Transport(radio, recoveryRadio),
     credentials: CbioStaticCredentialSource(_credentials),
     timing: _timing,
     privateStateStore: adapter,
@@ -442,8 +462,10 @@ class _Radio implements BleConnection {
 }
 
 class _Transport implements BleTransport {
-  _Transport(this.radio);
+  _Transport(this.radio, this.recoveryRadio);
   final _Radio radio;
+  final _Radio? recoveryRadio;
+  int connects = 0;
   @override
   Stream<BleScanResult> scan({
     Duration? timeout,
@@ -454,7 +476,11 @@ class _Transport implements BleTransport {
   Future<BleConnection> connect(
     String deviceId, {
     Duration timeout = const Duration(seconds: 10),
-  }) async => radio;
+  }) async {
+    if (++connects == 1) return radio;
+    if (connects == 2 && recoveryRadio != null) return recoveryRadio!;
+    throw StateError('Unexpected synthetic reconnect');
+  }
 }
 
 class _MemoryStore implements HealthStateStore {

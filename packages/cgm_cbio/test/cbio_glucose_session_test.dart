@@ -5,6 +5,7 @@ import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_cbio/src/cbio_history_state.dart';
 import 'package:cgm_cbio/src/cbio_full_record_state.dart';
+import 'package:cgm_cbio/src/cbio_recovery_state.dart';
 import 'package:cgm_cbio/src/cbio_private_state_owner.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
@@ -104,18 +105,31 @@ final class _FakeConnection implements BleConnection {
     this.serial = _serialOctets,
     this.failDisconnect = false,
     this.failNotificationCancel = false,
+    this.failStateCancel = false,
+    this.notificationCancelHold,
+    this.stateCancelHold,
+    this.disconnectHold,
     List<BleService>? services,
     List<int>? streamKey,
   }) : services = services ?? _defaultServices,
        streamKey = streamKey ?? _syntheticKey {
-    _notifications = failNotificationCancel
+    _notifications = failNotificationCancel || notificationCancelHold != null
         ? StreamController<List<int>>(
             onCancel: () async {
               notificationCancelCalls++;
-              throw StateError('synthetic native cancellation detail');
+              await notificationCancelHold?.future;
+              if (failNotificationCancel) {
+                throw StateError('synthetic native cancellation detail');
+              }
             },
           )
         : StreamController<List<int>>.broadcast();
+    _states = StreamController<BleConnectionState>(
+      onCancel: () async {
+        await stateCancelHold?.future;
+        if (failStateCancel) throw StateError('synthetic state cancellation');
+      },
+    );
   }
 
   static const List<BleService> _defaultServices = <BleService>[
@@ -153,16 +167,21 @@ final class _FakeConnection implements BleConnection {
   final List<int> streamKey;
   final bool failDisconnect;
   final bool failNotificationCancel;
-  final StreamController<BleConnectionState> _states =
-      StreamController<BleConnectionState>.broadcast();
+  final bool failStateCancel;
+  final Completer<void>? notificationCancelHold;
+  final Completer<void>? stateCancelHold;
+  final Completer<void>? disconnectHold;
+  late final StreamController<BleConnectionState> _states;
   late final StreamController<List<int>> _notifications;
   final List<List<int>> writes = <List<int>>[];
   final List<BleCharacteristicRef> serialReads = <BleCharacteristicRef>[];
 
   /// Invoked with each plaintext command the session writes.
   Future<void> Function(List<int> plaintext)? onWrite;
+  Future<void> Function(String operation)? onSetup;
   bool notifySubscribed = false;
   bool disconnected = false;
+  bool disconnectCompleted = false;
   int mtuRequests = 0;
   int disconnectCalls = 0;
   int notificationCancelCalls = 0;
@@ -185,14 +204,19 @@ final class _FakeConnection implements BleConnection {
   @override
   Future<void> requestMtu(int mtu) async {
     mtuRequests += 1;
+    await onSetup?.call('mtu');
   }
 
   @override
-  Future<List<BleService>> discoverServices() async => services;
+  Future<List<BleService>> discoverServices() async {
+    await onSetup?.call('discovery');
+    return services;
+  }
 
   @override
   Future<List<int>> read(BleCharacteristicRef characteristic) async {
     serialReads.add(characteristic);
+    await onSetup?.call('serial');
     if (CbioUuids.canonical(characteristic.characteristicUuid) ==
         CbioUuids.canonical(serialUuid)) {
       return serial;
@@ -217,6 +241,7 @@ final class _FakeConnection implements BleConnection {
     bool enabled,
   ) async {
     notifySubscribed = enabled;
+    await onSetup?.call('notify');
   }
 
   @override
@@ -238,9 +263,11 @@ final class _FakeConnection implements BleConnection {
   Future<void> disconnect() async {
     disconnectCalls++;
     disconnected = true;
+    await disconnectHold?.future;
     await _states.close();
     await _notifications.close();
     if (failDisconnect) throw StateError('synthetic native disconnect detail');
+    disconnectCompleted = true;
   }
 }
 
@@ -561,6 +588,139 @@ final class _FullStore implements CbioFullRecordStore {
 CbioFullRecordState _fullSaved(_FullStore store) =>
     CbioFullRecordState.decode(store.full!, sensorKey: _sensor.storageKey);
 
+final class _RecoveryStore extends _FullStore implements CbioRecoveryStore {
+  _RecoveryStore() {
+    final checkpoint = CbioSessionCheckpoint(
+      sensorKey: _sensor.storageKey,
+      index: 2,
+      rawTime: 1000,
+    ).encode();
+    legacy = CbioHistoryState(
+      sensorKey: _sensor.storageKey,
+      checkpoint: checkpoint,
+      history: const [
+        CgmReading(
+          valueMgdl: 6,
+          rawValue: 60,
+          sensorMinute: 2,
+          source: CgmRecordSource.raw,
+          isDisplayProvisional: true,
+        ),
+      ],
+    ).encode();
+    expectedLegacy = legacy;
+    full = CbioFullRecordState.pending(
+      sensorKey: _sensor.storageKey,
+      captureId: 'a' * 32,
+      legacyDigest: 'a' * 64,
+      bootstrapCheckpoint: checkpoint,
+    ).encode();
+    originalFull = full!;
+  }
+
+  late final String originalFull;
+  String? recovery;
+  int recoveryWrites = 0;
+  Completer<void>? recoveryHold;
+  Completer<void>? recoveryStarted;
+  bool failRecovery = false;
+  bool commitThenFail = false;
+
+  @override
+  String legacySha256(String value) {
+    if (value == expectedLegacy) return 'a' * 64;
+    if (value == originalFull || value == full) return 'b' * 64;
+    throw StateError('Unexpected digest input');
+  }
+
+  @override
+  Future<String?> readRecovery(String sensorKey) async => recovery;
+
+  @override
+  Future<void> writeRecovery(String sensorKey, String envelope) async {
+    recoveryWrites++;
+    if (recoveryStarted?.isCompleted == false) recoveryStarted!.complete();
+    await recoveryHold?.future;
+    if (failRecovery) throw StateError('synthetic recovery write failure');
+    recovery = envelope;
+    if (commitThenFail) throw StateError('synthetic post-commit failure');
+  }
+
+  CbioRecoveryState get saved =>
+      CbioRecoveryState.decode(recovery!, sensorKey: _sensor.storageKey);
+}
+
+final class _RecoveryTransport extends _FakeTransport {
+  _RecoveryTransport(super.connection, this.successor, this.store);
+  final _FakeConnection successor;
+  final _RecoveryStore store;
+  Future<void> Function()? beforeSuccessorConnect;
+
+  @override
+  Future<BleConnection> connect(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    connects++;
+    if (connects == 1) return connection;
+    expect(connects, 2, reason: 'only one independent recovery is allowed');
+    expect(connection.disconnectCompleted, isTrue);
+    expect(store.saved.active.isPending, isTrue);
+    expect(store.saved.active.records, isEmpty);
+    expect(store.saved.active.resumeCheckpoint, isNull);
+    await beforeSuccessorConnect?.call();
+    return successor;
+  }
+}
+
+final class _CallbackCredentialSource implements CbioCredentialSource {
+  _CallbackCredentialSource(this.onSuccessor);
+  final void Function() onSuccessor;
+  int reads = 0;
+  @override
+  bool get isConfigured => true;
+  @override
+  CbioCredentials read() {
+    if (++reads == 2) onSuccessor();
+    return _syntheticCredentials;
+  }
+}
+
+Future<CbioGlucoseSession> _recoveringSession(
+  _RecoveryTransport transport,
+) async {
+  await _defaultResponder(
+    transport.connection,
+    rawBatches: [
+      _rawBatch(
+        startIndex: 2,
+        baseEpochSeconds: 9000,
+        baseReindex: 0,
+        currents: [99],
+      ),
+    ],
+  );
+  await _defaultResponder(
+    transport.successor,
+    rawBatches: [
+      _rawBatch(
+        startIndex: 1,
+        baseEpochSeconds: 2000,
+        baseReindex: 0,
+        currents: [74, 80],
+        temperature: 321,
+      ),
+    ],
+  );
+  return _privateSession(
+    sensor: _sensor,
+    transport: transport,
+    credentials: _syntheticSource,
+    timing: _fastTiming.copyWith(livePollInterval: const Duration(hours: 1)),
+    privateStateStore: transport.store,
+  );
+}
+
 final class _PrivateStore implements CbioPrivateStateStore {
   String? envelope;
   bool failWrite = false;
@@ -585,6 +745,745 @@ Future<List<CgmReading>> _storedHistory(
 }
 
 void main() {
+  group('one-capsule successor', () {
+    test(
+      'parent close settles successor auth wait without waiting for timeout',
+      () async {
+        await runZoned(
+          () async {
+            final cleanupGate = Completer<void>();
+            final store = _RecoveryStore();
+            final successor = _FakeConnection(disconnectHold: cleanupGate);
+            final transport = _RecoveryTransport(
+              _FakeConnection(),
+              successor,
+              store,
+            );
+            final session = await _recoveringSession(transport);
+            successor.onWrite = (_) async {};
+            await session.initialize();
+            await _drainMicrotasks();
+            expect(
+              successor.writes.map(_unmaskWrite).map((frame) => frame[1]),
+              [1],
+            );
+            final closing = session.disconnect();
+            await _drainMicrotasks();
+            expect(
+              successor.disconnectCalls,
+              1,
+              reason:
+                  'close must settle the auth waiter without firing its timeout',
+            );
+            cleanupGate.complete();
+            await closing;
+            expect(
+              successor.writes.map(_unmaskWrite).map((frame) => frame[1]),
+              [1],
+            );
+            expect(store.saved.active.isPending, isTrue);
+          },
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, callback) {
+              return _ManualTimer(duration, callback);
+            },
+          ),
+        );
+      },
+    );
+
+    for (final boundary in [
+      'connect',
+      'mtu',
+      'discovery',
+      'notify',
+      'serial',
+      'write-1',
+      'write-3',
+      'write-10',
+    ]) {
+      test(
+        'parent close during successor $boundary stops setup and waits for actual cleanup',
+        () async {
+          final setupGate = Completer<void>();
+          final setupEntered = Completer<void>();
+          final cleanupGate = Completer<void>();
+          final store = _RecoveryStore();
+          final successor = _FakeConnection(disconnectHold: cleanupGate);
+          final transport = _RecoveryTransport(
+            _FakeConnection(),
+            successor,
+            store,
+          );
+          final session = await _recoveringSession(transport);
+          final operations = <String>[];
+          Future<void> observe(String operation) async {
+            operations.add(operation);
+            if (operation == boundary) {
+              setupEntered.complete();
+              await setupGate.future;
+            }
+          }
+
+          transport.beforeSuccessorConnect = () => observe('connect');
+          successor.onSetup = observe;
+          final responder = successor.onWrite!;
+          successor.onWrite = (frame) async {
+            await observe('write-${frame[1]}');
+            await responder(frame);
+          };
+          await session.initialize();
+          await setupEntered.future;
+          final beforeClose = List.of(operations);
+          final pending = store.recovery;
+          var closeFinished = false;
+          final closing = session.disconnect().then(
+            (_) => closeFinished = true,
+          );
+          await _drainMicrotasks();
+          expect(closeFinished, isFalse);
+          expect(
+            successor.disconnectCalls,
+            0,
+            reason:
+                'in-flight initialization must settle before cleanup releases owner',
+          );
+          final competitor = await CbioPrivateStateOwner.load(
+            _sensor.storageKey,
+            store,
+          );
+          await expectLater(
+            competitor.adoptFullRecords(),
+            throwsA(isA<CbioPrivateStateFailure>()),
+          );
+          setupGate.complete();
+          await _drainMicrotasks();
+          expect(
+            operations,
+            beforeClose,
+            reason: 'close forbids every subsequent setup step or command',
+          );
+          expect(successor.disconnectCalls, 1);
+          expect(closeFinished, isFalse);
+          await expectLater(
+            competitor.adoptFullRecords(),
+            throwsA(isA<CbioPrivateStateFailure>()),
+          );
+          cleanupGate.complete();
+          await closing;
+          expect(successor.disconnectCompleted, isTrue);
+          expect(successor.disconnectCalls, 1);
+          expect(transport.connects, 2);
+          expect(store.recovery, pending);
+          expect(store.saved.active.isPending, isTrue);
+          expect(store.full, store.originalFull);
+          await competitor.adoptFullRecords();
+          await competitor.close();
+        },
+      );
+    }
+
+    for (final rejectSuccessor in [false, true]) {
+      test(
+        'trace preserves original failure exactly once successor rejected=$rejectSuccessor',
+        () async {
+          final output = <String>[];
+          await runZoned(
+            () async {
+              final store = _RecoveryStore();
+              final transport = _RecoveryTransport(
+                _FakeConnection(),
+                _FakeConnection(),
+                store,
+              );
+              final session = await _recoveringSession(transport);
+              if (rejectSuccessor) {
+                await _defaultResponder(
+                  transport.successor,
+                  authReply: _authRejected,
+                );
+              }
+              await session.initialize();
+              await _pumpUntil(
+                () => rejectSuccessor
+                    ? session.currentSnapshot.lastError ==
+                          CbioSessionFailure.authRejected
+                    : session.currentSnapshot.stage == CgmSyncStage.ready,
+              );
+              await session.disconnect();
+              expect(transport.connects, 2);
+              expect(store.full, store.originalFull);
+              if (rejectSuccessor) {
+                expect(store.saved.active.isPending, isTrue);
+                expect(store.recoveryWrites, 1);
+              }
+            },
+            zoneSpecification: ZoneSpecification(
+              print: (self, parent, zone, line) => output.add(line),
+            ),
+          );
+          expect(
+            output,
+            const bool.fromEnvironment('CBIO_FAILURE_TRACE')
+                ? [
+                    'CBIO failure=cbio.counter.restart counterFailureReason=witness-time-mismatch',
+                    if (rejectSuccessor) 'CBIO failure=cbio.auth.rejected',
+                  ]
+                : isEmpty,
+          );
+        },
+      );
+    }
+
+    test(
+      'drains old link and commits pending before fresh seven-field acquisition',
+      () async {
+        final store = _RecoveryStore();
+        final transport = _RecoveryTransport(
+          _FakeConnection(),
+          _FakeConnection(),
+          store,
+        );
+        final session = await _recoveringSession(transport);
+        final snapshots = <CgmSessionSnapshot>[];
+        final logs = <CgmLogEntry>[];
+        session.snapshots.listen(snapshots.add);
+        session.logs.listen(logs.add);
+        try {
+          await session.initialize();
+          await _pumpUntil(
+            () => session.currentSnapshot.stage == CgmSyncStage.ready,
+          );
+          await session.flushPrivateState();
+          expect(transport.connects, 2);
+          expect(store.full, store.originalFull);
+          expect(store.legacy, store.expectedLegacy);
+          expect(store.writes, 0);
+          expect(store.legacyWrites, 0);
+          expect(store.saved.active.captureId, isNot('a' * 32));
+          expect((jsonDecode(store.recovery!) as Map)['active']['records'], [
+            [1, 2000, 1, 321, 0, 74, 0],
+            [2, 2060, 0, 321, 0, 80, 0],
+          ]);
+          expect(
+            transport.successor.writes
+                .map(_unmaskWrite)
+                .where((frame) => frame[1] == 0x08)
+                .first
+                .sublist(2, 4),
+            [1, 0],
+          );
+          expect(
+            snapshots.where(
+              (s) => s.lastError == CbioSessionFailure.counterRestart,
+            ),
+            hasLength(1),
+          );
+          expect(
+            logs.where((entry) => entry.message == 'cbio.connect.started'),
+            hasLength(2),
+          );
+          for (final snapshot in snapshots) {
+            expect(snapshot.latestReading, isNull);
+            expect(snapshot.history, isEmpty);
+            expect(snapshot.rawHistory, isEmpty);
+          }
+          expect(
+            (await session.refreshDiagnostics()).single.fields['phase'],
+            CbioSessionPhase.live,
+          );
+        } finally {
+          await session.disconnect();
+        }
+        expect(transport.successor.disconnectCompleted, isTrue);
+      },
+    );
+
+    test('close during successor credentials prevents its connect', () async {
+      final store = _RecoveryStore();
+      final transport = _RecoveryTransport(
+        _FakeConnection(),
+        _FakeConnection(),
+        store,
+      );
+      await _defaultResponder(
+        transport.connection,
+        rawBatches: [
+          _rawBatch(
+            startIndex: 2,
+            baseEpochSeconds: 9000,
+            baseReindex: 0,
+            currents: [99],
+          ),
+        ],
+      );
+      late CbioGlucoseSession session;
+      Future<void>? close;
+      final credentials = _CallbackCredentialSource(() {
+        close = session.disconnect();
+      });
+      session = await _privateSession(
+        sensor: _sensor,
+        transport: transport,
+        credentials: credentials,
+        timing: _fastTiming,
+        privateStateStore: store,
+      );
+      await session.initialize();
+      await _pumpUntil(() => close != null);
+      await close;
+      expect(transport.connects, 1);
+      expect(store.saved.active.isPending, isTrue);
+      final replacement = await CbioPrivateStateOwner.load(
+        _sensor.storageKey,
+        store,
+      );
+      await replacement.adoptFullRecords();
+      await replacement.close();
+    });
+
+    test(
+      'queued old history callbacks cannot change successor output',
+      () async {
+        final timers = <_ManualTimer>[];
+        await runZoned(
+          () async {
+            final store = _RecoveryStore();
+            final transport = _RecoveryTransport(
+              _FakeConnection(),
+              _FakeConnection(),
+              store,
+            );
+            final session = await _recoveringSession(transport);
+            await _defaultResponder(transport.connection);
+            final logs = <CgmLogEntry>[];
+            session.logs.listen(logs.add);
+            await session.initialize();
+            await _drainMicrotasks();
+            final oldTimers = timers
+                .where(
+                  (timer) =>
+                      timer.duration == _fastTiming.historyWindow ||
+                      timer.duration == _fastTiming.historyIdleWindow,
+                )
+                .toList();
+            expect(oldTimers, hasLength(2));
+            transport.connection.emitPlaintext(
+              _rawBatch(
+                startIndex: 2,
+                baseEpochSeconds: 9000,
+                baseReindex: 0,
+                currents: [99],
+              ),
+            );
+            await _drainMicrotasks();
+            expect(transport.connects, 2);
+            _fireTimer(timers, _fastTiming.historyIdleWindow);
+            await _drainMicrotasks();
+            expect(session.currentSnapshot.stage, CgmSyncStage.ready);
+            final snapshot = session.currentSnapshot;
+            final logCount = logs.length;
+            for (final timer in oldTimers) {
+              timer.fireQueued();
+            }
+            await _drainMicrotasks();
+            expect(session.currentSnapshot, same(snapshot));
+            expect(logs, hasLength(logCount));
+            await session.flushPrivateState();
+            expect(store.saved.active.records.map((r) => r.index), [1, 2]);
+            await session.disconnect();
+          },
+          zoneSpecification: ZoneSpecification(
+            createTimer: (self, parent, zone, duration, callback) {
+              final timer = _ManualTimer(duration, callback);
+              timers.add(timer);
+              return timer;
+            },
+          ),
+        );
+      },
+    );
+
+    test(
+      'restart uses recovery witness and second mismatch cannot allocate another capsule',
+      () async {
+        final store = _RecoveryStore();
+        final transport = _RecoveryTransport(
+          _FakeConnection(),
+          _FakeConnection(),
+          store,
+        );
+        final session = await _recoveringSession(transport);
+        await session.initialize();
+        await _pumpUntil(
+          () => session.currentSnapshot.stage == CgmSyncStage.ready,
+        );
+        await session.disconnect();
+        final recovered = store.recovery;
+        final captureId = store.saved.active.captureId;
+        final writes = store.recoveryWrites;
+        final nextConnection = _FakeConnection();
+        await _defaultResponder(
+          nextConnection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 2,
+              baseEpochSeconds: 10000,
+              baseReindex: 0,
+              currents: [80],
+            ),
+          ],
+        );
+        final nextTransport = _FakeTransport(nextConnection);
+        final restarted = await _privateSession(
+          sensor: _sensor,
+          transport: nextTransport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await restarted.initialize();
+        await _pumpUntil(() => nextConnection.disconnectCompleted);
+        expect(
+          restarted.currentSnapshot.lastError,
+          CbioSessionFailure.counterRestart,
+        );
+        expect(
+          restarted
+              .currentSnapshot
+              .metadata['cgm.cbio.resume.counterFailureReason'],
+          'witness-time-mismatch',
+        );
+        await restarted.refresh();
+        await restarted.syncHistory();
+        await restarted.disconnect();
+        expect(nextTransport.connects, 1);
+        expect(store.recovery, recovered);
+        expect(store.saved.active.captureId, captureId);
+        expect(store.recoveryWrites, writes);
+        expect(store.full, store.originalFull);
+        expect(store.legacy, store.expectedLegacy);
+      },
+    );
+
+    test(
+      'pending private drain failure prevents selection and keeps dirty owner retryable',
+      () async {
+        final store = _RecoveryStore()
+          ..hold = Completer<void>()
+          ..started = Completer<void>()
+          ..failFull = true;
+        final transport = _RecoveryTransport(
+          _FakeConnection(),
+          _FakeConnection(),
+          store,
+        );
+        final session = await _recoveringSession(transport);
+        final owner = _owners[session]!;
+        await owner.adoptFullRecords();
+        final checkpoint = CbioSessionCheckpoint(
+          sensorKey: _sensor.storageKey,
+          index: 2,
+          rawTime: 1000,
+        ).encode();
+        // Model previously admitted but not yet durable input on the supplied
+        // leased owner. The mismatch itself must never admit its new raw words.
+        owner.acceptFullRecords(
+          [
+            const CbioRawGlucoseRecord(
+              index: 2,
+              rawTime: 1000,
+              reindex: 0,
+              rawTemperature: 315,
+              rawDump: 7,
+              rawPayload: 60,
+              rawProcessed: 5,
+            ),
+          ],
+          admittedInputCheckpoint: checkpoint,
+          currentCheckpoint: checkpoint,
+        );
+        await session.initialize();
+        await store.started!.future;
+        expect(transport.connection.disconnectCompleted, isTrue);
+        expect(transport.connects, 1);
+        expect(store.recoveryWrites, 0);
+        store.hold!.complete();
+        await _drainMicrotasks();
+        expect(store.full, store.originalFull);
+        expect(store.recovery, isNull);
+        expect(
+          session.currentSnapshot.lastError,
+          CbioSessionFailure.counterRestart,
+        );
+        await expectLater(
+          session.disconnect(),
+          throwsA(isA<CbioPrivateStateFailure>()),
+        );
+        final competitor = await CbioPrivateStateOwner.load(
+          _sensor.storageKey,
+          store,
+        );
+        await expectLater(
+          competitor.adoptFullRecords(),
+          throwsA(isA<CbioPrivateStateFailure>()),
+        );
+        store.failFull = false;
+        await session.disconnect();
+        await competitor.adoptFullRecords();
+        await competitor.close();
+        expect(_fullSaved(store).records.single.rawTemperature, 315);
+        expect(transport.connects, 1);
+        expect(store.recovery, isNull);
+        expect(store.legacy, store.expectedLegacy);
+      },
+    );
+
+    for (final boundary in ['notification', 'state', 'disconnect', 'commit']) {
+      test(
+        'successful delayed $boundary resumes only after completion',
+        () async {
+          final gate = Completer<void>();
+          final store = _RecoveryStore();
+          if (boundary == 'commit') store.recoveryHold = gate;
+          final first = _FakeConnection(
+            notificationCancelHold: boundary == 'notification' ? gate : null,
+            stateCancelHold: boundary == 'state' ? gate : null,
+            disconnectHold: boundary == 'disconnect' ? gate : null,
+          );
+          final transport = _RecoveryTransport(first, _FakeConnection(), store);
+          final session = await _recoveringSession(transport);
+          await session.initialize();
+          await _drainMicrotasks();
+          expect(transport.connects, 1);
+          expect(store.recovery, isNull);
+          gate.complete();
+          await _pumpUntil(
+            () => session.currentSnapshot.stage == CgmSyncStage.ready,
+          );
+          expect(transport.connects, 2);
+          await session.disconnect();
+        },
+      );
+
+      test(
+        'awaits $boundary before successor and close waits for transition',
+        () async {
+          final gate = Completer<void>();
+          final store = _RecoveryStore();
+          if (boundary == 'commit') store.recoveryHold = gate;
+          final first = _FakeConnection(
+            notificationCancelHold: boundary == 'notification' ? gate : null,
+            stateCancelHold: boundary == 'state' ? gate : null,
+            disconnectHold: boundary == 'disconnect' ? gate : null,
+          );
+          final transport = _RecoveryTransport(first, _FakeConnection(), store);
+          final session = await _recoveringSession(transport);
+          await session.initialize();
+          await _drainMicrotasks();
+          expect(
+            session.currentSnapshot.lastError,
+            CbioSessionFailure.counterRestart,
+          );
+          expect(transport.connects, 1);
+          expect(store.recovery, isNull);
+          var closed = false;
+          final close = session.disconnect().then((_) => closed = true);
+          await _drainMicrotasks();
+          expect(closed, isFalse);
+          final competitor = await CbioPrivateStateOwner.load(
+            _sensor.storageKey,
+            store,
+          );
+          await expectLater(
+            competitor.adoptFullRecords(),
+            throwsA(isA<CbioPrivateStateFailure>()),
+          );
+          gate.complete();
+          await close;
+          expect(transport.connects, 1);
+          expect(store.full, store.originalFull);
+          expect(store.recovery, boundary == 'commit' ? isNotNull : isNull);
+          await competitor.adoptFullRecords();
+          await competitor.close();
+        },
+      );
+    }
+
+    test(
+      'close after pending commit restarts same capture fresh at index one',
+      () async {
+        final gate = Completer<void>();
+        final store = _RecoveryStore()..recoveryHold = gate;
+        final transport = _RecoveryTransport(
+          _FakeConnection(),
+          _FakeConnection(),
+          store,
+        );
+        final session = await _recoveringSession(transport);
+        await session.initialize();
+        await _drainMicrotasks();
+        expect(store.recoveryWrites, 1);
+        final close = session.disconnect();
+        gate.complete();
+        await close;
+        expect(transport.connects, 1);
+        final captureId = store.saved.active.captureId;
+        final link = _FakeConnection();
+        await _defaultResponder(
+          link,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: 5000,
+              baseReindex: 0,
+              currents: [85],
+            ),
+          ],
+        );
+        final restarted = await _privateSession(
+          sensor: _sensor,
+          transport: _FakeTransport(link),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          privateStateStore: store,
+        );
+        await restarted.initialize();
+        await _pumpUntil(
+          () => restarted.currentSnapshot.stage == CgmSyncStage.ready,
+        );
+        await restarted.disconnect();
+        expect(store.saved.active.captureId, captureId);
+        expect(store.saved.active.bootstrapCheckpoint, isNull);
+        expect(store.saved.active.records.single.index, 1);
+        expect(store.saved.active.records.single.rawTime, 5000);
+        expect(store.full, store.originalFull);
+        expect(store.legacy, store.expectedLegacy);
+      },
+    );
+
+    for (final failLateWrite in [false, true]) {
+      test(
+        'late predecessor write failure=$failLateWrite is inert after successor',
+        () async {
+          final store = _RecoveryStore();
+          final transport = _RecoveryTransport(
+            _FakeConnection(),
+            _FakeConnection(),
+            store,
+          );
+          final session = await _recoveringSession(transport);
+          final oldWrite = Completer<void>();
+          final respond = transport.connection.onWrite!;
+          transport.connection.onWrite = (frame) async {
+            await respond(frame);
+            if (frame[1] == 0x08) await oldWrite.future;
+          };
+          final logs = <CgmLogEntry>[];
+          session.logs.listen(logs.add);
+          await session.initialize();
+          await _pumpUntil(
+            () => session.currentSnapshot.stage == CgmSyncStage.ready,
+          );
+          final snapshot = session.currentSnapshot;
+          final logged = logs.length;
+          if (failLateWrite) {
+            oldWrite.completeError(StateError('synthetic late write failure'));
+          } else {
+            oldWrite.complete();
+          }
+          await _drainMicrotasks();
+          expect(session.currentSnapshot, same(snapshot));
+          expect(logs, hasLength(logged));
+          expect(transport.connects, 2);
+          await session.disconnect();
+        },
+      );
+    }
+
+    test(
+      'failed successor close remains retryable and eventually closes host streams',
+      () async {
+        final store = _RecoveryStore();
+        final transport = _RecoveryTransport(
+          _FakeConnection(),
+          _FakeConnection(),
+          store,
+        );
+        final session = await _recoveringSession(transport);
+        var snapshotsClosed = false;
+        var logsClosed = false;
+        session.snapshots.listen((_) {}, onDone: () => snapshotsClosed = true);
+        session.logs.listen((_) {}, onDone: () => logsClosed = true);
+        await session.initialize();
+        await _pumpUntil(
+          () => session.currentSnapshot.stage == CgmSyncStage.ready,
+        );
+        store.failRecovery = true;
+        await expectLater(
+          session.disconnect(),
+          throwsA(isA<CbioPrivateStateFailure>()),
+        );
+        store.failRecovery = false;
+        await session.disconnect();
+        expect(snapshotsClosed, isTrue);
+        expect(logsClosed, isTrue);
+        expect(store.saved.active.records, hasLength(2));
+        final nextOwner = await CbioPrivateStateOwner.load(
+          _sensor.storageKey,
+          store,
+        );
+        await nextOwner.adoptFullRecords();
+        await nextOwner.close();
+      },
+    );
+
+    for (final boundary in [
+      'notification',
+      'state',
+      'disconnect',
+      'commit',
+      'committed-error',
+    ]) {
+      test(
+        '$boundary failure forbids successor and preserves original terminal reason',
+        () async {
+          final store = _RecoveryStore()
+            ..failRecovery = boundary == 'commit'
+            ..commitThenFail = boundary == 'committed-error';
+          final first = _FakeConnection(
+            failNotificationCancel: boundary == 'notification',
+            failStateCancel: boundary == 'state',
+            failDisconnect: boundary == 'disconnect',
+          );
+          final transport = _RecoveryTransport(first, _FakeConnection(), store);
+          final session = await _recoveringSession(transport);
+          await session.initialize();
+          await _drainMicrotasks();
+          expect(transport.connects, 1);
+          expect(first.disconnectCalls, 1);
+          expect(
+            store.recoveryWrites,
+            boundary == 'commit' || boundary == 'committed-error' ? 1 : 0,
+          );
+          expect(
+            session.currentSnapshot.lastError,
+            CbioSessionFailure.counterRestart,
+          );
+          expect(
+            session
+                .currentSnapshot
+                .metadata['cgm.cbio.resume.counterFailureReason'],
+            'witness-time-mismatch',
+          );
+          await session.disconnect();
+          expect(store.full, store.originalFull);
+          expect(store.legacy, store.expectedLegacy);
+        },
+      );
+    }
+  });
+
   group('private failure trace', () {
     const enabled = bool.fromEnvironment('CBIO_FAILURE_TRACE');
     for (final scenario in ['success', 'auth', 'write', 'witness']) {

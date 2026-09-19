@@ -2,6 +2,12 @@
 
 ## Resume integration contract
 
+The current live driver owns checkpoint/archive state privately through
+`CbioPrivateStateStore`; it does not publish checkpoint proof or raw records to
+the host. The metadata integration described below is the historical contract,
+superseded by private ownership (see the changelog and
+[durable history contract](../../docs/testing/cbio-gs1-durable-history.md)).
+
 `cbioCheckpointMetadataKey` (`cgm.cbio.checkpoint`) is a versioned JSON value
 published in session metadata after a contiguous archive prefix is received.
 It binds one index/counter witness and optional clock anchor to the sensor's
@@ -36,6 +42,37 @@ metadata is not exposed. `cbioLifecycleMetadataKey` is `unknown`: activation,
 warmup completion, session start, and wear lifetime are not sensor-verified.
 The non-null legacy `CgmSessionInfo` duration fields do not establish those
 facts and must not be presented as a verified lifecycle.
+
+## Optional one-capsule acquisition recovery
+
+Hosts may implement `CbioRecoveryStore`, an additive capability extending
+`CbioFullRecordStore` with atomic `readRecovery` and `writeRecovery`. Legacy-only
+and full-only stores keep their existing terminal failure behavior. The app
+adapter opts in through its restricted history store.
+
+Only the exact `witness-time-mismatch` failure can request recovery. The original
+session remains terminal and observable. Notification/state cancellation and
+GATT disconnect must all complete successfully, then private writes drain and
+one fresh pending capsule commits before a separate authenticated connection
+requests raw index1. Existing host subscriptions and methods forward to that
+new session. Closing during transition prevents a new connection; a pending
+capsule already committed remains authoritative on restart. Cleanup or storage
+failure preserves the original terminal reason and forbids a successor link.
+
+The recovery capsule references exact original UTF8 bytes by SHA256, leaves
+legacy/fullRecords keys immutable, and holds only the fresh capture. No prior
+rows, checkpoint or clock anchor enter it. Presence consumes the single recovery
+budget, even when pending; malformed state or a subsequent mismatch fails
+closed without another capsule. Bounds are 65535 fresh rows, 4194304 bytes for
+fresh state, a 4096-byte fresh header, 4096 bytes of recovery metadata and
+4198400 bytes for the complete capsule. There is no truncation or rotation.
+
+Older builds do not understand the selected recovery route. Downgrade is
+unsupported; preserve the complete restricted store and roll forward. A fresh
+capture is not evidence of a new sensor era or calibrated glucose. Every new
+session still uses the existing clock write and exact resume witness guard;
+reconnect can fail again, with the recovery budget already consumed. Public
+latest/history/rawHistory stay empty and the shared UI remains unchanged.
 
 ## Driver boundary
 
