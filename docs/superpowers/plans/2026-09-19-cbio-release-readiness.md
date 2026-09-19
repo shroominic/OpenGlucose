@@ -1,10 +1,47 @@
 # CBIO release readiness implementation plan
 
+> **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans for implementation and independent review. The latest user direction below overrides historical raw-UI tasks and visual acceptance.
+
 > Use test-driven development and independent task review. Retain the single feature/cbio-gs1 branch and PR #209. Do not merge or publish release artifacts.
+
+**Goal:** Deliver verified GS1 data through the unchanged existing AiDEX/Libre2 multi-sensor UI.
+
+**Architecture:** Correct the driver/private data adapter boundary so raw protocol archives never masquerade as normalized public readings. Restore only CBIO-induced UI hunks from the current reconciled source, preserving Libre2/Anytime and main-derived localization/export changes. Verified decoding remains necessary for completion.
+
+**Tech Stack:** Flutter/Dart, existing cgm_core/cgm_ble contracts, isolated worktrees, repository-pinned native build tools.
+
+**Spec:** [Unchanged shared UI and source-bound restoration map](../specs/2026-09-19-cbio-shared-ui-restoration.md).
+
+## Active user-directed restoration work
+
+This section supersedes the historical raw-screen/support-reference/recovery-UI
+work and its screenshot approvals. Audit baseline is published `ac016e3`;
+pre-CBIO sensor line is `02140e7` (parent `821f9a3`), combined with retained
+main-derived behavior from `5b3a78e`. Do not reset whole files to either tip.
+
+Root approved the exact private-store/app-hook signatures now recorded in the
+spec's "Accepted ownership and interfaces" section. The host owner may begin
+staged RED-to-GREEN boundary implementation; production UI restoration follows
+independent boundary proof. All public reading fields, including `rawHistory`,
+must remain normalized-only. This authorization does not waive the unresolved
+decoder, restart-witness investigation or physical release-evidence gates.
+
+- [x] Verify canonical/PR identity and map the dual baseline without modifying user code.
+- [x] Inventory CBIO-only production UI, localization, messaging and health-surface branches; record retained host/persistence responsibilities in the linked spec.
+- [ ] Review the host owner's exact file/interface plan before implementation. Root approved existing raw-v1 envelopes unchanged, private manifest `openHealth.driverState.cbio.rawArchives.v1` in the restricted store, and normalized route `openHealth.history.normalized.v1.<canonical encoded driver+sensor binding>`. Persist the private descriptor before normal archive-index update; preserve old blobs/lists and test idempotent interruption/failure. No general framework/core redesign or data clearing.
+- [ ] Pin optional app-only prepare-target/flush-private-state/history-namespace hook signatures with no-op defaults. Test prepare failure retaining old session, durable flush failure blocking new identity, successful retry, canceled/superseded handoff, no cross-driver namespace collisions and no raw fallback. Preserve prepare → durable old flush → identity commit ordering and AiDEX default behavior.
+- [ ] RED: feed actual driver raw acquisition and legacy restores through the host; assert no normalized latest/history or glucose-side consumers, unchanged raw durable state and all existing witness/terminal guards.
+- [ ] Implement the smallest private driver/data boundary satisfying those tests. This safe interim empty normalized output is not sensor feature completion; decoding remains open.
+- [ ] RED: assert shared production screens have no CBIO raw/support/history/recovery UI, while normalized-equivalent AiDEX/Libre2/GS1 fixtures use existing components and retain multi-sensor setup behavior.
+- [ ] Restore only the mapped CBIO UI hunks and remove unused CBIO presentation/localization helpers. Preserve unrelated main/Libre2/Anytime/user changes; temporary private diagnostics must not become permanent production UI.
+- [ ] Run focused regression tests, full app and affected package tests, formatting/analyzers, secret/vendor-material scans and affected native builds. Use existing Make targets; failures remain gates.
+- [ ] Capture and inspect Playwright screenshots of English/Chinese shared UI at narrow/phone widths, both units and normal/error/empty/stale states. Iterate until the existing design is restored, not redesigned.
+- [ ] Independently review the exact driver/host/UI restoration, update PR #209 with source-bound evidence, and request the separately gated private phone demonstration without erasing data.
+- [ ] Complete verified decoder/model/lifecycle work and real-sensor live/history/restart/reconnect/screen-off proof before claiming GS1 release readiness. Unchanged UI alone does not close these requirements.
 
 ## Objective and acceptance
 
-Deliver production GS1 support through the shared sensor UI, with evidence-backed glucose decoding and units, accurate lifecycle, durable history, reliable live/reconnect behavior, reproducible release artifacts, and real-phone verification. A raw-data-only screen does not satisfy this objective.
+Deliver production GS1 support through the unchanged existing AiDEX/Libre2 multi-sensor UI, with evidence-backed normalized glucose decoding and units, accurate lifecycle, durable history, reliable live/reconnect behavior, reproducible release artifacts, and real-phone verification. No GS1-specific raw labels/screens/support references/history widgets belong in production. Neither a raw-data-only screen nor an empty-reading substitute satisfies the completed sensor objective.
 
 Risk: R2 for protocol/reliability/data work; R3 approval required for activation, destructive commands, signing or changes to distribution of vendor material. Accountable product owner: @shroominic.
 
@@ -12,7 +49,7 @@ Risk: R2 for protocol/reliability/data work; R3 approval required for activation
 
 - Preserve all sensor/user data and unrelated work. No reset, unbind, activation, calibration, firmware or phone-profile changes.
 - Do not claim that raw / 10 is mg/dL or mmol/L without independent evidence. Preserve raw data and do not retrospectively relabel persisted samples.
-- Reuse the AiDEX presentation and sensor-neutral contracts where supported by evidence; do not disguise incomplete data as production glucose.
+- Preserve the existing AiDEX/Libre2 multi-sensor presentation and normalized contracts. Keep sensor-specific protocol/composition/private data migration behind that boundary, not as vendor conditionals in production UI. Do not disguise incomplete data as production glucose.
 - Synthetic fixtures only. No credentials, health records, private reference code or identifiers in tracked artifacts.
 - SDK: repository-pinned `.toolchains/flutter/bin`. Tests, analysis and formatting run in the dedicated worktree. Use apply_patch for edits.
 - Independent review plus focused RED/GREEN evidence are required for each code task. Final make check, native builds and phone proof remain release gates.
@@ -35,7 +72,7 @@ Task review must separately verdict requirement compliance and code quality. Rep
 ## Remaining release work (not waived or declared complete)
 
 1. Trace the reference payload/processed/native algorithm and lifecycle evidence; implement verified normalized glucose and model admission only when source and target evidence justify them.
-2. Correct chart/export raw-unit contamination; unify the verified-reading UI with AiDEX while keeping uncertainty visible until verification is complete. Test both unit preferences, raw/provisional/mixed/archived data and screenshots.
+2. Restore the unchanged shared UI after isolating raw data from the normalized contract; remove CBIO-specific production presentation. Keep all raw-unit safety and durable-data guarantees at the driver/private data boundary. Test both unit preferences, raw/provisional/mixed/archived data and shared-screen screenshots.
 3. Persist history epoch/counter and clock provenance across process restarts with migrations and interruption tests; prevent old/new sensor eras merging.
 4. Replace the finite production polling halt with bounded recoverable operation and verify overnight/screen-off freshness, drop/reconnect, restart and history completion.
 5. Establish evidence-backed warmup/activation/expiry/model behavior, without deriving activation from first observation.
@@ -43,6 +80,8 @@ Task review must separately verdict requirement compliance and code quality. Rep
 7. Update contradictory compatibility/release docs and PR claims; retain Libre2 ancestry. Run independent full review, complete native/check matrix and real-phone release-artifact demonstration without clearing app data.
 
 ## Progress ledger
+
+Historical entries below record what was implemented and tested at their named commits, not approval to retain the superseded GS1-specific raw UI. Current restoration scope and acceptance are the active section and linked spec above; current runtime/source evidence remains in the ignored coordination ledger.
 
 - Latest reviewed code head: `4510b739f924c0495cbc7424dc78592759f54394`. Fixture integration `7f0e8f5` was independently reviewed and integrated as `4510b73`; seven focused suites passed 130 tests, fatal-info analysis and seven-file formatting passed. Real producer/fake-BLE tests cover fresh acquisition, atomic save, recreated controller, held pending witness, exact confirmed proof and mismatched-era preservation. Controlled UI fixtures now supply documented synthetic witnesses without relaxing any production gate; malformed-quality presentation/export coverage remains.
 - Latest complete `make check` invocation (session 75795, unchanged code `4510b73`) is **partial, not green**. Passed: tooling/contracts, vendor canary/tree guard, all nine format/analyzer lanes, package unit tests (core 123; BLE 17; BLE-Flutter 27; AiDEX 82; CBIO 196 plus 2 real-material skips; Libre2 175; Libre glucose 33; Anytime 105), app unit/widget 599, host integration 1, Android debug APK, web build and Android missing-signing-credentials guard. Device-backed integration was explicitly deferred, not passed. The invocation exited 2 at `build-ios` because CocoaPods was unavailable; Xcode was also not discovered and xcode-select selected CommandLineTools. Required pins are Xcode 26.6 / CocoaPods 1.16.2; no Apple toolchain installation was attempted. iOS/macOS builds and native tests remain unverified.
