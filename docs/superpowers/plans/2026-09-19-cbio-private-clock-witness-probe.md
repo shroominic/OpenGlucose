@@ -104,6 +104,7 @@ Future<Map<String, Object?>> runCbioClockWitnessProbe({
   required CbioProbeSavedState saved,
   required CbioCredentialSource credentials,
   required DateTime Function() clock,
+  required String sourceRevision,
   bool includeAdjacentIndex = false,
 });
 ```
@@ -112,6 +113,10 @@ The returned map is the closed public result, never an object containing frames.
 Use a `Stopwatch`/deadline for duration; changing wall clock must not extend a
 budget. Tests use `fake_async` or an injected private test scheduler to advance
 timeouts without sleeping.
+
+Validate `sourceRevision` against `^[0-9a-f]{40}$` before any BLE operation.
+The private entrypoint supplies it from `CBIO_PROBE_SOURCE_REVISION`, an explicit
+build define pinned by the reviewed build command, never a runtime guessed HEAD.
 
 Exact schema: `schemaVersion` is 1; `sourceRevision` is a reviewed 40-character
 lowercase hex commit; `outcome` is `completed`, `aborted` or `inconclusive`;
@@ -145,7 +150,7 @@ empty data as an equality result. Reject every other key, type or string.
 - [ ] Compare newly observed overlapping same-index full four-word records in memory. Report equality booleans, overlap count, whether rawTime deltas are constant and the constant signed delta when they are. Report index ordering/gaps only as booleans/counts, not raw index lists. Reindex is allowed to change as the live suffix grows; compare its progression separately, not as immutable record identity.
 - [ ] Compare old saved checkpoint time only as a signed delta to each newly observed witness; compare old rawPayload only as a clearly labeled weak diagnostic equality, never proof or admission. No reconstructed absolute timestamp is output.
 - [ ] Finally cancel all subscriptions/timers, clear retained frame/record references and disconnect. Report failed cleanup truthfully. Delayed callbacks and timed-out pending operations must be unable to issue any later write. Dart GC does not guarantee secure erasure; claim only memory-only retention and explicit reference disposal.
-- [ ] Reread the same canonical metadata/envelope bytes before publishing completion and compare in memory. Any difference becomes `storage-changed`; do not restore, overwrite or merge either copy. This detects interference without modifying user state.
+- [ ] In the finalization path for every outcome, including aborted/error runs, reread and compare the same canonical metadata/envelope bytes whenever initial bytes were obtained. Any difference becomes `storage-changed`; unreadable comparison is explicitly failed verification, not equality. Do not restore, overwrite or merge either copy. This detects interference without modifying user state.
 
 Hard ceilings (not caller-increasable):
 
@@ -195,7 +200,8 @@ git diff --check
 ```sh
 : "${CBIO_PRIVATE_DEFINE_FILE:?existing private provisioning file required}"
 : "${CBIO_PROBE_BUILD_NUMBER:?root assigned private build number required}"
-JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ANDROID_HOME=/Users/fungus/dev/.cbio-android-sdk ANDROID_SDK_ROOT=/Users/fungus/dev/.cbio-android-sdk LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 /Users/fungus/dev/openhealth/.toolchains/flutter/bin/flutter build apk --release --no-pub --target tool/cbio_clock_probe_main.dart --build-number "$CBIO_PROBE_BUILD_NUMBER" --dart-define=CBIO_PRIVATE_CLOCK_PROBE=true --dart-define-from-file="$CBIO_PRIVATE_DEFINE_FILE"
+: "${CBIO_PROBE_SOURCE_REVISION:?reviewed 40-character source revision required}"
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ANDROID_HOME=/Users/fungus/dev/.cbio-android-sdk ANDROID_SDK_ROOT=/Users/fungus/dev/.cbio-android-sdk LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 /Users/fungus/dev/openhealth/.toolchains/flutter/bin/flutter build apk --release --no-pub --target tool/cbio_clock_probe_main.dart --build-number "$CBIO_PROBE_BUILD_NUMBER" --dart-define=CBIO_PRIVATE_CLOCK_PROBE=true --dart-define=CBIO_PROBE_SOURCE_REVISION="$CBIO_PROBE_SOURCE_REVISION" --dart-define-from-file="$CBIO_PRIVATE_DEFINE_FILE"
 ```
 
 ## Separate physical authorization gate

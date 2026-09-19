@@ -129,6 +129,10 @@ was independently reviewed and approved for staged RED-to-GREEN implementation.
   uses private typed records. Tests must assert that actual protocol acquisition
   and legacy restoration populate none of these fields until decoding is
   independently verified. Empty normalized fields are interim, not completion.
+- Public normalized history counters remain zero/unknown while decoding is
+  unavailable; do not advertise decoded-history/raw-history availability from
+  private raw acquisition. Raw progress, retention counts and polling remain
+  private. This truthful interim capability state is not feature completion.
 - Disconnect drains and flushes private writes. Required app flush propagates
   failures independently of generic disconnect error handling. Synchronous
   dispose cannot promise completion: schedule flush, retain last durable data,
