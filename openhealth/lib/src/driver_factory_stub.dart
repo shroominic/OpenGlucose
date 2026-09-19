@@ -1,4 +1,5 @@
 import 'package:cgm_core/cgm_core.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 
 import 'demo_driver.dart';
 import 'display_awake_gate.dart';
@@ -19,7 +20,7 @@ bool get platformLibreGen1StreamingEnabled => false;
 
 Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() async => null;
 
-CgmDriver buildPlatformDriver() =>
+CgmDriver buildPlatformDriver({CbioPrivateStateStore? privateStateStore}) =>
     DemoCgmDriver(initialScenario: MockScenario.fromId(kOgScenario));
 
 /// Web/demo builds have no display to hold and no unfiltered scan to protect.

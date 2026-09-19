@@ -22,6 +22,129 @@ import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  for (final failAt in ['prepare', 'flush']) {
+    test(
+      'private handoff $failAt failure retains selection and retries',
+      () async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        final oldSensor = _multiDriverSensor(
+          driverId: 'controlled',
+          storageKey: 'old',
+        );
+        final nextSensor = _multiDriverSensor(
+          driverId: 'controlled',
+          storageKey: 'next',
+        );
+        final old = _ControlledSession(
+          _testSnapshot(oldSensor, stage: CgmSyncStage.ready),
+        );
+        final next = _ControlledSession(
+          _testSnapshot(nextSensor, stage: CgmSyncStage.ready),
+        );
+        final driver = _ControlledDriver([old, next]);
+        var shouldFail = false;
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: driver,
+          prepareTarget: (_) async {
+            if (shouldFail && failAt == 'prepare') {
+              throw StateError('private payload');
+            }
+          },
+          flushPrivateState: () async {
+            if (shouldFail && failAt == 'flush') {
+              throw StateError('private payload');
+            }
+          },
+        );
+        await controller.initialize();
+        await controller.connect(oldSensor);
+        shouldFail = true;
+        await controller.connect(nextSensor);
+        expect(controller.snapshot?.sensor.storageKey, 'old');
+        expect(driver.connectedSensors, hasLength(1));
+        expect(old.disconnectCalls, failAt == 'prepare' ? 0 : 1);
+        expect(controller.lastError, isNot(contains('private payload')));
+        shouldFail = false;
+        await controller.connect(nextSensor);
+        expect(controller.snapshot?.sensor.storageKey, 'next');
+        expect(driver.connectedSensors, hasLength(2));
+        await controller.disconnect(clearSelection: false);
+        controller.dispose();
+        await driver.close();
+      },
+    );
+  }
+
+  test(
+    'cancel during private preparation cannot connect delayed target',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'controlled',
+        storageKey: 'pending',
+      );
+      final driver = _ControlledDriver([
+        _ControlledSession(_testSnapshot(sensor, stage: CgmSyncStage.ready)),
+      ]);
+      final preparing = Completer<void>();
+      final entered = Completer<void>();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        prepareTarget: (_) async {
+          entered.complete();
+          await preparing.future;
+        },
+      );
+      await controller.initialize();
+      final connecting = controller.connect(sensor);
+      await entered.future;
+      await controller.disconnect();
+      preparing.complete();
+      await connecting;
+      expect(driver.connectedSensors, isEmpty);
+      expect(controller.snapshot, isNull);
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test('normalized namespace never falls back to legacy raw history', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final sensor = _multiDriverSensor(
+      driverId: 'controlled',
+      storageKey: 'private',
+    );
+    final encoded = base64Url
+        .encode(utf8.encode(jsonEncode(['controlled', 'private'])))
+        .replaceAll('=', '');
+    final raw = jsonEncode([
+      {'valueMgdl': 59, 'sensorMinute': 1},
+    ]);
+    final store = _ControllableHealthStateStore(
+      initialValues: {
+        'openHealth.lastSensor': jsonEncode(sensor.toJson()),
+        'openHealth.history.v2.$encoded': raw,
+        'openHealth.history.cbio.v1.$encoded': raw,
+      },
+    );
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _ControlledDriver([]),
+      healthStateStore: store,
+      historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+    );
+    await controller.initialize();
+    expect(controller.snapshot!.history, isEmpty);
+    expect(controller.snapshot!.latestReading, isNull);
+    expect(store.getString('openHealth.history.v2.$encoded'), raw);
+    controller.dispose();
+  });
+
   test(
     'CBIO counter reason is closed and cannot survive stale or foreign snapshots',
     () async {

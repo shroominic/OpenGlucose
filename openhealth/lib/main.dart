@@ -39,6 +39,7 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'src/persistence/cbio_private_state_adapter.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -69,9 +70,16 @@ Future<_BootstrapResult> _bootstrap() async {
   final preferences = await SharedPreferences.getInstance();
   final languageController = AppLanguageController(preferences: preferences);
   final healthStateStore = createHealthStateStore(preferences);
+  await healthStateStore.initialize();
+  final privateState = CbioPrivateStateAdapter(healthStateStore);
+  await privateState.migrateLegacyArchives();
+  final driver = buildDefaultDriver(privateStateStore: privateState);
   final controller = CgmAppController(
     preferences: preferences,
-    driver: buildDefaultDriver(),
+    driver: driver,
+    prepareTarget: (sensor) => prepareDefaultDriverTarget(driver, sensor),
+    flushPrivateState: () => flushDefaultDriverPrivateState(driver),
+    historyNamespace: defaultDriverHistoryNamespace,
     healthStateStore: healthStateStore,
     displayAwake: buildDefaultDisplayAwakeGate(),
   );

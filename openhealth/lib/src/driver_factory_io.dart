@@ -184,7 +184,7 @@ Future<void> configurePlatformPrivacyDefaults() async {
   }
 }
 
-CgmDriver buildPlatformDriver() {
+CgmDriver buildPlatformDriver({CbioPrivateStateStore? privateStateStore}) {
   _rejectIncompatibleDebugModes();
   if (kOgDemo && kReleaseMode) {
     throw UnsupportedError('OG_DEMO is disabled in release builds.');
@@ -208,10 +208,16 @@ CgmDriver buildPlatformDriver() {
     }
     return _buildCaptureRegistry(_sharedProtocolTransport());
   }
-  return _buildPlatformRegistry(const FlutterBluePlusTransport());
+  return _buildPlatformRegistry(
+    const FlutterBluePlusTransport(),
+    privateStateStore: privateStateStore,
+  );
 }
 
-CgmDriver _buildPlatformRegistry(BleTransport transport) {
+CgmDriver _buildPlatformRegistry(
+  BleTransport transport, {
+  CbioPrivateStateStore? privateStateStore,
+}) {
   const aidexDiscovery = AidexDiscovery();
   const cbioDiscovery = CbioDiscovery();
   return CgmDriverRegistry(
@@ -229,6 +235,7 @@ CgmDriver _buildPlatformRegistry(BleTransport transport) {
             transport,
             discovery: cbioDiscovery,
             credentials: cbioCredentials,
+            privateStateStore: privateStateStore,
           ),
           scanServiceUuids: CbioDiscovery.scanServiceUuids,
           discover: cbioDiscovery.mapScanResult,
