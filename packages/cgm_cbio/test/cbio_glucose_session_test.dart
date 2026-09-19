@@ -478,6 +478,20 @@ Future<CbioGlucoseSession> _privateSession({
     privateState: owner,
   );
   _owners[session] = owner;
+  session.logs.listen((entry) {
+    if (entry.message.startsWith('cbio.raw.records') ||
+        entry.message.startsWith('cbio.raw.counter-restart') ||
+        entry.message.startsWith('cbio.clock.anchor')) {
+      expect(
+        entry.message,
+        anyOf(
+          'cbio.raw.records',
+          'cbio.raw.counter-restart',
+          'cbio.clock.anchor',
+        ),
+      );
+    }
+  });
   return session;
 }
 

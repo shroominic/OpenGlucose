@@ -98,6 +98,7 @@ abstract final class CbioSessionFailure {
   static const String invalidResume = 'cbio.resume.invalid';
   static const String missingWitness = 'cbio.resume.witness-missing';
   static const String counterRestart = 'cbio.counter.restart';
+  static const String conflictingHistory = 'cbio.history.conflicting';
 }
 
 /// Whether a closed failure code is worth another automatic attempt.
@@ -113,6 +114,7 @@ bool cbioFailureAllowsAutomaticReconnect(String code) => switch (code) {
   CbioSessionFailure.invalidResume ||
   CbioSessionFailure.missingWitness ||
   CbioSessionFailure.counterRestart ||
+  CbioSessionFailure.conflictingHistory ||
   CbioSessionFailure.topology => false,
   _ => true,
 };
@@ -936,7 +938,7 @@ final class CbioGlucoseSession implements CgmSession {
     switch (status) {
       case CbioArchiveIngestStatus.accepted:
       case CbioArchiveIngestStatus.gap:
-        _log(CgmLogLevel.debug, 'cbio.raw.records=${_archive.length}');
+        _log(CgmLogLevel.debug, 'cbio.raw.records');
         _restartHistoryIdleTimer();
         _emit();
       case CbioArchiveIngestStatus.counterRestart:
@@ -945,11 +947,7 @@ final class CbioGlucoseSession implements CgmSession {
         // splicing the new stretch onto the old numbering, so say so where a
         // reader can see it: a silently absorbed restart looks exactly like a
         // sensor that stopped producing records.
-        _log(
-          CgmLogLevel.warning,
-          'cbio.raw.counter-restart index=${_archive.counterRestartIndex} '
-          'records=${_archive.length} contiguous=false',
-        );
+        _log(CgmLogLevel.warning, 'cbio.raw.counter-restart');
         _fail(
           CbioSessionFailure.counterRestart,
           counterFailureReason: _CounterFailureReason.archiveTimeConflict,
@@ -1109,7 +1107,7 @@ final class CbioGlucoseSession implements CgmSession {
     _anchor = anchor;
     if (anchor != null && !_anchorLogged) {
       _anchorLogged = true;
-      _log(CgmLogLevel.info, 'cbio.clock.anchor=index${anchor.anchorIndex}');
+      _log(CgmLogLevel.info, 'cbio.clock.anchor');
     }
     return anchor;
   }
@@ -1171,7 +1169,7 @@ final class CbioGlucoseSession implements CgmSession {
             });
           }
         } on FormatException {
-          _fail('cbio.history.conflicting');
+          _fail(CbioSessionFailure.conflictingHistory);
           return;
         }
       }
