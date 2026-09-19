@@ -1,4 +1,4 @@
-# ADR 0004: Localize the app through a user-controlled language policy
+# ADR 0005: Localize the app through a user-controlled language policy
 
 - Status: Accepted
 - Date: 2026-08-31

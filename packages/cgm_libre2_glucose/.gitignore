@@ -1,0 +1,2 @@
+# Library resolution is validated by the consuming app lockfile.
+pubspec.lock

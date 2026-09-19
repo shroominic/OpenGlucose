@@ -3,8 +3,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:cgm_cbio/cgm_cbio.dart';
+import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/health_state_store_io.dart';
+import 'package:openglucose/src/persistence/cbio_history_state.dart';
+import 'package:openglucose/src/persistence/cbio_private_state_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _fileName = 'restricted-health-state.json';
@@ -18,6 +22,333 @@ const _healthExportWatermarkKey = 'openHealth.healthExport.watermarkMs';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'full-input blob rollback preserves complete rows/checkpoint and frozen v1',
+    () async {
+      final directory = await _temporaryDirectory('cbio-full-rollback');
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      var failCommit = false;
+      final excluded = <String>[];
+      FileHealthStateStore makeStore() => FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async {
+          excluded.add(path);
+          if (failCommit && path.endsWith('.blob')) {
+            failCommit = false;
+            throw StateError('synthetic full commit verification failure');
+          }
+        },
+      );
+      final store = makeStore();
+      await store.initialize();
+      final adapter = CbioPrivateStateAdapter(store);
+      await adapter.write('synthetic', ' frozen original v1\n');
+      final before = _fullEnvelope(1);
+      await adapter.writeFullRecords('synthetic', before);
+      failCommit = true;
+      await expectLater(
+        adapter.writeFullRecords('synthetic', _fullEnvelope(2)),
+        throwsStateError,
+      );
+      expect(await adapter.readFullRecords('synthetic'), before);
+      final restarted = makeStore();
+      await restarted.initialize();
+      final restoredAdapter = CbioPrivateStateAdapter(restarted);
+      expect(await restoredAdapter.readFullRecords('synthetic'), before);
+      expect(await restoredAdapter.read('synthetic'), ' frozen original v1\n');
+      final restored =
+          jsonDecode((await restoredAdapter.readFullRecords('synthetic'))!)
+              as Map;
+      expect(restored['records'], [
+        [1, 1000, 0, 321, 7, 64, 5],
+      ]);
+      expect(
+        (jsonDecode(restored['currentCheckpoint'] as String) as Map)['index'],
+        1,
+      );
+      const key =
+          'openHealth.history.cbio.fullRecords.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+      final blob = _historyBlob(directory, key);
+      expect(excluded, contains('${blob.path}.next'));
+      expect(excluded, contains(blob.path));
+      expect((await _readEnvelope(directory))['values'], isNot(contains(key)));
+      expect(restarted.getString('openHealth.sensorArchive'), isNull);
+      await restoredAdapter.writeFullRecords('synthetic', _fullEnvelope(2));
+      final afterRestart = makeStore();
+      await afterRestart.initialize();
+      expect(
+        await CbioPrivateStateAdapter(
+          afterRestart,
+        ).readFullRecords('synthetic'),
+        _fullEnvelope(2),
+      );
+      expect(
+        await CbioPrivateStateAdapter(afterRestart).read('synthetic'),
+        ' frozen original v1\n',
+      );
+    },
+  );
+
+  test(
+    'interrupted full-input replacement restores whole prior acquisition',
+    () async {
+      final directory = await _temporaryDirectory('cbio-full-interrupted');
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      FileHealthStateStore makeStore() => FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+      final store = makeStore();
+      await store.initialize();
+      await CbioPrivateStateAdapter(
+        store,
+      ).writeFullRecords('synthetic', _fullEnvelope(1));
+      const key =
+          'openHealth.history.cbio.fullRecords.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+      final blob = _historyBlob(directory, key);
+      await blob.rename('${blob.path}.previous');
+      await File('${blob.path}.next').writeAsString(_fullEnvelope(2));
+      final restarted = makeStore();
+      await restarted.initialize();
+      expect(
+        await CbioPrivateStateAdapter(restarted).readFullRecords('synthetic'),
+        _fullEnvelope(1),
+      );
+      expect(await blob.readAsString(), _fullEnvelope(1));
+      expect(File('${blob.path}.next').existsSync(), isFalse);
+      expect(File('${blob.path}.previous').existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'only exact private manifest key is allowed in restricted metadata',
+    () async {
+      const manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
+      const rawKey = 'openHealth.history.cbio.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+      const normalizedKey =
+          'openHealth.history.normalized.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+      final directory = await _temporaryDirectory('private-manifest');
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final excluded = <String>[];
+      FileHealthStateStore makeStore() => FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async => excluded.add(path),
+      );
+      final store = makeStore();
+      await store.initialize();
+      await store.setString(manifestKey, 'private manifest bytes');
+      await store.setString(rawKey, ' raw envelope\n');
+      await store.setString(normalizedKey, '[]');
+      for (final key in [
+        '$manifestKey.extra',
+        'openHealth.driverState.cbio.rawArchives.v2',
+        'openHealth.driverState.other',
+      ]) {
+        expect(() => store.setString(key, 'denied'), throwsArgumentError);
+      }
+      expect(
+        (await _readEnvelope(directory))['values'],
+        containsPair(manifestKey, 'private manifest bytes'),
+      );
+      expect(
+        (await _readEnvelope(directory))['values'],
+        isNot(contains(rawKey)),
+      );
+      expect(
+        await _historyBlob(directory, rawKey).readAsString(),
+        ' raw envelope\n',
+      );
+      expect(await _historyBlob(directory, normalizedKey).readAsString(), '[]');
+      expect(excluded.any((path) => path.endsWith(_fileName)), isTrue);
+      expect(excluded.any((path) => path.endsWith('.blob')), isTrue);
+      final restarted = makeStore();
+      await restarted.initialize();
+      expect(restarted.getString(manifestKey), 'private manifest bytes');
+      expect(restarted.getString(rawKey), ' raw envelope\n');
+      expect(restarted.getString(normalizedKey), '[]');
+    },
+  );
+
+  for (final failingCommit in [1, 2]) {
+    test(
+      'private migration retries native commit failure $failingCommit',
+      () async {
+        const manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
+        const indexKey = 'openHealth.sensorArchive';
+        const rawKey = 'openHealth.history.v2.WyJjYmlvIiwic3ludGhldGljIl0';
+        final descriptor = {
+          'id': 'raw',
+          'driverId': 'cbio',
+          'storageKey': 'synthetic',
+          'historyKey': rawKey,
+        };
+        final original = ' \n${jsonEncode([descriptor])}\n';
+        final directory = await _temporaryDirectory('private-migration');
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        var remaining = 0;
+        FileHealthStateStore makeStore() => FileHealthStateStore(
+          legacyPreferences: preferences,
+          directoryProvider: () async => directory,
+          requiresBackupExclusion: true,
+          backupExclusionMarker: (path) async {
+            if (remaining > 0 && path.endsWith(_fileName) && --remaining == 0) {
+              throw StateError('synthetic commit verification failure');
+            }
+          },
+        );
+        final store = makeStore();
+        await store.initialize();
+        await store.setString(indexKey, original);
+        await store.setString(rawKey, ' raw bytes untouched\n');
+        remaining = failingCommit;
+        await expectLater(
+          CbioPrivateStateAdapter(store).migrateLegacyArchives(),
+          throwsStateError,
+        );
+        expect(store.getString(indexKey), original);
+        expect(store.getString(rawKey), ' raw bytes untouched\n');
+        if (failingCommit == 1) expect(store.getString(manifestKey), isNull);
+        final restarted = makeStore();
+        await restarted.initialize();
+        expect(restarted.getString(indexKey), original);
+        await CbioPrivateStateAdapter(restarted).migrateLegacyArchives();
+        expect(jsonDecode(restarted.getString(indexKey)!), isEmpty);
+        final manifest =
+            jsonDecode(restarted.getString(manifestKey)!)
+                as Map<String, dynamic>;
+        expect(manifest['archives'], [descriptor]);
+        expect(manifest['sourceIndexes'], [original]);
+        expect(
+          await _historyBlob(directory, rawKey).readAsString(),
+          ' raw bytes untouched\n',
+        );
+        await CbioPrivateStateAdapter(restarted).migrateLegacyArchives();
+        expect(jsonDecode(restarted.getString(manifestKey)!), manifest);
+      },
+    );
+  }
+
+  test(
+    'CBIO paired blob rolls back atomically and restores in a new store',
+    () async {
+      final directory = await _temporaryDirectory('cbio-pair');
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      const key = 'openHealth.history.cbio.v1.synthetic';
+      var failCommit = false;
+      final excluded = <String>[];
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async {
+          excluded.add(path);
+          if (failCommit && path.endsWith('.blob')) {
+            failCommit = false;
+            throw StateError('synthetic final verification failure');
+          }
+        },
+      );
+      String state(int index) => CbioHistoryState(
+        sensorKey: 'synthetic',
+        checkpoint: CbioSessionCheckpoint(
+          sensorKey: 'synthetic',
+          index: index,
+          rawTime: 1000 + index * 60,
+        ).encode(),
+        history: [
+          for (var i = 1; i <= index; i++)
+            CgmReading(
+              valueMgdl: 6,
+              source: CgmRecordSource.raw,
+              rawValue: 60,
+              sensorMinute: i,
+              isDisplayProvisional: true,
+            ),
+        ],
+      ).encode();
+      await store.initialize();
+      final before = state(1);
+      await store.setString(key, before);
+      failCommit = true;
+      await expectLater(store.setString(key, state(2)), throwsStateError);
+      expect(store.getString(key), before);
+      final restarted = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+      await restarted.initialize();
+      expect(restarted.getString(key), before);
+      final restored = CbioHistoryState.decode(
+        restarted.getString(key)!,
+        sensorKey: 'synthetic',
+      );
+      expect(restored.history, hasLength(1));
+      expect(
+        CbioSessionCheckpoint.decode(restored.checkpoint, 'synthetic')!.index,
+        1,
+      );
+      expect(excluded.any((path) => path.endsWith('.blob.next')), isTrue);
+      expect(excluded.any((path) => path.endsWith('.blob')), isTrue);
+    },
+  );
+
+  test(
+    'CBIO interrupted blob replacement restores whole previous pair',
+    () async {
+      final directory = await _temporaryDirectory('cbio-interrupted');
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      const key = 'openHealth.history.cbio.v1.synthetic';
+      final before = CbioHistoryState(
+        sensorKey: 'synthetic',
+        checkpoint: const CbioSessionCheckpoint(
+          sensorKey: 'synthetic',
+          index: 1,
+          rawTime: 1000,
+        ).encode(),
+        history: [
+          const CgmReading(
+            valueMgdl: 6,
+            source: CgmRecordSource.raw,
+            sensorMinute: 1,
+            rawValue: 60,
+            isDisplayProvisional: true,
+          ),
+        ],
+      ).encode();
+      final store = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+      await store.initialize();
+      await store.setString(key, before);
+      final blob = _historyBlob(directory, key);
+      await blob.rename('${blob.path}.previous');
+      await File('${blob.path}.next').writeAsString('{interrupted');
+      final restarted = FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: false,
+      );
+      await restarted.initialize();
+      expect(restarted.getString(key), before);
+      expect(File('${blob.path}.next').existsSync(), isFalse);
+      expect(File('${blob.path}.previous').existsSync(), isFalse);
+    },
+  );
 
   test(
     'migrates restricted preferences into a versioned excluded file',
@@ -813,6 +1144,27 @@ File _historyBlob(Directory directory, String key) {
   final digest = crypto.sha256.convert(utf8.encode(key));
   return File('${historyDirectory.path}/history-$digest$_historyBlobExtension');
 }
+
+String _fullEnvelope(int lastIndex) => jsonEncode({
+  'schemaVersion': 1,
+  'driverId': 'cbio',
+  'profile': 'raw08-observed',
+  'sensorKey': 'synthetic',
+  'captureId': '0123456789abcdef0123456789abcdef',
+  'state': 'observing',
+  'bootstrap': {'kind': 'fresh'},
+  'firstObservation': [1, 1000],
+  'records': [
+    [1, 1000, 0, 321, 7, 64, 5],
+    if (lastIndex == 2) [2, 1060, 0, 325, 8, 70, 6],
+  ],
+  'currentCheckpoint': jsonEncode({
+    'version': 1,
+    'sensorKey': 'synthetic',
+    'index': lastIndex,
+    'rawTime': lastIndex == 1 ? 1000 : 1060,
+  }),
+});
 
 File _legacyHistoryBlob(Directory directory, String key) {
   final historyDirectory = Directory('${directory.path}/$_historyDirectory')

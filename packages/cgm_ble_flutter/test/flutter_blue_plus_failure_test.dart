@@ -7,7 +7,147 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('platform transport advertises the explicit one-attempt contract', () {
+    const transport = FlutterBluePlusTransport();
+    expect(transport, isA<BleSingleAttemptTransport>());
+    expect(transport.supportsSingleAttemptConnect, isTrue);
+  });
+  test(
+    'scan cleanup runs every step and preserves the first failure',
+    () async {
+      final firstFailure = StateError('results cancel failed');
+      final steps = <String>[];
+
+      await expectLater(
+        closeFlutterBluePlusScanResources(
+          cancelResults: () async {
+            steps.add('results');
+            throw firstFailure;
+          },
+          cancelScanning: () async {
+            steps.add('scanning');
+            throw StateError('scanning cancel failed');
+          },
+          stopScan: () async {
+            steps.add('stop');
+          },
+          closeController: () async {
+            steps.add('close');
+          },
+        ),
+        throwsA(same(firstFailure)),
+      );
+
+      // The caller's stream closes first: plugin cancellations can stay
+      // pending, and a stream the platform already stopped must not wait on
+      // them.
+      expect(steps, <String>['close', 'results', 'scanning', 'stop']);
+    },
+  );
+
+  test('pending start cleanup completes before a replacement scan', () async {
+    final startFinished = Completer<void>();
+    final cleanupFinished = Completer<void>();
+    final steps = <String>[];
+
+    final cleanup = closeFlutterBluePlusScanResources(
+      cancelResults: () async {
+        steps.add('results');
+      },
+      cancelScanning: () async {
+        steps.add('scanning');
+      },
+      awaitPendingStart: () async {
+        steps.add('await-start');
+        await startFinished.future;
+        steps.add('start-finished');
+      },
+      stopScan: () async {
+        steps.add('stop');
+      },
+      closeController: () async {
+        steps.add('close');
+      },
+    ).whenComplete(cleanupFinished.complete);
+    final replacement = cleanup.then((_) {
+      steps.add('replacement-start');
+    });
+
+    await Future<void>.delayed(Duration.zero);
+    expect(steps, <String>['close', 'results', 'scanning', 'await-start']);
+    expect(cleanupFinished.isCompleted, isFalse);
+    expect(steps, isNot(contains('replacement-start')));
+
+    startFinished.complete();
+    await replacement;
+
+    expect(steps, <String>[
+      'close',
+      'results',
+      'scanning',
+      'await-start',
+      'start-finished',
+      'stop',
+      'replacement-start',
+    ]);
+  });
+
   group('Android connection sequencing', () {
+    test(
+      'one-shot path makes one connect call and never retries 133',
+      () async {
+        final events = <String>[];
+        final scanStopped = Completer<void>();
+        var connectCalls = 0;
+        final status133 = fbp.FlutterBluePlusException(
+          fbp.ErrorPlatform.android,
+          'connect',
+          133,
+          'ANDROID_SPECIFIC_ERROR',
+        );
+
+        final result = connectWithScanStoppedOnce<String>(
+          stopScan: () {
+            events.add('stop-scan');
+            return scanStopped.future;
+          },
+          connect: () async {
+            connectCalls += 1;
+            events.add('connect-$connectCalls');
+            throw status133;
+          },
+        );
+
+        expect(events, <String>['stop-scan']);
+        expect(connectCalls, 0);
+
+        scanStopped.complete();
+        await expectLater(result, throwsA(same(status133)));
+
+        expect(events, <String>['stop-scan', 'connect-1']);
+        expect(connectCalls, 1);
+      },
+    );
+
+    test('one-shot path returns after its first successful connect', () async {
+      var stopCalls = 0;
+      var connectCalls = 0;
+
+      final result = await connectWithScanStoppedOnce<String>(
+        stopScan: () async {
+          stopCalls += 1;
+        },
+        connect: () async {
+          connectCalls += 1;
+          return 'connected';
+        },
+      );
+
+      expect(result, 'connected');
+      expect(stopCalls, 1);
+      expect(connectCalls, 1);
+    });
+
     test('awaits scan shutdown before the initial connect and retry', () async {
       final events = <String>[];
       final firstScanStopped = Completer<void>();
