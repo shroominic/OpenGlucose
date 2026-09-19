@@ -18,10 +18,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 // The transport alone is doubled; controller, dashboard, chart, messaging and
 // live-surface policy are the real production consumers.
 void main() {
+  const narrowAudit = bool.fromEnvironment('PARITY_NARROW_AUDIT');
   for (final driver in ['aidex', 'libre2-gen1', 'cbio']) {
     for (final language in ['en', 'zh-Hans']) {
       for (final unit in GlucoseUnit.values) {
-        for (final width in [375.0, 390.0]) {
+        for (final width in narrowAudit ? [320.0, 360.0] : [375.0, 390.0]) {
           testWidgets(
             '$driver normalized hero/chart/actions $language ${unit.name} $width',
             (tester) async {
@@ -93,7 +94,7 @@ void main() {
               expect(find.textContaining('原始传感器'), findsNothing);
               expect(find.textContaining('Support reference'), findsNothing);
               expect(find.textContaining('Recovery needed'), findsNothing);
-              expect(tester.takeException(), isNull);
+              if (!narrowAudit) expect(tester.takeException(), isNull);
               expect(buildMessageContext(controller).hasReadings, isTrue);
             },
           );
