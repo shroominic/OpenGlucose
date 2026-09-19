@@ -102,10 +102,21 @@ List<int> _packedBatch({required int startIndex, required int count}) {
 final class _FakeConnection implements BleConnection {
   _FakeConnection({
     this.serial = _serialOctets,
+    this.failDisconnect = false,
+    this.failNotificationCancel = false,
     List<BleService>? services,
     List<int>? streamKey,
   }) : services = services ?? _defaultServices,
-       streamKey = streamKey ?? _syntheticKey;
+       streamKey = streamKey ?? _syntheticKey {
+    _notifications = failNotificationCancel
+        ? StreamController<List<int>>(
+            onCancel: () async {
+              notificationCancelCalls++;
+              throw StateError('synthetic native cancellation detail');
+            },
+          )
+        : StreamController<List<int>>.broadcast();
+  }
 
   static const List<BleService> _defaultServices = <BleService>[
     BleService(
@@ -140,10 +151,11 @@ final class _FakeConnection implements BleConnection {
   final List<int> serial;
   final List<BleService> services;
   final List<int> streamKey;
+  final bool failDisconnect;
+  final bool failNotificationCancel;
   final StreamController<BleConnectionState> _states =
       StreamController<BleConnectionState>.broadcast();
-  final StreamController<List<int>> _notifications =
-      StreamController<List<int>>.broadcast();
+  late final StreamController<List<int>> _notifications;
   final List<List<int>> writes = <List<int>>[];
   final List<BleCharacteristicRef> serialReads = <BleCharacteristicRef>[];
 
@@ -152,6 +164,8 @@ final class _FakeConnection implements BleConnection {
   bool notifySubscribed = false;
   bool disconnected = false;
   int mtuRequests = 0;
+  int disconnectCalls = 0;
+  int notificationCancelCalls = 0;
 
   @override
   String get deviceId => 'fake-cbio';
@@ -222,9 +236,11 @@ final class _FakeConnection implements BleConnection {
 
   @override
   Future<void> disconnect() async {
+    disconnectCalls++;
     disconnected = true;
     await _states.close();
     await _notifications.close();
+    if (failDisconnect) throw StateError('synthetic native disconnect detail');
   }
 }
 
@@ -297,19 +313,22 @@ Future<void> _withManualReadySession(
   )
   body, {
   CbioSessionTiming timing = _fastTiming,
+  _FakeConnection? connection,
+  CbioPrivateStateStore? privateStateStore,
 }) async {
   final timers = <_ManualTimer>[];
   var now = DateTime.utc(2026, 9, 19);
-  final connection = _FakeConnection();
-  await _defaultResponder(connection);
+  final activeConnection = connection ?? _FakeConnection();
+  await _defaultResponder(activeConnection);
   await runZoned(
     () async {
       final session = await _privateSession(
         sensor: _sensor,
-        transport: _FakeTransport(connection),
+        transport: _FakeTransport(activeConnection),
         credentials: _syntheticSource,
         timing: timing,
         clock: () => now,
+        privateStateStore: privateStateStore,
       );
       try {
         await session.initialize();
@@ -321,7 +340,7 @@ Future<void> _withManualReadySession(
             .fire();
         await _drainMicrotasks();
         expect(session.currentSnapshot.stage, CgmSyncStage.ready);
-        await body(session, connection, timers, (value) => now = value);
+        await body(session, activeConnection, timers, (value) => now = value);
       } finally {
         await session.disconnect();
       }
@@ -566,6 +585,222 @@ Future<List<CgmReading>> _storedHistory(
 }
 
 void main() {
+  group('throwing cleanup', () {
+    for (final cleanup in ['disconnect', 'notification', 'both']) {
+      test(
+        '$cleanup failure cannot replace terminal write failure or revive reads',
+        () async {
+          final store = _FullStore();
+          final connection = _FakeConnection(
+            failDisconnect: cleanup != 'notification',
+            failNotificationCancel: cleanup != 'disconnect',
+          );
+          await _withManualReadySession(
+            (session, connection, timers, _) async {
+              connection.emitPlaintext(
+                _rawBatch(
+                  startIndex: 1,
+                  baseEpochSeconds: 1000,
+                  baseReindex: 0,
+                  currents: [64],
+                  temperature: 321,
+                ),
+              );
+              await _drainMicrotasks();
+              expect(_fullSaved(store).isPending, isTrue);
+              final originalWrite = Completer<void>();
+              connection.onWrite = (_) => originalWrite.future;
+              var settled = 0;
+              final first = session.refreshLiveData().then((_) => settled++);
+              _fireTimer(timers, _fastTiming.livePollInterval);
+              await _drainMicrotasks();
+              final second = session
+                  .syncHistory(requestedStartOffset: 1)
+                  .then((_) => settled++);
+              await _drainMicrotasks();
+              expect(settled, 0);
+              final queued = timers
+                  .where(
+                    (timer) => timer.duration == _fastTiming.livePollInterval,
+                  )
+                  .toList();
+              originalWrite.completeError(
+                StateError('synthetic original write failure'),
+              );
+              await _drainMicrotasks();
+              expect(settled, 2);
+              await Future.wait([first, second]);
+              expect(session.currentSnapshot.stage, CgmSyncStage.error);
+              expect(
+                session.currentSnapshot.lastError,
+                CbioSessionFailure.write,
+              );
+              expect(
+                connection.disconnectCalls,
+                1,
+                reason:
+                    'notification cancellation failure must not skip link cleanup',
+              );
+              if (cleanup != 'disconnect') {
+                expect(connection.notificationCancelCalls, 1);
+              }
+              final writesAtFailure = connection.writes.length;
+              final timersAtFailure = timers.length;
+              for (final timer in queued) {
+                timer.fireQueued();
+              }
+              await _drainMicrotasks();
+              await session.refreshLiveData();
+              await session.syncHistory();
+              expect(connection.writes.length, writesAtFailure);
+              expect(timers.length, timersAtFailure);
+              expect(timers.where((timer) => timer.isActive), isEmpty);
+              expect(
+                session.currentSnapshot.lastError,
+                CbioSessionFailure.write,
+              );
+              await session.disconnect();
+              expect(
+                session.currentSnapshot.lastError,
+                CbioSessionFailure.write,
+              );
+              expect(_fullSaved(store).records.single.rawTemperature, 321);
+              expect(_fullSaved(store).records.single.rawPayload, 64);
+              final nextOwner = await CbioPrivateStateOwner.load(
+                _sensor.storageKey,
+                store,
+              );
+              await nextOwner.adoptFullRecords();
+              expect(
+                CbioSessionCheckpoint.decode(
+                  nextOwner.resumeCheckpoint!,
+                  _sensor.storageKey,
+                )!.index,
+                1,
+              );
+              await nextOwner.close();
+              expect(store.legacyWrites, 0);
+            },
+            connection: connection,
+            privateStateStore: store,
+          );
+        },
+      );
+    }
+
+    for (final failDrain in [false, true]) {
+      test(
+        'explicit throwing cleanup preserves durable lease until drain succeeds failure=$failDrain',
+        () async {
+          final store = _FullStore();
+          final connection = _FakeConnection(
+            failDisconnect: true,
+            failNotificationCancel: true,
+          );
+          await _withManualReadySession(
+            (session, connection, timers, _) async {
+              connection.emitPlaintext(
+                _rawBatch(
+                  startIndex: 1,
+                  baseEpochSeconds: 1000,
+                  baseReindex: 0,
+                  currents: [64],
+                  temperature: 321,
+                ),
+              );
+              await _drainMicrotasks();
+              final before = store.full;
+              final release = Completer<void>();
+              store.hold = release;
+              store.failFull = failDrain;
+              store.started = Completer<void>();
+              final queued = timers
+                  .where(
+                    (timer) => timer.duration == _fastTiming.livePollInterval,
+                  )
+                  .toList();
+              var readersSettled = 0;
+              final first = session.refreshLiveData().then(
+                (_) => readersSettled++,
+              );
+              final second = session.syncHistory().then(
+                (_) => readersSettled++,
+              );
+              var closeSettled = false;
+              Object? closeError;
+              final closing = session.disconnect().then<void>(
+                (_) {
+                  closeSettled = true;
+                },
+                onError: (Object error) {
+                  closeError = error;
+                  closeSettled = true;
+                },
+              );
+              await _drainMicrotasks();
+              expect(store.started!.isCompleted, isTrue);
+              expect(closeSettled, isFalse);
+              expect(readersSettled, 2);
+              await Future.wait([first, second]);
+              expect(connection.disconnectCalls, 1);
+              expect(connection.notificationCancelCalls, 1);
+              expect(store.full, before);
+              final competitor = await CbioPrivateStateOwner.load(
+                _sensor.storageKey,
+                store,
+              );
+              await expectLater(
+                competitor.adoptFullRecords(),
+                throwsA(isA<CbioPrivateStateFailure>()),
+              );
+              final writesAtClose = connection.writes.length;
+              final timersAtClose = timers.length;
+              for (final timer in queued) {
+                timer.fireQueued();
+              }
+              await _drainMicrotasks();
+              expect(connection.writes.length, writesAtClose);
+              expect(timers.length, timersAtClose);
+              expect(timers.where((timer) => timer.isActive), isEmpty);
+              release.complete();
+              await closing;
+              if (failDrain) {
+                expect(closeError, isA<CbioPrivateStateFailure>());
+                expect(store.full, before);
+                await expectLater(
+                  competitor.adoptFullRecords(),
+                  throwsA(isA<CbioPrivateStateFailure>()),
+                );
+                store.failFull = false;
+                await session.disconnect();
+              } else {
+                expect(closeError, isNull);
+              }
+              expect(_fullSaved(store).records.single.rawTemperature, 321);
+              expect(
+                CbioSessionCheckpoint.decode(
+                  _fullSaved(store).currentCheckpoint!,
+                  _sensor.storageKey,
+                )!.index,
+                1,
+              );
+              await competitor.adoptFullRecords();
+              expect(
+                competitor.resumeCheckpoint,
+                _fullSaved(store).currentCheckpoint,
+              );
+              await competitor.close();
+              expect(store.legacyWrites, 0);
+              expect(connection.disconnectCalls, 1);
+            },
+            connection: connection,
+            privateStateStore: store,
+          );
+        },
+      );
+    }
+  });
+
   group('complete private inputs', () {
     test(
       'legacy bootstrap remains byte-identical after full-input suffix save',
