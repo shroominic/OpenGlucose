@@ -220,14 +220,15 @@ final class _PendingRead {
 /// One authenticated GS1 session: history ingest plus live polling.
 final class CbioGlucoseSession implements CgmSession {
   CbioGlucoseSession({
-    required this.sensor,
+    required DiscoveredSensor sensor,
     required BleTransport transport,
     CbioCredentialSource credentials = const CbioDefineCredentialSource(),
     this.timing = const CbioSessionTiming(),
     DateTime Function() clock = DateTime.now,
     CbioPrivateStateStore? privateStateStore,
     CbioPrivateStateOwner? privateState,
-  }) : _transport = transport,
+  }) : sensor = _publicSensor(sensor),
+       _transport = transport,
        _credentials = credentials,
        _clock = clock,
        _privateStateStore = privateStateStore,
@@ -240,7 +241,7 @@ final class CbioGlucoseSession implements CgmSession {
        _snapshot = CgmSessionSnapshot(
          stage: CgmSyncStage.connecting,
          statusText: 'Connecting to the GS1 sensor',
-         sensor: sensor,
+         sensor: _publicSensor(sensor),
          capabilities: capabilities,
          sessionInfo: const CgmSessionInfo(
            manufacturer: 'Sibionics',
@@ -251,10 +252,6 @@ final class CbioGlucoseSession implements CgmSession {
          metadata: <String, String>{
            cbioPhaseMetadataKey: CbioSessionPhase.connecting,
            cbioLifecycleMetadataKey: 'unknown',
-           cbioResumeStatusMetadataKey:
-               sensor.metadata.containsKey(cbioCheckpointMetadataKey)
-               ? CbioResumeStatus.pending
-               : CbioResumeStatus.fresh,
          },
        );
 
@@ -277,6 +274,18 @@ final class CbioGlucoseSession implements CgmSession {
   @override
   final DiscoveredSensor sensor;
 
+  static DiscoveredSensor _publicSensor(DiscoveredSensor sensor) =>
+      DiscoveredSensor.fromJson({
+        ...sensor.toJson(),
+        'metadata': {
+          for (final entry in sensor.metadata.entries)
+            if (entry.key != cbioCheckpointMetadataKey &&
+                !entry.key.startsWith('cgm.cbio.clock.') &&
+                !entry.key.startsWith('cgm.cbio.resume.'))
+              entry.key: entry.value,
+        },
+      });
+
   final CbioSessionTiming timing;
 
   final BleTransport _transport;
@@ -289,7 +298,9 @@ final class CbioGlucoseSession implements CgmSession {
   Timer? _privateSaveTimer;
   bool _witnessConfirmed = false;
   _CounterFailureReason? _counterFailureReason;
-  final CbioHistoryArchive _archive = CbioHistoryArchive();
+  final CbioHistoryArchive _uninitializedArchive = CbioHistoryArchive();
+  CbioHistoryArchive get _archive =>
+      _privateState?.acquisitionArchive ?? _uninitializedArchive;
   final StreamController<CgmSessionSnapshot> _snapshotController =
       StreamController<CgmSessionSnapshot>.broadcast();
   final StreamController<CgmLogEntry> _logController =
@@ -315,7 +326,6 @@ final class CbioGlucoseSession implements CgmSession {
   _PendingRead? _pendingRead;
   Future<void>? _initialization;
   Completer<void>? _liveWindow;
-  DateTime? _lastSyncAt;
   String _phase = CbioSessionPhase.connecting;
   String _statusText = 'Connecting to the GS1 sensor';
   String? _lastError;
@@ -325,7 +335,6 @@ final class CbioGlucoseSession implements CgmSession {
   int? _clockReferenceEpochSeconds;
   CbioIndexTimeAnchor? _anchor;
   bool _anchorLogged = false;
-  bool _catchUpOpen = false;
   bool _budgetExhausted = false;
   bool _automaticReconnectAllowed = true;
   bool _closing = false;
@@ -585,7 +594,6 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _beginHistory(int startIndex) {
-    _catchUpOpen = false;
     _catchUpTimer?.cancel();
     _catchUpTimer = null;
     _setPhase(
@@ -642,7 +650,6 @@ final class CbioGlucoseSession implements CgmSession {
     _historyDeadlineTimer = null;
     _historyIdleTimer?.cancel();
     _historyIdleTimer = null;
-    _lastSyncAt ??= _clock().toUtc();
     _setPhase(
       CbioSessionPhase.live,
       CgmSyncStage.ready,
@@ -774,21 +781,18 @@ final class CbioGlucoseSession implements CgmSession {
     if (_closing || _linkDropped || _terminalFailure) {
       return;
     }
-    _catchUpOpen = true;
     _catchUpTimer?.cancel();
     _catchUpTimer = Timer(timing.catchUpWindow, () {
       _catchUpTimer = null;
       if (_closing || _linkDropped || _terminalFailure) {
         return;
       }
-      _catchUpOpen = false;
       _emit(force: true);
     });
     _emit(force: true);
     try {
       await _performRead(startIndex, label: 'sync-read');
     } finally {
-      _catchUpOpen = false;
       _catchUpTimer?.cancel();
       _catchUpTimer = null;
       if (!_closing && !_linkDropped && !_terminalFailure) {
@@ -931,7 +935,6 @@ final class CbioGlucoseSession implements CgmSession {
     switch (status) {
       case CbioArchiveIngestStatus.accepted:
       case CbioArchiveIngestStatus.gap:
-        _lastSyncAt = _clock().toUtc();
         _log(CgmLogLevel.debug, 'cbio.raw.records=${_archive.length}');
         _restartHistoryIdleTimer();
         _emit();
@@ -1052,28 +1055,6 @@ final class CbioGlucoseSession implements CgmSession {
     }
   }
 
-  bool get _atLiveEdge {
-    if (_archive.length == 0 || _archive.hasGap) {
-      return false;
-    }
-    if (_archive.oldestIndex != _historyStartIndex) {
-      return false;
-    }
-    // The counter is the sensor's own position, not a clock. Comparing it
-    // against the app's clock is an observation, not a derivation: a counter
-    // that never took the written clock sits decades away from `now`, so this
-    // gate fails closed and the archive is simply not at the live edge.
-    final newestCounter = _archive.newestSensorCounter;
-    if (newestCounter == null) {
-      return false;
-    }
-    final newest = DateTime.fromMillisecondsSinceEpoch(
-      newestCounter * 1000,
-      isUtc: true,
-    );
-    return _clock().toUtc().difference(newest).abs() <= timing.liveEdgeWindow;
-  }
-
   // Public history describes normalized glucose, not private raw acquisition.
   CgmHistorySyncState get _historySyncState => const CgmHistorySyncState();
 
@@ -1165,7 +1146,7 @@ final class CbioGlucoseSession implements CgmSession {
               rawTime: newest.rawTime,
               anchor: anchor,
             ).encode()
-          : _snapshot.metadata[cbioCheckpointMetadataKey] ?? _inputCheckpoint;
+          : _privateState?.state?.checkpoint ?? _inputCheckpoint;
       if (!_terminalFailure &&
           (_checkpoint == null || _witnessConfirmed) &&
           checkpoint != null &&
@@ -1201,29 +1182,13 @@ final class CbioGlucoseSession implements CgmSession {
         latestReading: null,
         historySync: _historySyncState,
         metadata: <String, String>{
-          for (final entry in sensor.metadata.entries)
-            if (!entry.key.startsWith('cgm.cbio.clock.') &&
-                !entry.key.startsWith('cgm.cbio.resume.'))
-              entry.key: entry.value,
           cbioPhaseMetadataKey: _phase,
           cbioLifecycleMetadataKey: 'unknown',
-          cbioCheckpointMetadataKey: ?checkpoint,
-          cbioResumeStatusMetadataKey: _terminalFailure
-              ? CbioResumeStatus.failed
-              : _checkpoint == null
-              ? CbioResumeStatus.fresh
-              : _witnessConfirmed
-              ? CbioResumeStatus.confirmed
-              : CbioResumeStatus.pending,
           if (_terminalFailure &&
               _lastError == CbioSessionFailure.counterRestart &&
               _counterFailureReason != null)
             'cgm.cbio.resume.counterFailureReason':
                 _counterFailureReason!.value,
-          if (_witnessConfirmed && !_terminalFailure)
-            cbioConfirmedCheckpointMetadataKey: _inputCheckpoint!,
-          'cgm.cbio.unit': 'provisional',
-          ...?anchor?.toMetadata(),
           if (!_automaticReconnectAllowed)
             cgmAutomaticReconnectAllowedMetadataKey: 'false',
         },
@@ -1404,24 +1369,10 @@ final class CbioGlucoseSession implements CgmSession {
   Future<List<CgmDiagnosticItem>> refreshDiagnostics() async =>
       <CgmDiagnosticItem>[
         CgmDiagnosticItem(
-          key: 'cbio.gs1.session',
-          title: 'GS1 link',
+          key: 'cgm.session',
+          title: 'Sensor connection',
           summary: _statusText,
-          fields: <String, String>{
-            'phase': _phase,
-            'reads': '$_readsUsed',
-            'clockWritten': _clockWritten.toString(),
-            'clockAnchor': _anchor == null
-                ? 'unsynced: no position on the sensor clock this app set'
-                : 'index ${_anchor!.anchorIndex} at '
-                      '${_anchor!.anchorEpochSeconds} (source '
-                      '${_anchor!.source}, covers from '
-                      '${_anchor!.coveredFromIndex})',
-            'storedRecords': '${_archive.length}',
-            'acquisitionPending': '${!_atLiveEdge || _catchUpOpen}',
-            'newestIndex': '${_archive.newestIndex ?? 0}',
-            'unit': cbioProvisionalUnitNotice,
-          },
+          fields: <String, String>{'phase': _phase, 'failure': ?_lastError},
         ),
       ];
 

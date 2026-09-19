@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_cbio/src/cbio_history_state.dart';
+import 'package:cgm_cbio/src/cbio_private_state_owner.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
@@ -302,7 +303,7 @@ Future<void> _withManualReadySession(
   await _defaultResponder(connection);
   await runZoned(
     () async {
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: _FakeTransport(connection),
         credentials: _syntheticSource,
@@ -427,9 +428,63 @@ Future<void> _defaultResponder(
   };
 }
 
-Future<int> _rawCount(CbioGlucoseSession session) async => int.parse(
-  (await session.refreshDiagnostics()).single.fields['storedRecords']!,
-);
+final _owners = Expando<CbioPrivateStateOwner>();
+
+Future<CbioGlucoseSession> _privateSession({
+  required DiscoveredSensor sensor,
+  required BleTransport transport,
+  CbioCredentialSource credentials = const CbioDefineCredentialSource(),
+  CbioSessionTiming timing = const CbioSessionTiming(),
+  DateTime Function() clock = DateTime.now,
+  CbioPrivateStateStore? privateStateStore,
+}) async {
+  final store = privateStateStore ?? _PrivateStore();
+  final encoded = sensor.metadata[cbioCheckpointMetadataKey];
+  if (privateStateStore == null && encoded != null) {
+    final checkpoint = CbioSessionCheckpoint.decode(encoded, sensor.storageKey);
+    if (checkpoint == null) {
+      return CbioGlucoseSession(
+        sensor: sensor,
+        transport: transport,
+        credentials: credentials,
+        timing: timing,
+        clock: clock,
+      );
+    }
+    await store.write(
+      sensor.storageKey,
+      CbioHistoryState(
+        sensorKey: sensor.storageKey,
+        checkpoint: encoded,
+        history: [
+          CgmReading(
+            valueMgdl: 6,
+            rawValue: 60,
+            source: CgmRecordSource.raw,
+            sensorMinute: checkpoint.index,
+            isDisplayProvisional: true,
+          ),
+        ],
+      ).encode(),
+    );
+  }
+  final owner = await CbioPrivateStateOwner.load(sensor.storageKey, store);
+  final session = CbioGlucoseSession(
+    sensor: sensor,
+    transport: transport,
+    credentials: credentials,
+    timing: timing,
+    clock: clock,
+    privateState: owner,
+  );
+  _owners[session] = owner;
+  return session;
+}
+
+Future<int> _rawCount(CbioGlucoseSession session) async =>
+    _owners[session]!.acquisitionArchive.length;
+String? _privateCheckpoint(CbioGlucoseSession session) =>
+    _owners[session]?.state?.checkpoint;
 
 String _phaseOf(CgmSessionSnapshot snapshot) =>
     snapshot.metadata[cbioPhaseMetadataKey] ?? '';
@@ -507,7 +562,7 @@ void main() {
       expect(session.currentSnapshot.latestReading, isNull);
       expect(
         session.currentSnapshot.metadata[cbioResumeStatusMetadataKey],
-        CbioResumeStatus.fresh,
+        isNull,
       );
       store.failWrite = true;
       await expectLater(session.disconnect(), throwsException);
@@ -538,7 +593,7 @@ void main() {
         ),
       ],
     );
-    final session = CbioGlucoseSession(
+    final session = await _privateSession(
       privateStateStore: privateStore,
       sensor: _sensor,
       transport: _FakeTransport(connection),
@@ -568,7 +623,7 @@ void main() {
           ),
         ],
       );
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _withMetadata({reasonKey: 'before-checkpoint'}),
         transport: _FakeTransport(connection),
         credentials: _syntheticSource,
@@ -606,7 +661,7 @@ void main() {
           ],
         );
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -655,7 +710,7 @@ void main() {
         final transport = _FakeTransport(connection);
         await _defaultResponder(connection);
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -683,7 +738,7 @@ void main() {
         final transport = _FakeTransport(connection);
         await _defaultResponder(connection);
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: const DiscoveredSensor(
             driverId: 'cbio',
             deviceId: 'A4E7D0B1-4CB4-4A0A-9B6A-OPAQUE',
@@ -717,7 +772,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection, authReply: _authRejected);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -740,7 +795,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection, authReply: _authRejected);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -767,7 +822,7 @@ void main() {
       final transport = _FakeTransport(connection);
       connection.onWrite = (_) async {};
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -791,7 +846,7 @@ void main() {
       final transport = _FakeTransport(connection);
       connection.onWrite = (_) async {};
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -821,7 +876,7 @@ void main() {
           throw StateError('radio refused the frame');
         };
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -852,7 +907,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: DiscoveredSensor(
           driverId: 'cbio',
           deviceId: 'not-an-address',
@@ -885,7 +940,7 @@ void main() {
       await _defaultResponder(connection);
       final logs = <String>[];
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -928,7 +983,7 @@ void main() {
         ],
       );
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
@@ -1016,7 +1071,7 @@ void main() {
           ],
         );
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           privateStateStore: privateStore,
           sensor: _sensor,
           transport: transport,
@@ -1053,10 +1108,7 @@ void main() {
           reason: 'a restart must be visible, not absorbed as a duplicate',
         );
         expect(session.currentSnapshot.stage, CgmSyncStage.error);
-        expect(
-          session.currentSnapshot.metadata['cgm.cbio.checkpoint'],
-          isNotNull,
-        );
+        expect(_privateCheckpoint(session), isNotNull);
         await subscription.cancel();
         await session.disconnect();
       },
@@ -1081,7 +1133,7 @@ void main() {
           ],
         );
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -1118,7 +1170,7 @@ void main() {
         ],
       );
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1160,7 +1212,7 @@ void main() {
         ],
       );
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
@@ -1211,7 +1263,7 @@ void main() {
           packedReply: _packedBatch(startIndex: 1, count: 4),
         );
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -1257,7 +1309,7 @@ void main() {
         }
       };
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
@@ -1284,7 +1336,7 @@ void main() {
 
         await runZoned(
           () async {
-            final session = CbioGlucoseSession(
+            final session = await _privateSession(
               sensor: _sensor,
               transport: transport,
               credentials: _syntheticSource,
@@ -1347,7 +1399,7 @@ void main() {
 
           await runZoned(
             () async {
-              final session = CbioGlucoseSession(
+              final session = await _privateSession(
                 sensor: _sensor,
                 transport: transport,
                 credentials: _syntheticSource,
@@ -1469,7 +1521,7 @@ void main() {
           }
         };
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -1492,7 +1544,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1525,7 +1577,7 @@ void main() {
         ],
       );
       final transport = _FakeTransport(connection);
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1547,7 +1599,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1572,7 +1624,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1908,7 +1960,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1936,7 +1988,7 @@ void main() {
         final transport = _FakeTransport(connection);
         await _defaultResponder(connection);
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -1962,7 +2014,7 @@ void main() {
       final transport = _FakeTransport(connection);
       await _defaultResponder(connection);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1994,7 +2046,7 @@ void main() {
           ),
         ],
       );
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _withMetadata({
           cbioCheckpointMetadataKey: jsonEncode({
             'version': 1,
@@ -2045,7 +2097,7 @@ void main() {
           ),
         ],
       );
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: _FakeTransport(connection),
         credentials: _syntheticSource,
@@ -2054,7 +2106,7 @@ void main() {
       await session.initialize();
       await _pumpUntil(() async => await _rawCount(session) == 3);
       final checkpoint = CbioSessionCheckpoint.decode(
-        session.currentSnapshot.metadata[cbioCheckpointMetadataKey]!,
+        _privateCheckpoint(session)!,
         _sensor.storageKey,
       );
       expect(checkpoint!.index, 2);
@@ -2074,7 +2126,7 @@ void main() {
           ),
         ],
       );
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: _FakeTransport(connection),
         credentials: _syntheticSource,
@@ -2082,10 +2134,7 @@ void main() {
       );
       await session.initialize();
       await _pumpUntil(() async => await _rawCount(session) > 0);
-      expect(
-        session.currentSnapshot.metadata[cbioCheckpointMetadataKey],
-        isNull,
-      );
+      expect(_privateCheckpoint(session), isNull);
       await session.disconnect();
     });
 
@@ -2096,7 +2145,7 @@ void main() {
         final transport = _FakeTransport(connection);
         await _defaultResponder(connection);
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: const DiscoveredSensor(
             driverId: 'cbio',
             deviceId: 'AA:BB:CC:DD:EE:FF',
@@ -2141,7 +2190,7 @@ void main() {
             ),
           ],
         );
-        final first = CbioGlucoseSession(
+        final first = await _privateSession(
           privateStateStore: privateStore,
           sensor: _sensor,
           transport: _FakeTransport(firstConnection),
@@ -2151,15 +2200,12 @@ void main() {
         );
         await first.initialize();
         await _pumpUntil(() async => await _rawCount(first) == 2);
-        final metadata = Map<String, String>.from(
-          jsonDecode(jsonEncode(first.currentSnapshot.metadata)) as Map,
-        );
+        final metadata = Map<String, String>.from({
+          cbioCheckpointMetadataKey: _privateCheckpoint(first)!,
+        });
         expect(metadata['cgm.cbio.checkpoint'], isNotNull);
         await first.disconnect();
-        expect(
-          first.currentSnapshot.metadata[cbioCheckpointMetadataKey],
-          metadata[cbioCheckpointMetadataKey],
-        );
+        expect(_privateCheckpoint(first), metadata[cbioCheckpointMetadataKey]);
 
         final connection = _FakeConnection();
         await _defaultResponder(
@@ -2173,7 +2219,7 @@ void main() {
             ),
           ],
         );
-        final restored = CbioGlucoseSession(
+        final restored = await _privateSession(
           privateStateStore: privateStore,
           sensor: _withMetadata(metadata),
           transport: _FakeTransport(connection),
@@ -2183,7 +2229,7 @@ void main() {
         );
         expect(
           restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
-          'pending',
+          isNull,
         );
         expect(
           restored
@@ -2195,13 +2241,13 @@ void main() {
         await _pumpUntil(() async => await _rawCount(restored) > 0);
         expect(
           restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
-          'confirmed',
+          isNull,
         );
         expect(
           restored
               .currentSnapshot
               .metadata['cgm.cbio.resume.confirmedCheckpoint'],
-          metadata[cbioCheckpointMetadataKey],
+          isNull,
         );
         final query = connection.writes
             .map(_unmaskWrite)
@@ -2216,7 +2262,7 @@ void main() {
           then.add(const Duration(minutes: 1)),
         );
         final next = CbioSessionCheckpoint.decode(
-          restored.currentSnapshot.metadata[cbioCheckpointMetadataKey]!,
+          _privateCheckpoint(restored)!,
           _sensor.storageKey,
         );
         expect(next?.anchor?.anchorEpochSeconds, epoch);
@@ -2224,23 +2270,19 @@ void main() {
           restored.currentSnapshot.metadata['cgm.cbio.lifecycle'],
           'unknown',
         );
-        final advancedCheckpoint =
-            restored.currentSnapshot.metadata[cbioCheckpointMetadataKey];
+        final advancedCheckpoint = _privateCheckpoint(restored);
         await restored.disconnect();
         expect(
           restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
-          'confirmed',
+          isNull,
         );
         expect(
           restored
               .currentSnapshot
               .metadata['cgm.cbio.resume.confirmedCheckpoint'],
-          metadata[cbioCheckpointMetadataKey],
+          isNull,
         );
-        expect(
-          restored.currentSnapshot.metadata[cbioCheckpointMetadataKey],
-          advancedCheckpoint,
-        );
+        expect(_privateCheckpoint(restored), advancedCheckpoint);
       },
     );
 
@@ -2248,7 +2290,7 @@ void main() {
       test('malformed checkpoint fails before radio: $raw', () async {
         final connection = _FakeConnection();
         final transport = _FakeTransport(connection);
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _withMetadata({'cgm.cbio.checkpoint': raw}),
           transport: transport,
           credentials: _syntheticSource,
@@ -2266,7 +2308,7 @@ void main() {
       () async {
         final connection = _FakeConnection();
         await _defaultResponder(connection);
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _withMetadata({
             cbioCheckpointMetadataKey: jsonEncode({
               'version': 1,
@@ -2314,7 +2356,7 @@ void main() {
           'index': 2,
           'rawTime': 1000,
         });
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           sensor: _withMetadata({
             cbioCheckpointMetadataKey: checkpoint,
             cbioAnchorIndexMetadataKey: '2',
@@ -2331,7 +2373,7 @@ void main() {
         expect(session.currentSnapshot.history, isEmpty);
         expect(
           session.currentSnapshot.metadata['cgm.cbio.resume.status'],
-          'failed',
+          isNull,
         );
         expect(
           session
@@ -2339,10 +2381,7 @@ void main() {
               .metadata['cgm.cbio.resume.confirmedCheckpoint'],
           isNull,
         );
-        expect(
-          session.currentSnapshot.metadata['cgm.cbio.checkpoint'],
-          checkpoint,
-        );
+        expect(_privateCheckpoint(session), checkpoint);
         expect(
           session
               .currentSnapshot
@@ -2354,10 +2393,7 @@ void main() {
         await session.syncHistory();
         expect(connection.writes.length, writes);
         await session.disconnect();
-        expect(
-          session.currentSnapshot.metadata[cbioCheckpointMetadataKey],
-          checkpoint,
-        );
+        expect(_privateCheckpoint(session), checkpoint);
         expect(
           CbioIndexTimeAnchor.fromMetadata(session.currentSnapshot.metadata),
           isNull,
@@ -2432,7 +2468,7 @@ void main() {
       await _defaultResponder(connection);
       final source = _CountingCredentialSource(_syntheticCredentials);
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: source,
@@ -2452,7 +2488,7 @@ void main() {
       final transport = _FakeTransport(connection);
       final source = _CountingCredentialSource();
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         sensor: _sensor,
         transport: transport,
         credentials: source,
@@ -2495,7 +2531,7 @@ void main() {
         ],
       );
 
-      final session = CbioGlucoseSession(
+      final session = await _privateSession(
         privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
@@ -2507,7 +2543,23 @@ void main() {
       await _pumpUntil(() async => await _rawCount(session) == 3);
 
       final snapshot = session.currentSnapshot;
-      final anchor = CbioIndexTimeAnchor.fromMetadata(snapshot.metadata);
+      final anchor = CbioSessionCheckpoint.decode(
+        _privateCheckpoint(session)!,
+        _sensor.storageKey,
+      )?.anchor;
+      expect(snapshot.history, isEmpty);
+      expect(
+        snapshot.metadata.keys.where(
+          (key) => key.contains('checkpoint') || key.contains('clock.'),
+        ),
+        isEmpty,
+      );
+      expect(
+        snapshot.sensor.metadata.keys.where(
+          (key) => key.contains('checkpoint') || key.contains('clock.'),
+        ),
+        isEmpty,
+      );
       expect(anchor, isNotNull);
       expect(anchor!.anchorIndex, 3);
       expect(anchor.coveredFromIndex, 1);
@@ -2535,10 +2587,8 @@ void main() {
             'counter',
       );
       expect(
-        await session.refreshDiagnostics().then(
-          (items) => items.single.fields['clockAnchor'],
-        ),
-        contains('index 3'),
+        (await session.refreshDiagnostics()).single.fields.keys,
+        isNot(contains('clockAnchor')),
       );
       await session.disconnect();
     });
@@ -2566,7 +2616,7 @@ void main() {
           ],
         );
 
-        final session = CbioGlucoseSession(
+        final session = await _privateSession(
           privateStateStore: privateStore,
           sensor: _sensor,
           transport: transport,
@@ -2588,10 +2638,8 @@ void main() {
           reason: 'the counter is a position, never a clock',
         );
         expect(
-          await session.refreshDiagnostics().then(
-            (items) => items.single.fields['clockAnchor'],
-          ),
-          contains('unsynced'),
+          (await session.refreshDiagnostics()).single.fields.keys,
+          isNot(contains('clockAnchor')),
         );
         await session.disconnect();
       },

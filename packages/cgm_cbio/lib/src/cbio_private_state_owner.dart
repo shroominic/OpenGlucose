@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 
 import 'cbio_history_state.dart';
 import 'cbio_private_state.dart';
+import 'cbio_history_archive.dart';
 
 /// Closed storage failure; native errors can include private paths or data.
 final class CbioPrivateStateFailure implements Exception {
@@ -17,6 +18,7 @@ final class CbioPrivateStateOwner {
 
   final String sensorKey;
   final CbioPrivateStateStore _store;
+  final CbioHistoryArchive acquisitionArchive = CbioHistoryArchive();
   CbioHistoryState? _state;
   int _revision = 0;
   int _durableRevision = 0;
