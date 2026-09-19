@@ -1528,6 +1528,9 @@ void main() {
           const ValueKey<String>('confirmYuwellActivationButton'),
         ),
       );
+      // Stream.empty cancellation uses the SDK's shared completion future;
+      // allow its real-zone microtasks to finish before settling the UI.
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
       await tester.pumpAndSettle();
 
       expect(driver.connectedSensors, hasLength(2));
