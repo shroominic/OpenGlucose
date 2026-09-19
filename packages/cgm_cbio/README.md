@@ -1,5 +1,37 @@
 # cgm_cbio
 
+## Resume integration contract
+
+`cbioCheckpointMetadataKey` (`cgm.cbio.checkpoint`) is a versioned JSON value
+published in session metadata after a contiguous archive prefix is received.
+It binds one index/counter witness and optional clock anchor to the sensor's
+`storageKey`. It is restricted health/device state, not diagnostic log data.
+The host must atomically persist this value with its associated archive in the
+existing backup-excluded local store, then restore it into
+`DiscoveredSensor.metadata` before reconnecting. The package does not implement
+durable storage. Saving metadata independently of its archive is insufficient.
+
+On reconnect the session re-reads the witness index before accepting any
+suffix. A different counter, missing witness, malformed JSON, unsupported
+version, foreign sensor binding, or invalid anchor provenance fails closed
+and disables automatic reconnect. The last good checkpoint and old records
+remain intact. Recovery must preserve the old archive; never silently delete
+the checkpoint, reset/activate the sensor, or merge another counter era.
+Records below a restored witness are also refused: a suffix-only restore has
+no evidence to classify those positions as earlier backfill versus a reset.
+Legacy `resumeOffset` alone no longer authorizes skipping history. A host with
+legacy archived data and no checkpoint must keep that archive separate until
+its era has been reconciled; blindly merging the fresh full read is unsafe.
+
+An accepted anchor keeps its original clock provenance and timestamps across
+restart. It is not moved to the new host time. Unreconciled restored anchor
+metadata is not exposed. `cbioLifecycleMetadataKey` is `unknown`: activation,
+warmup completion, session start, and wear lifetime are not sensor-verified.
+The non-null legacy `CgmSessionInfo` duration fields do not establish those
+facts and must not be presented as a verified lifecycle.
+
+## Driver boundary
+
 Live driver for the SIBIONICS / Cbio GS1 sensor, plus offline frame inspection.
 
 `CbioSensorDriver` implements `CgmDriver` under driver ID `cbio` and is

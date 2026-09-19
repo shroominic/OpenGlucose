@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
@@ -307,6 +308,17 @@ const DiscoveredSensor _sensor = DiscoveredSensor(
   rssi: -60,
   capabilities: CbioGlucoseSession.capabilities,
 );
+
+DiscoveredSensor _withMetadata(Map<String, String> metadata) =>
+    DiscoveredSensor(
+      driverId: _sensor.driverId,
+      deviceId: _sensor.deviceId,
+      displayName: _sensor.displayName,
+      storageKey: _sensor.storageKey,
+      rssi: _sensor.rssi,
+      capabilities: _sensor.capabilities,
+      metadata: metadata,
+    );
 
 /// Short windows so a session reaches its live phase inside one test.
 const CbioSessionTiming _fastTiming = CbioSessionTiming(
@@ -806,6 +818,11 @@ void main() {
           messages.any((m) => m.contains('counter-restart')),
           isTrue,
           reason: 'a restart must be visible, not absorbed as a duplicate',
+        );
+        expect(session.currentSnapshot.stage, CgmSyncStage.error);
+        expect(
+          session.currentSnapshot.metadata['cgm.cbio.checkpoint'],
+          isNotNull,
         );
         await subscription.cancel();
         await session.disconnect();
@@ -1412,36 +1429,316 @@ void main() {
   });
 
   group('CbioGlucoseSession resume', () {
-    test('resumes the raw read after the persisted offset', () async {
+    test('counter rollback below resumed window is not merged', () async {
       final connection = _FakeConnection();
-      final transport = _FakeTransport(connection);
-      await _defaultResponder(connection);
-
+      await _defaultResponder(
+        connection,
+        rawBatches: [
+          _rawBatch(
+            startIndex: 100,
+            baseEpochSeconds: 7000,
+            baseReindex: 100,
+            currents: [60],
+          ),
+        ],
+      );
       final session = CbioGlucoseSession(
-        sensor: const DiscoveredSensor(
-          driverId: 'cbio',
-          deviceId: 'AA:BB:CC:DD:EE:FF',
-          displayName: 'Cbio / SiSensing candidate',
-          storageKey: 'AA:BB:CC:DD:EE:FF',
-          rssi: -60,
-          capabilities: CbioGlucoseSession.capabilities,
-          metadata: <String, String>{'resumeOffset': '9981'},
-        ),
-        transport: transport,
+        sensor: _withMetadata({
+          cbioCheckpointMetadataKey: jsonEncode({
+            'version': 1,
+            'sensorKey': _sensor.storageKey,
+            'index': 100,
+            'rawTime': 7000,
+          }),
+        }),
+        transport: _FakeTransport(connection),
         credentials: _syntheticSource,
         timing: _fastTiming,
       );
       await session.initialize();
-      await _pumpUntil(
-        () => connection.writes.map(_unmaskWrite).any((f) => f[1] == 0x08),
+      await _pumpUntil(() => session.currentSnapshot.history.length == 1);
+      connection.emitPlaintext(
+        _rawBatch(
+          startIndex: 1,
+          baseEpochSeconds: 9000,
+          baseReindex: 1,
+          currents: [99],
+        ),
       );
-
-      final raw = connection.writes
-          .map(_unmaskWrite)
-          .firstWhere((frame) => frame[1] == 0x08);
-      expect(raw[2] | (raw[3] << 8), 9982);
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.error,
+      );
+      expect(session.currentSnapshot.history.map((r) => r.sensorMinute), [100]);
+      expect(session.currentSnapshot.lastError, 'cbio.counter.restart');
       await session.disconnect();
     });
+
+    test('does not checkpoint beyond an unfilled history gap', () async {
+      final connection = _FakeConnection();
+      await _defaultResponder(
+        connection,
+        rawBatches: [
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: 1000,
+            baseReindex: 2,
+            currents: [60, 61],
+          ),
+          _rawBatch(
+            startIndex: 10,
+            baseEpochSeconds: 1540,
+            baseReindex: 10,
+            currents: [99],
+          ),
+        ],
+      );
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: _FakeTransport(connection),
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+      final checkpoint = CbioSessionCheckpoint.decode(
+        session.currentSnapshot.metadata[cbioCheckpointMetadataKey]!,
+        _sensor.storageKey,
+      );
+      expect(checkpoint!.index, 2);
+      await session.disconnect();
+    });
+
+    test('an initial suffix cannot establish a complete checkpoint', () async {
+      final connection = _FakeConnection();
+      await _defaultResponder(
+        connection,
+        rawBatches: [
+          _rawBatch(
+            startIndex: 10,
+            baseEpochSeconds: 1540,
+            baseReindex: 10,
+            currents: [99],
+          ),
+        ],
+      );
+      final session = CbioGlucoseSession(
+        sensor: _sensor,
+        transport: _FakeTransport(connection),
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+      );
+      await session.initialize();
+      await _pumpUntil(() => session.currentSnapshot.history.isNotEmpty);
+      expect(
+        session.currentSnapshot.metadata[cbioCheckpointMetadataKey],
+        isNull,
+      );
+      await session.disconnect();
+    });
+
+    test(
+      'does not skip history on an unverified legacy resume offset',
+      () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        await _defaultResponder(connection);
+
+        final session = CbioGlucoseSession(
+          sensor: const DiscoveredSensor(
+            driverId: 'cbio',
+            deviceId: 'AA:BB:CC:DD:EE:FF',
+            displayName: 'Cbio / SiSensing candidate',
+            storageKey: 'AA:BB:CC:DD:EE:FF',
+            rssi: -60,
+            capabilities: CbioGlucoseSession.capabilities,
+            metadata: <String, String>{'resumeOffset': '9981'},
+          ),
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        await _pumpUntil(
+          () => connection.writes.map(_unmaskWrite).any((f) => f[1] == 0x08),
+        );
+
+        final raw = connection.writes
+            .map(_unmaskWrite)
+            .firstWhere((frame) => frame[1] == 0x08);
+        expect(raw[2] | (raw[3] << 8), 1);
+        await session.disconnect();
+      },
+    );
+
+    test(
+      'round-tripped checkpoint rechecks witness and retains old time',
+      () async {
+        final then = DateTime.utc(2026, 1, 1);
+        final epoch = then.millisecondsSinceEpoch ~/ 1000;
+        final firstConnection = _FakeConnection();
+        await _defaultResponder(
+          firstConnection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 1,
+              baseEpochSeconds: epoch - 60,
+              baseReindex: 2,
+              currents: [60, 61],
+            ),
+          ],
+        );
+        final first = CbioGlucoseSession(
+          sensor: _sensor,
+          transport: _FakeTransport(firstConnection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          clock: () => then,
+        );
+        await first.initialize();
+        await _pumpUntil(() => first.currentSnapshot.history.length == 2);
+        final metadata = Map<String, String>.from(
+          jsonDecode(jsonEncode(first.currentSnapshot.metadata)) as Map,
+        );
+        expect(metadata['cgm.cbio.checkpoint'], isNotNull);
+        await first.disconnect();
+
+        final connection = _FakeConnection();
+        await _defaultResponder(
+          connection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 2,
+              baseEpochSeconds: epoch,
+              baseReindex: 2,
+              currents: [61, 62],
+            ),
+          ],
+        );
+        final restored = CbioGlucoseSession(
+          sensor: _withMetadata(metadata),
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+          clock: () => then.add(const Duration(hours: 1)),
+        );
+        await restored.initialize();
+        await _pumpUntil(() => restored.currentSnapshot.history.isNotEmpty);
+        final query = connection.writes
+            .map(_unmaskWrite)
+            .firstWhere((frame) => frame[1] == 0x08);
+        expect(query[2] | (query[3] << 8), 2);
+        expect(restored.currentSnapshot.history.first.recordedAt, then);
+        expect(
+          restored.currentSnapshot.history.last.recordedAt,
+          then.add(const Duration(minutes: 1)),
+        );
+        final next = CbioSessionCheckpoint.decode(
+          restored.currentSnapshot.metadata[cbioCheckpointMetadataKey]!,
+          _sensor.storageKey,
+        );
+        expect(next?.anchor?.anchorEpochSeconds, epoch);
+        expect(
+          restored.currentSnapshot.metadata['cgm.cbio.lifecycle'],
+          'unknown',
+        );
+        await restored.disconnect();
+      },
+    );
+
+    for (final raw in ['{', '{}', '{"version":99}']) {
+      test('malformed checkpoint fails before radio: $raw', () async {
+        final connection = _FakeConnection();
+        final transport = _FakeTransport(connection);
+        final session = CbioGlucoseSession(
+          sensor: _withMetadata({'cgm.cbio.checkpoint': raw}),
+          transport: transport,
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        expect(session.currentSnapshot.lastError, 'cbio.resume.invalid');
+        expect(transport.connects, 0);
+        await session.disconnect();
+      });
+    }
+
+    test(
+      'unreconciled restored metadata never exposes a clock anchor',
+      () async {
+        final connection = _FakeConnection();
+        await _defaultResponder(connection);
+        final session = CbioGlucoseSession(
+          sensor: _withMetadata({
+            cbioCheckpointMetadataKey: jsonEncode({
+              'version': 1,
+              'sensorKey': _sensor.storageKey,
+              'index': 2,
+              'rawTime': 1000,
+            }),
+            cbioAnchorIndexMetadataKey: '2',
+            cbioAnchorEpochMetadataKey: '1000',
+          }),
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        expect(
+          CbioIndexTimeAnchor.fromMetadata(session.currentSnapshot.metadata),
+          isNull,
+        );
+        await session.disconnect();
+      },
+    );
+
+    for (final batchKind in ['missing', 'conflicting', 'suffix-only']) {
+      test('$batchKind witness never publishes a new era', () async {
+        final connection = _FakeConnection();
+        final frames = batchKind == 'missing'
+            ? <List<int>>[]
+            : [
+                _rawBatch(
+                  startIndex: batchKind == 'suffix-only' ? 3 : 2,
+                  baseEpochSeconds: 9000,
+                  baseReindex: 2,
+                  currents: [99],
+                ),
+              ];
+        await _defaultResponder(connection, rawBatches: frames);
+        final checkpoint = jsonEncode({
+          'version': 1,
+          'sensorKey': _sensor.storageKey,
+          'index': 2,
+          'rawTime': 1000,
+        });
+        final session = CbioGlucoseSession(
+          sensor: _withMetadata({'cgm.cbio.checkpoint': checkpoint}),
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+        await session.initialize();
+        await _pumpUntil(
+          () => session.currentSnapshot.stage == CgmSyncStage.error,
+        );
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(
+          session.currentSnapshot.metadata['cgm.cbio.checkpoint'],
+          checkpoint,
+        );
+        expect(
+          session
+              .currentSnapshot
+              .metadata[cgmAutomaticReconnectAllowedMetadataKey],
+          'false',
+        );
+        final writes = connection.writes.length;
+        await session.refreshLiveData();
+        await session.syncHistory();
+        expect(connection.writes.length, writes);
+        await session.disconnect();
+      });
+    }
   });
 
   group('CbioGlucoseSession provisional scale', () {

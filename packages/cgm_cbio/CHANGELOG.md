@@ -2,6 +2,15 @@
 
 ## 0.1.0
 
+- Add a versioned, sensor-bound resume checkpoint with counter-witness replay
+  and validated clock-anchor provenance. Legacy offsets no longer skip history
+  without evidence; malformed state, a missing witness, or a changed counter
+  stops without appending a new era or clearing archived data. Preserve the
+  last reconciled checkpoint and never advance it across a history gap.
+  Hosts must atomically persist and restore the checkpoint with the archive;
+  this package does not provide durable storage. Publish lifecycle as unknown
+  until sensor-derived lifecycle evidence exists.
+
 - Harden the authenticated session boundary: resolve the serial characteristic
   from its discovered service (including opaque iOS identifiers), release the
   GATT link on terminal topology/auth/write failures, surface history/live

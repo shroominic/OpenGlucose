@@ -34,12 +34,15 @@ import 'cbio_crypto.dart';
 import 'cbio_driver.dart';
 import 'cbio_history_archive.dart';
 import 'cbio_index_time_anchor.dart';
+import 'cbio_frames.dart';
+import 'cbio_session_checkpoint.dart';
 import 'cbio_vendor_frames.dart';
 
 /// Snapshot metadata key carrying the closed session phase.
 const String cbioPhaseMetadataKey = 'cgm.cbio.phase';
 
-/// Sensor-provided resume offset left by the app for the next connection.
+/// Legacy app resume offset. Not sufficient to resume a CBIO counter era;
+/// hosts must restore [cbioCheckpointMetadataKey] with the archived records.
 const String cbioResumeOffsetMetadataKey = 'resumeOffset';
 
 /// The unit marker every CBio surface must show until a reference measurement
@@ -89,6 +92,9 @@ abstract final class CbioSessionFailure {
   static const String authRejected = 'cbio.auth.rejected';
   static const String write = 'cbio.write.failed';
   static const String disconnected = 'cbio.disconnected';
+  static const String invalidResume = 'cbio.resume.invalid';
+  static const String missingWitness = 'cbio.resume.witness-missing';
+  static const String counterRestart = 'cbio.counter.restart';
 }
 
 /// Whether a closed failure code is worth another automatic attempt.
@@ -101,6 +107,9 @@ abstract final class CbioSessionFailure {
 bool cbioFailureAllowsAutomaticReconnect(String code) => switch (code) {
   CbioSessionFailure.authMaterial ||
   CbioSessionFailure.authRejected ||
+  CbioSessionFailure.invalidResume ||
+  CbioSessionFailure.missingWitness ||
+  CbioSessionFailure.counterRestart ||
   CbioSessionFailure.topology => false,
   _ => true,
 };
@@ -196,7 +205,7 @@ final class CbioGlucoseSession implements CgmSession {
   }) : _transport = transport,
        _credentials = credentials,
        _clock = clock,
-       _resumeOffset = _resumeOffsetFrom(sensor),
+       _checkpoint = _checkpointFrom(sensor),
        _snapshot = CgmSessionSnapshot(
          stage: CgmSyncStage.connecting,
          statusText: 'Connecting to the GS1 sensor',
@@ -210,6 +219,7 @@ final class CbioGlucoseSession implements CgmSession {
          ),
          metadata: const <String, String>{
            cbioPhaseMetadataKey: CbioSessionPhase.connecting,
+           cbioLifecycleMetadataKey: 'unknown',
          },
        );
 
@@ -237,7 +247,8 @@ final class CbioGlucoseSession implements CgmSession {
   final BleTransport _transport;
   final CbioCredentialSource _credentials;
   final DateTime Function() _clock;
-  final int? _resumeOffset;
+  final CbioSessionCheckpoint? _checkpoint;
+  bool _witnessConfirmed = false;
   final CbioHistoryArchive _archive = CbioHistoryArchive();
   final StreamController<CgmSessionSnapshot> _snapshotController =
       StreamController<CgmSessionSnapshot>.broadcast();
@@ -304,6 +315,14 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   Future<void> _initialize() async {
+    if (sensor.metadata.containsKey(cbioCheckpointMetadataKey) &&
+        _checkpoint == null) {
+      _fail(
+        CbioSessionFailure.invalidResume,
+        statusText: 'Saved sensor state needs recovery. History preserved.',
+      );
+      return;
+    }
     // The material is resolved once per session and before the radio is
     // touched. A build that does not carry it can neither authenticate nor
     // unmask a reply, so it fails closed here as a configuration problem
@@ -388,7 +407,7 @@ final class CbioGlucoseSession implements CgmSession {
     _beginHistory(_historyStartIndex);
   }
 
-  int get _historyStartIndex => (_resumeOffset ?? 0) + 1;
+  int get _historyStartIndex => _checkpoint?.index ?? 1;
 
   /// The resolved per-frame stream key. Reached only after [_initialize]
   /// resolved the material, so no call site can mask or unmask without it.
@@ -558,6 +577,14 @@ final class CbioGlucoseSession implements CgmSession {
     if (_closing || _linkDropped || _terminalFailure) {
       return;
     }
+    if (_checkpoint != null && !_witnessConfirmed) {
+      _fail(
+        CbioSessionFailure.missingWitness,
+        statusText:
+            'Sensor history could not be reconciled. Saved history preserved.',
+      );
+      return;
+    }
     _historyDeadlineTimer?.cancel();
     _historyDeadlineTimer = null;
     _historyIdleTimer?.cancel();
@@ -694,7 +721,11 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _onNotification(List<int> bytes) {
-    if (_closing || bytes.isEmpty || _resolved == null) {
+    if (_closing ||
+        _terminalFailure ||
+        _linkDropped ||
+        bytes.isEmpty ||
+        _resolved == null) {
       return;
     }
     _reassemblyBuffer.addAll(bytes);
@@ -727,6 +758,7 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   void _handlePlaintext(List<int> plaintext) {
+    if (_terminalFailure || _linkDropped) return;
     if (plaintext.length < 5) {
       return;
     }
@@ -749,6 +781,51 @@ final class CbioGlucoseSession implements CgmSession {
       // five-byte control frames carry no reading.
       return;
     }
+    final checkpoint = _checkpoint;
+    if (checkpoint != null) {
+      final CbioRawBatch batch;
+      try {
+        batch = parseCbioRawDataFrame(plaintext);
+      } on CbioFrameException {
+        return;
+      }
+      // A suffix-only restore has no witnesses for earlier positions. A
+      // rollback cannot be classified as historical backfill versus a new
+      // counter era, so do not merge it into the resumed archive.
+      if (batch.records.any(
+        (record) => record.processed.index < checkpoint.index,
+      )) {
+        _fail(
+          CbioSessionFailure.counterRestart,
+          statusText:
+              'Sensor counter changed. Saved history preserved; recovery required.',
+        );
+        return;
+      }
+      if (!_witnessConfirmed) {
+        final witnesses = batch.records.where(
+          (record) => record.processed.index == checkpoint.index,
+        );
+        if (witnesses.isEmpty) {
+          _fail(
+            CbioSessionFailure.missingWitness,
+            statusText:
+                'Sensor history could not be reconciled. Saved history preserved.',
+          );
+          return;
+        }
+        if (witnesses.single.processed.rawTime != checkpoint.rawTime) {
+          _fail(
+            CbioSessionFailure.counterRestart,
+            statusText:
+                'Sensor counter changed. Saved history preserved; recovery required.',
+          );
+          return;
+        }
+        _witnessConfirmed = true;
+        _anchor = checkpoint.anchor;
+      }
+    }
     final status = _archive.ingest(plaintext);
     switch (status) {
       case CbioArchiveIngestStatus.accepted:
@@ -768,8 +845,11 @@ final class CbioGlucoseSession implements CgmSession {
           'cbio.raw.counter-restart index=${_archive.counterRestartIndex} '
           'records=${_archive.length} contiguous=false',
         );
-        _lastSyncAt = _clock().toUtc();
-        _emit();
+        _fail(
+          CbioSessionFailure.counterRestart,
+          statusText:
+              'Sensor counter changed. Saved history preserved; recovery required.',
+        );
       case CbioArchiveIngestStatus.duplicate:
       case CbioArchiveIngestStatus.notRawBatch:
         break;
@@ -925,11 +1005,26 @@ final class CbioGlucoseSession implements CgmSession {
   /// agrees with the app's clock, so a sensor that never took the written
   /// clock publishes no timestamp at all rather than a guessed one.
   CbioIndexTimeAnchor? _publishAnchor() {
-    final anchor = deriveCbioIndexTimeAnchor(
+    final derived = deriveCbioIndexTimeAnchor(
       records: _archive.records,
       clockReferenceEpochSeconds: _clockReferenceEpochSeconds,
       now: _clock().toUtc(),
     );
+    final previous = _anchor;
+    final anchor =
+        derived ??
+        (previous != null &&
+                _archive.records.every(
+                  (record) =>
+                      !previous.coversIndex(record.index) ||
+                      previous
+                                  .timeForIndex(record.index)
+                                  .millisecondsSinceEpoch ~/
+                              1000 ==
+                          record.rawTime,
+                )
+            ? previous
+            : null);
     _anchor = anchor;
     if (anchor != null && !_anchorLogged) {
       _anchorLogged = true;
@@ -959,6 +1054,20 @@ final class CbioGlucoseSession implements CgmSession {
     void publish() {
       final anchor = _publishAnchor();
       final history = _historyReadingsFor(anchor);
+      final newest = _archive.records.lastOrNull;
+      final checkpoint =
+          !_terminalFailure &&
+              newest != null &&
+              _archive.contiguous &&
+              _archive.oldestIndex == _historyStartIndex
+          ? CbioSessionCheckpoint(
+              sensorKey: sensor.storageKey,
+              index: newest.index,
+              rawTime: newest.rawTime,
+              anchor: anchor,
+            ).encode()
+          : _snapshot.metadata[cbioCheckpointMetadataKey] ??
+                sensor.metadata[cbioCheckpointMetadataKey];
       _snapshot = _snapshot.copyWith(
         stage: _stage,
         statusText: _statusText,
@@ -967,8 +1076,12 @@ final class CbioGlucoseSession implements CgmSession {
         latestReading: history.isEmpty ? null : history.last,
         historySync: _historySyncState,
         metadata: <String, String>{
-          ...sensor.metadata,
+          for (final entry in sensor.metadata.entries)
+            if (!entry.key.startsWith('cgm.cbio.clock.'))
+              entry.key: entry.value,
           cbioPhaseMetadataKey: _phase,
+          cbioLifecycleMetadataKey: 'unknown',
+          cbioCheckpointMetadataKey: ?checkpoint,
           'cgm.cbio.unit': 'provisional',
           ...?anchor?.toMetadata(),
           if (!_automaticReconnectAllowed)
@@ -1087,16 +1200,11 @@ final class CbioGlucoseSession implements CgmSession {
     _publishTimer = null;
   }
 
-  static int? _resumeOffsetFrom(DiscoveredSensor sensor) {
-    final raw = sensor.metadata[cbioResumeOffsetMetadataKey];
-    if (raw == null) {
-      return null;
-    }
-    final value = int.tryParse(raw);
-    if (value == null || value < 0) {
-      return null;
-    }
-    return value;
+  static CbioSessionCheckpoint? _checkpointFrom(DiscoveredSensor sensor) {
+    final raw = sensor.metadata[cbioCheckpointMetadataKey];
+    return raw == null
+        ? null
+        : CbioSessionCheckpoint.decode(raw, sensor.storageKey);
   }
 
   @override
