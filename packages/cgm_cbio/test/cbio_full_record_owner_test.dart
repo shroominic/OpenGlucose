@@ -402,6 +402,23 @@ void main() {
   );
 
   test(
+    'first observed reindex survives validation before candidate acceptance',
+    () async {
+      final store = _Store();
+      final owner = await CbioFullRecordOwner.load('synthetic', store);
+      await owner.adopt();
+      owner.validateObservations([_row(1, reindex: 9)]);
+      owner.accept(
+        [_row(1, reindex: 0)],
+        admittedInputCheckpoint: '',
+        currentCheckpoint: _checkpoint(1),
+      );
+      await owner.close();
+      expect(_saved(store).records.single.reindex, 9);
+    },
+  );
+
+  test(
     'reindex-only repeat keeps first observation and is idempotent',
     () async {
       final store = _Store();

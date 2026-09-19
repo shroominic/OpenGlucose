@@ -177,7 +177,7 @@ final class CbioFullRecordOwner {
       for (final row in _candidate!.records) row.index: row,
     };
     for (final row in records) {
-      merged.putIfAbsent(row.index, () => row);
+      merged.putIfAbsent(row.index, () => _observed[row.index]!);
       if (merged.length > CbioFullRecordState.maxRows) {
         throw const FormatException('CBIO full input capacity reached.');
       }
