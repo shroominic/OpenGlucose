@@ -2,6 +2,13 @@
 
 ## 0.1.0
 
+- Add optional restricted private-state storage and read-only target preparation
+  with durable handoff flushing. Raw-v1 archives retain their existing codec;
+  failed writes stay dirty and retryable. Driver-owned raw acquisition and
+  restored records no longer populate any public glucose reading field.
+  Empty normalized output is an interim safety boundary, not verified glucose
+  support. No decoder, clock protocol, activation or lifecycle claim is added.
+
 - Distinguish the three existing counter-confirmation guards with a closed,
   ephemeral failure category for host support presentation. Caller metadata
   cannot provide the category; the failure gates, checkpoint format and

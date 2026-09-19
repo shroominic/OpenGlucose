@@ -5,6 +5,8 @@ import 'package:cgm_core/cgm_core.dart';
 
 import 'cbio_credentials.dart';
 import 'cbio_glucose_session.dart';
+import 'cbio_private_state.dart';
+import 'cbio_private_state_owner.dart';
 
 /// UUID candidates recovered from both SiSensing GS1 and GS3 Java payloads.
 /// Shared UUIDs do not establish a sensor model or protocol compatibility.
@@ -73,7 +75,8 @@ class CbioSensorDriver implements CgmDriver {
     this.credentials = const CbioDefineCredentialSource(),
     this.timing = const CbioSessionTiming(),
     this.clock = DateTime.now,
-  });
+    CbioPrivateStateStore? privateStateStore,
+  }) : _privateStateStore = privateStateStore ?? CbioMemoryPrivateStateStore();
 
   final BleTransport _transport;
   final CbioDiscovery discovery;
@@ -86,6 +89,21 @@ class CbioSensorDriver implements CgmDriver {
 
   final CbioSessionTiming timing;
   final DateTime Function() clock;
+  final CbioPrivateStateStore _privateStateStore;
+  CbioGlucoseSession? _session;
+
+  /// Read-only validation before the host closes its current sensor.
+  Future<void> prepareTarget(DiscoveredSensor sensor) async {
+    if (sensor.driverId != driverId || sensor.storageKey.isEmpty) {
+      throw const CbioPrivateStateFailure();
+    }
+    await CbioPrivateStateOwner.load(sensor.storageKey, _privateStateStore);
+  }
+
+  /// Required durable handoff, independent of best-effort BLE disconnect.
+  Future<void> flushPrivateState() async {
+    await _session?.flushPrivateState();
+  }
 
   /// Whether this driver can open its authenticated link at all.
   ///
@@ -145,13 +163,22 @@ class CbioSensorDriver implements CgmDriver {
 
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async {
+    await prepareTarget(sensor);
+    await flushPrivateState();
+    // Reload after flushing: reconnecting the same sensor may advance its state.
+    final privateState = await CbioPrivateStateOwner.load(
+      sensor.storageKey,
+      _privateStateStore,
+    );
     final session = CbioGlucoseSession(
       sensor: sensor,
       transport: _transport,
       credentials: credentials,
       timing: timing,
       clock: clock,
+      privateState: privateState,
     );
+    _session = session;
     unawaited(session.initialize());
     return session;
   }

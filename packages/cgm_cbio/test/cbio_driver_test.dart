@@ -194,7 +194,7 @@ void main() {
       expect(result, isNotNull);
       expect(result!.driverId, 'cbio');
       expect(result.capabilities.supportsDirectBle, isTrue);
-      expect(result.capabilities.supportsHistory, isTrue);
+      expect(result.capabilities.supportsHistory, isFalse);
     }
     for (final uuid in <String>[
       CbioUuids.receive,

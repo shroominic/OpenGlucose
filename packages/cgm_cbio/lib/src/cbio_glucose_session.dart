@@ -19,9 +19,9 @@
 ///
 /// The sensor answers one `06 08` request with a stream of `08` batches pushed
 /// to the same characteristic, so history is an ingest problem rather than a
-/// request/response pair. Every raw record carries a derived, explicitly
-/// unverified glucose value; [CbioRawGlucoseRecord.isUnitVerified] stays false
-/// and every emitted [CgmReading] is marked provisional.
+/// request/response pair. Raw records remain private protocol state;
+/// [CbioRawGlucoseRecord.isUnitVerified] stays false and no public glucose
+/// reading is emitted until a normalized decoder is independently verified.
 library;
 
 import 'dart:async';
@@ -37,6 +37,9 @@ import 'cbio_index_time_anchor.dart';
 import 'cbio_frames.dart';
 import 'cbio_session_checkpoint.dart';
 import 'cbio_vendor_frames.dart';
+import 'cbio_history_state.dart';
+import 'cbio_private_state.dart';
+import 'cbio_private_state_owner.dart';
 
 /// Snapshot metadata key carrying the closed session phase.
 const String cbioPhaseMetadataKey = 'cgm.cbio.phase';
@@ -222,10 +225,18 @@ final class CbioGlucoseSession implements CgmSession {
     CbioCredentialSource credentials = const CbioDefineCredentialSource(),
     this.timing = const CbioSessionTiming(),
     DateTime Function() clock = DateTime.now,
+    CbioPrivateStateStore? privateStateStore,
+    CbioPrivateStateOwner? privateState,
   }) : _transport = transport,
        _credentials = credentials,
        _clock = clock,
-       _checkpoint = _checkpointFrom(sensor),
+       _privateStateStore = privateStateStore,
+       _privateState = privateState,
+       _inputCheckpoint = privateState != null
+           ? privateState.state?.checkpoint
+           : privateStateStore == null
+           ? sensor.metadata[cbioCheckpointMetadataKey]
+           : null,
        _snapshot = CgmSessionSnapshot(
          stage: CgmSyncStage.connecting,
          statusText: 'Connecting to the GS1 sensor',
@@ -258,8 +269,8 @@ final class CbioGlucoseSession implements CgmSession {
 
   static const CgmCapabilities capabilities = CgmCapabilities(
     supportsDirectBle: true,
-    supportsHistory: true,
-    supportsRawHistory: true,
+    supportsHistory: false,
+    supportsRawHistory: false,
     supportsDiagnostics: true,
   );
 
@@ -271,7 +282,11 @@ final class CbioGlucoseSession implements CgmSession {
   final BleTransport _transport;
   final CbioCredentialSource _credentials;
   final DateTime Function() _clock;
-  final CbioSessionCheckpoint? _checkpoint;
+  final CbioPrivateStateStore? _privateStateStore;
+  CbioPrivateStateOwner? _privateState;
+  String? _inputCheckpoint;
+  CbioSessionCheckpoint? _checkpoint;
+  Timer? _privateSaveTimer;
   bool _witnessConfirmed = false;
   _CounterFailureReason? _counterFailureReason;
   final CbioHistoryArchive _archive = CbioHistoryArchive();
@@ -341,8 +356,20 @@ final class CbioGlucoseSession implements CgmSession {
   }
 
   Future<void> _initialize() async {
-    if (sensor.metadata.containsKey(cbioCheckpointMetadataKey) &&
-        _checkpoint == null) {
+    if (_privateState == null) {
+      _privateState = await CbioPrivateStateOwner.load(
+        sensor.storageKey,
+        _privateStateStore ?? CbioMemoryPrivateStateStore(),
+      );
+      if (_privateStateStore != null) {
+        _inputCheckpoint = _privateState!.state?.checkpoint;
+      }
+    }
+    if (_closing) return;
+    _checkpoint = _inputCheckpoint == null
+        ? null
+        : CbioSessionCheckpoint.decode(_inputCheckpoint!, sensor.storageKey);
+    if (_inputCheckpoint != null && _checkpoint == null) {
       _fail(
         CbioSessionFailure.invalidResume,
         statusText: 'Saved sensor state needs recovery. History preserved.',
@@ -1047,15 +1074,8 @@ final class CbioGlucoseSession implements CgmSession {
     return _clock().toUtc().difference(newest).abs() <= timing.liveEdgeWindow;
   }
 
-  CgmHistorySyncState get _historySyncState => CgmHistorySyncState(
-    inProgress: !_atLiveEdge || _catchUpOpen,
-    storedCount: _archive.length,
-    totalAvailable: _archive.newestIndex ?? 0,
-    latestStoredOffset: _archive.newestIndex,
-    startIndex: _historyStartIndex,
-    targetIndex: _archive.newestIndex,
-    lastSyncAt: _lastSyncAt,
-  );
+  // Public history describes normalized glucose, not private raw acquisition.
+  CgmHistorySyncState get _historySyncState => const CgmHistorySyncState();
 
   /// The history as published. A record carries a timestamp only when the
   /// session holds an anchor that covers its position; the counter is never
@@ -1145,14 +1165,40 @@ final class CbioGlucoseSession implements CgmSession {
               rawTime: newest.rawTime,
               anchor: anchor,
             ).encode()
-          : _snapshot.metadata[cbioCheckpointMetadataKey] ??
-                sensor.metadata[cbioCheckpointMetadataKey];
+          : _snapshot.metadata[cbioCheckpointMetadataKey] ?? _inputCheckpoint;
+      if (!_terminalFailure &&
+          (_checkpoint == null || _witnessConfirmed) &&
+          checkpoint != null &&
+          history.isNotEmpty) {
+        try {
+          _privateState?.accept(
+            CbioHistoryState(
+              sensorKey: sensor.storageKey,
+              checkpoint: checkpoint,
+              history: history,
+            ),
+          );
+          if (!_closing && !_linkDropped) {
+            _privateSaveTimer ??= Timer(const Duration(milliseconds: 900), () {
+              _privateSaveTimer = null;
+              unawaited(
+                flushPrivateState().catchError((Object _) {
+                  _log(CgmLogLevel.error, 'cbio.private-state.write-failed');
+                }),
+              );
+            });
+          }
+        } on FormatException {
+          _fail('cbio.history.conflicting');
+          return;
+        }
+      }
       _snapshot = _snapshot.copyWith(
         stage: _stage,
         statusText: _statusText,
-        history: history,
-        rawHistory: history,
-        latestReading: history.isEmpty ? null : history.last,
+        history: const <CgmReading>[],
+        rawHistory: const <CgmReading>[],
+        latestReading: null,
         historySync: _historySyncState,
         metadata: <String, String>{
           for (final entry in sensor.metadata.entries)
@@ -1175,8 +1221,7 @@ final class CbioGlucoseSession implements CgmSession {
             'cgm.cbio.resume.counterFailureReason':
                 _counterFailureReason!.value,
           if (_witnessConfirmed && !_terminalFailure)
-            cbioConfirmedCheckpointMetadataKey:
-                sensor.metadata[cbioCheckpointMetadataKey]!,
+            cbioConfirmedCheckpointMetadataKey: _inputCheckpoint!,
           'cgm.cbio.unit': 'provisional',
           ...?anchor?.toMetadata(),
           if (!_automaticReconnectAllowed)
@@ -1295,6 +1340,8 @@ final class CbioGlucoseSession implements CgmSession {
   };
 
   void _cancelTimers() {
+    _privateSaveTimer?.cancel();
+    _privateSaveTimer = null;
     _historyDeadlineTimer?.cancel();
     _historyDeadlineTimer = null;
     _historyIdleTimer?.cancel();
@@ -1309,11 +1356,11 @@ final class CbioGlucoseSession implements CgmSession {
     _publishTimer = null;
   }
 
-  static CbioSessionCheckpoint? _checkpointFrom(DiscoveredSensor sensor) {
-    final raw = sensor.metadata[cbioCheckpointMetadataKey];
-    return raw == null
-        ? null
-        : CbioSessionCheckpoint.decode(raw, sensor.storageKey);
+  /// Drains private writes without exposing protocol records to the host.
+  Future<void> flushPrivateState() async {
+    _privateSaveTimer?.cancel();
+    _privateSaveTimer = null;
+    await _privateState?.flush();
   }
 
   @override
@@ -1371,6 +1418,7 @@ final class CbioGlucoseSession implements CgmSession {
                       '${_anchor!.source}, covers from '
                       '${_anchor!.coveredFromIndex})',
             'storedRecords': '${_archive.length}',
+            'acquisitionPending': '${!_atLiveEdge || _catchUpOpen}',
             'newestIndex': '${_archive.newestIndex ?? 0}',
             'unit': cbioProvisionalUnitNotice,
           },
@@ -1380,8 +1428,11 @@ final class CbioGlucoseSession implements CgmSession {
   @override
   Future<void> disconnect() async {
     if (_closing) {
+      await flushPrivateState();
       return;
     }
+    // Publish the last coalesced acquisition into private state before closing.
+    _emit(force: true);
     _closing = true;
     _cancelTimers();
     _settlePendingRead();
@@ -1425,5 +1476,6 @@ final class CbioGlucoseSession implements CgmSession {
     if (!_logController.isClosed) {
       await _logController.close();
     }
+    await flushPrivateState();
   }
 }

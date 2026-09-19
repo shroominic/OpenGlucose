@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
+import 'package:cgm_cbio/src/cbio_history_state.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:test/test.dart';
 
@@ -391,10 +392,10 @@ const CbioSessionTiming _fastTiming = CbioSessionTiming(
   publishInterval: Duration.zero,
 );
 
-Future<void> _pumpUntil(bool Function() condition) async {
+Future<void> _pumpUntil(FutureOr<bool> Function() condition) async {
   final deadline = DateTime.now().add(const Duration(seconds: 5));
   while (DateTime.now().isBefore(deadline)) {
-    if (condition()) return;
+    if (await condition()) return;
     await Future<void>.delayed(const Duration(milliseconds: 2));
   }
   fail('condition was not satisfied before the deadline');
@@ -426,10 +427,131 @@ Future<void> _defaultResponder(
   };
 }
 
+Future<int> _rawCount(CbioGlucoseSession session) async => int.parse(
+  (await session.refreshDiagnostics()).single.fields['storedRecords']!,
+);
+
 String _phaseOf(CgmSessionSnapshot snapshot) =>
     snapshot.metadata[cbioPhaseMetadataKey] ?? '';
 
+final class _PrivateStore implements CbioPrivateStateStore {
+  String? envelope;
+  bool failWrite = false;
+  @override
+  Future<String?> read(String sensorKey) async => envelope;
+  @override
+  Future<void> write(String sensorKey, String value) async {
+    if (failWrite) throw StateError('synthetic private write failure');
+    envelope = value;
+  }
+}
+
+Future<List<CgmReading>> _storedHistory(
+  CbioGlucoseSession session,
+  _PrivateStore store,
+) async {
+  await session.flushPrivateState();
+  return CbioHistoryState.decode(
+    store.envelope!,
+    sensorKey: session.sensor.storageKey,
+  ).history;
+}
+
 void main() {
+  test(
+    'driver preparation is read only and rejects malformed saved state',
+    () async {
+      final store = _PrivateStore()..envelope = '{invalid';
+      final transport = _FakeTransport(_FakeConnection());
+      final driver = CbioSensorDriver(transport, privateStateStore: store);
+      await expectLater(driver.prepareTarget(_sensor), throwsException);
+      expect(transport.connects, 0);
+      expect(store.envelope, '{invalid');
+    },
+  );
+
+  test(
+    'driver ignores forged caller resume proof and retains failed dirty save',
+    () async {
+      final store = _PrivateStore();
+      final connection = _FakeConnection();
+      await _defaultResponder(
+        connection,
+        rawBatches: [
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: 1000,
+            baseReindex: 1,
+            currents: [64, 80],
+          ),
+        ],
+      );
+      final driver = CbioSensorDriver(
+        _FakeTransport(connection),
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+        privateStateStore: store,
+      );
+      final session = await driver.connect(
+        _withMetadata({
+          cbioCheckpointMetadataKey: '{forged',
+          cbioResumeStatusMetadataKey: CbioResumeStatus.confirmed,
+          cbioConfirmedCheckpointMetadataKey: '{forged',
+        }),
+      );
+      await _pumpUntil(
+        () => session.currentSnapshot.stage == CgmSyncStage.ready,
+      );
+      expect(session.currentSnapshot.history, isEmpty);
+      expect(session.currentSnapshot.rawHistory, isEmpty);
+      expect(session.currentSnapshot.latestReading, isNull);
+      expect(
+        session.currentSnapshot.metadata[cbioResumeStatusMetadataKey],
+        CbioResumeStatus.fresh,
+      );
+      store.failWrite = true;
+      await expectLater(session.disconnect(), throwsException);
+      expect(store.envelope, isNull);
+      store.failWrite = false;
+      await driver.flushPrivateState();
+      expect(
+        CbioHistoryState.decode(
+          store.envelope!,
+          sensorKey: _sensor.storageKey,
+        ).history.map((r) => r.rawValue),
+        [64, 80],
+      );
+    },
+  );
+
+  test('raw acquisition never enters any public reading field', () async {
+    final privateStore = _PrivateStore();
+    final connection = _FakeConnection();
+    await _defaultResponder(
+      connection,
+      rawBatches: [
+        _rawBatch(
+          startIndex: 1,
+          baseEpochSeconds: 1000,
+          baseReindex: 1,
+          currents: [64, 80],
+        ),
+      ],
+    );
+    final session = CbioGlucoseSession(
+      privateStateStore: privateStore,
+      sensor: _sensor,
+      transport: _FakeTransport(connection),
+      credentials: _syntheticSource,
+      timing: _fastTiming,
+    );
+    await session.initialize();
+    await _pumpUntil(() => session.currentSnapshot.stage == CgmSyncStage.ready);
+    expect(session.currentSnapshot.latestReading, isNull);
+    expect(session.currentSnapshot.history, isEmpty);
+    expect(session.currentSnapshot.rawHistory, isEmpty);
+    await session.disconnect();
+  });
   test(
     'caller counter-failure reason never survives ready or later link loss',
     () async {
@@ -788,73 +910,87 @@ void main() {
   });
 
   group('CbioGlucoseSession glucose', () {
-    test(
-      'ingests the raw stream into a provisional live reading and history',
-      () async {
-        final connection = _FakeConnection();
-        final transport = _FakeTransport(connection);
-        final now = DateTime.now().toUtc();
-        final base = now.millisecondsSinceEpoch ~/ 1000 - 120;
-        await _defaultResponder(
-          connection,
-          rawBatches: <List<int>>[
-            _rawBatch(
-              startIndex: 1,
-              baseEpochSeconds: base,
-              baseReindex: 3,
-              currents: <int>[64, 80, 97],
+    test('ingests raw stream privately without publishing glucose', () async {
+      final privateStore = _PrivateStore();
+      final connection = _FakeConnection();
+      final transport = _FakeTransport(connection);
+      final now = DateTime.now().toUtc();
+      final base = now.millisecondsSinceEpoch ~/ 1000 - 120;
+      await _defaultResponder(
+        connection,
+        rawBatches: <List<int>>[
+          _rawBatch(
+            startIndex: 1,
+            baseEpochSeconds: base,
+            baseReindex: 3,
+            currents: <int>[64, 80, 97],
+          ),
+        ],
+      );
+
+      final session = CbioGlucoseSession(
+        privateStateStore: privateStore,
+        sensor: _sensor,
+        transport: transport,
+        credentials: _syntheticSource,
+        timing: _fastTiming,
+        clock: () => now,
+      );
+      await session.initialize();
+      await _pumpUntil(
+        () async =>
+            (await _rawCount(session)) == 3 &&
+            session.currentSnapshot.stage == CgmSyncStage.ready,
+      );
+
+      final snapshot = session.currentSnapshot;
+      final rawHistory = await _storedHistory(session, privateStore);
+      final latest = rawHistory.last;
+      expect(snapshot.latestReading, isNull);
+      expect(snapshot.history, isEmpty);
+      expect(snapshot.rawHistory, isEmpty);
+      expect(snapshot.stage, CgmSyncStage.ready);
+      expect(latest.source, CgmRecordSource.raw);
+      expect(latest.isDisplayProvisional, isTrue);
+      expect(latest.rawValue, 97);
+      expect(latest.sensorMinute, 3);
+      // The record carries the unverified /10 scale of its own raw field.
+      // The archive publishes no glucose unit, so the session publishes the
+      // same unit-free number the hero renders - not a converted mg/dL value.
+      expect(latest.valueMgdl, 9.7);
+      // These records stamp the clock this session wrote, so the index is
+      // anchored to it and each position steps 60 s back from the newest.
+      // The counter itself is never the source: the clock-anchor group below
+      // holds the case where it does not agree with the app's clock.
+      expect(
+        (await _storedHistory(
+          session,
+          privateStore,
+        )).map((reading) => reading.recordedAt),
+        <DateTime?>[
+          for (final offset in <int>[0, 60, 120])
+            DateTime.fromMillisecondsSinceEpoch(
+              (base + offset) * 1000,
+              isUtc: true,
             ),
-          ],
-        );
-
-        final session = CbioGlucoseSession(
-          sensor: _sensor,
-          transport: transport,
-          credentials: _syntheticSource,
-          timing: _fastTiming,
-          clock: () => now,
-        );
-        await session.initialize();
-        await _pumpUntil(
-          () =>
-              session.currentSnapshot.history.length == 3 &&
-              session.currentSnapshot.stage == CgmSyncStage.ready,
-        );
-
-        final snapshot = session.currentSnapshot;
-        final latest = snapshot.latestReading!;
-        expect(snapshot.stage, CgmSyncStage.ready);
-        expect(latest.source, CgmRecordSource.raw);
-        expect(latest.isDisplayProvisional, isTrue);
-        expect(latest.rawValue, 97);
-        expect(latest.sensorMinute, 3);
-        // The record carries the unverified /10 scale of its own raw field.
-        // The archive publishes no glucose unit, so the session publishes the
-        // same unit-free number the hero renders - not a converted mg/dL value.
-        expect(latest.valueMgdl, 9.7);
-        // These records stamp the clock this session wrote, so the index is
-        // anchored to it and each position steps 60 s back from the newest.
-        // The counter itself is never the source: the clock-anchor group below
-        // holds the case where it does not agree with the app's clock.
-        expect(
-          snapshot.history.map((reading) => reading.recordedAt),
-          <DateTime?>[
-            for (final offset in <int>[0, 60, 120])
-              DateTime.fromMillisecondsSinceEpoch(
-                (base + offset) * 1000,
-                isUtc: true,
-              ),
-          ],
-        );
-        expect(snapshot.history.map((r) => r.sensorMinute), <int>[1, 2, 3]);
-        expect(snapshot.capabilities.supportsHistory, isTrue);
-        await session.disconnect();
-      },
-    );
+        ],
+      );
+      expect(
+        (await _storedHistory(
+          session,
+          privateStore,
+        )).map((r) => r.sensorMinute),
+        <int>[1, 2, 3],
+      );
+      expect(snapshot.capabilities.supportsHistory, isFalse);
+      expect(snapshot.capabilities.supportsRawHistory, isFalse);
+      await session.disconnect();
+    });
 
     test(
       'surfaces a restarted sensor counter instead of absorbing it',
       () async {
+        final privateStore = _PrivateStore();
         final connection = _FakeConnection();
         final transport = _FakeTransport(connection);
         final now = DateTime.now().toUtc();
@@ -881,6 +1017,7 @@ void main() {
         );
 
         final session = CbioGlucoseSession(
+          privateStateStore: privateStore,
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -892,7 +1029,7 @@ void main() {
           (entry) => messages.add(entry.message),
         );
         await session.initialize();
-        await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+        await _pumpUntil(() async => await _rawCount(session) == 3);
         await _pumpUntil(
           () => messages.any((m) => m.contains('counter-restart')),
         );
@@ -900,14 +1037,16 @@ void main() {
         // The old numbering keeps its records: the new cycle is not spliced on
         // to it, and no position is silently renumbered.
         expect(
-          session.currentSnapshot.history.map((r) => r.sensorMinute),
+          (await _storedHistory(
+            session,
+            privateStore,
+          )).map((r) => r.sensorMinute),
           <int>[1, 2, 3],
         );
-        expect(session.currentSnapshot.history.map((r) => r.rawValue), <int>[
-          64,
-          80,
-          97,
-        ]);
+        expect(
+          (await _storedHistory(session, privateStore)).map((r) => r.rawValue),
+          <int>[64, 80, 97],
+        );
         expect(
           messages.any((m) => m.contains('counter-restart')),
           isTrue,
@@ -950,17 +1089,13 @@ void main() {
           clock: () => now,
         );
         await session.initialize();
-        await _pumpUntil(() => session.currentSnapshot.history.length == 2);
+        await _pumpUntil(() async => await _rawCount(session) == 2);
 
         final syncing = session.currentSnapshot;
-        expect(syncing.historySync.storedCount, 2);
-        expect(syncing.historySync.latestStoredOffset, 2);
-        expect(syncing.historySync.startIndex, 1);
-        expect(
-          syncing.historySync.inProgress,
-          isTrue,
-          reason: 'stored history stops an hour short of the live edge',
-        );
+        expect(syncing.historySync.storedCount, 0);
+        expect(syncing.historySync.latestStoredOffset, isNull);
+        expect(syncing.historySync.startIndex, isNull);
+        expect(syncing.historySync.inProgress, isFalse);
         expect(_phaseOf(syncing), CbioSessionPhase.history);
         await session.disconnect();
       },
@@ -1000,14 +1135,15 @@ void main() {
       final snapshot = session.currentSnapshot;
       expect(snapshot.stage, CgmSyncStage.ready);
       expect(_phaseOf(snapshot), CbioSessionPhase.live);
-      expect(snapshot.historySync.storedCount, 3);
-      expect(snapshot.historySync.totalAvailable, 3);
-      expect(snapshot.historySync.lastSyncAt, isNotNull);
+      expect(snapshot.historySync.storedCount, 0);
+      expect(snapshot.historySync.totalAvailable, 0);
+      expect(snapshot.historySync.lastSyncAt, isNull);
       expect(snapshot.statusText, contains('Live'));
       await session.disconnect();
     });
 
     test('keeps polling for new records after the live edge', () async {
+      final privateStore = _PrivateStore();
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
       final now = DateTime.now().toUtc();
@@ -1025,6 +1161,7 @@ void main() {
       );
 
       final session = CbioGlucoseSession(
+        privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1032,7 +1169,7 @@ void main() {
         clock: () => now,
       );
       await session.initialize();
-      await _pumpUntil(() => session.currentSnapshot.history.length == 1);
+      await _pumpUntil(() async => await _rawCount(session) == 1);
 
       // The next raw read is requested at the index after the newest one.
       connection.onWrite = (plaintext) async {
@@ -1051,13 +1188,16 @@ void main() {
           ),
         );
       };
-      await _pumpUntil(() => session.currentSnapshot.history.length == 2);
+      await _pumpUntil(() async => await _rawCount(session) == 2);
 
-      expect(session.currentSnapshot.latestReading!.rawValue, 88);
-      expect(session.currentSnapshot.history.map((r) => r.sensorMinute), <int>[
-        1,
-        2,
-      ]);
+      expect((await _storedHistory(session, privateStore)).last.rawValue, 88);
+      expect(
+        (await _storedHistory(
+          session,
+          privateStore,
+        )).map((r) => r.sensorMinute),
+        <int>[1, 2],
+      );
       await session.disconnect();
     });
 
@@ -1093,6 +1233,7 @@ void main() {
     );
 
     test('reassembles a record batch split across notifications', () async {
+      final privateStore = _PrivateStore();
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
       final now = DateTime.now().toUtc();
@@ -1117,6 +1258,7 @@ void main() {
       };
 
       final session = CbioGlucoseSession(
+        privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -1124,9 +1266,9 @@ void main() {
         clock: () => now,
       );
       await session.initialize();
-      await _pumpUntil(() => session.currentSnapshot.history.length == 2);
+      await _pumpUntil(() async => await _rawCount(session) == 2);
 
-      expect(session.currentSnapshot.latestReading!.rawValue, 70);
+      expect((await _storedHistory(session, privateStore)).last.rawValue, 70);
       await session.disconnect();
     });
   });
@@ -1535,7 +1677,7 @@ void main() {
           await _drainMicrotasks();
           _fireTimer(timers, _fastTiming.liveResponseWindow);
           await _drainMicrotasks();
-          expect(session.currentSnapshot.history.length, tick + 1);
+          expect(await _rawCount(session), tick + 1);
           expect(session.currentSnapshot.lastError, isNull);
         }
       });
@@ -1866,7 +2008,7 @@ void main() {
         timing: _fastTiming,
       );
       await session.initialize();
-      await _pumpUntil(() => session.currentSnapshot.history.length == 1);
+      await _pumpUntil(() async => await _rawCount(session) == 1);
       connection.emitPlaintext(
         _rawBatch(
           startIndex: 1,
@@ -1878,7 +2020,8 @@ void main() {
       await _pumpUntil(
         () => session.currentSnapshot.stage == CgmSyncStage.error,
       );
-      expect(session.currentSnapshot.history.map((r) => r.sensorMinute), [100]);
+      expect(await _rawCount(session), 1);
+      expect(session.currentSnapshot.history, isEmpty);
       expect(session.currentSnapshot.lastError, 'cbio.counter.restart');
       await session.disconnect();
     });
@@ -1909,7 +2052,7 @@ void main() {
         timing: _fastTiming,
       );
       await session.initialize();
-      await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+      await _pumpUntil(() async => await _rawCount(session) == 3);
       final checkpoint = CbioSessionCheckpoint.decode(
         session.currentSnapshot.metadata[cbioCheckpointMetadataKey]!,
         _sensor.storageKey,
@@ -1938,7 +2081,7 @@ void main() {
         timing: _fastTiming,
       );
       await session.initialize();
-      await _pumpUntil(() => session.currentSnapshot.history.isNotEmpty);
+      await _pumpUntil(() async => await _rawCount(session) > 0);
       expect(
         session.currentSnapshot.metadata[cbioCheckpointMetadataKey],
         isNull,
@@ -1983,6 +2126,7 @@ void main() {
     test(
       'round-tripped checkpoint rechecks witness and retains old time',
       () async {
+        final privateStore = _PrivateStore();
         final then = DateTime.utc(2026, 1, 1);
         final epoch = then.millisecondsSinceEpoch ~/ 1000;
         final firstConnection = _FakeConnection();
@@ -1998,6 +2142,7 @@ void main() {
           ],
         );
         final first = CbioGlucoseSession(
+          privateStateStore: privateStore,
           sensor: _sensor,
           transport: _FakeTransport(firstConnection),
           credentials: _syntheticSource,
@@ -2005,7 +2150,7 @@ void main() {
           clock: () => then,
         );
         await first.initialize();
-        await _pumpUntil(() => first.currentSnapshot.history.length == 2);
+        await _pumpUntil(() async => await _rawCount(first) == 2);
         final metadata = Map<String, String>.from(
           jsonDecode(jsonEncode(first.currentSnapshot.metadata)) as Map,
         );
@@ -2029,6 +2174,7 @@ void main() {
           ],
         );
         final restored = CbioGlucoseSession(
+          privateStateStore: privateStore,
           sensor: _withMetadata(metadata),
           transport: _FakeTransport(connection),
           credentials: _syntheticSource,
@@ -2046,7 +2192,7 @@ void main() {
           isNull,
         );
         await restored.initialize();
-        await _pumpUntil(() => restored.currentSnapshot.history.isNotEmpty);
+        await _pumpUntil(() async => await _rawCount(restored) > 0);
         expect(
           restored.currentSnapshot.metadata['cgm.cbio.resume.status'],
           'confirmed',
@@ -2061,9 +2207,12 @@ void main() {
             .map(_unmaskWrite)
             .firstWhere((frame) => frame[1] == 0x08);
         expect(query[2] | (query[3] << 8), 2);
-        expect(restored.currentSnapshot.history.first.recordedAt, then);
         expect(
-          restored.currentSnapshot.history.last.recordedAt,
+          (await _storedHistory(restored, privateStore))[1].recordedAt,
+          then,
+        );
+        expect(
+          (await _storedHistory(restored, privateStore)).last.recordedAt,
           then.add(const Duration(minutes: 1)),
         );
         final next = CbioSessionCheckpoint.decode(
@@ -2328,6 +2477,7 @@ void main() {
 
   group('CbioGlucoseSession clock anchor', () {
     test('stamps stored history once the sensor took the clock', () async {
+      final privateStore = _PrivateStore();
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
       final now = DateTime.now().toUtc();
@@ -2346,6 +2496,7 @@ void main() {
       );
 
       final session = CbioGlucoseSession(
+        privateStateStore: privateStore,
         sensor: _sensor,
         transport: transport,
         credentials: _syntheticSource,
@@ -2353,7 +2504,7 @@ void main() {
         clock: () => now,
       );
       await session.initialize();
-      await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+      await _pumpUntil(() async => await _rawCount(session) == 3);
 
       final snapshot = session.currentSnapshot;
       final anchor = CbioIndexTimeAnchor.fromMetadata(snapshot.metadata);
@@ -2368,7 +2519,10 @@ void main() {
       );
       expect(anchor.clockAgreement, Duration.zero);
       expect(
-        snapshot.history.map((reading) => reading.recordedAt),
+        (await _storedHistory(
+          session,
+          privateStore,
+        )).map((reading) => reading.recordedAt),
         <DateTime?>[
           for (final offset in <int>[-120, -60, 0])
             DateTime.fromMillisecondsSinceEpoch(
@@ -2392,6 +2546,7 @@ void main() {
     test(
       'publishes no timestamp while the sensor clock is the counter',
       () async {
+        final privateStore = _PrivateStore();
         final connection = _FakeConnection();
         final transport = _FakeTransport(connection);
         final now = DateTime.now().toUtc();
@@ -2412,6 +2567,7 @@ void main() {
         );
 
         final session = CbioGlucoseSession(
+          privateStateStore: privateStore,
           sensor: _sensor,
           transport: transport,
           credentials: _syntheticSource,
@@ -2419,12 +2575,15 @@ void main() {
           clock: () => now,
         );
         await session.initialize();
-        await _pumpUntil(() => session.currentSnapshot.history.length == 3);
+        await _pumpUntil(() async => await _rawCount(session) == 3);
 
         final snapshot = session.currentSnapshot;
         expect(CbioIndexTimeAnchor.fromMetadata(snapshot.metadata), isNull);
         expect(
-          snapshot.history.every((reading) => reading.recordedAt == null),
+          (await _storedHistory(
+            session,
+            privateStore,
+          )).every((reading) => reading.recordedAt == null),
           isTrue,
           reason: 'the counter is a position, never a clock',
         );
