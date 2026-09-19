@@ -1311,10 +1311,8 @@ final class CbioGlucoseSession implements CgmSession {
       stage: _stage,
       statusText: _statusText,
       metadata: <String, String>{
-        ...sensor.metadata,
+        ..._snapshot.metadata,
         cbioPhaseMetadataKey: _phase,
-        'cgm.cbio.unit': 'provisional',
-        ...?_anchor?.toMetadata(),
       },
     );
     if (!_snapshotController.isClosed) {

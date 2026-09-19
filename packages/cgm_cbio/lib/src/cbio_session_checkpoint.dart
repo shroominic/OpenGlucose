@@ -63,6 +63,10 @@ final class CbioSessionCheckpoint {
           return null;
         }
         final metadata = fields.cast<String, String>();
+        if (metadata[cbioAnchorSourceMetadataKey] !=
+            CbioAnchorSource.appSetSensorClock) {
+          return null;
+        }
         final observed = DateTime.tryParse(
           metadata[cbioAnchorObservedAtMetadataKey] ?? '',
         );

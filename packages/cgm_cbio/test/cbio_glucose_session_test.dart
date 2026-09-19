@@ -1601,6 +1601,10 @@ void main() {
         );
         expect(metadata['cgm.cbio.checkpoint'], isNotNull);
         await first.disconnect();
+        expect(
+          first.currentSnapshot.metadata[cbioCheckpointMetadataKey],
+          metadata[cbioCheckpointMetadataKey],
+        );
 
         final connection = _FakeConnection();
         await _defaultResponder(
@@ -1641,7 +1645,13 @@ void main() {
           restored.currentSnapshot.metadata['cgm.cbio.lifecycle'],
           'unknown',
         );
+        final advancedCheckpoint =
+            restored.currentSnapshot.metadata[cbioCheckpointMetadataKey];
         await restored.disconnect();
+        expect(
+          restored.currentSnapshot.metadata[cbioCheckpointMetadataKey],
+          advancedCheckpoint,
+        );
       },
     );
 
@@ -1688,6 +1698,10 @@ void main() {
           isNull,
         );
         await session.disconnect();
+        expect(
+          CbioIndexTimeAnchor.fromMetadata(session.currentSnapshot.metadata),
+          isNull,
+        );
       },
     );
 
@@ -1712,7 +1726,11 @@ void main() {
           'rawTime': 1000,
         });
         final session = CbioGlucoseSession(
-          sensor: _withMetadata({'cgm.cbio.checkpoint': checkpoint}),
+          sensor: _withMetadata({
+            cbioCheckpointMetadataKey: checkpoint,
+            cbioAnchorIndexMetadataKey: '2',
+            cbioAnchorEpochMetadataKey: '1000',
+          }),
           transport: _FakeTransport(connection),
           credentials: _syntheticSource,
           timing: _fastTiming,
@@ -1737,6 +1755,20 @@ void main() {
         await session.syncHistory();
         expect(connection.writes.length, writes);
         await session.disconnect();
+        expect(
+          session.currentSnapshot.metadata[cbioCheckpointMetadataKey],
+          checkpoint,
+        );
+        expect(
+          CbioIndexTimeAnchor.fromMetadata(session.currentSnapshot.metadata),
+          isNull,
+        );
+        expect(
+          session
+              .currentSnapshot
+              .metadata[cgmAutomaticReconnectAllowedMetadataKey],
+          'false',
+        );
       });
     }
   });

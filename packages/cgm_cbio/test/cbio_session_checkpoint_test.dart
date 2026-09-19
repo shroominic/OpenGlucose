@@ -41,6 +41,19 @@ void main() {
     expect(jsonDecode(state.encode()), anchored);
   });
 
+  test('missing anchor source cannot acquire default provenance', () {
+    final anchorWithoutSource = Map<String, String>.from(
+      anchored['anchor']! as Map<String, String>,
+    )..remove(cbioAnchorSourceMetadataKey);
+    expect(
+      CbioSessionCheckpoint.decode(
+        jsonEncode({...anchored, 'anchor': anchorWithoutSource}),
+        sensorKey,
+      ),
+      isNull,
+    );
+  });
+
   for (final mutation in <Map<String, Object>>[
     {'version': 1.0},
     {'version': 2},

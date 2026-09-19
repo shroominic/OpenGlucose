@@ -9,7 +9,9 @@
   last reconciled checkpoint and never advance it across a history gap.
   Hosts must atomically persist and restore the checkpoint with the archive;
   this package does not provide durable storage. Publish lifecycle as unknown
-  until sensor-derived lifecycle evidence exists.
+  until sensor-derived lifecycle evidence exists. Explicit disconnect retains
+  validated snapshot state instead of restoring stale connection metadata;
+  checkpoint anchors require explicit source provenance.
 
 - Harden the authenticated session boundary: resolve the serial characteristic
   from its discovered service (including opaque iOS identifiers), release the

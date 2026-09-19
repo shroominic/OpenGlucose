@@ -57,8 +57,10 @@ leaves the driver out entirely when a build did not supply it.
 The sensor answers one `06 08` request with a stream of `08` batches pushed to
 the same characteristic, so history is an ingest problem rather than a
 request/response pair. The session ingests that stream under a bounded window,
-publishes `CgmHistorySyncState` progress, resumes from the app's persisted
-`resumeOffset`, and then polls once a minute at the first unseen index. Every
+publishes `CgmHistorySyncState` progress, replays the witness from the app's
+persisted checkpoint before accepting a resumed suffix, and then polls once
+a minute at the first unseen index. A legacy `resumeOffset` alone does not
+authorize skipping records. Every
 emitted reading is `CgmRecordSource.raw` with `isDisplayProvisional` set, and
 `cbioProvisionalUnitNotice` is the marker the UI shows: the raw field divided
 by ten is plausible but no reference measurement has confirmed the scale.
