@@ -11,6 +11,8 @@ import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/sensor_archive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'cbio_snapshot_fixture.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   WidgetsBinding.instance.ensureSemantics();
@@ -95,7 +97,7 @@ class _PreviewSession implements CgmSession {
     final history = <CgmReading>[
       for (var index = 0; index < 3; index++)
         CgmReading(
-          valueMgdl: 0,
+          valueMgdl: (57 + index) / 10,
           rawValue: 57 + index,
           sensorMinute: 100 + index,
           source: CgmRecordSource.raw,
@@ -115,7 +117,8 @@ class _PreviewSession implements CgmSession {
           Duration(minutes: stale ? 60 : 1),
         ),
       ),
-      metadata: const {
+      metadata: {
+        ...syntheticCbioFreshMetadata(_sensor, history),
         cgmAutomaticReconnectAllowedMetadataKey: 'false',
         cbioPhaseMetadataKey: CbioSessionPhase.live,
       },

@@ -16,6 +16,8 @@ import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/cbio_snapshot_fixture.dart';
+
 const DiscoveredSensor _sensor = DiscoveredSensor(
   driverId: 'cbio',
   deviceId: 'AA:BB:CC:DD:EE:FF',
@@ -33,7 +35,7 @@ const int _firstStoredIndex = 10067;
 List<CgmReading> _gs1Readings(int count) => <CgmReading>[
   for (var index = 0; index < count; index++)
     CgmReading(
-      valueMgdl: 100 + index.toDouble(),
+      valueMgdl: (55 + index) / 10,
       source: CgmRecordSource.raw,
       sensorMinute: _firstStoredIndex + index,
       recordedAt: null,
@@ -54,7 +56,8 @@ CgmSessionSnapshot _snapshot(List<CgmReading> history) => CgmSessionSnapshot(
     totalAvailable: history.length,
     latestStoredOffset: history.last.sensorMinute,
   ),
-  metadata: const <String, String>{
+  metadata: <String, String>{
+    ...syntheticCbioFreshMetadata(_sensor, history),
     cgmAutomaticReconnectAllowedMetadataKey: 'false',
     cbioPhaseMetadataKey: CbioSessionPhase.live,
   },

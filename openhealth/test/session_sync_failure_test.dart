@@ -8,6 +8,8 @@ import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/sensor_connection_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/cbio_snapshot_fixture.dart';
+
 /// Desired product copy for a session that connected but never produced a
 /// readable reading. Asserted as literals so any wording change is deliberate.
 const _failureTitle = 'No reading from this sensor';
@@ -298,8 +300,11 @@ final class _StallingSession implements CgmSession {
 
   void reportReading() {
     final reading = CgmReading(
-      valueMgdl: 112,
-      source: CgmRecordSource.broadcast,
+      valueMgdl: 11.2,
+      rawValue: 112,
+      sensorMinute: 1,
+      source: CgmRecordSource.raw,
+      isDisplayProvisional: true,
       recordedAt: DateTime.utc(2026, 9, 17, 12),
     );
     _emit(
@@ -308,6 +313,7 @@ final class _StallingSession implements CgmSession {
         statusText: 'Receiving sensor readings',
         latestReading: reading,
         history: <CgmReading>[reading],
+        metadata: syntheticCbioFreshMetadata(sensor, [reading]),
       ),
     );
   }
@@ -322,6 +328,7 @@ final class _StallingSession implements CgmSession {
       history: snapshot.history,
       historySync: snapshot.historySync,
       metadata: <String, String>{
+        ...snapshot.metadata,
         if (snapshot.stage == CgmSyncStage.syncing) ..._syncingMetadata,
       },
       lastError: snapshot.lastError,

@@ -13,6 +13,8 @@ import 'package:openglucose/src/sensor_connection_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/cbio_snapshot_fixture.dart';
+
 const DiscoveredSensor _sensor = DiscoveredSensor(
   driverId: 'cbio',
   deviceId: 'AA:BB:CC:DD:EE:FF',
@@ -25,7 +27,7 @@ const DiscoveredSensor _sensor = DiscoveredSensor(
 List<CgmReading> _readings(int count) => <CgmReading>[
   for (var index = 0; index < count; index++)
     CgmReading(
-      valueMgdl: 100 + index.toDouble(),
+      valueMgdl: (55 + index) / 10,
       source: CgmRecordSource.raw,
       sensorMinute: 9970 + index,
       recordedAt: DateTime.now().subtract(Duration(minutes: count - index)),
@@ -44,10 +46,12 @@ CgmSessionSnapshot _snapshot({
   statusText: statusText,
   sensor: _sensor,
   capabilities: _sensor.capabilities,
+  sessionInfo: const CgmSessionInfo(warmupMinutes: 0),
   latestReading: history.isEmpty ? null : history.last,
   history: history,
   historySync: historySync,
-  metadata: const <String, String>{
+  metadata: <String, String>{
+    ...syntheticCbioFreshMetadata(_sensor, history),
     cgmAutomaticReconnectAllowedMetadataKey: 'false',
     cbioPhaseMetadataKey: CbioSessionPhase.live,
   },
@@ -95,6 +99,33 @@ Future<void> _pumpApp(
 }
 
 void main() {
+  test('direct CBIO presentation remains raw-only without quality flags', () {
+    const row = CgmReading(
+      valueMgdl: 5.9,
+      source: CgmRecordSource.vendor,
+      rawValue: 59,
+      sensorMinute: 120,
+    );
+    final value = _snapshot(
+      stage: CgmSyncStage.ready,
+      statusText: 'Synthetic',
+      history: [row],
+      historySync: const CgmHistorySyncState(),
+    );
+    expect(cbioProvisionalValueText(row), '59');
+    expect(
+      provisionalReadingNoticeForSnapshot(value),
+      cbioProvisionalUnitNotice,
+    );
+    expect(
+      historyProvisionalNoticeForSnapshot(value),
+      cbioProvisionalUnitNotice,
+    );
+    // The host rejects malformed quality; this separate direct-presentation
+    // check prevents safety from depending only on that rejection. CSV/XLSX
+    // missing-flags containment is covered in sensor_archive_export_test.dart.
+  });
+
   test('CBIO disconnected history does not promise a reconnect', () {
     final snapshot = _snapshot(
       stage: CgmSyncStage.disconnected,
@@ -115,6 +146,7 @@ void main() {
           CgmReading(
             valueMgdl: 5.9,
             rawValue: 59,
+            sensorMinute: 1,
             source: CgmRecordSource.raw,
             isDisplayProvisional: true,
             recordedAt: DateTime.now().subtract(const Duration(hours: 1)),
@@ -196,7 +228,14 @@ void main() {
     );
     await _pumpApp(tester, controller, preferences);
     expect(controller.allHistoricalReadings, isEmpty);
+    expect(controller.snapshot!.stage, CgmSyncStage.error);
+    expect(controller.snapshot!.history, isEmpty);
+    expect(controller.snapshot!.latestReading, isNull);
+    // This key is the static settings hint, not a chart or admitted raw rows.
     expect(find.byKey(const ValueKey('rawSensorHistory')), findsOneWidget);
+    expect(find.text('59'), findsNothing);
+    expect(find.textContaining('mg/dL'), findsNothing);
+    expect(find.textContaining('mmol/L'), findsNothing);
     expect(
       find.byKey(const ValueKey('dashboardPatternsSection')),
       findsNothing,
@@ -207,12 +246,11 @@ void main() {
     );
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.runAsync(() => controller.disconnect(clearSelection: true));
-    expect(controller.archivedSensors, hasLength(1));
+    for (final archive in controller.archivedSensors) {
+      expect(archive.readingCount, 0);
+      expect(controller.readingsForArchivedSensor(archive), isEmpty);
+    }
     expect(controller.allHistoricalReadings, isEmpty);
-    expect(
-      controller.readingsForArchivedSensor(controller.archivedSensors.single),
-      hasLength(1),
-    );
     controller.dispose();
     await tester.pump();
   });

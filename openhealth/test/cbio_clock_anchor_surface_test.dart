@@ -15,6 +15,8 @@ import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/session_presentation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/cbio_snapshot_fixture.dart';
+
 const DiscoveredSensor _sensor = DiscoveredSensor(
   driverId: 'cbio',
   deviceId: 'AA:BB:CC:DD:EE:FF',
@@ -32,7 +34,7 @@ final DateTime _anchorInstant = DateTime.utc(2026, 9, 18, 3, 5);
 List<CgmReading> _readings({required bool anchored}) => <CgmReading>[
   for (var offset = 2; offset >= 0; offset -= 1)
     CgmReading(
-      valueMgdl: 100 + offset.toDouble(),
+      valueMgdl: (55 + offset) / 10,
       source: CgmRecordSource.raw,
       sensorMinute: _newestIndex - offset,
       recordedAt: anchored
@@ -49,6 +51,16 @@ CgmSessionSnapshot _snapshot({
   List<CgmReading>? history,
 }) {
   final readings = history ?? _readings(anchored: anchored);
+  final anchor = anchored
+      ? CbioIndexTimeAnchor(
+          anchorIndex: _newestIndex,
+          coveredFromIndex: covered ? _newestIndex - 400 : _newestIndex - 1,
+          anchorEpochSeconds: _anchorInstant.millisecondsSinceEpoch ~/ 1000,
+          observedAt: _anchorInstant.add(const Duration(seconds: 4)),
+          clockReferenceEpochSeconds:
+              _anchorInstant.millisecondsSinceEpoch ~/ 1000 - 900,
+        )
+      : null;
   return CgmSessionSnapshot(
     stage: CgmSyncStage.ready,
     statusText: 'Live. Reading every minute.',
@@ -62,17 +74,10 @@ CgmSessionSnapshot _snapshot({
       latestStoredOffset: readings.last.sensorMinute,
     ),
     metadata: <String, String>{
+      ...syntheticCbioFreshMetadata(_sensor, readings, anchor: anchor),
       cgmAutomaticReconnectAllowedMetadataKey: 'false',
       cbioPhaseMetadataKey: CbioSessionPhase.live,
-      if (anchored)
-        ...CbioIndexTimeAnchor(
-          anchorIndex: _newestIndex,
-          coveredFromIndex: covered ? _newestIndex - 400 : _newestIndex - 1,
-          anchorEpochSeconds: _anchorInstant.millisecondsSinceEpoch ~/ 1000,
-          observedAt: _anchorInstant.add(const Duration(seconds: 4)),
-          clockReferenceEpochSeconds:
-              _anchorInstant.millisecondsSinceEpoch ~/ 1000 - 900,
-        ).toMetadata(),
+      if (anchor != null) ...anchor.toMetadata(),
     },
   );
 }
