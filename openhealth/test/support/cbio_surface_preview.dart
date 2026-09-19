@@ -1,4 +1,6 @@
 // Synthetic, radio-free visual fixture. Never used by the production entrypoint.
+import 'dart:convert';
+
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter/material.dart';
@@ -6,15 +8,32 @@ import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/healthkit_export.dart';
+import 'package:openglucose/src/sensor_archive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   WidgetsBinding.instance.ensureSemantics();
   final query = Uri.base.queryParameters;
+  final archiveRecovery = query['archive'] == 'recovery';
+  const archive = ArchivedSensorSession(
+    id: 'cbio-unreconciled:synthetic-preview',
+    historyKey: 'openHealth.history.v2.synthetic-preview',
+    storageKey: 'synthetic-preview',
+    driverId: 'cbio',
+    deviceId: 'synthetic-preview',
+    displayName: 'Synthetic CBIO archive',
+    reason: SensorArchiveReason.disconnected,
+    readingCount: 0,
+    isUnreconciled: true,
+  );
   SharedPreferences.setMockInitialValues(<String, Object>{
     'openHealth.onboarding.completed': true,
     'openHealth.appLanguage': query['lang'] == 'zh' ? 'zh-Hans' : 'en',
+    if (archiveRecovery) ...{
+      archive.historyKey: '{',
+      'openHealth.sensorArchive': jsonEncode([archive.toJson()]),
+    },
   });
   final preferences = await SharedPreferences.getInstance();
   final controller = CgmAppController(
@@ -22,7 +41,7 @@ Future<void> main() async {
     driver: _PreviewDriver(stale: query['stale'] == 'true'),
   );
   await controller.initialize();
-  await controller.connect(_sensor);
+  if (!archiveRecovery) await controller.connect(_sensor);
   controller.updateDisplayPreferences(
     DisplayPreferences(
       unit: query['unit'] == 'mmol' ? GlucoseUnit.mmolL : GlucoseUnit.mgdl,
