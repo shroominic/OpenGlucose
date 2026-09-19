@@ -113,6 +113,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get archiveNeedsRecovery => 'History needs recovery';
 
   @override
+  String get archiveRecoverySummary =>
+      'Saved sensor data is preserved. History totals are incomplete until recovery.';
+
+  @override
   String get archiveRecoveryNotice =>
       'These saved sensor records have not been reconciled with a verified sensor session. Original data is preserved. Readable raw records can be exported, but they are not body-glucose readings. Unreadable records need recovery before export.';
 

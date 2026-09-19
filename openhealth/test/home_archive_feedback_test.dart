@@ -18,6 +18,65 @@ import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  for (final mixed in [false, true]) {
+    testWidgets(
+      'home identifies recovery without a complete-history count mixed=$mixed',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'openHealth.onboarding.completed': true,
+        });
+        final preferences = await SharedPreferences.getInstance();
+        const session = ArchivedSensorSession(
+          id: 'cbio-unreconciled:home',
+          historyKey: 'openHealth.history.v2.home',
+          storageKey: 'home',
+          driverId: 'cbio',
+          deviceId: 'home',
+          displayName: 'Retained CBIO',
+          reason: SensorArchiveReason.disconnected,
+          readingCount: 0,
+          isUnreconciled: true,
+        );
+        final fixture = _archivedHistoryFixture();
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: _NoSensorDriver(),
+          healthStateStore: _MemoryHealthStateStore({
+            if (mixed) ...fixture.values,
+            session.historyKey: '{',
+            'openHealth.sensorArchive': jsonEncode([
+              session.toJson(),
+              if (mixed) fixture.session.toJson(),
+            ]),
+          }),
+        );
+        await controller.initialize();
+        await tester.pumpWidget(
+          OpenGlucoseApp(
+            controller: controller,
+            healthExport: HealthExportController(
+              preferences: preferences,
+              writesAllowed: false,
+            )..initialize(),
+            preferences: preferences,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('History needs recovery'), findsOneWidget);
+        expect(find.text('Your glucose history'), findsNothing);
+        expect(find.textContaining('0 readings'), findsNothing);
+        expect(
+          find.byKey(const ValueKey<String>('historicalRecoverySummary')),
+          findsOneWidget,
+        );
+        expect(controller.allHistoricalReadings.length, mixed ? 1 : 0);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+      },
+    );
+  }
+
   testWidgets(
     'malformed unreconciled CBIO archive opens recovery without empty export',
     (tester) async {

@@ -296,6 +296,12 @@ abstract class AppLocalizations {
   /// **'History needs recovery'**
   String get archiveNeedsRecovery;
 
+  /// No description provided for @archiveRecoverySummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved sensor data is preserved. History totals are incomplete until recovery.'**
+  String get archiveRecoverySummary;
+
   /// No description provided for @archiveRecoveryNotice.
   ///
   /// In en, this message translates to:

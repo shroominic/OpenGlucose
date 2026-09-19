@@ -765,6 +765,9 @@ class _HistoricalOverviewCard extends StatelessWidget {
     final theme = Theme.of(context);
     final l10n = context.l10n;
     final readings = controller.allHistoricalReadings;
+    final hasRecoveryEntries = controller.archivedSensors.any(
+      (session) => session.isUnreconciled,
+    );
     final timestampedReadings = readings
         .where((reading) => reading.recordedAt != null)
         .toList(growable: false);
@@ -789,7 +792,9 @@ class _HistoricalOverviewCard extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      l10n.yourGlucoseHistory,
+                      hasRecoveryEntries
+                          ? l10n.archiveNeedsRecovery
+                          : l10n.yourGlucoseHistory,
                       style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w900,
                       ),
@@ -799,12 +804,19 @@ class _HistoricalOverviewCard extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                <String>[
-                  l10n.archivedSensorsCount(controller.archivedSensors.length),
-                  l10n.readingCount(readings.length),
-                  if (latest != null)
-                    l10n.lastAt(_localizedShortDateTime(context, latest)),
-                ].join(' · '),
+                hasRecoveryEntries
+                    ? l10n.archiveRecoverySummary
+                    : <String>[
+                        l10n.archivedSensorsCount(
+                          controller.archivedSensors.length,
+                        ),
+                        l10n.readingCount(readings.length),
+                        if (latest != null)
+                          l10n.lastAt(_localizedShortDateTime(context, latest)),
+                      ].join(' · '),
+                key: hasRecoveryEntries
+                    ? const ValueKey<String>('historicalRecoverySummary')
+                    : null,
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF5B6E6A),
                 ),
