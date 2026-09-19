@@ -8,6 +8,280 @@ import 'package:cgm_cbio/src/cbio_history_archive.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('one-capsule recovery', () {
+    for (final step in ['read', 'write', 'committed-write']) {
+      test(
+        'close releases clean lease after failed in-flight recovery $step',
+        () async {
+          final store = _RecoveryStore()..legacy = _legacy;
+          final owner = await CbioFullRecordOwner.load('synthetic', store);
+          await owner.adopt();
+          final original = store.full;
+          final gate = Completer<void>();
+          store.recoveryStarted = Completer<void>();
+          if (step == 'read') {
+            store.readRecoveryHold = gate;
+          } else {
+            store.writeRecoveryHold = gate;
+          }
+          store.commitThenFail = step == 'committed-write';
+          final recoveryFailed = expectLater(
+            owner.recoverWitnessMismatch(),
+            _storageFailure,
+          );
+          await store.recoveryStarted!.future;
+          final closeFailed = expectLater(owner.close(), _storageFailure);
+          if (step == 'committed-write') {
+            gate.complete();
+          } else {
+            gate.completeError(StateError('synthetic transition failure'));
+          }
+          await recoveryFailed;
+          await closeFailed;
+          store.readRecoveryHold = store.writeRecoveryHold = null;
+          store.commitThenFail = false;
+          final selected = store.recovery;
+          final replacement = await CbioFullRecordOwner.load(
+            'synthetic',
+            store,
+          );
+          await replacement.adopt();
+          expect(
+            replacement.resumeCheckpoint,
+            step == 'committed-write' ? isNull : _checkpoint(3),
+          );
+          expect(store.recovery, selected);
+          expect(store.full, original);
+          expect(store.legacy, _legacy);
+          await replacement.close();
+        },
+      );
+    }
+
+    test(
+      'close retains lease and dirty rows until failed drain can be retried',
+      () async {
+        final store = _RecoveryStore()..legacy = _legacy;
+        final owner = await CbioFullRecordOwner.load('synthetic', store);
+        await owner.adopt();
+        owner.accept(
+          [_row(3), _row(4)],
+          admittedInputCheckpoint: _checkpoint(3),
+          currentCheckpoint: _checkpoint(4),
+        );
+        final original = store.full;
+        store.hold = Completer<void>();
+        store.started = Completer<void>();
+        store.failWrite = true;
+        final recoveryFailed = expectLater(
+          owner.recoverWitnessMismatch(),
+          _storageFailure,
+        );
+        await store.started!.future;
+        final closeFailed = expectLater(owner.close(), _storageFailure);
+        store.hold!.complete();
+        await recoveryFailed;
+        await closeFailed;
+        final replacement = await CbioFullRecordOwner.load('synthetic', store);
+        await expectLater(replacement.adopt(), _storageFailure);
+        expect(store.full, original);
+        expect(store.recovery, isNull);
+        store.failWrite = false;
+        store.hold = null;
+        await owner.close();
+        await replacement.adopt();
+        expect(replacement.resumeCheckpoint, _checkpoint(4));
+        expect(_saved(store).records.map((row) => row.index), [3, 4]);
+        expect(store.legacy, _legacy);
+        await replacement.close();
+      },
+    );
+
+    test(
+      'stale prepared owner adopts committed recovery rather than overwrite it',
+      () async {
+        final store = _RecoveryStore()..legacy = _legacy;
+        final stale = await CbioFullRecordOwner.load('synthetic', store);
+        final first = await CbioFullRecordOwner.load('synthetic', store);
+        await first.adopt();
+        await expectLater(stale.adopt(), _storageFailure);
+        await first.recoverWitnessMismatch();
+        final selected = store.recovery;
+        await first.close();
+        await stale.adopt();
+        expect(stale.resumeCheckpoint, isNull);
+        expect(stale.canRecoverWitnessMismatch, isFalse);
+        expect(store.recovery, selected);
+        await stale.close();
+      },
+    );
+
+    test(
+      'commit then reported failure still consumes durable recovery budget',
+      () async {
+        final store = _RecoveryStore()..legacy = _legacy;
+        final owner = await CbioFullRecordOwner.load('synthetic', store);
+        await owner.adopt();
+        final original = store.full;
+        store.commitThenFail = true;
+        await expectLater(owner.recoverWitnessMismatch(), _storageFailure);
+        final selected = store.recovery;
+        expect(selected, isNotNull);
+        store.commitThenFail = false;
+        await expectLater(owner.recoverWitnessMismatch(), _storageFailure);
+        await owner.close();
+        final restored = await CbioFullRecordOwner.load('synthetic', store);
+        await restored.adopt();
+        expect(restored.canRecoverWitnessMismatch, isFalse);
+        expect(restored.resumeCheckpoint, isNull);
+        expect(store.recovery, selected);
+        expect(store.full, original);
+        await restored.close();
+      },
+    );
+
+    test('changed legacy bytes before transition forbid recovery', () async {
+      final store = _RecoveryStore()..legacy = _legacy;
+      final owner = await CbioFullRecordOwner.load('synthetic', store);
+      await owner.adopt();
+      final original = store.full;
+      store.legacy = '$_legacy ';
+      await expectLater(owner.recoverWitnessMismatch(), _storageFailure);
+      expect(store.recovery, isNull);
+      expect(store.full, original);
+      await owner.close();
+    });
+
+    test(
+      'existing observing inputs remain frozen and fresh capture never inherits them',
+      () async {
+        final store = _RecoveryStore()..legacy = _legacy;
+        final owner = await CbioFullRecordOwner.load('synthetic', store);
+        await owner.adopt();
+        owner.accept(
+          [_row(3), _row(4)],
+          admittedInputCheckpoint: _checkpoint(3),
+          currentCheckpoint: _checkpoint(4),
+        );
+        await owner.flush();
+        final original = store.full;
+        await owner.recoverWitnessMismatch();
+        expect(owner.resumeCheckpoint, isNull);
+        expect(
+          () => owner.accept(
+            [_row(2)],
+            admittedInputCheckpoint: '',
+            currentCheckpoint: _checkpoint(2),
+          ),
+          throwsFormatException,
+        );
+        owner.accept(
+          [_row(1)],
+          admittedInputCheckpoint: '',
+          currentCheckpoint: _checkpoint(1),
+        );
+        await owner.close();
+        expect(store.full, original);
+        expect(store.legacy, _legacy);
+      },
+    );
+
+    test(
+      'pending selection retains originals and consumes budget across restart',
+      () async {
+        final store = _RecoveryStore()..legacy = _legacy;
+        final owner = await CbioFullRecordOwner.load('synthetic', store);
+        await owner.adopt();
+        final original = store.full;
+        expect(owner.canRecoverWitnessMismatch, isTrue);
+        await owner.recoverWitnessMismatch();
+        final pending = store.recovery;
+        expect(pending, isNotNull);
+        expect(store.full, original);
+        expect(store.legacy, _legacy);
+        expect(owner.resumeCheckpoint, isNull);
+        expect(owner.canRecoverWitnessMismatch, isFalse);
+        await owner.close();
+        final restored = await CbioFullRecordOwner.load('synthetic', store);
+        await restored.adopt();
+        expect(store.recovery, pending);
+        expect(restored.resumeCheckpoint, isNull);
+        await expectLater(restored.recoverWitnessMismatch(), _storageFailure);
+        restored.accept(
+          [_row(1), _row(2)],
+          admittedInputCheckpoint: '',
+          currentCheckpoint: _checkpoint(2),
+        );
+        await restored.close();
+        expect(store.full, original);
+        expect(store.legacy, _legacy);
+        final capsule = jsonDecode(store.recovery!) as Map<String, dynamic>;
+        expect(capsule['predecessorFullSha256'], store.legacySha256(original!));
+        expect(capsule['predecessorLegacySha256'], store.legacySha256(_legacy));
+        expect(capsule.containsKey('predecessorFull'), isFalse);
+        expect(capsule.containsKey('predecessorLegacy'), isFalse);
+        final fresh = CbioFullRecordState.decode(
+          jsonEncode(capsule['active']),
+          sensorKey: 'synthetic',
+        );
+        expect(fresh.records.map((row) => row.index), [1, 2]);
+        expect(fresh.bootstrapCheckpoint, isNull);
+        expect(fresh.legacyDigest, isNull);
+        final resumed = await CbioFullRecordOwner.load('synthetic', store);
+        expect(resumed.resumeCheckpoint, _checkpoint(2));
+      },
+    );
+
+    test(
+      'failed recovery write preserves original authority and can be retried',
+      () async {
+        final store = _RecoveryStore()..legacy = _legacy;
+        final owner = await CbioFullRecordOwner.load('synthetic', store);
+        await owner.adopt();
+        final original = store.full;
+        store.failRecovery = true;
+        await expectLater(owner.recoverWitnessMismatch(), _storageFailure);
+        expect(store.recovery, isNull);
+        expect(store.full, original);
+        expect(owner.resumeCheckpoint, _checkpoint(3));
+        store.failRecovery = false;
+        await owner.recoverWitnessMismatch();
+        await owner.close();
+      },
+    );
+
+    for (final altered in ['legacy', 'full', 'capsule']) {
+      test(
+        'altered $altered fails closed without replacing evidence',
+        () async {
+          final store = _RecoveryStore()..legacy = _legacy;
+          final owner = await CbioFullRecordOwner.load('synthetic', store);
+          await owner.adopt();
+          await owner.recoverWitnessMismatch();
+          await owner.close();
+          if (altered == 'legacy') store.legacy = '$_legacy ';
+          if (altered == 'full') store.full = '${store.full} ';
+          if (altered == 'capsule') store.recovery = '{}';
+          final original = [store.legacy, store.full, store.recovery];
+          await expectLater(
+            CbioFullRecordOwner.load('synthetic', store),
+            _storageFailure,
+          );
+          expect([store.legacy, store.full, store.recovery], original);
+        },
+      );
+    }
+
+    test('legacy full-only store cannot allocate recovery', () async {
+      final store = _Store();
+      final owner = await CbioFullRecordOwner.load('synthetic', store);
+      await owner.adopt();
+      expect(owner.canRecoverWitnessMismatch, isFalse);
+      await expectLater(owner.recoverWitnessMismatch(), _storageFailure);
+      await owner.close();
+    });
+  });
+
   test(
     'load is read-only and adoption durably reserves private pending state',
     () async {
@@ -548,5 +822,39 @@ final class _Store implements CbioFullRecordStore {
     if (legacyEnvelope == _legacy) return 'a' * 64;
     if (legacyEnvelope == '$_legacy ') return 'b' * 64;
     throw StateError('Unexpected synthetic digest input');
+  }
+}
+
+final class _RecoveryStore extends _Store implements CbioRecoveryStore {
+  String? recovery;
+  bool failRecovery = false;
+  bool commitThenFail = false;
+  Completer<void>? readRecoveryHold;
+  Completer<void>? writeRecoveryHold;
+  Completer<void>? recoveryStarted;
+  final _digests = <String, String>{};
+  @override
+  String legacySha256(String value) => _digests.putIfAbsent(
+    value,
+    () => (_digests.length + 1).toRadixString(16).padLeft(64, '0'),
+  );
+  @override
+  Future<String?> readRecovery(String sensorKey) async {
+    if (readRecoveryHold != null) {
+      if (recoveryStarted?.isCompleted == false) recoveryStarted!.complete();
+      await readRecoveryHold!.future;
+    }
+    return recovery;
+  }
+
+  @override
+  Future<void> writeRecovery(String sensorKey, String value) async {
+    if (writeRecoveryHold != null) {
+      if (recoveryStarted?.isCompleted == false) recoveryStarted!.complete();
+      await writeRecoveryHold!.future;
+    }
+    if (failRecovery) throw StateError('private recovery path');
+    recovery = value;
+    if (commitThenFail) throw StateError('synthetic commit interruption');
   }
 }

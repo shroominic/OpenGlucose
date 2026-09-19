@@ -4,6 +4,7 @@ import 'cbio_full_record_state.dart';
 import 'cbio_history_archive.dart';
 import 'cbio_history_state.dart';
 import 'cbio_private_state.dart';
+import 'cbio_recovery_state.dart';
 
 final class CbioFullRecordFailure implements Exception {
   const CbioFullRecordFailure();
@@ -25,6 +26,9 @@ final class CbioFullRecordOwner {
   String? _admissionCheckpoint;
   Future<void>? _adopting;
   Future<void>? _saving;
+  Future<void>? _recovering;
+  CbioRecoveryState? _recovery;
+  String? _originalFull;
   bool _leased = false;
   bool _closed = false;
   bool _closing = false;
@@ -43,12 +47,28 @@ final class CbioFullRecordOwner {
     try {
       if (sensorKey.isEmpty) throw const CbioFullRecordFailure();
       final encoded = await _store.readFullRecords(sensorKey);
-      final full = encoded == null
+      var full = encoded == null
           ? null
           : CbioFullRecordState.decode(encoded, sensorKey: sensorKey);
       String? legacy;
       String? checkpoint;
-      if (full == null || full.isPending) {
+      final store = _store;
+      final recoveryText = store is CbioRecoveryStore
+          ? await store.readRecovery(sensorKey)
+          : null;
+      final recovery = recoveryText == null
+          ? null
+          : CbioRecoveryState.decode(recoveryText, sensorKey: sensorKey);
+      if (recovery != null) {
+        if (encoded == null) throw const CbioFullRecordFailure();
+        legacy = await _store.read(sensorKey);
+        recovery.validatePredecessors(
+          full: encoded,
+          legacy: legacy,
+          digest: _digest,
+        );
+        full = recovery.active;
+      } else if (full == null || full.isPending) {
         legacy = await _store.read(sensorKey);
         checkpoint = legacy == null
             ? null
@@ -61,8 +81,18 @@ final class CbioFullRecordOwner {
           throw const CbioFullRecordFailure();
         }
       }
+      if (store is CbioRecoveryStore &&
+          recovery == null &&
+          full != null &&
+          !full.isPending) {
+        // Freeze the exact legacy reference even when only full inputs supply
+        // the checkpoint. It may be opaque historical data, never rewritten.
+        legacy = await _store.read(sensorKey);
+      }
       _durable = full;
       _candidate = full;
+      _recovery = recovery;
+      _originalFull = encoded;
       _observed = {
         for (final row in full?.records ?? const <CbioRawGlucoseRecord>[])
           row.index: row,
@@ -108,7 +138,9 @@ final class CbioFullRecordOwner {
           legacyDigest: _legacy == null ? null : _digest(_legacy!),
           bootstrapCheckpoint: _legacyCheckpoint,
         );
-        await _store.writeFullRecords(sensorKey, pending.encode());
+        final encoded = pending.encode();
+        await _store.writeFullRecords(sensorKey, encoded);
+        _originalFull = encoded;
         _durable = pending;
         _candidate = pending;
       }
@@ -124,14 +156,84 @@ final class CbioFullRecordOwner {
     if (_closed) return;
     _closing = true;
     await _adopting;
+    Object? recoveryFailure;
+    StackTrace? recoveryStack;
+    try {
+      await _recovering;
+    } on Object catch (error, stack) {
+      recoveryFailure = error;
+      recoveryStack = stack;
+    }
+    // A settled transition failure must not strand a clean lease. A failed
+    // drain still exits before release, retaining genuinely dirty observations.
     await flush();
     if (_leased) _leases[_store]?.remove(sensorKey);
     _leased = false;
     _closed = true;
+    if (recoveryFailure != null) {
+      Error.throwWithStackTrace(recoveryFailure, recoveryStack!);
+    }
   }
 
   String? get resumeCheckpoint =>
       _durable?.resumeCheckpoint ?? _legacyCheckpoint;
+
+  bool get canRecoverWitnessMismatch =>
+      _store is CbioRecoveryStore &&
+      _recovery == null &&
+      _durable != null &&
+      !_closed &&
+      !_closing;
+
+  /// Called only after the session's exact mismatch guard and successful GATT
+  /// cleanup. Presence commits the route and permanently spends the one budget.
+  Future<void> recoverWitnessMismatch() => _recovering ??=
+      _recoverWitnessMismatch().whenComplete(() => _recovering = null);
+
+  Future<void> _recoverWitnessMismatch() async {
+    try {
+      _requireActive();
+      if (!canRecoverWitnessMismatch) throw const CbioFullRecordFailure();
+      await flush();
+      if (_closing || _closed) throw const CbioFullRecordFailure();
+      final store = _store as CbioRecoveryStore;
+      if (await store.readRecovery(sensorKey) != null) {
+        throw const CbioFullRecordFailure();
+      }
+      final full = await store.readFullRecords(sensorKey);
+      final legacy = await store.read(sensorKey);
+      if (full == null || full != _originalFull || legacy != _legacy) {
+        throw const CbioFullRecordFailure();
+      }
+      final random = Random.secure();
+      final fresh = CbioFullRecordState.pending(
+        sensorKey: sensorKey,
+        captureId: List.generate(
+          16,
+          (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+        ).join(),
+      );
+      final recovery = CbioRecoveryState(
+        sensorKey: sensorKey,
+        predecessorFullSha256: _digest(full),
+        predecessorLegacySha256: legacy == null ? null : _digest(legacy),
+        active: fresh,
+      );
+      recovery.validatePredecessors(
+        full: full,
+        legacy: legacy,
+        digest: _digest,
+      );
+      await store.writeRecovery(sensorKey, recovery.encode());
+      _recovery = recovery;
+      _durable = _candidate = fresh;
+      _observed = {};
+      _legacyCheckpoint = null;
+      _admissionCheckpoint = '';
+    } on Object {
+      throw const CbioFullRecordFailure();
+    }
+  }
 
   /// Runs before archive deduplication, including for repeated witness batches.
   void validateObservations(List<CbioRawGlucoseRecord> records) {
@@ -196,6 +298,7 @@ final class CbioFullRecordOwner {
     if (!_leased ||
         _closed ||
         _closing ||
+        _recovering != null ||
         _candidate == null ||
         _admissionCheckpoint == null) {
       throw const FormatException('CBIO full input owner inactive.');
@@ -224,7 +327,25 @@ final class CbioFullRecordOwner {
       final encoded = candidate.encode();
       if (encoded != _durable!.encode()) {
         try {
-          await _store.writeFullRecords(sensorKey, encoded);
+          final recovery = _recovery;
+          if (recovery == null) {
+            await _store.writeFullRecords(sensorKey, encoded);
+            _originalFull = encoded;
+          } else {
+            final full = await _store.readFullRecords(sensorKey);
+            if (full == null) throw const CbioFullRecordFailure();
+            recovery.validatePredecessors(
+              full: full,
+              legacy: await _store.read(sensorKey),
+              digest: _digest,
+            );
+            final next = recovery.withActive(candidate);
+            await (_store as CbioRecoveryStore).writeRecovery(
+              sensorKey,
+              next.encode(),
+            );
+            _recovery = next;
+          }
         } on Object {
           throw const CbioFullRecordFailure();
         }

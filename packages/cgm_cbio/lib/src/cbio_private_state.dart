@@ -18,3 +18,11 @@ abstract interface class CbioFullRecordStore implements CbioPrivateStateStore {
   /// Lowercase SHA256 of the exact original envelope encoded as UTF8.
   String legacySha256(String legacyEnvelope);
 }
+
+/// Optional one-shot acquisition recovery. The separate, atomic envelope is
+/// both the selected recovery route and its consumed budget. Original legacy
+/// and full-record keys must remain intact; malformed presence is not absence.
+abstract interface class CbioRecoveryStore implements CbioFullRecordStore {
+  Future<String?> readRecovery(String sensorKey);
+  Future<void> writeRecovery(String sensorKey, String envelope);
+}

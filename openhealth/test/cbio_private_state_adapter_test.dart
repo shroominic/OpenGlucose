@@ -16,6 +16,28 @@ const _legacyKey = 'openHealth.history.v2.$_binding';
 const _normalizedKey = 'openHealth.history.normalized.v1.$_binding';
 
 void main() {
+  test('recovery capsule has a separate bound atomic route', () async {
+    const key = 'openHealth.history.cbio.recovery.v1.$_binding';
+    final before = {
+      _rawKey: ' exact legacy\n',
+      _fullKey: ' exact full\n',
+      _normalizedKey: '[]',
+    };
+    final store = _Store(before);
+    final adapter = CbioPrivateStateAdapter(store);
+    expect(adapter, isA<CbioRecoveryStore>());
+    await adapter.writeRecovery('synthetic', ' opaque capsule\n');
+    expect(store.values, {...before, key: ' opaque capsule\n'});
+    expect(await adapter.readRecovery('synthetic'), ' opaque capsule\n');
+    expect(await adapter.readRecovery('foreign'), isNull);
+    store.failKey = key;
+    await expectLater(
+      adapter.writeRecovery('synthetic', 'replacement'),
+      throwsStateError,
+    );
+    expect(store.values, {...before, key: ' opaque capsule\n'});
+  });
+
   test(
     'full capability stores opaque bytes only in the bound private blob',
     () async {

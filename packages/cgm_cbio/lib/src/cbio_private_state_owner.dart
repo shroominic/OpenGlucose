@@ -24,7 +24,7 @@ final class CbioPrivateStateOwner {
 
   final String sensorKey;
   final CbioPrivateStateStore _store;
-  final CbioHistoryArchive acquisitionArchive = CbioHistoryArchive();
+  CbioHistoryArchive acquisitionArchive = CbioHistoryArchive();
   CbioHistoryState? _state;
   final CbioFullRecordOwner? _full;
   int _revision = 0;
@@ -33,6 +33,8 @@ final class CbioPrivateStateOwner {
 
   CbioHistoryState? get state => _state;
   bool get usesFullRecords => _full != null;
+  bool get canRecoverWitnessMismatch =>
+      _full?.canRecoverWitnessMismatch ?? false;
   String? get resumeCheckpoint => _full?.resumeCheckpoint ?? _state?.checkpoint;
 
   static Future<CbioPrivateStateOwner> load(
@@ -106,6 +108,16 @@ final class CbioPrivateStateOwner {
   Future<void> adoptFullRecords() async {
     try {
       await _full?.adopt();
+    } on Object {
+      throw const CbioPrivateStateFailure();
+    }
+  }
+
+  Future<void> recoverWitnessMismatch() async {
+    try {
+      if (_full == null) throw const CbioPrivateStateFailure();
+      await _full.recoverWitnessMismatch();
+      acquisitionArchive = CbioHistoryArchive();
     } on Object {
       throw const CbioPrivateStateFailure();
     }

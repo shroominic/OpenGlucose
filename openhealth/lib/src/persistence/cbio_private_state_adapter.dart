@@ -8,12 +8,24 @@ import '../health_state_store.dart';
 import 'sensor_state_identity.dart';
 
 /// Opaque package state and legacy raw archives, never normalized glucose.
-class CbioPrivateStateAdapter implements CbioFullRecordStore {
+class CbioPrivateStateAdapter implements CbioRecoveryStore {
   CbioPrivateStateAdapter(this._store);
 
   final HealthStateStore _store;
   static const _manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
   static const _indexKey = 'openHealth.sensorArchive';
+
+  @override
+  Future<String?> readRecovery(String sensorKey) async => _store.getString(
+    'openHealth.history.cbio.recovery.v1.${_binding('cbio', sensorKey)}',
+  );
+
+  @override
+  Future<void> writeRecovery(String sensorKey, String envelope) =>
+      _store.setString(
+        'openHealth.history.cbio.recovery.v1.${_binding('cbio', sensorKey)}',
+        envelope,
+      );
 
   @override
   Future<String?> readFullRecords(String sensorKey) async => _store.getString(
