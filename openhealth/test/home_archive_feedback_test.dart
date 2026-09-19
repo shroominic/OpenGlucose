@@ -585,6 +585,12 @@ void main() {
       expect(sharedFilePaths, hasLength(1));
       expect(File(sharedFilePaths.first).existsSync(), isFalse);
 
+      // The error SnackBar covers the export button once its entrance settles.
+      // Dismiss it through the supported downward gesture before retrying.
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(SnackBar), const Offset(0, 500));
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsNothing);
       await _confirmCsvArchiveExport(tester);
       await _pumpUntil(
         tester,
