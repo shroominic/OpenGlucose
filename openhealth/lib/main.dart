@@ -1474,6 +1474,7 @@ class _KeyValueRow extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),
+          const SizedBox(width: 12),
           Expanded(child: Text(effectiveValue)),
         ],
       ),

@@ -155,6 +155,41 @@ void main() {
     ),
   ];
   for (final language in ['en', 'zh-Hans']) {
+    for (final width in [320.0, 412.0]) {
+      testWidgets(
+        'support reference stays separated at $width pixels in $language',
+        (tester) async {
+          await tester.binding.setSurfaceSize(Size(width, 900));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          final (controller, preferences) = await _controllerFor(
+            () => _snapshot(
+              stage: CgmSyncStage.error,
+              statusText: 'Synthetic failure',
+              history: _readings(3),
+              historySync: const CgmHistorySyncState(),
+            ).copyWith(lastError: 'cbio.history.unconfirmed'),
+            language: language,
+          );
+          await _pumpApp(tester, controller, preferences);
+          await tester.tap(find.byIcon(Icons.tune_rounded));
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.text(language == 'en' ? 'Current sensor' : '当前传感器'),
+          );
+          await tester.pumpAndSettle();
+          final label = tester.getRect(
+            find.text(language == 'en' ? 'Support reference' : '支持参考编号'),
+          );
+          final value = tester.getRect(find.text('GS1-H06'));
+          expect(value.left - label.right, greaterThanOrEqualTo(12));
+          expect(value.right, lessThanOrEqualTo(width - 20));
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+          controller.dispose();
+          await tester.pump();
+        },
+      );
+    }
     for (final failure in failures) {
       testWidgets('CBIO ${failure.$4} error overrides progress in $language', (
         tester,
