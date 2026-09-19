@@ -220,50 +220,62 @@ void main() {
     });
   }
 
-  testWidgets('AiDEX chart retains its undismissed chart tip', (tester) async {
-    const sensor = DiscoveredSensor(
-      driverId: 'aidex',
-      deviceId: 'synthetic-aidex-tip',
-      displayName: 'Synthetic AiDEX',
-      storageKey: 'synthetic-aidex-tip',
-      rssi: -60,
-      capabilities: CgmCapabilities(supportsHistory: true),
+  for (final provisional in [false, true]) {
+    testWidgets(
+      'AiDEX chart retains its undismissed chart tip provisional=$provisional',
+      (tester) async {
+        const sensor = DiscoveredSensor(
+          driverId: 'aidex',
+          deviceId: 'synthetic-aidex-tip',
+          displayName: 'Synthetic AiDEX',
+          storageKey: 'synthetic-aidex-tip',
+          rssi: -60,
+          capabilities: CgmCapabilities(supportsHistory: true),
+        );
+        final history = [
+          CgmReading(
+            valueMgdl: 110,
+            source: provisional
+                ? CgmRecordSource.vendor
+                : CgmRecordSource.standard,
+            rawValue: 110,
+            isDisplayProvisional: provisional,
+            sensorMinute: 120,
+            recordedAt: DateTime.now(),
+          ),
+        ];
+        final (controller, preferences) = await _controllerFor(
+          () => CgmSessionSnapshot(
+            sensor: sensor,
+            capabilities: sensor.capabilities,
+            stage: CgmSyncStage.ready,
+            statusText: 'Connected',
+            latestReading: history.last,
+            history: history,
+          ),
+          sensor: sensor,
+        );
+        await _pumpApp(tester, controller, preferences);
+        expect(
+          find.byKey(const ValueKey('messageCard-tip.tapReading')),
+          findsOneWidget,
+        );
+        await tester.scrollUntilVisible(
+          find.byType(CgmDashboardChart),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(find.byType(CgmDashboardChart), findsOneWidget);
+        expect(
+          preferences.getStringList('openHealth.messaging.dismissed'),
+          isNull,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+        await tester.pump();
+      },
     );
-    final history = [
-      CgmReading(
-        valueMgdl: 110,
-        source: CgmRecordSource.vendor,
-        sensorMinute: 120,
-        recordedAt: DateTime.now(),
-      ),
-    ];
-    final (controller, preferences) = await _controllerFor(
-      () => CgmSessionSnapshot(
-        sensor: sensor,
-        capabilities: sensor.capabilities,
-        stage: CgmSyncStage.ready,
-        statusText: 'Connected',
-        latestReading: history.last,
-        history: history,
-      ),
-      sensor: sensor,
-    );
-    await _pumpApp(tester, controller, preferences);
-    expect(
-      find.byKey(const ValueKey('messageCard-tip.tapReading')),
-      findsOneWidget,
-    );
-    await tester.scrollUntilVisible(
-      find.byType(CgmDashboardChart),
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
-    expect(find.byType(CgmDashboardChart), findsOneWidget);
-    expect(preferences.getStringList('openHealth.messaging.dismissed'), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-    await tester.pump();
-  });
+  }
 
   testWidgets('CBIO missing flags cannot enable glucose or wellness surfaces', (
     tester,
@@ -291,6 +303,10 @@ void main() {
     expect(controller.snapshot!.latestReading, isNull);
     // This key is the static settings hint, not a chart or admitted raw rows.
     expect(find.byKey(const ValueKey('rawSensorHistory')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('messageCard-tip.tapReading')),
+      findsNothing,
+    );
     expect(find.text('59'), findsNothing);
     expect(find.textContaining('mg/dL'), findsNothing);
     expect(find.textContaining('mmol/L'), findsNothing);
