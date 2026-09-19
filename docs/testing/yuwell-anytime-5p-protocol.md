@@ -1,9 +1,10 @@
 # Yuwell Anytime 5P protocol evidence boundary
 
 This document separates verified reference evidence from facts observed on a
-physical Anytime 5P. No physical 5P observation has been completed yet. The
-current work is an interoperability investigation, not a compatibility or
-clinical-accuracy claim.
+physical Anytime 5P. A first physical observation now exists — see
+"First physical observation" below — but it stops at the version handshake.
+The current work remains an interoperability investigation, not a
+compatibility or clinical-accuracy claim.
 
 OpenGlucose must not use this work for diagnosis, dosing, treatment, or
 emergency monitoring. Raw captures can contain health data, device identities,
@@ -21,6 +22,40 @@ storage. Commit only synthetic fixtures and redacted evidence.
   transmitter firmware, phone, and operating-system combination.
 - **HARD UNKNOWN**: evidence is not sufficient. Do not guess or send a write
   that depends on it.
+
+## First physical observation
+
+**2026-09-09, macOS Mac-BLE debug harness (`yuwell_macos_debug_main.dart`),
+target: an Anytime 5P.** A bounded scan/connect/observe session ran to a
+clean, safe stop. This is **TARGET-DEVICE-CONFIRMED** for exactly these
+facts, nothing more:
+
+- The device advertised as an exact `Anytime` plus ten-digit candidate and
+  was reachable over GATT.
+- The connected topology matched the reference primary service
+  `00001000-1212-efde-1523-785feabcd123`, notify characteristic
+  `00001001-...`, and write characteristic `00001002-...` **exactly**.
+- Notify-before-write ordering held: notifications subscribed cleanly before
+  any write.
+- The one-byte version request (`[0x01]`) was written and produced a real,
+  decodable response.
+- The driver read that response and correctly, safely stopped: this unit's
+  firmware branch is not `V1150`, so the driver failed closed at
+  `YuwellSessionFailureKind.unsupportedFirmware` before sending any
+  state-changing command (no date/communication-ID/configure/initialize/
+  low-power write was ever attempted). Disconnect was clean.
+
+No sensor identifier, address, or raw payload from this session is recorded
+anywhere in this repository, per the private-storage rule below.
+
+This promotes discovery, GATT topology, and the version handshake from
+**OFFICIAL-APP-STATIC** to **TARGET-DEVICE-CONFIRMED** on this one unit. It
+does not change any `HARD UNKNOWN` below: the final glucose algorithm is
+still not implemented, and this unit's own firmware branch (being non-V1150)
+means a live glucose read is not available from it under the current,
+deliberately narrow `V1150`-only admission gate — extending that gate to
+another branch still requires the independent specification and synthetic
+validation described under "Differential-validation plan".
 
 ## Application identity correction
 
@@ -92,6 +127,66 @@ applies its own name/sensor-code checks. The first OpenGlucose capture must
 therefore use an explicit debug-only unfiltered profile. It must not broaden
 production scanning.
 
+The application's own `ist.com.sdk.ProtocolTools.verify(byte[])` (delegating
+to `ProtocolToolsHolder.verifyHolder`) is the exact call site that turns one
+scan-advertisement payload into `type`/`category`/`name`/`isBound` fields.
+This is **OFFICIAL-APP-STATIC** source grounding for the 27-byte
+manufacturer-data claim below, not a new claim of its own. `CT5InitViewModel`'s
+scan callback calls it on every scan result and matches the decoded `name`
+against the expected candidate. This document previously described the
+next step as branching on `isBound` alone; tracing the callback's full
+body corrects that — it is a three-way branch, not two:
+
+- `isBound` false: classifies the already-validated BSN via
+  `CT5BSNUtils.isHospital`/`isOnline`/`isOTC` (see "Sensor-code admission
+  gate" above), persists the matching device-source preference, and
+  proceeds to a fresh connect.
+- `isBound` true, and a separate can-recover check passes — a
+  `CT5InitViewModel` method distinct from `ProtocolTools.verify`,
+  requiring the *current logged-in user* to match a saved one, the
+  *current BSN* to match a saved one, and a locally recorded sensor to
+  exist, clearing saved recovery state on either mismatch — persists the
+  BSN, calls `CGMCallbackHandlerCT5.enterRecoveryMode()` (traced under
+  "Reference session branches" below), then proceeds to the same connect
+  call the unbound branch uses.
+- `isBound` true, but that can-recover check fails: stops the scan timer,
+  posts to the `getBound()` LiveData the Activity observes, and returns
+  without connecting at all. This is the one outcome of the three that
+  never reaches GATT.
+
+Both connecting branches still require a full GATT connect and the
+version handshake below before any further step — `isBound` read from
+the advertisement is a UI-routing hint the application uses for itself,
+gated by its own additional session/account state, not a substitute for
+the authenticated binding-status check (`0x11`) OpenGlucose's own driver
+already uses for the same purpose over GATT.
+
+`verifyHolder`'s own body sharpens that grounding rather than just repeating
+it: it is a generic, length-prefixed BLE advertising-data (AD structure)
+walker, not a CT5-specific envelope parser. It recognizes standard AD
+types — `0x01` Flags (one byte, read into `Verify.type`, only at total
+length `2`), `0x03` Service UUIDs (skipped), and `0x08`/`0x09`
+Local/Shortened Name (read into `Verify.name`, except one exact total
+length that instead sets `Verify.category`) — plus `0xFF` Manufacturer
+Specific Data, where it reads exactly 3 bytes into `Verify.category` and
+one following byte into `Verify.isBound` (nonzero-vs-not), for either a
+5-byte or a 27-byte total AD structure. For the 27-byte form specifically,
+it consumes only that first 4-byte prefix and explicitly discards the
+remaining 22 bytes unparsed. Those 22 bytes are where the six-record and
+checksum content the paragraph above describes would live —
+`verifyHolder` is confirmed *not* to be the method that reads them. A
+`ProtocolToolsHolder_CT5$BroadData` class exists as a pointer for whoever
+picks that thread up next; that dig is done — see "Advertisement decoder:
+`ProtocolToolsHolder_CT5.verify()`" under "Live, history, and advertisement
+records" below. It is a separate class from `ProtocolToolsHolder` above,
+with its own result type, and it consumes this same 27-byte structure
+differently. Any AD type/length combination outside the ones
+above leaves this reference parser's buffer position unresolved for that
+one structure — a fragility of the reference implementation, not a
+wire-format fact. A future OpenGlucose parser should walk every AD
+structure by its own declared length regardless of whether the type is
+recognized, rather than copy that shortcut.
+
 ## Frame integrity and command map
 
 Most CT5 command frames are:
@@ -140,6 +235,19 @@ Do not add initialize, configuration, unbind, reset, activation, calibration,
 or ownership-changing writes to an OpenGlucose session until their target
 effects, retry semantics, and recovery behavior are separately approved and
 verified.
+
+The history (`0x37`/`0x47`) and query-code (`0x3F`) *requests* above encode
+with no apparent session dependency, but their *responses* are not so
+simple: both are decrypted with the session cipher `driver.dart` derives via
+`deriveCipherFromSetIdResponse` from the `0x30` set-ID write's response, per
+**OFFICIAL-APP-STATIC** analysis of the CT5 driver. Sending either cold —
+before that state-changing write completes — cannot produce a response
+OpenGlucose can meaningfully decode, independent of whether transmitting it
+is otherwise safe. This is a stronger reason than "no precedent," and it is
+why only `0x11` (binding-state check) is both a simple unauthenticated
+request and a response OpenGlucose can read cold: it is the one operation in
+this table that is plaintext on the wire, not merely simply-encoded on
+request.
 
 ## Communication identity and payload transform
 
@@ -190,6 +298,93 @@ connect -> verify topology -> enable notifications -> version
         -> read binding state -> low-power/ready -> live notifications
 ```
 
+The application-layer choice between these two branches, and a third,
+narrower one, happens in `CGMCallbackHandlerCT5`'s device-prepared callback,
+before either sequence above starts: it looks up a locally persisted
+`Transmitter` record for this identity first.
+
+- A record found: reuses that record's stored `sureClose` field directly as
+  the session cipher (`AuthInfo.setCipher`), together with the
+  already-derived ID/random-A/random-B, then sends `0x31` (check
+  communication ID) — no fresh `0x30` set-ID round-trip appears in this
+  path. This is the saved-session branch above, and `sureClose` is the same
+  field `ProtocolToolsHolder_CT5.setKCipher` reads for the advertisement
+  path (see "Advertisement decoder"): `TransmitterRepository
+  .saveTransmitterFirstInit` writes it during first-time on-device
+  pairing, in the same call that persists the communication ID, `K`, and
+  `R` — one of (at least) two independent write paths this field has; see
+  below for the other. For a transmitter this app has already bound
+  locally, the advertisement decoder and the connected-GATT session read
+  the identical stored value regardless of which path wrote it.
+- No record found, and the application is not in `enterRecoveryMode()`:
+  proceeds to `getVersion()` — the first-use branch above.
+- No record found, and the application *is* in `enterRecoveryMode()`: reads
+  a cipher from `PreferenceSource.getCT5InitCipher()` instead — a
+  SharedPreferences-backed value distinct from any `Transmitter` record,
+  written during a CT5Init flow that has not yet reached a durable save.
+  `enterRecoveryMode()` (traced above, under "Discovery and GATT topology",
+  as the effect of a bound scan-advertisement match that also passes the
+  scan callback's own can-recover check) sets a single boolean
+  flag on this callback handler; this is the branch point traced here. That
+  flag has other read sites in this same handler this document does not
+  trace. This third path is a narrower variant of the saved-session branch,
+  not a distinct opcode sequence — it changes only where the cipher comes
+  from, not what is sent.
+
+A second, independent write path for this same field exists for CT5-series
+transmitters specifically: `TransformHosToOutViewModel` — a
+hospital-to-outpatient transfer flow — constructs a fresh `Transmitter`
+record from a backend server response (`PrepareTreatmentOutResp`'s
+`ct5SecretKey` payload, not any on-device BLE exchange) and persists it
+through the same `saveOrUpdate` call `saveTransmitterFirstInit` itself
+uses. For a CT5 transmitter, that server payload supplies `sureClose`,
+`K`, `R`, and the communication-ID components directly — this path's
+session-cipher provenance is a backend API response, not a locally
+derived `0x30` set-ID round-trip. Everything downstream (the
+saved-session branch above, the advertisement decoder's `setKCipher`)
+reads the same `sureClose` field regardless of which of these two paths
+wrote it; this document's account of where the value comes from now
+covers both, not the on-device path alone.
+
+`CGMCallbackHandlerCT5.onCheckIDResponse` is the continuation of the
+saved-session `0x31` step above that this document had not yet traced.
+It branches again on the same recovery flag traced above:
+
+- Recovering, check succeeds: proceeds to a sensor-code query step this
+  document does not trace further here (`getSSN()`, inherited from the
+  base handler, not overridden by this class).
+- Recovering, check fails: broadcasts `TransmitterState.ERROR_BOUND`
+  (state 30 — the exact trigger for the terminal state CT5Init's own
+  section above already lists, now source-grounded), exits recovery
+  mode, and disconnects.
+- Not recovering, check fails: does not disconnect immediately. Sets a
+  flag and proceeds to a device-reset check this document does not
+  trace further (`checkDeviceReset()`, inherited) — a more exploratory
+  response to a rejected saved communication ID than OpenGlucose's own
+  `authenticationRejected` gate takes. OpenGlucose failing closed on the
+  first rejection rather than replicating this further exploration is a
+  deliberate simplification, not a gap this document is flagging.
+- Not recovering, check succeeds: branches on whether an unbind is
+  pending (below) — if not, proceeds to `setDate()`, the already-documented
+  saved-session step; if so, calls `unbind()`, CT5-specific only in that
+  it logs first — the actual send is the shared base handler's.
+
+Unbinding itself traces back to `sendUnbindToTransmitter`, called (among
+other places) when history sync reaches its natural end. It broadcasts
+`TransmitterState.UNBINDING` (state 8, already documented under
+"CT5Init activity") with the reason as `extras`, then either calls the
+shared, generic `unbindForce` immediately (already disconnected, or a
+reset-check flag already set from the branch above) or marks an unbind
+pending and attempts the graceful path first — a live protocol send
+with roughly a 3-second window before this document's trace of it ends
+at the shared base handler.
+
+This also closes the write side of the can-recover mechanism this
+document already corrected once (see the confidence table): `sendInit`
+persists the current timestamp and current user ID the *first* time it
+runs, not on every call — exactly the two values `canRecover`'s read
+side checks against a saved user and a non-zero timestamp.
+
 The application also sends `0x0F` after initialization and after every
 completed history cycle. This repeated reference behavior supports treating
 the low-power command as replayable after an interrupted response. OpenGlucose
@@ -206,6 +401,248 @@ a secure credential store and a durable write journal. It does not implement
 unbind, reset, OTA, calibration, or ownership transfer. Unknown write outcomes
 fail closed unless the reference application proves that an operation is
 normally replayed, as it does for `0x0F`.
+
+## Application-side version gate
+
+**OFFICIAL-APP-STATIC.** `CT5InitViewModel`'s data-receive handler filters
+incoming notifications to exactly two opcodes at this stage of its own
+flow — `0x05` (self-check) and `0x01` (version) — and its version handler
+enforces a hard-coded allowlist before it will call `setDate` at all:
+`V1100` only at the exact date `2024-10-24`; `V1110` only at the exact date
+`2025-03-24`; and unconditionally `V1120`, `V1130`, `V1140`, `V1150`,
+`V1200`, `V1210`. Any other reported version — or a date-gated version
+outside its one exact accepted date — makes the application report an
+init failure and call `close()` on the connection. It never reaches
+`setDate` or anything after it on that path.
+
+This is a *broader* gate than the transmitter-computed trust check the
+"Live, history, and advertisement records" section below already describes:
+`TransmitterRepository.FIRMWARE_VERSION_V1150` is still the only version the
+application trusts for a transmitter-computed value, with no sibling
+constant. The application's own code therefore treats "firmware new enough
+to initialize" (`V1120`-`V1210`) and "firmware whose transmitter value it
+will trust" (`V1150` only) as two different questions.
+
+This does not change any `HARD UNKNOWN` above and does not license widening
+OpenGlucose's own `unsupportedFirmware` gate: the native algorithm that the
+`V1120`-`V1210` range would still need for any non-transmitter-computed
+value remains unimplemented. It is cited here as version-gate evidence, not
+as grounds to admit those versions any further than the one read-only
+binding-status query OpenGlucose's driver already sends for evidence on any
+non-`V1150` unit (see the package's evidence-boundary doc).
+
+## Sensor-code admission gate: CT5BSNUtils (manual entry, QR scan, NFC read)
+
+**OFFICIAL-APP-STATIC**, cross-checked against smali. Before any of the
+three ways this application admits a CT5 sensor identifier —
+`CT5ManualInput` (keyboard entry), `CT5QrScan` (camera), `NFCReadActivity`
+(NFC tag read) — hands that string to `CT5Init.start(context, str)` (the
+same static launcher documented under "CT5Init activity" below), all
+three apply the identical, two-part gate, entirely upstream of any scan
+or GATT admission:
+
+1. A fixed 12-character shape check:
+   `[1-9A-Z][1-9][0-9](0[1-9]|[1-4][0-9]|5[0-3])[1-9][0-9]{6}` — one
+   alphanumeric lead character, followed by digits, with a two-digit
+   field constrained to `01`-`53` (a week-of-year-shaped range) in the
+   middle.
+2. `CT5BSNUtils.match(String)`: the first two characters must be one of
+   exactly eighteen enumerated prefixes — `A4`, `A5`, `B2`, `B3`, `B4`,
+   `C2`, `C4`, `D4`, `D5`, `E3`, `E4`, `F4`, `G4`, `N3`, `P3`, `P4`, `Q3`,
+   `Q4`. Any other two-character prefix, or a string failing the shape
+   check above, is rejected before it ever reaches `CT5Init`.
+
+All three entry points are otherwise identical past this gate: on a
+match, `CT5BSNUtils.isHospital(str)` (first character in `1ADEF`)
+branches to a distinct hospital-flow handler; every other accepted
+prefix reaches the same non-hospital handler, which clears cached
+sensor state (`PreferenceSource.clearSensorInfo()`/`setDeviceSource("")`),
+persists the code (`setHandInputSensorCode`), then calls `CT5Init.start`.
+A separate method on the same class, `getCT5DeviceSource`, reuses the
+same four channel checks (`isHospital`/`isOnline`/`isOTC`, else
+unmatched) but maps them to a *different* stored code (`"3"`/`"1"`/`"2"`/
+`"4"` respectively) — not the sensor code's own first character —
+a detail worth keeping straight for anyone re-deriving it.
+
+`match()` carries jadx's own uncertainty flag ("Failed to restore switch
+over string"), the same category of warning `lambda$algorithmGlucose$10`
+and `ProtocolToolsHolder_CT5.a([B)Z` already needed smali to resolve
+correctly (see "Advertisement decoder"). Tracing it confirms the accepted
+set above is exact, but the *mechanism* for one entry, `B2`, is not what
+the decompiled Java suggests: jadx renders it as though a literal default
+value were assigned for that case. The smali shows no such assignment
+exists there — the register holding the result index is simply never
+written on the `B2` branch (that branch's own string-equality check uses
+a different register for its literal than every sibling case does), so
+it silently keeps a value an earlier, unrelated instruction (the
+substring endpoint computation) had already placed there. The
+accepted/rejected sets are unaffected either way; what changes is that
+this is a compiler/register-reuse coincidence this reference
+implementation happens to depend on, not a deliberate default — worth
+recording precisely rather than as "a default value," which is not what
+the bytecode does.
+
+This gate has no bearing on any `HARD UNKNOWN` below and touches no
+live, history, or advertisement content — it rejects a malformed or
+unrecognized sensor-code string using only the string itself, before any
+radio activity.
+
+A negative finding worth recording alongside it: the BLE protocol layer
+does expose a direct on-device BSN read (`CGMCallbackAgreementD
+.onBSNRead(BluetoothDevice, String)`), but `CGMCallbackHandlerCT5`'s
+override only logs the value — it does not compare it against the
+user-supplied BSN this section documents, and nothing else in this
+handler reads it. Whatever admission value the on-device BSN has, this
+reference app is not shown to use it as a check against what the user
+scanned, typed, or tapped.
+
+## Multi-product-line admission gate: CommonScan
+
+**OFFICIAL-APP-STATIC.** A separate, shared entry point,
+`com.yuwell.cgm.view.normal.home.mine.CommonScan`, feeds a scanned or
+typed code through three product-line format checks at once — a CT2
+regex, a CT3 regex plus an exact 21-character length, and the same CT5
+shape-regex-plus-`CT5BSNUtils.match()` gate documented above — then
+routes to a product-specific "before use" screen (`BeforeUseCT2`/
+`BeforeUseCT3`/`BeforeUseCT5`) for whichever one matched.
+`BeforeUseCT5` is instructional UI only (an onboarding video, an NFC
+capability check); it adds no validation of its own before handing off
+to `CT5QrScan` or `NFCReadActivity` — the same two entry points already
+documented above, unchanged.
+
+One gate applies before any of that product-line routing, regardless of
+which format matched: `TransmitterRepository.getCurrentDevice()` —
+scoped to the current logged-in user (`PreferenceSource.getLoginId()`),
+the same per-account scoping the CT5Init scan callback's can-recover
+check above uses — and if it returns a record at all, the application
+refuses to proceed with any new-sensor flow, CT5 included, and shows a
+message to that effect instead. This is a broader, earlier gate than
+anything `CT5Init` itself implements: it can block entry to the whole
+CT5 admission chain before a single CT5-specific check ever runs,
+whenever this account already has an active sensor on record.
+
+The product-line routing above is actually `CommonScan`'s fallback path.
+Its primary path attempts to AES-decrypt the scanned content and parse it
+as a `TransformHosToOutQrCode` (fields: `treatmentUid`, `phoneNumber`,
+`manufacturerId`, `connectWay`, `anytimeTreatmentUid`) first; only a
+JSON-parse failure on that attempt falls through to the CT2/CT3/CT5 regex
+matching described above. A successful parse is gated by an identity
+check before anything else, regardless of `connectWay`: the QR code's own
+`phoneNumber` field must equal the currently logged-in account's own
+phone number, or the application rejects it outright ("手机号与院内系统不匹配" —
+phone number does not match the hospital system) and proceeds no
+further. Past that gate, `connectWay` selects one of at least three
+`TransformHosToOutViewModel` entry methods: `prepareTreatmentOut` (the
+path that reaches `sureClose`'s backend-sourced write, documented under
+"Reference session branches"), `finishAntTreatmentOut`, and
+`prepareMultiWear` — closing the pointer this document left open for
+these last two:
+
+- `prepareMultiWear` shares its guard with `prepareTreatmentOut`, not
+  just its shape: both independently re-check `TransmitterRepository
+  .getCurrentDevice()` before sending their respective backend request
+  (built from the QR's `treatmentUid`/`phoneNumber`/`manufacturerId`),
+  and both refuse with the same message on a record already existing.
+  This is defense in depth with `CommonScan`'s own check above, not a
+  single point of enforcement — a genuine second, independent gate,
+  not a duplicate description of the first.
+- `finishAntTreatmentOut` is shaped differently: it matches the *local*
+  device's own identity against the QR's `anytimeTreatmentUid`, reads
+  whether a local record exists and, if so, its index, then completes a
+  backend call carrying that index. This is a transfer-teardown/
+  sync-completion step, not a new-admission gate.
+
+None of these three reads, publishes, or invents a decoded value — only
+identity fields and a record index.
+
+## CT5Init activity: view-layer session lifecycle
+
+**OFFICIAL-APP-STATIC.** `com.yuwell.cgm.view.normal.home.guide.ct5.CT5Init`
+is the guide-flow Activity that hosts `CT5InitViewModel`. It is a distinct
+class, not previously covered in this document, and it adds a
+session-lifecycle layer above the ViewModel logic already recorded here:
+
+- `onCreate` reads a `BSN` string extra from the launching `Intent` and
+  compares it against `PreferenceSource.getCT5InitBSN()`, the BSN this flow
+  last saved. A mismatch clears saved CT5-init recovery state
+  (`PreferenceSource.clearCT5InitRecovery()`) before anything else runs:
+  recovery is keyed to this identifier, not only to "was there an
+  interrupted init."
+- Calling the ViewModel's `getConfig()` (a backend config fetch, not a BLE
+  operation) is itself permission-gated: `onCreate` only calls it once a
+  local permission check passes, otherwise it calls `requestPermission()`
+  first.
+- `onDestroy` unconditionally calls `CT5InitViewModel.stopBleScan()`, which
+  itself no-ops unless a scan is active (guarded by the ViewModel's own
+  boolean scan flag) and otherwise stops the platform scanner and a timer.
+  Scan lifetime is therefore bounded by this Activity's lifecycle as a
+  backstop, independent of any protocol-level timeout.
+- `CT5InitViewModel.startInit(Date)` **is** `startBleScan(Date)` — there is
+  no separate init-specific scan entry point. `startBleScan` builds
+  `ScanSettings` with `SCAN_MODE_LOW_LATENCY` and hardware batching
+  explicitly disabled, and is reentrancy-guarded by the same flag
+  `stopBleScan` checks.
+- The first scan is reached only past a four-part prerequisite gate in the
+  permission-success callback (`onPermissionRequestSuccess`, traced through
+  its AspectJ wrapper): the app's runtime-permission set, an
+  Android-12-plus BLE-specific permission re-check, location services
+  (GPS) enabled, then the Bluetooth adapter enabled — each unmet condition
+  routes to its own prompt instead of proceeding. Only once all four hold
+  does the Activity clear the version-gate-failure latch and schedule
+  `startInit(new Date())` on the next handler tick. That `Date` is the
+  reference timestamp the resume window below measures from: a resumed
+  retry inside that window reuses this same original `Date` rather than
+  minting a new one, so the 30 seconds is a fixed budget from the first
+  attempt, not a sliding window renewed by each retry.
+
+`onTransmitterStateReceived(TransmitterState)` is this Activity's single
+dispatch point for session state, keyed on `TransmitterState.newState`
+against the constants that class defines
+(`com.yuwell.cgm.data.model.local.TransmitterState`; source-grounded, not
+inferred). It splits into two groups:
+
+- Terminal states that return immediately: `INIT_SUCCESS` (calls the
+  ViewModel's `finishGuide()`, whose async completion later drives the
+  Activity's own `getGuideFinish()` observer to broadcast
+  `TransmitterState.FINISH_GUIDE` through the app's `MessageSender` and
+  then close the Activity — two steps through two components, not one),
+  `UNBINDING` (clears the saved reference timestamp), `ERROR_BOUND`,
+  `ERROR_SENSOR_INFO` (shows the app's QR-error string), and
+  `CHECK_TRANSMITTER_VERSION_FAIL` — which stores the failure detail, logs
+  the app's own `"checkTransmitterVersion fail:"` line, and shows
+  `WearVersionTipDialog`, whose own callback closes the Activity regardless
+  of which option the dialog reports: this path has no retry inside
+  `CT5Init`. `CHECK_TRANSMITTER_VERSION_FAIL` is the UI-layer surface of the
+  version-handler allowlist this document already establishes under
+  "Application-side version gate"; it is an independent, corroborating code
+  path (the Activity's own state-code dispatch and log string), not a new
+  claim about the gate's condition.
+- `DISCONNECTED` and `CHECK_FAIL` share one fall-through tail instead of a
+  dedicated branch: it returns immediately if a version-gate failure was
+  already recorded or there is no saved reference timestamp; otherwise,
+  inside a 30-second window of that timestamp it re-arms the UI and calls
+  `startInit` (a re-`startBleScan`, itself a no-op if a scan is already
+  running); outside that window it clears the timestamp and runs the same
+  recovery path a failed connection attempt uses. This is a UI resume/retry
+  window, not a protocol timeout, and it never fires once a version-gate
+  failure has latched.
+
+Two more LiveData observers converge on already-seen recovery helpers, but
+not identically: `getScanOverTime()` calls the exact same helper pair
+`onRequestFailed` calls, while `getBound()`'s `true` case shares only one of
+the two — the Activity treats an already-bound sensor as a distinct recovery
+path from a generic scan timeout or connect failure, not an identical one.
+`getBound()`'s `true` case is the Activity-side reaction to the same
+advertisement `isBound` flag already discussed under "Discovery and GATT
+topology"; this document's conclusion there — `isBound` is a UI-routing
+hint, not an authenticated check — is unchanged, this only adds where that
+hint's `true` case lands once wired to this Activity.
+
+This adds a previously undocumented layer above `CT5InitViewModel` without
+changing any conclusion already recorded for it: everything here is
+session/UI lifecycle — BSN-keyed recovery, permission gating, scan
+configuration, and state-code-driven dialog-vs-resume branching — and none
+of it touches live, history, or advertisement record content.
 
 ## Live, history, and advertisement records
 
@@ -240,6 +677,121 @@ and contiguous history before it publishes the normal glucose record. The
 alternate value is also stored separately for comparison. A separate
 advertisement-display path accepts a transmitter value without the native
 algorithm. This does not prove that the two values are equivalent.
+
+### Advertisement decoder: `ProtocolToolsHolder_CT5.verify()`
+
+**OFFICIAL-APP-STATIC**, cross-checked against smali. `com.yuwell.cgm.utils.
+ProtocolToolsHolder_CT5` is a separate class from `ist.com.sdk.ProtocolTools`/
+`ProtocolToolsHolder` above, with its own result type (`Verify_CT5`, not
+`ProtocolTools.Verify`). Its `verify(byte[])` has exactly one call site in
+the inspected DEX — `CGMService`'s field `j0` — and `CT5InitViewModel`'s scan
+callback never calls it; that callback only ever reaches `ist.com.sdk.
+ProtocolTools.verify`/`verifyHolder`. The two decoders do not call each
+other.
+
+A private helper (`ProtocolToolsHolder_CT5.a([B)Z` in smali) gates
+`verify()`: for the same type-`0xFF`, 27-byte AD structure, it skips a
+4-byte prefix, sums the next 21 bytes, and requires the low 8 bits of that
+sum to equal the following byte. `verify()` returns `null` for a checksum or
+shape mismatch here, and for any other exception, including a
+nibble-encoded count that reads past the end of the payload described below.
+
+That helper's other branches are worth tracing precisely against smali, not
+just jadx: a second, distinct instance of the same decompiler-fidelity issue
+this document already resolved once for `lambda$algorithmGlucose$10` (see
+below) turns up inside `a([B)Z` itself. jadx renders the non-`0xFF` branches
+so that both AD type `3` (Service UUIDs) and type `9` (Complete Local Name)
+appear to share one more, redundant skip whenever the element's length is
+exactly `13`. The smali does not agree: type `9`'s branch jumps straight
+back to the loop top and never reaches that check; only type `3` genuinely
+falls through into it, so only type `3` at length `13` is actually
+double-skipped by this helper — a real over-read, not a decompiler illusion.
+Type `8` (Shortened Local Name) reaches that same length-`13` check
+directly, with no skip of its own first: at length `13` it is skipped
+correctly, but at any other length this helper advances zero bytes for it,
+so the next loop iteration reads that element's own value bytes as a new
+length/type pair. All three are fragilities of the reference app's own
+advertisement scanner, in the same register as the `verifyHolder` fragility
+already noted above — none touch the type-`0xFF`/27-byte branch this
+document otherwise relies on, so nothing about the checksum gate or the
+record decode below changes. Exception handling in this same helper is also
+stricter than a literal reading of the decompiled `catch` block suggests:
+the smali `catch` handler for the method's one try region falls straight
+through to the method's final `return false` — an exception anywhere in one
+pass aborts the whole scan immediately, it does not log and continue looking
+at the rest of the payload for a later, valid element.
+
+Where `verifyHolder` discards the remaining 22 bytes of that structure
+unparsed (see above), `ProtocolToolsHolder_CT5.verify()` is the method that
+reads them: after 3 bytes (category) and 1 byte (bound flag, `== 1`), it
+reads one byte split into a count (low nibble) and a type selector (high
+nibble), a little-endian 2-byte starting index, then 18 bytes it runs
+through the same `ConvertTools.encode(bytes, kCipher)` transform the GATT
+session path uses — `kCipher` here is set immediately before each call from
+`Transmitter.sureClose`, a per-transmitter persisted int field. That field's
+full provenance, and the one case where the GATT path reads a *different*
+cipher instead, are traced under "Reference session branches" below; for a
+transmitter this app has already bound locally, it is the identical stored
+value on both paths, not independently derived ones. It then reads that
+decoded payload as `count`
+fixed 3-byte big-endian records — nothing in this method caps `count`
+against the 18-byte payload itself; an over-long count throws and is caught
+by the same shape-error handling above — branching only on the type nibble:
+
+- type `1`: `dValue = (raw >> 10) * 0.01`, `dTrmpture = (raw & 0x3FF) * 0.1 -
+  40.0`;
+- type `2`: `trend = raw & 0x1F`, `errorCode = (raw >> 5) & 0xFF`,
+  `glucoseValue = (raw >> 13) & 0x7FF`.
+
+Both record types also carry `nIndex = <the 27-byte structure's starting
+index> + <the record's position in this batch>`, re-deriving each record's
+absolute index from the one little-endian starting index already noted
+above. A type selector outside `1`/`2`, or a zero count, leaves the returned
+`Verify_CT5` non-null but with zero `BroadData` records: category and bound
+are still set from the fixed-position bytes read earlier, only the record
+list is empty. This is not a parse failure — it is indistinguishable, from
+the caller's side, from a genuinely empty batch.
+
+`verify()`'s only caller, `CGMService`'s `lambda$algorithmGlucose$10`,
+requires `isBound()` true and a category match before reading any record,
+then hands every type-`2` record straight to
+`CGMCallbackCT5.onBroadcastNewGlucoseRead()` as a `CurrentGlucose` — with no
+native-algorithm call anywhere in that method. This is the exact source
+grounding for "a separate advertisement-display path accepts a transmitter
+value without the native algorithm" above.
+
+jadx flags this same method's surrounding index/gap-continuity logic as
+unreliably decompiled ("Removed duplicated region for block"), leaving an
+empty `if` body in the Java text where the source implies real branching.
+That gap is now closed against smali directly, rather than characterized
+from "the plain accessor calls" alone as the previous revision of this
+document put it. The empty branch is a jadx duplicated-region artifact, not
+a behavioral no-op: in the raw bytecode, the comparison it hides decides
+only whether execution *joins* the one record-processing loop every entry
+path shares — it is not a second path with independent behavior. Concretely,
+with `i12` the last-published `glucoseId`, `i13 = i12 + 1`, and `i14` the new
+batch's first `nIndex`: if `i13 < i14` (a gap — the batch starts after
+records this method has not seen) or `i13 > i14 + size - 1` (the whole batch
+is already old), the branch falls through without publishing, exactly like
+the sibling "no recent record" `else` case below it. Otherwise — `i13` lands
+inside `[i14, i14 + size - 1]` — control joins that same `else` case's loop,
+which always walks the batch from its first record regardless of where
+`i13` fell inside that window. The loop's own per-record guard is the real
+replay gate: each candidate's `glucoseId` is compared against the
+last-published id and skipped unless strictly greater, independent of the
+outer window check. Two things follow, both source-level, from this trace
+alone: the outer check only gates whether the loop runs at all, never which
+records within it publish; and nothing anywhere in this method reads a
+firmware-version field. The `V1150`-only gate this document establishes
+elsewhere belongs to the connected-session alternate-record selector, a
+different code path — this advertisement callback does not consult it.
+Resolving the gap does not change any conclusion above: the method still
+runs no native algorithm and still requires only `isBound()`, a category
+match, and `verify()`'s own checksum to publish a transmitter-computed
+`glucoseValue`. If anything it sharpens the existing reason this path stays
+out of scope for OpenGlucose's own admission gate — the absence of a
+firmware check here is a property of the reference app's own code, not a
+precedent for widening OpenGlucose's `unsupportedFirmware` gate to match it.
 
 The alternate branch selector is exact: the application enables it only when
 the persisted firmware-version string starts with `V1150`. It then sends an
@@ -421,6 +973,44 @@ layout, status, gap, checksum, transform, or session state must produce no
 `CgmReading`. The non-V1150 branch remains blocked because it has no validated
 local final-value provider.
 
+### OTA firmware-update path
+
+**OFFICIAL-APP-STATIC.** The application bundles two Gecko Bootloader
+(`.gbl`) firmware images as assets and can update a connected transmitter
+through `OTAViewModel`/`OTAUtils`. Static analysis of that path, and of the
+two image files themselves, closes it off as a shortcut to `V1150`:
+
+- `OTAViewModel` selects the update asset by the device's *current* reported
+  version: `update.gbl` for a device on `V1200`; the other bundled image,
+  `CT3A_V1400_241213A.gbl`, for a device on `V1300` or `V1400`. The full
+  ladder the application implements is `V1200 -> V1300 -> V1400`. `V1150`
+  is not a node in it, at either end or in between.
+- Each `.gbl` image's own embedded application-version string confirms its
+  target: `update.gbl` contains the plaintext string `V1300`;
+  `CT3A_V1400_241213A.gbl` contains `V1400`, matching its filename exactly.
+  Extracted at a fixed structural offset inside the GBL container; the two
+  files agree on format up to that point and only diverge from there,
+  which corroborates a real embedded target-version field rather than a
+  coincidental byte match.
+- `TransmitterRepository.FIRMWARE_VERSION_V1150 = "V1150"` is the only
+  version literal the application trusts for a transmitter-computed value;
+  `V1200`/`V1300`/`V1400` have no sibling constant anywhere in that class.
+  Completing this OTA ladder would not make a unit's packed value
+  trustworthy even if it reached `V1400`.
+- `OTAUtils`/`OTAViewModel`'s own gating functions (`isNewCT3Sensor`,
+  `isCT4Sensor`) and the complete absence of any `CT5` reference in either
+  file read as CT3/CT4-product logic, not CT5/Anytime-5P. This update
+  mechanism may not target the Anytime 5P transmitter at all. Lower
+  confidence than the two points above — not traced to a live
+  device-model call site.
+
+Net: an official-app OTA update cannot promote a unit to `V1150` through
+this mechanism, independent of whether it is offered to a CT5 unit in the
+first place. This resolves a previously open question (whether an OTA path
+reaches `V1150`) with a documented negative finding instead of leaving it
+unverified; it does not relax any rule in "OpenGlucose therefore must not"
+above.
+
 ## Confidence table
 
 | Finding | Confidence | Basis |
@@ -431,8 +1021,63 @@ local final-value provider.
 | index-zero reset and strict contiguous indexes | high | static path and synthetic differential checks |
 | zero-based output boundary at record 14 | high for the reference build | synthetic differential checks |
 | exact CT5 glucose mathematics | incomplete | multiple unresolved stateful stages |
-| target retail 5P firmware branch | unknown | no physical capture yet |
-| `V1150` packed value equals published glucose | unknown | requires target differential capture |
+| CT5 topology + version handshake on a real 5P | high | 2026-09-09 macOS physical session (see "First physical observation") |
+| target retail 5P firmware branch | one unit confirmed non-`V1150` | 2026-09-09 macOS physical session; other units/lots unconfirmed |
+| application's own init-vs-trust version gate is two different checks (`V1120`-`V1210` init-eligible, `V1150`-only transmitter-trusted) | high (source-level) | static analysis of `CT5InitViewModel`/`TransmitterRepository` — see "Application-side version gate" |
+| `CT5BSNUtils` gates all three sensor-code entry points (manual/QR/NFC) identically — a 12-character shape regex plus an 18-prefix allowlist — before any of them reaches `CT5Init`; `match()`'s jadx string-switch warning resolves in smali to an exact accepted set, though its `B2` case relies on leftover register content rather than a re-loaded literal, unlike every sibling case | high (source-level) | static analysis of `CT5ManualInput`/`CT5QrScan`/`NFCReadActivity`, full smali trace of `CT5BSNUtils.match()` — see "Sensor-code admission gate" |
+| `CT5Init` (the guide Activity, distinct from `CT5InitViewModel`) drives session lifecycle from `TransmitterState` codes, gated behind a four-part permission/GPS/Bluetooth prerequisite check whose completion timestamp is the origin of the 30s resume window shared by `DISCONNECTED`/`CHECK_FAIL`, with `CHECK_TRANSMITTER_VERSION_FAIL` (23) as the version gate's dedicated, non-retrying UI path | high (source-level) | static analysis of `CT5Init`/`TransmitterState`, cross-referenced against `CT5InitViewModel.startBleScan`/`stopBleScan` — see "CT5Init activity: view-layer session lifecycle" |
+| `ProtocolTools.verify()` is a generic BLE AD-structure walker, not a CT5-specific envelope, and does not itself parse the six-record/checksum advertising content | high (source-level) | static analysis of `ProtocolToolsHolder.verifyHolder` — see "Discovery and GATT topology" |
+| **Correction of a prior entry:** the scan callback's post-`verify()` branch is three-way, not a bound-vs-unbound binary — a bound match additionally needs a passing can-recover check (same logged-in user, matching BSN, a locally recorded sensor) before it enters recovery; failing that check stops the scan without ever connecting, the only one of the three outcomes that does not reach GATT | high (source-level) | full-body trace of `CT5InitViewModel`'s scan callback and its `canRecover` method — see "Discovery and GATT topology" |
+| `CommonScan`'s per-account `TransmitterRepository.getCurrentDevice()` check blocks all new-sensor admission (CT2/CT3/CT5 alike) whenever the current login already has an active sensor on record — a broader, earlier gate than anything CT5-specific; `BeforeUseCT5` between it and the CT5 entry points is instructional UI only, no added validation | high (source-level) | static analysis of `CommonScan`, `BeforeUseCT5`, `TransmitterRepository.getCurrentDevice` — see "Multi-product-line admission gate" |
+| The CT2/CT3/CT5 product-line regex matching `CommonScan` uses is its fallback path only; its primary path parses the scan as a `TransformHosToOutQrCode` (a hospital-transfer credential) and, before dispatching on `connectWay`, rejects it outright unless the code's own `phoneNumber` field equals the current logged-in account's phone number | high (source-level) | static analysis of `CommonScan.m37138H`/`m37137G` and `TransformHosToOutQrCode` — see "Multi-product-line admission gate" |
+| `prepareTreatmentOut`/`prepareMultiWear` (the two `connectWay` branches this document previously left as an open pointer) both independently re-check `getCurrentDevice()` before their backend call — a second, genuinely independent already-active-device gate, not a restatement of `CommonScan`'s own check; `finishAntTreatmentOut` is a differently-shaped transfer-teardown step (matches local device identity, reads a local record index) rather than another admission gate | high (source-level) | static analysis of all three `TransformHosToOutViewModel` entry methods — see "Multi-product-line admission gate" |
+| `onCheckIDResponse` (the saved-session `0x31` continuation) sources `ERROR_BOUND` (30) exactly on a rejected check-ID while recovering, and folds an unbind trigger into the same success path a normal `setDate()` continuation uses when one is pending; `sendInit` is the write side of the already-corrected `canRecover` mechanism (persists timestamp/user ID once, not per call), closing that read-only account | high (source-level) | static analysis of `CGMCallbackHandlerCT5.onCheckIDResponse`/`sendInit`/`sendUnbindToTransmitter`/`unbind` — see "Reference session branches" |
+| Negative finding: `onBSNRead` exists as a BLE callback but `CGMCallbackHandlerCT5` only logs it — the reference app is not shown comparing an on-device BSN read against the user-supplied BSN `CT5BSNUtils` gates | high (source-level) | static analysis of `CGMCallbackHandlerCT5.onBSNRead` — see "Sensor-code admission gate" |
+| `ProtocolToolsHolder_CT5.verify()` is the app's own decoder for that six-record/checksum content, with its sole call site in `CGMService`, never `CT5InitViewModel` | high (source-level) | static analysis of `ProtocolToolsHolder_CT5`/`CGMService`, cross-checked against smali — see "Advertisement decoder" under "Live, history, and advertisement records" |
+| `lambda$algorithmGlucose$10`'s jadx-empty continuity branch only gates loop entry (per-record `glucoseId` comparison is the real replay guard), and the method never reads a firmware-version field | high (source-level) | full smali trace of `CGMService.lambda$algorithmGlucose$10`, resolving the jadx "Removed duplicated region" warning — see "Advertisement decoder" |
+| `ProtocolToolsHolder_CT5.a([B)Z`'s non-`0xFF` skip branches: jadx's Java over-states which AD types double-skip at length 13 (only type `3` truly does; type `9` does not, despite reading the same in decompiled Java); type `8` skips nothing unless length is exactly 13; any exception aborts the whole scan immediately rather than continuing past it — a second, distinct jadx-vs-smali discrepancy in this class, same failure class as the `lambda$algorithmGlucose$10` row above | high (source-level) | full smali trace of `ProtocolToolsHolder_CT5.a([B)Z`, cross-checked line-by-line against its jadx Java rendering — see "Advertisement decoder" |
+| `Transmitter.sureClose` is one persisted field, read identically by both the advertisement decoder (`ProtocolToolsHolder_CT5.setKCipher`) and the connected-GATT session (`CGMCallbackHandlerCT5`'s `AuthInfo.setCipher`) for an already-bound transmitter, resolving this document's own prior "does not yet prove" note; a third, narrower session-start path (`enterRecoveryMode()` with no local record) reads a different, SharedPreferences-backed cipher instead. **Updated:** it has two independent write paths, not one — `TransmitterRepository.saveTransmitterFirstInit` (on-device pairing) and, for CT5 specifically, `TransformHosToOutViewModel` (a backend-server response, no on-device exchange) | high (source-level) | static analysis of `CGMCallbackHandlerCT5.lambda$onDevicePrepared$0`, `TransmitterRepository.saveTransmitterFirstInit`, `TransformHosToOutViewModel`, and `Transmitter.sureClose`'s full read/write site list — see "Reference session branches" |
+| `V1150` packed value equals published glucose | unknown | requires target differential capture on a `V1150` unit |
+| official-app OTA reaches `V1150` | no (documented negative) | static analysis of `OTAViewModel`/`OTAUtils` and both bundled `.gbl` images — see "OTA firmware-update path" |
+| history (`0x37`/`0x47`) and query-code (`0x3F`) responses are cold-decodable | no — session-cipher-dependent | static analysis of `driver.dart`'s use of `deriveCipherFromSetIdResponse` |
+
+## Structural investigation status: ProtocolToolsHolder_CT5 / CT5Init / notification
+
+As of 2026-09-12, static structural analysis of `ProtocolToolsHolder_CT5`
+and `CT5Init` (the Activity, and, where already cited, `CT5InitViewModel`)
+is complete at the depth this document tracks. Every method, branch, and
+cross-class call site relevant to admission, session lifecycle, and
+advertisement decoding has been traced against jadx and, wherever jadx's
+rendering of non-trivial control flow was suspect, independently
+re-verified against smali — see "Advertisement decoder" and "CT5Init
+activity" above and their confidence-table rows. Two threads this
+document itself had left as bare citations (`Transmitter.sureClose`'s
+provenance, `enterRecoveryMode()`'s effect) have since been traced and
+closed, not merely re-described. `CT5Init`'s remaining untraced methods
+(`m37049L` and similar activity-local helpers) are UI navigation/dialog
+plumbing with no admission or protocol content; tracing them further
+would not change any conclusion here.
+
+Separately, `YuwellAnytimeSession._runNotification`'s generic exception
+catch (`YuwellSessionFailureKind.notification`, in
+`packages/cgm_yuwell_anytime`) has been checked three independent ways: a
+full manual trace of every throw site inside `_handleNotification` (each
+already funnels into a more specific failure kind or is a guarded
+no-op), a coverage-tool run confirming it is the only
+failure-kind-related line in `driver.dart` with zero test coverage, and a
+check of whether `_publishFailure` itself could throw uncaught there (it
+cannot: it independently guards `_closing`/`_snapshotController.isClosed`
+before doing anything). It presents as an unreachable defensive backstop
+through the public synthetic-test surface, not a live condition.
+
+Neither of these is a closed door — a new decompiled artifact, a specific
+notification-reachability angle, or physical target evidence for the
+native-algorithm `HARD UNKNOWN` below would all extend this record. Re-
+digging the same two classes or re-asking the same general question
+without one of those would repeat already-recorded analysis rather than
+extend it, the same way this document already declined to keep asking
+Dom about the OTA lead once "OTA firmware-update path" closed it with a
+documented negative finding.
 
 ## Required physical evidence
 
@@ -466,7 +1111,10 @@ the capture harness only observes and records it.
   the application publishes after its native algorithm.
 - Meaning/check digits of QR fields beyond the proved format, lifetime branch,
   and name matching.
-- Exact 5P advertisement and GATT behavior on the target firmware.
+- Exact 5P advertisement and GATT *topology* is now confirmed on one unit
+  (see "First physical observation"); behavior beyond the version handshake
+  (live/history/configure/initialize) on any target firmware remains
+  unobserved.
 - All status, warning, calibration, and error bits.
 - Whether Android bonding is required or created.
 - Persistence, replay, and retry behavior after interrupted writes.

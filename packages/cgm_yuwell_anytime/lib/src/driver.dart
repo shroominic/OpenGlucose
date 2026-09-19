@@ -21,6 +21,16 @@ const yuwellValidationStateMetadataKey = 'cgm.yuwell.validation-state';
 const yuwellFailureCodeMetadataKey = 'cgm.yuwell.failure-code';
 const yuwellSessionPhaseMetadataKey = 'cgm.yuwell.phase';
 const yuwellOutputModeMetadataKey = 'cgm.yuwell.output-mode';
+// The reported firmware branch (e.g. "V1150"), not a sensor identifier or
+// health value. The evidence-boundary promotion gate asks for the exact
+// firmware on record for any non-V1150 unit; this makes that automatic on
+// the next attempt instead of relying on a human to note it down.
+const yuwellFirmwareMetadataKey = 'cgm.yuwell.firmware';
+// Whether the sensor reported itself already bound: 'bound' or 'unbound'.
+// Matches the value _readBindingStatusForDiagnostic already publishes for a
+// resumed session; _tryReadBindingStatusForEvidence reuses the same key for
+// a non-V1150 unit's pre-fail-closed evidence.
+const yuwellBindingStateMetadataKey = 'cgm.yuwell.binding-state';
 
 void _debugYuwellTrace(String phase, String operation, String outcome) {
   assert(() {
@@ -55,9 +65,22 @@ enum YuwellSessionFailureKind {
 }
 
 final class YuwellSessionException implements Exception {
-  const YuwellSessionException(this.kind);
+  const YuwellSessionException(this.kind, {this.firmware, this.bound});
 
   final YuwellSessionFailureKind kind;
+
+  /// The reported firmware branch (e.g. "V1150") when [kind] is
+  /// [YuwellSessionFailureKind.unsupportedFirmware] and a version response
+  /// was actually parsed. Null when no fresh version query ran (for example,
+  /// a resumed session inferring non-admission from saved credentials) —
+  /// never guessed or backfilled.
+  final String? firmware;
+
+  /// Whether a non-V1150 unit reported itself already bound, from the one
+  /// best-effort binding-status query [YuwellAnytimeSession] sends before
+  /// failing closed on firmware. Null when that query was not sent or did
+  /// not get a valid answer — never guessed.
+  final bool? bound;
 
   String get diagnosticCode => 'yuwell.session.${kind.name}';
 
@@ -318,11 +341,13 @@ final class YuwellAnytimeSession implements CgmSession {
   Future<void> _writeTail = Future<void>.value();
   Future<void>? _initialization;
   Future<void>? _historyFuture;
+  Future<void>? _publicHistoryFuture;
   YuwellSessionCredentials? _credentials;
   YuwellUnresolvedWriteIntent? _unresolvedIntent;
   YuwellHistoryRecordLayout? _recordLayout;
   String? _firmware;
   bool _closing = false;
+  bool _initializationFinished = false;
   bool _writeWithoutResponse = false;
   bool _autoHistoryStarted = false;
   bool _historySawSessionComplete = false;
@@ -353,10 +378,16 @@ final class YuwellAnytimeSession implements CgmSession {
       final failure = error is YuwellSessionException
           ? error
           : const YuwellSessionException(YuwellSessionFailureKind.connection);
-      _publishFailure(failure.kind);
+      _publishFailure(
+        failure.kind,
+        firmware: failure.firmware,
+        bound: failure.bound,
+      );
       if (!_closing) await _cleanupAfterInitializationFailure();
       _releaseLease();
       Error.throwWithStackTrace(failure, stackTrace);
+    } finally {
+      _initializationFinished = true;
     }
   }
 
@@ -438,8 +469,11 @@ final class YuwellAnytimeSession implements CgmSession {
       );
       _firmware = _parseFirmware(version);
       if (_firmware != 'V1150') {
-        throw const YuwellSessionException(
+        final bound = await _tryReadBindingStatusForEvidence();
+        throw YuwellSessionException(
           YuwellSessionFailureKind.unsupportedFirmware,
+          firmware: _firmware,
+          bound: bound,
         );
       }
     } else {
@@ -1081,7 +1115,9 @@ final class YuwellAnytimeSession implements CgmSession {
     // Saved CT5 sessions enter ready state only after the exact reviewed
     // check-ID -> date -> history -> status -> low-power sequence completes.
     _autoHistoryStarted = true;
-    await syncHistory();
+    // Initialization owns this internal history leg. Calling the public
+    // syncHistory() here would wait for initialization and deadlock itself.
+    await _syncHistoryCoalesced();
   }
 
   Future<void> _readBindingStatusForDiagnostic() async {
@@ -1090,7 +1126,7 @@ final class YuwellAnytimeSession implements CgmSession {
       _emit(
         metadata: <String, String>{
           ..._snapshot.metadata,
-          'cgm.yuwell.binding-state': bound ? 'bound' : 'unbound',
+          yuwellBindingStateMetadataKey: bound ? 'bound' : 'unbound',
         },
       );
     } catch (_) {
@@ -1105,6 +1141,30 @@ final class YuwellAnytimeSession implements CgmSession {
       responseOpcode: YuwellCt5Commands.bindingStatusCommand,
     );
     return _validate(() => YuwellCt5Responses.bindingStatus(response));
+  }
+
+  /// Best-effort binding-status read for non-V1150 evidence, sent right
+  /// before this session fails closed on firmware.
+  ///
+  /// [YuwellCt5Commands.readBindingStatus] is the exact query
+  /// [_beginFreshActivation] already sends first, unconditionally, before
+  /// any state-changing write. It needs no prior write and no cipher —
+  /// unlike [YuwellCt5Commands.querySensorCode], whose response
+  /// [_completeActivationFromAuthenticated] decrypts with the cipher that
+  /// `set-communication-id` derives, so it cannot be sent meaningfully
+  /// before that write and is never sent pre-activation in any existing
+  /// path. Sending this one extra query for a non-V1150 unit carries no
+  /// more risk than what the reviewed V1150 flow already does
+  /// unconditionally as its very first step. A failure here must never
+  /// replace the primary `unsupportedFirmware` diagnostic with a less
+  /// specific one, so it is swallowed and reported as "unknown" (null),
+  /// not surfaced as its own exception.
+  Future<bool?> _tryReadBindingStatusForEvidence() async {
+    try {
+      return await _readBindingStatus('binding-status-firmware-gate');
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _requireUnboundForSetIdRecovery(String operation) async {
@@ -1576,7 +1636,7 @@ final class YuwellAnytimeSession implements CgmSession {
 
   Future<void> _autoSyncHistory() async {
     try {
-      await syncHistory();
+      await _syncHistoryCoalesced();
     } catch (_) {
       _log(CgmLogLevel.warning, 'yuwell.history.auto-failed');
     }
@@ -1595,6 +1655,38 @@ final class YuwellAnytimeSession implements CgmSession {
     bool includeRawHistory = false,
     int? requestedStartOffset,
   }) {
+    final inFlight = _publicHistoryFuture;
+    if (inFlight != null) return inFlight;
+
+    // Public callers must not race the current connection's authentication or
+    // setup-date write. Initialization uses the private coalesced leg above
+    // so its own setup history remains part of the existing chain.
+    final queuedDuringInitialization = !_initializationFinished;
+    late final Future<void> operation;
+    operation = (_initialization ?? initialize())
+        .then<void>((_) async {
+          if (queuedDuringInitialization) {
+            // Saved-session setup has already completed its internal history
+            // leg when initialization resolves. Fresh activation starts the
+            // same leg from _publishReady; await either one if still active
+            // instead of launching a redundant history/low-power exchange.
+            await _historyFuture;
+            return;
+          }
+          await _syncHistoryCoalesced(
+            requestedStartOffset: requestedStartOffset,
+          );
+        })
+        .whenComplete(() {
+          if (identical(_publicHistoryFuture, operation)) {
+            _publicHistoryFuture = null;
+          }
+        });
+    _publicHistoryFuture = operation;
+    return operation;
+  }
+
+  Future<void> _syncHistoryCoalesced({int? requestedStartOffset}) {
     final inFlight = _historyFuture;
     if (inFlight != null) return inFlight;
     late final Future<void> operation;
@@ -1737,7 +1829,7 @@ final class YuwellAnytimeSession implements CgmSession {
           : const YuwellSessionException(
               YuwellSessionFailureKind.historyIncomplete,
             );
-      _publishFailure(failure.kind);
+      _publishFailure(failure.kind, firmware: failure.firmware);
       if (identical(failure, error)) rethrow;
       Error.throwWithStackTrace(failure, stackTrace);
     }
@@ -1941,7 +2033,11 @@ final class YuwellAnytimeSession implements CgmSession {
     }
   }
 
-  void _publishFailure(YuwellSessionFailureKind kind) {
+  void _publishFailure(
+    YuwellSessionFailureKind kind, {
+    String? firmware,
+    bool? bound,
+  }) {
     if (_closing || _snapshotController.isClosed) return;
     if (_terminalFailure) return;
     _log(CgmLogLevel.error, 'yuwell.failure.${kind.name}');
@@ -1954,6 +2050,11 @@ final class YuwellAnytimeSession implements CgmSession {
       return;
     }
     if (!_allowsAutomaticReconnect(kind)) _terminalFailure = true;
+    final bindingState = switch (bound) {
+      true => 'bound',
+      false => 'unbound',
+      null => null,
+    };
     _emit(
       stage: CgmSyncStage.error,
       statusText: _failureStatus(kind),
@@ -1966,6 +2067,8 @@ final class YuwellAnytimeSession implements CgmSession {
           yuwellActivationRequiredMetadataKey: 'true',
         if (kind == YuwellSessionFailureKind.activationRequired)
           'activationRequired': 'true',
+        yuwellFirmwareMetadataKey: ?firmware,
+        yuwellBindingStateMetadataKey: ?bindingState,
       },
       lastError: 'yuwell.session.${kind.name}',
     );

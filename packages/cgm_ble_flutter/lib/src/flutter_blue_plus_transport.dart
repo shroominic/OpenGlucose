@@ -79,24 +79,35 @@ class FlutterBluePlusTransport
     StreamSubscription<List<fbp.ScanResult>>? resultsSubscription;
     StreamSubscription<bool>? scanningSubscription;
     Future<void>? startupFuture;
-    Future<void>? closeFuture;
+    final closeOnce = SingleFlightTeardown();
+    final stopOnce = SingleFlightTeardown();
     Timer? scanDeadline;
     var startedScan = false;
     var closed = false;
+
+    Future<void> stopStartedScan() {
+      if (!stopOnce.started && !fbp.FlutterBluePlus.isScanningNow) {
+        return Future<void>.value();
+      }
+      // startScan and stopScan share the plugin's scan mutex. A pending stop
+      // therefore follows a late native start; both close and late-start
+      // cleanup must await that same stop rather than queue a second one.
+      return stopOnce.run(fbp.FlutterBluePlus.stopScan);
+    }
 
     Future<void> closeStream({
       bool stopScan = true,
       bool waitForStartup = true,
     }) {
-      final existing = closeFuture;
-      if (existing != null) {
-        return existing;
-      }
+      // `closed`/`scanDeadline.cancel()` are safe to repeat — the guard that
+      // must not repeat is `closeOnce.run`. Only the first caller's `stopScan`/
+      // `waitForStartup` are honored; later concurrent or sequential callers
+      // (the bound timer, a consumer cancel, the `isScanning` listener, a
+      // startup error) all observe that same first outcome instead of
+      // re-running teardown. See [SingleFlightTeardown].
       closed = true;
       scanDeadline?.cancel();
       scanDeadline = null;
-      final completer = Completer<void>();
-      closeFuture = completer.future;
       final results = resultsSubscription;
       final scanning = scanningSubscription;
       // Close the caller's stream before cleanup. Cleanup awaits plugin
@@ -108,8 +119,9 @@ class FlutterBluePlusTransport
           onError: (Object _, StackTrace _) {},
         ),
       );
-      unawaited(
-        closeFlutterBluePlusScanResources(
+      return closeOnce.run(
+        () =>
+            closeFlutterBluePlusScanResources(
               cancelResults: results?.cancel,
               cancelScanning: scanning?.cancel,
               awaitPendingStart: waitForStartup
@@ -120,28 +132,15 @@ class FlutterBluePlusTransport
                       }
                     }
                   : null,
-              stopScan: stopScan
-                  ? () async {
-                      if (fbp.FlutterBluePlus.isScanningNow) {
-                        await fbp.FlutterBluePlus.stopScan();
-                      }
-                    }
-                  : null,
+              stopScan: stopScan ? stopStartedScan : null,
               closeController: controller.close,
-            )
-            .timeout(
-              // The radio is already stopped by this point; a plugin future that
-              // never completes must not leave cancellation pending forever.
+            ).timeout(
+              // Native cleanup may still be pending; it must not leave caller
+              // cancellation pending forever.
               const Duration(seconds: 5),
               onTimeout: () {},
-            )
-            .then<void>(
-              (_) => completer.complete(),
-              onError: (Object error, StackTrace stackTrace) =>
-                  completer.completeError(error, stackTrace),
             ),
       );
-      return completer.future;
     }
 
     void closeStreamSafely({bool stopScan = true, bool waitForStartup = true}) {
@@ -155,12 +154,9 @@ class FlutterBluePlusTransport
 
     /// Closes this scan when the requested window elapses.
     ///
-    /// `flutter_blue_plus` stops the radio when its own `timeout` fires, but
-    /// that stop is not reliably visible here: the plugin can finish the scan
-    /// without publishing `isScanning = false`, and its pending `startScan`
-    /// future can stay pending past the window. Callers pass `timeout`
-    /// expecting a bounded scan, so the stream must bound itself instead of
-    /// waiting for a signal that may never arrive.
+    /// The wrapper owns the only timeout, including adapter/startup time:
+    /// the plugin's pending `startScan` future can stay pending past the
+    /// window without publishing `isScanning = false`.
     void armScanDeadline(Duration window) {
       scanDeadline?.cancel();
       scanDeadline = Timer(window + const Duration(milliseconds: 750), () {
@@ -211,7 +207,9 @@ class FlutterBluePlusTransport
       );
     }
 
-    controller.onCancel = closeStream;
+    // Closing the controller also invokes onCancel. That natural completion
+    // must not await its own cleanup future and delay stream-first closure.
+    controller.onCancel = () => closed ? null : closeStream();
 
     startupFuture = () async {
       try {
@@ -246,30 +244,42 @@ class FlutterBluePlusTransport
         if (closed) {
           return;
         }
+        // No `timeout:` passed to the plugin here, on purpose. flutter_blue_plus
+        // races its own internal `Timer(timeout, stopScan)` against whatever
+        // stops this wrapper's stream (consumer cancel, error, or the
+        // `isScanning` listener below) — both paths call the plugin's public
+        // `stopScan()`, which serializes on a process-global mutex
+        // (`_MutexFactory.getMutexForKey("scan")`). If the plugin's own
+        // timer wins that race and its native stop invocation never returns
+        // (observed on macOS: see "M3" in the Yuwell Anytime 5P status
+        // notes), the loser blocks on that mutex forever — wedging every
+        // later scan/connect call in the process, since the mutex is never
+        // released. Owning the single bound timer here instead means exactly
+        // one stop (`stopStartedScan`, idempotent via `stopOnce`) ever calls
+        // the plugin's `stopScan()` for a given scan attempt.
         await fbp.FlutterBluePlus.startScan(
           withServices: (withServices ?? const <String>[])
               .map(fbp.Guid.new)
               .toList(growable: false),
-          timeout: timeout,
           continuousUpdates: true,
           oneByOne: true,
           androidUsesFineLocation: androidUsesFineLocation,
           androidCheckLocationServices: androidCheckLocationServices,
         );
         startedScan = true;
-        if (!closed && scanAttempt != null) {
-          tracker!._acknowledge(scanAttempt);
-        } else if (closed && fbp.FlutterBluePlus.isScanningNow) {
-          await fbp.FlutterBluePlus.stopScan();
+        if (closed) {
+          await stopStartedScan();
+        } else {
+          if (scanAttempt != null) {
+            tracker!._acknowledge(scanAttempt);
+          }
         }
       } catch (error, stackTrace) {
         if (!closed && !controller.isClosed) {
           emitScanError(error, stackTrace);
         }
         if (closed) {
-          if (fbp.FlutterBluePlus.isScanningNow) {
-            await fbp.FlutterBluePlus.stopScan();
-          }
+          await stopStartedScan();
         } else {
           closeStreamSafely(waitForStartup: false);
         }
@@ -452,6 +462,37 @@ class FlutterBluePlusTransport
     final message = error.toString().toUpperCase();
     return message.contains('ANDROID_SPECIFIC_ERROR') ||
         message.contains('CONNECT') && message.contains('133');
+  }
+}
+
+/// Runs one teardown at most once; every caller — the first and any later
+/// concurrent or sequential one — awaits that same first outcome.
+///
+/// [FlutterBluePlusTransport.scan] keys one of these per scan attempt so a
+/// consumer cancelling its subscription, the wrapper's own bound timeout
+/// timer, an externally observed `isScanning` drop, and a startup error can
+/// all race to end the scan without [run] ever executing [teardown] twice.
+/// A second, concurrent call to the plugin's `stopScan()` for the same
+/// attempt can hang forever on this transport's process-wide scan mutex —
+/// see the comment above the `startScan` call in
+/// [FlutterBluePlusTransport.scan].
+@visibleForTesting
+final class SingleFlightTeardown {
+  Future<void>? _future;
+
+  /// True once [run] has been called at least once.
+  bool get started => _future != null;
+
+  Future<void> run(Future<void> Function() teardown) {
+    final existing = _future;
+    if (existing != null) {
+      return existing;
+    }
+    final completer = Completer<void>();
+    _future = completer.future;
+    // Publish first: closing a stream can re-enter through onCancel.
+    completer.complete(Future<void>.sync(teardown));
+    return completer.future;
   }
 }
 

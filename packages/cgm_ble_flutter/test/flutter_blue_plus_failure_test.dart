@@ -12,6 +12,108 @@ void main() {
     expect(transport, isA<BleSingleAttemptTransport>());
     expect(transport.supportsSingleAttemptConnect, isTrue);
   });
+  group('SingleFlightTeardown', () {
+    test('synchronous failure is shared without rerunning teardown', () async {
+      final guard = SingleFlightTeardown();
+      final failure = StateError('synchronous stop failure');
+      var calls = 0;
+
+      Future<void> teardown() {
+        calls += 1;
+        throw failure;
+      }
+
+      final first = guard.run(teardown);
+      final second = guard.run(teardown);
+      await expectLater(first, throwsA(same(failure)));
+      await expectLater(second, throwsA(same(failure)));
+      expect(second, same(first));
+      expect(calls, 1);
+    });
+
+    test('reentrant closure observes the published first teardown', () async {
+      final guard = SingleFlightTeardown();
+      Future<void>? reentrant;
+      var duplicateCalls = 0;
+
+      final first = guard.run(() {
+        reentrant = guard.run(() async {
+          duplicateCalls += 1;
+        });
+        return Future<void>.value();
+      });
+
+      await first;
+      expect(duplicateCalls, 0);
+      expect(reentrant, same(first));
+    });
+
+    test('runs teardown once for two concurrent callers', () async {
+      var teardownCalls = 0;
+      final gate = Completer<void>();
+      final guard = SingleFlightTeardown();
+
+      Future<void> teardown() async {
+        teardownCalls += 1;
+        await gate.future;
+      }
+
+      final first = guard.run(teardown);
+      final second = guard.run(teardown);
+
+      expect(teardownCalls, 1);
+      expect(identical(first, second), isTrue);
+
+      gate.complete();
+      await Future.wait(<Future<void>>[first, second]);
+      expect(teardownCalls, 1);
+    });
+
+    test('a later caller observes the first outcome, not a new run', () async {
+      var firstTeardownCalls = 0;
+      var secondTeardownCalls = 0;
+      final guard = SingleFlightTeardown();
+
+      await guard.run(() async {
+        firstTeardownCalls += 1;
+      });
+      await guard.run(() async {
+        secondTeardownCalls += 1;
+      });
+
+      expect(firstTeardownCalls, 1);
+      expect(secondTeardownCalls, 0);
+    });
+
+    test('propagates the first outcome\'s error to every caller', () async {
+      final failure = StateError('stopScan wedged');
+      final guard = SingleFlightTeardown();
+
+      Future<void> failingTeardown() async {
+        throw failure;
+      }
+
+      final first = guard.run(failingTeardown);
+      final second = guard.run(() async {
+        fail('a concurrent caller must not run a second teardown');
+      });
+
+      await expectLater(first, throwsA(same(failure)));
+      await expectLater(second, throwsA(same(failure)));
+    });
+
+    test('started flips true as soon as run is called, before it settles', () {
+      final guard = SingleFlightTeardown();
+      final gate = Completer<void>();
+
+      expect(guard.started, isFalse);
+      unawaited(guard.run(() => gate.future));
+      expect(guard.started, isTrue);
+
+      gate.complete();
+    });
+  });
+
   test(
     'scan cleanup runs every step and preserves the first failure',
     () async {
