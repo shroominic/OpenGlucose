@@ -57,7 +57,10 @@ void main() {
           now: now,
         );
         expect(payload.valueText, '--');
-        expect(payload.unitText, isEmpty);
+        expect(
+          payload.unitText,
+          reading.isDisplayProvisional ? isEmpty : 'mg/dL',
+        );
         expect(payload.trendSymbol, isEmpty);
         expect(payload.deltaText, isEmpty);
         expect(payload.recordedAtIso8601, isNull);

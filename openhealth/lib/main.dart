@@ -773,9 +773,6 @@ class _HistoricalOverviewCard extends StatelessWidget {
     final theme = Theme.of(context);
     final l10n = context.l10n;
     final readings = controller.allHistoricalReadings;
-    final hasRecoveryEntries = controller.archivedSensors.any(
-      (session) => session.isUnreconciled,
-    );
     final timestampedReadings = readings
         .where((reading) => reading.recordedAt != null)
         .toList(growable: false);
@@ -800,9 +797,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      hasRecoveryEntries
-                          ? l10n.archiveNeedsRecovery
-                          : l10n.yourGlucoseHistory,
+                      l10n.yourGlucoseHistory,
                       style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w900,
                       ),
@@ -812,19 +807,14 @@ class _HistoricalOverviewCard extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                hasRecoveryEntries
-                    ? l10n.archiveRecoverySummary
-                    : <String>[
-                        l10n.archivedSensorsCount(
-                          controller.archivedSensors.length,
-                        ),
-                        l10n.readingCount(readings.length),
-                        if (latest != null)
-                          l10n.lastAt(_localizedShortDateTime(context, latest)),
-                      ].join(' · '),
-                key: hasRecoveryEntries
-                    ? const ValueKey<String>('historicalRecoverySummary')
-                    : null,
+                <String>[
+                  l10n.archivedSensorsCount(
+                    controller.archivedSensors.length,
+                  ),
+                  l10n.readingCount(readings.length),
+                  if (latest != null)
+                    l10n.lastAt(_localizedShortDateTime(context, latest)),
+                ].join(' · '),
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF5B6E6A),
                 ),
@@ -903,15 +893,11 @@ class _DashboardView extends StatelessWidget {
     final preferences = controller.displayPreferences;
     final history = controller.visibleHistory;
     final wellnessHistory = controller.visibleWellnessHistory;
-    final showWellness =
-        !isCbioSnapshot(snapshot) &&
-        (history.isEmpty || wellnessHistory.isNotEmpty);
-    final warmup = isCbioSnapshot(snapshot)
-        ? null
-        : computeWarmupStatus(
-            snapshot,
-            latestReading: controller.displayLatestReading,
-          );
+    final showWellness = history.isEmpty || wellnessHistory.isNotEmpty;
+    final warmup = computeWarmupStatus(
+      snapshot,
+      latestReading: controller.displayLatestReading,
+    );
     final isWarmingUp = warmup?.phase == WarmupPhase.warming;
     final remainingLife = sensorLifeText(
       snapshot.sessionInfo.sessionStart,
@@ -963,28 +949,27 @@ class _DashboardView extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        if (!isCbioSnapshot(snapshot))
-                          Row(
-                            key: const ValueKey<String>(
-                              'sensorExpiryIndicator',
+                        Row(
+                          key: const ValueKey<String>(
+                            'sensorExpiryIndicator',
+                          ),
+                          children: <Widget>[
+                            const Icon(
+                              Icons.event_outlined,
+                              size: 16,
+                              color: Color(0xFF5B6E6A),
                             ),
-                            children: <Widget>[
-                              const Icon(
-                                Icons.event_outlined,
-                                size: 16,
-                                color: Color(0xFF5B6E6A),
-                              ),
-                              const SizedBox(width: 5),
-                              Flexible(
-                                child: Text(
-                                  remainingLife,
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: const Color(0xFF5B6E6A),
-                                  ),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                remainingLife,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: const Color(0xFF5B6E6A),
                                 ),
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -1041,67 +1026,56 @@ class _DashboardView extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 12),
-                        if (isCbioSnapshot(snapshot))
+                        if (history.any(
+                          (reading) => reading.isDisplayProvisional,
+                        )) ...<Widget>[
                           Text(
-                            l10n.rawSensorHistorySaved,
-                            key: const ValueKey('rawSensorHistory'),
-                            style: theme.textTheme.bodyMedium?.copyWith(
+                            historyProvisionalNoticeForSnapshot(snapshot),
+                            key: ValueKey<String>('historyQualityNotice'),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        if (snapshot.historySync.inProgress) ...<Widget>[
+                          Text(
+                            historySyncProgressText(snapshot.historySync),
+                            key: const ValueKey<String>(
+                              'historySyncProgress',
+                            ),
+                            style: theme.textTheme.bodySmall?.copyWith(
                               color: const Color(0xFF5B6E6A),
                             ),
-                          )
-                        else ...<Widget>[
-                          if (history.any(
-                            (reading) => reading.isDisplayProvisional,
-                          )) ...<Widget>[
-                            Text(
-                              historyProvisionalNoticeForSnapshot(snapshot),
-                              key: ValueKey<String>('historyQualityNotice'),
+                          ),
+                          const SizedBox(height: 8),
+                        ] else if (snapshot.historySync.lastSyncAt != null &&
+                            history.isNotEmpty) ...<Widget>[
+                          Text(
+                            'Sensor history complete. '
+                            '${snapshot.historySync.storedCount} records.',
+                            key: const ValueKey<String>(
+                              'historySyncComplete',
                             ),
-                            const SizedBox(height: 8),
-                          ],
-                          if (snapshot.historySync.inProgress) ...<Widget>[
-                            Text(
-                              historySyncProgressText(snapshot.historySync),
-                              key: const ValueKey<String>(
-                                'historySyncProgress',
-                              ),
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: const Color(0xFF5B6E6A),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                          ] else if (snapshot.historySync.lastSyncAt != null &&
-                              history.isNotEmpty) ...<Widget>[
-                            Text(
-                              'Sensor history complete. '
-                              '${snapshot.historySync.storedCount} records.',
-                              key: const ValueKey<String>(
-                                'historySyncComplete',
-                              ),
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: const Color(0xFF5B6E6A),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                          if (!snapshot.capabilities.supportsHistory &&
-                              !controller.isMockDriver) ...<Widget>[
-                            Text(
-                              'Readings received by this phone',
-                              style: theme.textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                          SizedBox(
-                            height: 336,
-                            child: CgmDashboardChart(
-                              readings: history,
-                              preferences: preferences,
-                              historySync: snapshot.historySync,
-                              rawDiagnosticsOnly: isCbioSnapshot(snapshot),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF5B6E6A),
                             ),
                           ),
+                          const SizedBox(height: 8),
                         ],
+                        if (!snapshot.capabilities.supportsHistory &&
+                            !controller.isMockDriver) ...<Widget>[
+                          Text(
+                            'Readings received by this phone',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        SizedBox(
+                          height: 336,
+                          child: CgmDashboardChart(
+                            readings: history,
+                            preferences: preferences,
+                            historySync: snapshot.historySync,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1201,9 +1175,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
       snapshot,
       widget.controller.displayLatestReading,
     );
-    final warmup = isCbioSnapshot(snapshot)
-        ? null
-        : computeWarmupStatus(snapshot, latestReading: latest);
+    final warmup = computeWarmupStatus(snapshot, latestReading: latest);
     final primaryError = primaryErrorTextForSnapshot(
       snapshot,
       language: context.appLanguage,
@@ -1223,8 +1195,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
       subtitle = warmupSubtext(warmup, language: context.appLanguage);
       stageLabel = warmupStageLabel(warmup, language: context.appLanguage);
     } else {
-      final cbioSnapshot = isCbioSnapshot(snapshot);
-      final fallbackValue = isLibreGen1Snapshot(snapshot)
+      final fallbackValue =
+          isLibreGen1Snapshot(snapshot) ||
+              widget.controller.displayLatestReading?.source ==
+                  CgmRecordSource.raw
           ? null
           : snapshot.lastAdvertisement?.displayValueMgdl;
       final displayedValue =
@@ -1232,22 +1206,13 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
           (fallbackValue == null
               ? null
               : preferences.unit.convertFromMgdl(fallbackValue));
-      if (cbioSnapshot) {
-        // The protocol's raw field is shown as-is: no glucose unit is claimed
-        // until a reference measurement settles the scale.
-        bigValue = cbioProvisionalValueText(latest) ?? '--';
-        unitLabel = '';
-      } else {
-        bigValue = displayedValue == null
-            ? '--'
-            : displayedValue.toStringAsFixed(
-                preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
-              );
-        unitLabel = preferences.unit.label;
-      }
-      subtitle = cbioSnapshot
-          ? context.l10n.rawSensorValueLabel
-          : primaryError == null
+      bigValue = displayedValue == null
+          ? '--'
+          : displayedValue.toStringAsFixed(
+              preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
+            );
+      unitLabel = preferences.unit.label;
+      subtitle = primaryError == null
           ? ((latest?.isDisplayProvisional == true
                     ? null
                     : libreConnectionDetailForSnapshot(snapshot)) ??
@@ -1294,17 +1259,16 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                           ),
                         ),
                         const SizedBox(width: 10),
-                        if (unitLabel.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Text(
-                              unitLabel,
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: const Color(0xFFC7E4DD),
-                                fontWeight: FontWeight.w700,
-                              ),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Text(
+                            unitLabel,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: const Color(0xFFC7E4DD),
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
+                        ),
                       ],
                     ),
                   ),
@@ -1327,29 +1291,12 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   color: const Color(0xFFD6ECE7),
                 ),
               ),
-              if (isCbioSnapshot(snapshot) ||
-                  latest?.isDisplayProvisional == true) ...<Widget>[
+              if (latest?.isDisplayProvisional == true) ...<Widget>[
                 const SizedBox(height: 6),
                 Text(
-                  isCbioSnapshot(snapshot)
-                      ? context.l10n.rawSensorValueNotice
-                      : provisionalReadingNoticeForSnapshot(snapshot) ??
-                            'Provisional reading. Not yet verified.',
+                  provisionalReadingNoticeForSnapshot(snapshot) ??
+                      'Provisional reading. Not yet verified.',
                   key: const ValueKey<String>('provisionalReadingNotice'),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFFC7E4DD),
-                  ),
-                ),
-              ],
-              if (isCbioSnapshot(snapshot)) ...<Widget>[
-                const SizedBox(height: 6),
-                Text(
-                  cbioFreshnessText(
-                    snapshot,
-                    reading: latest,
-                    language: context.appLanguage,
-                  ),
-                  key: const ValueKey('cbioFreshness'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFFC7E4DD),
                   ),
@@ -1482,7 +1429,6 @@ class _KeyValueRow extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),
-          const SizedBox(width: 12),
           Expanded(child: Text(effectiveValue)),
         ],
       ),
@@ -2167,15 +2113,13 @@ class _SensorArchivePane extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
             subtitle: Text(
-              session.isUnreconciled
-                  ? context.l10n.archiveNeedsRecovery
-                  : context.l10n.archiveSessionSummary(
-                      _archiveReasonLabel(context, session.reason),
-                      context.l10n.readingCount(displayReadingCount),
-                      date == null
-                          ? ''
-                          : ' · ${_localizedShortDateTime(context, date)}',
-                    ),
+              context.l10n.archiveSessionSummary(
+                _archiveReasonLabel(context, session.reason),
+                context.l10n.readingCount(displayReadingCount),
+                date == null
+                    ? ''
+                    : ' · ${_localizedShortDateTime(context, date)}',
+              ),
             ),
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: () => Navigator.of(context).push(
@@ -2256,9 +2200,7 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
     final session = widget.session;
     final rawReadings = controller.readingsForArchivedSensor(session);
     final readings = controller.displayReadingsForArchivedSensor(session);
-    final wellnessReadings = session.driverId == 'cbio'
-        ? const <CgmReading>[]
-        : readingsForWellness(readings);
+    final wellnessReadings = readingsForWellness(readings);
     final theme = Theme.of(context);
     var recapAnchor = session.lastReadingAt;
     for (final reading in readings) {
@@ -2282,23 +2224,14 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
           ),
           const SizedBox(height: 4),
           Text(
-            session.isUnreconciled
-                ? context.l10n.archiveNeedsRecovery
-                : context.l10n.archiveHistoryOnly(
-                    _archiveReasonLabel(context, session.reason),
-                  ),
+            context.l10n.archiveHistoryOnly(
+              _archiveReasonLabel(context, session.reason),
+            ),
             style: theme.textTheme.bodyMedium?.copyWith(
               color: const Color(0xFF5B6E6A),
             ),
           ),
           const SizedBox(height: 16),
-          if (session.isUnreconciled) ...<Widget>[
-            Text(
-              context.l10n.archiveRecoveryNotice,
-              key: const ValueKey<String>('archiveRecoveryNotice'),
-            ),
-            const SizedBox(height: 16),
-          ],
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -2306,9 +2239,7 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
                 children: <Widget>[
                   _KeyValueRow(
                     label: context.l10n.readings,
-                    value: session.isUnreconciled
-                        ? context.l10n.archiveNeedsRecovery
-                        : context.l10n.readingCount(readings.length),
+                    value: context.l10n.readingCount(readings.length),
                   ),
                   _KeyValueRow(
                     label: context.l10n.started,
@@ -2351,7 +2282,6 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
                     readings: readings,
                     preferences: controller.displayPreferences,
                     historySync: const CgmHistorySyncState(),
-                    rawDiagnosticsOnly: session.driverId == 'cbio',
                   ),
                 ),
               ),
@@ -2843,10 +2773,6 @@ Widget _buildSensorSettingsPane(
   CgmAppController controller,
   CgmSessionSnapshot snapshot,
 ) {
-  final cbioError = isCbioSnapshot(snapshot)
-      ? primaryErrorTextForSnapshot(snapshot, language: context.appLanguage)
-      : null;
-  final cbioSupportReference = cbioSupportReferenceForSnapshot(snapshot);
   final sessionStart = snapshot.sessionInfo.sessionStart;
   final interruptedTransferState =
       snapshot.metadata[cgmBondTransferStateMetadataKey];
@@ -2863,26 +2789,12 @@ Widget _buildSensorSettingsPane(
   return ListView(
     padding: const EdgeInsets.all(20),
     children: <Widget>[
-      if (cbioError != null) ...<Widget>[
-        Text(cbioError, key: const ValueKey('cbioSessionError')),
-        const SizedBox(height: 10),
-        if (cbioSupportReference != null)
-          KeyedSubtree(
-            key: const ValueKey('cbioSupportReference'),
-            child: _KeyValueRow(
-              label: context.l10n.supportReference,
-              value: cbioSupportReference,
-            ),
-          ),
-        const SizedBox(height: 18),
-      ],
-      if (!isCbioSnapshot(snapshot))
-        SensorLifecycleCard(
-          snapshot: snapshot,
-          latestReading: controller.displayLatestReading,
-          onReplaceSensor: () => unawaited(controller.replaceCurrentSensor()),
-          outerPadding: EdgeInsets.zero,
-        ),
+      SensorLifecycleCard(
+        snapshot: snapshot,
+        latestReading: controller.displayLatestReading,
+        onReplaceSensor: () => unawaited(controller.replaceCurrentSensor()),
+        outerPadding: EdgeInsets.zero,
+      ),
       if (supportsLiveGlucoseConsent) ...<Widget>[
         const SizedBox(height: 18),
         Card(
@@ -2933,38 +2845,6 @@ Widget _buildSensorSettingsPane(
         label: context.l10n.history,
         value: context.l10n.readingCount(snapshot.history.length),
       ),
-      if (isCbioSnapshot(snapshot)) ...<Widget>[
-        _KeyValueRow(
-          label: context.l10n.rawSensorIndexLabel,
-          value:
-              controller.displayLatestReading?.sensorMinute?.toString() ?? '--',
-        ),
-        Text(
-          cbioStoredRangeText(snapshot.history, language: context.appLanguage),
-          key: const ValueKey('cbioStoredRange'),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          cbioClockStateText(
-            snapshot,
-            reading: controller.displayLatestReading,
-            language: context.appLanguage,
-          ),
-          key: const ValueKey('cbioClockState'),
-        ),
-        if (cbioError == null &&
-            snapshot.stage != CgmSyncStage.error &&
-            snapshot.historySync.inProgress) ...<Widget>[
-          const SizedBox(height: 10),
-          Text(
-            historySyncProgressText(
-              snapshot.historySync,
-              language: context.appLanguage,
-            ),
-            key: const ValueKey('historySyncProgress'),
-          ),
-        ],
-      ],
       const SizedBox(height: 18),
       Wrap(
         spacing: 12,

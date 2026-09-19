@@ -262,15 +262,19 @@ Future<(CgmAppController, SharedPreferences)> _mount(
     ),
   );
   await tester.pump(const Duration(seconds: 1));
-  await tester.pumpAndSettle();
+  // The in-progress fixture intentionally leaves the shared history spinner
+  // animating. Wait for the route frame, not for that animation to terminate.
+  if (!snapshot.historySync.inProgress) await tester.pumpAndSettle();
   return (controller, preferences);
 }
 
 Future<void> _openSensorDetails(WidgetTester tester, String language) async {
   await tester.tap(find.byIcon(Icons.tune_rounded));
-  await tester.pumpAndSettle();
+  await tester.pump();
+  await tester.pump(const Duration(seconds: 1));
   await tester.tap(find.text(language == 'en' ? 'Current sensor' : '当前传感器'));
-  await tester.pumpAndSettle();
+  await tester.pump();
+  await tester.pump(const Duration(seconds: 1));
 }
 
 Future<void> _dispose(WidgetTester tester, CgmAppController controller) async {

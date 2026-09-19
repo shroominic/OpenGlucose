@@ -70,9 +70,8 @@ bool shouldPublishLiveActivity({
   DateTime? now,
 }) {
   final reading = currentReadingForSnapshot(snapshot, latestReading);
-  if (isCbioSnapshot(snapshot) ||
-      reading?.isDisplayProvisional == true ||
-      reading?.source == CgmRecordSource.raw) {
+  if (latestReading?.isDisplayProvisional == true ||
+      latestReading?.source == CgmRecordSource.raw) {
     return false;
   }
   final effectiveNow = now ?? DateTime.now();
@@ -104,18 +103,14 @@ LiveActivityPayload buildLiveActivityPayload({
 }) {
   final reading = currentReadingForSnapshot(snapshot, latestReading);
   final effectiveNow = now ?? DateTime.now();
-  // The surface's staleness follows the youngest honest clock this snapshot
-  // has. For the CBio protocol that is the receipt time, which is used here
-  // and nowhere else: it is never published as a sensor timestamp.
+  // Freshness follows the normalized reading's own timestamp, never receipt.
   final freshnessAt = liveSurfaceFreshnessAt(
     snapshot: snapshot,
     reading: reading,
     now: effectiveNow,
   );
   final isStale = liveSurfaceIsStale(freshnessAt, now: effectiveNow);
-  if (isCbioSnapshot(snapshot) ||
-      reading?.isDisplayProvisional == true ||
-      reading?.source == CgmRecordSource.raw) {
+  if (reading?.isDisplayProvisional == true) {
     return LiveActivityPayload(
       sensorName: liveSurfaceBrandName,
       stageCode: 'progress',
@@ -162,7 +157,9 @@ LiveActivityPayload buildLiveActivityPayload({
       isWarmup: warmup.phase == WarmupPhase.warming,
     );
   }
-  final fallbackValue = isLibreGen1Snapshot(snapshot)
+  final fallbackValue =
+      isLibreGen1Snapshot(snapshot) ||
+          latestReading?.source == CgmRecordSource.raw
       ? null
       : snapshot.lastAdvertisement?.displayValueMgdl;
   final displayedValue =

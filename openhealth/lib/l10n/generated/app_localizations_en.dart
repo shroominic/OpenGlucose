@@ -12,25 +12,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get appTitle => 'OpenGlucose';
 
   @override
-  String get rawSensorChartUnavailable =>
-      'Glucose chart unavailable. Raw sensor data is stored, but glucose decoding is not yet verified.';
-
-  @override
-  String get rawSensorValueNotice => 'Not a verified glucose reading.';
-
-  @override
-  String get rawSensorValueLabel => 'Raw sensor value';
-
-  @override
-  String get rawSensorHistorySaved => 'View sensor details in Settings.';
-
-  @override
-  String get rawSensorIndexLabel => 'Sensor index';
-
-  @override
-  String get supportReference => 'Support reference';
-
-  @override
   String get settings => 'Settings';
 
   @override
@@ -111,17 +92,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sensorArchive => 'Sensor archive';
-
-  @override
-  String get archiveNeedsRecovery => 'History needs recovery';
-
-  @override
-  String get archiveRecoverySummary =>
-      'Saved sensor data is preserved. History totals are incomplete until recovery.';
-
-  @override
-  String get archiveRecoveryNotice =>
-      'These saved sensor records have not been reconciled with a verified sensor session. Original data is preserved. Readable raw records can be exported, but they are not body-glucose readings. Unreadable records need recovery before export.';
 
   @override
   String get glucoseAndDisplay => 'Glucose & display';

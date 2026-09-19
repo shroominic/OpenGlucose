@@ -261,20 +261,12 @@ class _SensorConnectionScreenState extends State<SensorConnectionScreen> {
       ),
       final stage? => _ConnectionProgress(
         stage: stage,
-        statusText: _cbioProgressText,
         librePhase: _controller.snapshot?.metadata['cgm.libre2.phase'],
         libreDecoder: _controller.snapshot?.metadata['cgm.libre2.decoder'],
       ),
       null =>
         widget.inline ? _buildInlineChooser(context) : _buildChooser(context),
     };
-  }
-
-  /// The closed GS1 phase mapped to product copy. The driver's own status text
-  /// is an internal, unbounded string and never reaches this card.
-  String? get _cbioProgressText {
-    final snapshot = _controller.snapshot;
-    return snapshot == null ? null : cbioProgressTextForSnapshot(snapshot);
   }
 
   String get _connectionFailureMessage {
@@ -2227,13 +2219,11 @@ class _SensorFamilySupport {
 class _ConnectionProgress extends StatelessWidget {
   const _ConnectionProgress({
     required this.stage,
-    this.statusText,
     this.librePhase,
     this.libreDecoder,
   });
 
   final CgmSyncStage stage;
-  final String? statusText;
   final String? librePhase;
   final String? libreDecoder;
 
@@ -2250,7 +2240,7 @@ class _ConnectionProgress extends StatelessWidget {
       'validatedPacket' => libreGlucoseWaitingDetail(libreDecoder),
       _ => _connectionStageText(stage),
     };
-    final text = statusText ?? phaseText;
+    final text = phaseText;
     final receiving =
         librePhase == 'awaitingPacket' || librePhase == 'validatedPacket';
     return Semantics(

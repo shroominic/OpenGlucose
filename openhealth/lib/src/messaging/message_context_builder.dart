@@ -12,17 +12,16 @@ MessageContext buildMessageContext(
 }) {
   final snapshot = controller.snapshot;
   final hasSession = snapshot != null;
-  final latest = controller.displayLatestReading;
+  final latest = snapshot == null
+      ? null
+      : currentReadingForSnapshot(snapshot, controller.displayLatestReading);
   final warmup = snapshot == null
       ? null
       : computeWarmupStatus(snapshot, latestReading: latest, now: now);
   return MessageContext(
     hasSession: hasSession,
     isWarmingUp: warmup?.phase == WarmupPhase.warming,
-    // CBIO raw records do not populate a glucose chart. They must not enable
-    // glucose-reading tips merely because a raw diagnostic value is visible.
-    hasReadings:
-        latest != null && snapshot != null && !isCbioSnapshot(snapshot),
+    hasReadings: latest != null,
     now: now ?? DateTime.now(),
   );
 }

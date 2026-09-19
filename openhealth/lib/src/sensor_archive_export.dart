@@ -195,12 +195,9 @@ List<String> _rowFor(
 ];
 
 // Preserve diagnostic rows and raw fields, but do not assign glucose units to
-// an algorithm input. Session identity also contains legacy CBIO rows whose
-// quality flags were not saved by an earlier build.
+// an algorithm input. Legacy protocol archives stay in private driver storage.
 bool _hasGlucoseValue(ArchivedSensorSession session, CgmReading? reading) =>
-    session.driverId != 'cbio' &&
-    reading != null &&
-    reading.source != CgmRecordSource.raw;
+    reading != null && reading.source != CgmRecordSource.raw;
 
 /// Stops spreadsheet applications from evaluating exported labels as formulas.
 /// Numeric measurement columns remain numeric.

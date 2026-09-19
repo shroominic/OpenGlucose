@@ -1,6 +1,5 @@
 import 'package:cgm_aidex/cgm_aidex.dart';
 import 'package:cgm_ble/cgm_ble.dart';
-import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'app_language_controller.dart';
 import 'display_preferences.dart';
@@ -41,40 +40,13 @@ String readingTimeText(
 /// How long a live surface may stay silent before it is honestly stale.
 const Duration liveSurfaceStaleAfter = Duration(minutes: 10);
 
-/// The youngest honest timestamp behind a snapshot's live surface.
-///
-/// Drivers that time their own readings are judged by the reading time, which
-/// is what the surface shows as the record's own moment. The CBio protocol
-/// carries no epoch: a GS1 record is positioned by the sensor's minute counter,
-/// so [CgmReading.recordedAt] is null unless the session holds a clock anchor
-/// for the position (the clock this app set on the sensor). An anchored record
-/// is judged by that time; a record the anchor does not cover falls back to the
-/// only clock left, when this phone received the data,
-/// [CgmHistorySyncState.lastSyncAt]. A receipt time is returned here for
-/// staleness only; it is never published as a sensor time.
+/// Shared surfaces use only a normalized reading's own timestamp.
+/// Receipt times and private protocol counters cannot manufacture freshness.
 DateTime? liveSurfaceFreshnessAt({
   required CgmSessionSnapshot snapshot,
   CgmReading? reading,
   DateTime? now,
-}) {
-  final effectiveNow = now ?? DateTime.now();
-  if (!isCbioSnapshot(snapshot)) {
-    return clampedDisplayRecordedAt(reading?.recordedAt, now: effectiveNow);
-  }
-  final anchored = clampedDisplayRecordedAt(
-    reading?.recordedAt,
-    now: effectiveNow,
-  );
-  if (anchored != null) {
-    return anchored;
-  }
-  final receivedAt = snapshot.historySync.lastSyncAt;
-  if (receivedAt == null) {
-    return null;
-  }
-  final localReceivedAt = receivedAt.toLocal();
-  return localReceivedAt.isAfter(effectiveNow) ? effectiveNow : localReceivedAt;
-}
+}) => clampedDisplayRecordedAt(reading?.recordedAt, now: now);
 
 bool liveSurfaceIsStale(DateTime? freshnessAt, {DateTime? now}) {
   if (freshnessAt == null) {
@@ -82,26 +54,6 @@ bool liveSurfaceIsStale(DateTime? freshnessAt, {DateTime? now}) {
   }
   final effectiveNow = now ?? DateTime.now();
   return effectiveNow.difference(freshnessAt) > liveSurfaceStaleAfter;
-}
-
-String cbioFreshnessText(
-  CgmSessionSnapshot snapshot, {
-  CgmReading? reading,
-  DateTime? now,
-  AppLanguage language = AppLanguage.english,
-}) {
-  final freshness = liveSurfaceFreshnessAt(
-    snapshot: snapshot,
-    reading: reading,
-    now: now,
-  );
-  if (freshness == null) {
-    return _localized(language, 'Data freshness unavailable', '数据更新时间未知');
-  }
-  if (liveSurfaceIsStale(freshness, now: now)) {
-    return _localized(language, 'No recent sensor data', '暂无近期传感器数据');
-  }
-  return lastSyncText(freshness, now: now, language: language);
 }
 
 /// Local charts and explicit raw exports may retain provisional samples, with
@@ -521,20 +473,6 @@ String stageLabelForSnapshot(
     }
     return _localized(language, 'Connecting', '正在连接');
   }
-  if (isCbioSnapshot(snapshot)) {
-    if (snapshot.stage == CgmSyncStage.error) {
-      return _localized(language, 'Error', '出错');
-    }
-    if (snapshot.stage == CgmSyncStage.disconnected) {
-      return _localized(language, 'Disconnected', '已断开连接');
-    }
-    if (snapshot.stage == CgmSyncStage.syncing) {
-      return _localized(language, 'Fetching history', '正在获取历史数据');
-    }
-    return snapshot.stage == CgmSyncStage.ready
-        ? _localized(language, 'Connected', '已连接')
-        : _localized(language, 'Connecting', '正在连接');
-  }
   final hasData = snapshot.latestReading != null || snapshot.history.isNotEmpty;
 
   if (snapshot.stage == CgmSyncStage.error) {
@@ -564,13 +502,6 @@ String stageLabelForSnapshot(
 }
 
 String stageCodeForSnapshot(CgmSessionSnapshot snapshot) {
-  if (isCbioSnapshot(snapshot) && snapshot.stage == CgmSyncStage.disconnected) {
-    return 'disconnected';
-  }
-  if (isCbioSnapshot(snapshot) && snapshot.stage == CgmSyncStage.ready) {
-    // A connected raw-data transport is not a glucose-quality/target status.
-    return 'connected';
-  }
   if (isLibreGen1Snapshot(snapshot)) {
     return switch (stageLabelForSnapshot(snapshot)) {
       'Error' || 'Disconnected' || 'Connection lost' => 'error',
@@ -944,9 +875,6 @@ String? primaryErrorTextForSnapshot(
         ? userMessageForLibreConnectionLoss(snapshot.lastError)
         : userMessageForLibreConnectionFailure(snapshot.lastError);
   }
-  if (isCbioSnapshot(snapshot)) {
-    return userMessageForCbioFailure(snapshot.lastError, language: language);
-  }
   final bleFailure = BleFailure.fromMetadata(snapshot.metadata);
   if (bleFailure != null) {
     return userMessageForBleFailure(bleFailure, language: language);
@@ -958,176 +886,12 @@ String? primaryErrorTextForSnapshot(
 bool isLibreGen1Snapshot(CgmSessionSnapshot snapshot) =>
     snapshot.sensor.driverId == 'libre2-gen1';
 
-bool isCbioSnapshot(CgmSessionSnapshot snapshot) =>
-    snapshot.sensor.driverId == 'cbio';
-
-/// Product copy for the closed CBio session phase, or null to fall through.
-///
-/// The GS1 session publishes one of a fixed set of phases in
-/// [cbioPhaseMetadataKey], and this card renders *that*, never
-/// [CgmSessionSnapshot.statusText]. The status text is an internal, unbounded
-/// field: rendering it would put raw driver wording on a product surface and
-/// would let a session that never authenticates replace the bounded-sync stage
-/// label the connection screen shows for every other driver, which is what the
-/// session-sync failure guard asserts.
-///
-/// Returns null when the snapshot is not a CBio snapshot, carries no closed
-/// phase, or is failing, so the caller keeps the generic stage label.
-String? cbioProgressTextForSnapshot(CgmSessionSnapshot snapshot) {
-  if (!isCbioSnapshot(snapshot) ||
-      snapshot.stage == CgmSyncStage.error ||
-      shouldShowPrimaryError(snapshot)) {
-    return null;
-  }
-  return switch (snapshot.metadata[cbioPhaseMetadataKey]) {
-    CbioSessionPhase.connecting => 'Connecting to the sensor',
-    CbioSessionPhase.authenticating => 'Checking the sensor link',
-    CbioSessionPhase.history => 'Fetching sensor history',
-    CbioSessionPhase.live => 'Receiving sensor readings',
-    CbioSessionPhase.disconnected =>
-      'Connection lost. Reconnecting to your sensor.',
-    _ => null,
-  };
-}
-
-/// One exact allowlist owns both localized copy and public support references.
-/// Neither arbitrary errors nor metadata become user-facing text. References
-/// are static categories, not identifiers, and are shown only in sensor details.
-const _cbioFailureCopy = <String, ({String en, String zh, String reference})>{
-  CbioSessionFailure.connect: (
-    en: 'Could not reach the sensor. Keep it close and try again.',
-    zh: '无法连接传感器。请将手机靠近传感器，然后重试。',
-    reference: 'GS1-L01',
-  ),
-  CbioSessionFailure.topology: (
-    en: 'This sensor does not present the link OpenGlucose supports yet. Choose another sensor.',
-    zh: 'OpenGlucose 暂不支持此传感器的连接方式。请选择其他传感器。',
-    reference: 'GS1-L02',
-  ),
-  CbioSessionFailure.authMaterial: (
-    en: 'OpenGlucose could not read the link credential for this sensor. Choose another sensor or update the app.',
-    zh: 'OpenGlucose 无法读取此传感器的连接凭据。请选择其他传感器或更新应用。',
-    reference: 'GS1-L03',
-  ),
-  CbioSessionFailure.authTimeout: (
-    en: 'The sensor did not answer the link setup. Keep it close and try again.',
-    zh: '传感器未回应连接设置。请将手机靠近传感器，然后重试。',
-    reference: 'GS1-L04',
-  ),
-  CbioSessionFailure.authRejected: (
-    en: 'The sensor refused the link credential this build uses. Choose another sensor or update the app.',
-    zh: '传感器拒绝了此版本使用的连接凭据。请选择其他传感器或更新应用。',
-    reference: 'GS1-L05',
-  ),
-  CbioSessionFailure.write: (
-    en: 'The link refused a command from this phone. Keep the sensor close and try again.',
-    zh: '传感器连接拒绝了手机的指令。请将手机靠近传感器，然后重试。',
-    reference: 'GS1-L06',
-  ),
-  CbioSessionFailure.disconnected: (
-    en: 'The sensor disconnected. Keep it close and try again.',
-    zh: '传感器已断开连接。请将手机靠近传感器，然后重试。',
-    reference: 'GS1-L07',
-  ),
-  CbioSessionFailure.invalidResume: (
-    en: 'OpenGlucose could not safely resume saved history. Update the app or contact support. Do not reset the sensor.',
-    zh: 'OpenGlucose 无法安全地继续读取已保存的历史记录。请更新应用或联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H01',
-  ),
-  CbioSessionFailure.missingWitness: (
-    en: 'OpenGlucose could not confirm this sensor matches the saved history. Keep the sensor close and try again. If this continues, contact support. Do not reset the sensor.',
-    zh: 'OpenGlucose 无法确认此传感器与已保存的历史记录匹配。请将手机靠近传感器，然后重试。如果问题持续，请联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H02',
-  ),
-  CbioSessionFailure.counterRestart: (
-    en: 'The sensor record sequence could not be confirmed. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
-    zh: '无法确认传感器记录序列。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H03',
-  ),
-  'cbio.history.restore-invalid': (
-    en: 'Saved sensor history could not be read. Update the app or contact support. Do not reset the sensor.',
-    zh: '无法读取已保存的传感器历史记录。请更新应用或联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H04',
-  ),
-  'cbio.history.foreign': (
-    en: 'The history belongs to a different sensor. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
-    zh: '历史记录属于不同的传感器。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H05',
-  ),
-  'cbio.history.unconfirmed': (
-    en: 'The sensor history was not confirmed. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
-    zh: '传感器历史记录尚未确认。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H06',
-  ),
-  'cbio.history.conflicting': (
-    en: 'New sensor records conflict with saved history. OpenGlucose stopped combining history. Contact support before reconnecting. Do not reset the sensor.',
-    zh: '新的传感器记录与已保存的历史记录冲突。OpenGlucose 已停止合并历史记录。重新连接前请联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H07',
-  ),
-  'cbio.history.invalid': (
-    en: 'Sensor history could not be verified. OpenGlucose stopped combining history. Update the app or contact support. Do not reset the sensor.',
-    zh: '无法验证传感器历史记录。OpenGlucose 已停止合并历史记录。请更新应用或联系支持人员。请勿重置传感器。',
-    reference: 'GS1-H08',
-  ),
-  'cgm.session.reconnectExhausted': (
-    en: 'Automatic reconnect stopped after repeated attempts. Keep the sensor close and try again.',
-    zh: '多次尝试后自动重连已停止。请将手机靠近传感器，然后重试。',
-    reference: 'GS1-L08',
-  ),
-  sensorSyncStalledMessage: (
-    en: 'OpenGlucose did not receive a readable sensor result during sync. Keep the sensor close and try again. If this continues, contact support.',
-    zh: 'OpenGlucose 在同步期间未收到可读取的传感器结果。请将手机靠近传感器，然后重试。如果问题持续，请联系支持人员。',
-    reference: 'GS1-H09',
-  ),
-};
-
-String userMessageForCbioFailure(
-  String? code, {
-  AppLanguage language = AppLanguage.english,
-}) {
-  final copy = _cbioFailureCopy[code];
-  return copy == null
-      ? _localized(
-          language,
-          'OpenGlucose could not continue this sensor session. Try again. If this continues, contact support. Do not reset the sensor.',
-          'OpenGlucose 无法继续此传感器会话。请重试。如果问题持续，请联系支持人员。请勿重置传感器。',
-        )
-      : _localized(language, copy.en, copy.zh);
-}
-
-String? cbioSupportReferenceForSnapshot(CgmSessionSnapshot snapshot) {
-  if (!isCbioSnapshot(snapshot) || !shouldShowPrimaryError(snapshot)) {
-    return null;
-  }
-  if (snapshot.stage == CgmSyncStage.error &&
-      snapshot.lastError == CbioSessionFailure.counterRestart) {
-    return switch (snapshot.metadata['cgm.cbio.resume.counterFailureReason']) {
-      'before-checkpoint' => 'GS1-H03A',
-      'witness-time-mismatch' => 'GS1-H03B',
-      'archive-time-conflict' => 'GS1-H03C',
-      _ => 'GS1-H03',
-    };
-  }
-  return _cbioFailureCopy[snapshot.lastError]?.reference;
-}
-
-/// The provisional marker every CBio surface shows.
-///
-/// The GS1 raw field is divided by ten by two independent clients of the
-/// protocol, but no reference measurement has confirmed that scale, so the
-/// derived number stays visible with its unit explicitly unsettled.
 String? provisionalReadingNoticeForSnapshot(CgmSessionSnapshot snapshot) {
-  if (isCbioSnapshot(snapshot)) {
-    return cbioProvisionalUnitNotice;
-  }
   return libreConnectionDetailForSnapshot(snapshot);
 }
 
 /// The history-card quality notice for a provisional reading set.
 String historyProvisionalNoticeForSnapshot(CgmSessionSnapshot snapshot) {
-  if (isCbioSnapshot(snapshot)) {
-    return cbioProvisionalUnitNotice;
-  }
   return 'Includes provisional readings. Not validated for body glucose.';
 }
 
@@ -1150,139 +914,6 @@ String historySyncProgressText(
     'Fetching sensor history: $stored records',
     '正在获取传感器历史记录：$stored 条',
   );
-}
-
-/// The CBio dashboard value: the sensor's unscaled raw integer.
-///
-/// No glucose unit is attached, because the protocol's scale is unverified.
-/// The number the harness reads out of the same `0x08` field is the same
-/// number this renders, so the app and the capture tooling agree.
-String? cbioProvisionalValueText(CgmReading? reading) {
-  final raw = reading?.rawValue;
-  if (raw == null) {
-    return null;
-  }
-  return raw.toString();
-}
-
-/// Sensor positions inside the stored span that this phone never received.
-///
-/// The first and last stored positions bound an *envelope*. The protocol's own
-/// `index` counter advances one per stored minute, so a stored span of 1-7 with
-/// five records holds two holes - positions the sensor moved past that were
-/// never delivered to this app.
-int cbioMissingPositions(Iterable<CgmReading> readings) {
-  final positions = <int>{
-    for (final reading in readings)
-      if (reading.sensorMinute != null) reading.sensorMinute!,
-  };
-  if (positions.isEmpty) {
-    return 0;
-  }
-  final sorted = positions.toList()..sort();
-  return (sorted.last - sorted.first + 1) - sorted.length;
-}
-
-/// What the app actually stored for this sensor: how many records, which sensor
-/// positions they cover, and - when the envelope is not full - how many
-/// positions inside it never arrived. Positions are the protocol's own `index`
-/// counter, which advances one per stored minute; it is never a wall clock.
-String cbioStoredRangeText(
-  Iterable<CgmReading> readings, {
-  AppLanguage language = AppLanguage.english,
-}) {
-  final positions = <int>[
-    for (final reading in readings)
-      if (reading.sensorMinute != null) reading.sensorMinute!,
-  ];
-  if (positions.isEmpty) {
-    return _localized(
-      language,
-      '${readings.length} readings stored',
-      '已存储 ${readings.length} 条读数',
-    );
-  }
-  positions.sort();
-  final stored = _localized(
-    language,
-    '${readings.length} readings stored · '
-        'sensor minutes ${positions.first}–${positions.last}',
-    '已存储 ${readings.length} 条读数 · 传感器分钟 ${positions.first}–${positions.last}',
-  );
-  final missing = cbioMissingPositions(readings);
-  if (missing <= 0) {
-    return stored;
-  }
-  return _localized(
-    language,
-    '$stored · $missing positions not received',
-    '$stored · 缺失 $missing 个位置',
-  );
-}
-
-/// The index-to-clock anchor a GS1 session published, or null when it has none.
-CbioIndexTimeAnchor? cbioAnchorForSnapshot(CgmSessionSnapshot snapshot) =>
-    isCbioSnapshot(snapshot)
-    ? CbioIndexTimeAnchor.fromMetadata(snapshot.metadata)
-    : null;
-
-/// The clock state of a GS1 surface.
-///
-/// The record index is a wall clock only where the session holds an anchor for
-/// it: the clock this app set on the sensor, confirmed against the sensor's own
-/// newest record stamp. Without one the line names the ordering the surface can
-/// stand behind instead of a placeholder time, and with one it states the
-/// reference and the minute it can be trusted to.
-/// [reading] is the same reading the surface shows as the latest, so the clock
-/// line and the value above it always describe one position.
-String cbioClockStateText(
-  CgmSessionSnapshot snapshot, {
-  CgmReading? reading,
-  DateTime? now,
-  AppLanguage language = AppLanguage.english,
-}) {
-  if (!isCbioSnapshot(snapshot)) {
-    return '';
-  }
-  final anchor = cbioAnchorForSnapshot(snapshot);
-  if (anchor == null) {
-    return _localized(
-      language,
-      'Sensor clock unsynced · ordered by sensor index, not by clock',
-      '传感器时钟未同步 · 按传感器索引排序，而非时间',
-    );
-  }
-  final latest = reading ?? snapshot.latestReading;
-  // The line repeats the reading's own stamp, so a position the publisher left
-  // untimed is never given a clock the anchor does not cover.
-  if (latest == null ||
-      clampedDisplayRecordedAt(latest.recordedAt, now: now) == null) {
-    return _localized(
-      language,
-      'Sensor clock set by this app · this position has no anchored time',
-      '传感器时钟由本应用设置 · 此位置没有锚定时间',
-    );
-  }
-  return _localized(
-    language,
-    'Sensor clock set by this app · latest '
-        '${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor)})',
-    '传感器时钟由本应用设置 · 最新 ${readingTimeText(latest, now: now)} (${_anchorUncertaintyText(anchor, language: language)})',
-  );
-}
-
-String _anchorUncertaintyText(
-  CbioIndexTimeAnchor anchor, {
-  AppLanguage language = AppLanguage.english,
-}) {
-  final minutes = anchor.uncertainty.inMinutes;
-  return minutes >= 1
-      ? _localized(language, '±$minutes min', '±$minutes 分钟')
-      : _localized(
-          language,
-          '±${anchor.uncertainty.inSeconds} s',
-          '±${anchor.uncertainty.inSeconds} 秒',
-        );
 }
 
 /// The live driver rebuilds this diagnostic from its in-memory packet counter
@@ -1329,6 +960,7 @@ CgmReading? currentReadingForSnapshot(
   CgmSessionSnapshot snapshot,
   CgmReading? reading,
 ) {
+  if (reading?.source == CgmRecordSource.raw) return null;
   if (isLibreGen1Snapshot(snapshot) &&
       (snapshot.stage != CgmSyncStage.ready ||
           reading?.source == CgmRecordSource.raw)) {

@@ -12,24 +12,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get appTitle => 'OpenGlucose';
 
   @override
-  String get rawSensorChartUnavailable => '血糖图表不可用。原始传感器数据已存储，但血糖解码尚未经过验证。';
-
-  @override
-  String get rawSensorValueNotice => '并非经过验证的血糖读数。';
-
-  @override
-  String get rawSensorValueLabel => '传感器原始值';
-
-  @override
-  String get rawSensorHistorySaved => '在设置中查看传感器详情。';
-
-  @override
-  String get rawSensorIndexLabel => '传感器索引';
-
-  @override
-  String get supportReference => '支持参考编号';
-
-  @override
   String get settings => '设置';
 
   @override
@@ -108,16 +90,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sensorArchive => '传感器归档';
-
-  @override
-  String get archiveNeedsRecovery => '历史记录需要恢复';
-
-  @override
-  String get archiveRecoverySummary => '已保存的传感器数据已保留。在恢复完成前，历史记录统计并不完整。';
-
-  @override
-  String get archiveRecoveryNotice =>
-      '这些已保存的传感器记录尚未与已验证的传感器会话核对。原始数据已保留。可读取的原始记录可以导出，但并不代表人体葡萄糖读数。无法读取的记录需要先恢复才能导出。';
 
   @override
   String get glucoseAndDisplay => '葡萄糖与显示';

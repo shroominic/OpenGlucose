@@ -104,42 +104,6 @@ abstract class AppLocalizations {
   /// **'OpenGlucose'**
   String get appTitle;
 
-  /// No description provided for @rawSensorChartUnavailable.
-  ///
-  /// In en, this message translates to:
-  /// **'Glucose chart unavailable. Raw sensor data is stored, but glucose decoding is not yet verified.'**
-  String get rawSensorChartUnavailable;
-
-  /// No description provided for @rawSensorValueNotice.
-  ///
-  /// In en, this message translates to:
-  /// **'Not a verified glucose reading.'**
-  String get rawSensorValueNotice;
-
-  /// No description provided for @rawSensorValueLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Raw sensor value'**
-  String get rawSensorValueLabel;
-
-  /// No description provided for @rawSensorHistorySaved.
-  ///
-  /// In en, this message translates to:
-  /// **'View sensor details in Settings.'**
-  String get rawSensorHistorySaved;
-
-  /// No description provided for @rawSensorIndexLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Sensor index'**
-  String get rawSensorIndexLabel;
-
-  /// No description provided for @supportReference.
-  ///
-  /// In en, this message translates to:
-  /// **'Support reference'**
-  String get supportReference;
-
   /// No description provided for @settings.
   ///
   /// In en, this message translates to:
@@ -295,24 +259,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Sensor archive'**
   String get sensorArchive;
-
-  /// No description provided for @archiveNeedsRecovery.
-  ///
-  /// In en, this message translates to:
-  /// **'History needs recovery'**
-  String get archiveNeedsRecovery;
-
-  /// No description provided for @archiveRecoverySummary.
-  ///
-  /// In en, this message translates to:
-  /// **'Saved sensor data is preserved. History totals are incomplete until recovery.'**
-  String get archiveRecoverySummary;
-
-  /// No description provided for @archiveRecoveryNotice.
-  ///
-  /// In en, this message translates to:
-  /// **'These saved sensor records have not been reconciled with a verified sensor session. Original data is preserved. Readable raw records can be exported, but they are not body-glucose readings. Unreadable records need recovery before export.'**
-  String get archiveRecoveryNotice;
 
   /// No description provided for @glucoseAndDisplay.
   ///

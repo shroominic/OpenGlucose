@@ -80,6 +80,10 @@ void main() {
                 findsOneWidget,
               );
               expect(find.byType(CgmDashboardChart), findsOneWidget);
+              expect(
+                find.text(language == 'en' ? 'Patterns' : '趋势'),
+                findsOneWidget,
+              );
               expect(find.byIcon(Icons.tune_rounded), findsOneWidget);
               expect(
                 find.byKey(const ValueKey('rawSensorHistory')),
