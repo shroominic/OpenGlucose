@@ -8,6 +8,7 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/src/health_state_store_io.dart';
 import 'package:openglucose/src/persistence/cbio_history_state.dart';
+import 'package:openglucose/src/persistence/cbio_private_state_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _fileName = 'restricted-health-state.json';
@@ -21,6 +22,118 @@ const _healthExportWatermarkKey = 'openHealth.healthExport.watermarkMs';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'only exact private manifest key is allowed in restricted metadata',
+    () async {
+      const manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
+      const rawKey = 'openHealth.history.cbio.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+      const normalizedKey =
+          'openHealth.history.normalized.v1.WyJjYmlvIiwic3ludGhldGljIl0';
+      final directory = await _temporaryDirectory('private-manifest');
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final excluded = <String>[];
+      FileHealthStateStore makeStore() => FileHealthStateStore(
+        legacyPreferences: preferences,
+        directoryProvider: () async => directory,
+        requiresBackupExclusion: true,
+        backupExclusionMarker: (path) async => excluded.add(path),
+      );
+      final store = makeStore();
+      await store.initialize();
+      await store.setString(manifestKey, 'private manifest bytes');
+      await store.setString(rawKey, ' raw envelope\n');
+      await store.setString(normalizedKey, '[]');
+      for (final key in [
+        '$manifestKey.extra',
+        'openHealth.driverState.cbio.rawArchives.v2',
+        'openHealth.driverState.other',
+      ]) {
+        expect(() => store.setString(key, 'denied'), throwsArgumentError);
+      }
+      expect(
+        (await _readEnvelope(directory))['values'],
+        containsPair(manifestKey, 'private manifest bytes'),
+      );
+      expect(
+        (await _readEnvelope(directory))['values'],
+        isNot(contains(rawKey)),
+      );
+      expect(
+        await _historyBlob(directory, rawKey).readAsString(),
+        ' raw envelope\n',
+      );
+      expect(await _historyBlob(directory, normalizedKey).readAsString(), '[]');
+      expect(excluded.any((path) => path.endsWith(_fileName)), isTrue);
+      expect(excluded.any((path) => path.endsWith('.blob')), isTrue);
+      final restarted = makeStore();
+      await restarted.initialize();
+      expect(restarted.getString(manifestKey), 'private manifest bytes');
+      expect(restarted.getString(rawKey), ' raw envelope\n');
+      expect(restarted.getString(normalizedKey), '[]');
+    },
+  );
+
+  for (final failingCommit in [1, 2]) {
+    test(
+      'private migration retries native commit failure $failingCommit',
+      () async {
+        const manifestKey = 'openHealth.driverState.cbio.rawArchives.v1';
+        const indexKey = 'openHealth.sensorArchive';
+        const rawKey = 'openHealth.history.v2.WyJjYmlvIiwic3ludGhldGljIl0';
+        final descriptor = {
+          'id': 'raw',
+          'driverId': 'cbio',
+          'storageKey': 'synthetic',
+          'historyKey': rawKey,
+        };
+        final original = ' \n${jsonEncode([descriptor])}\n';
+        final directory = await _temporaryDirectory('private-migration');
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final preferences = await SharedPreferences.getInstance();
+        var remaining = 0;
+        FileHealthStateStore makeStore() => FileHealthStateStore(
+          legacyPreferences: preferences,
+          directoryProvider: () async => directory,
+          requiresBackupExclusion: true,
+          backupExclusionMarker: (path) async {
+            if (remaining > 0 && path.endsWith(_fileName) && --remaining == 0) {
+              throw StateError('synthetic commit verification failure');
+            }
+          },
+        );
+        final store = makeStore();
+        await store.initialize();
+        await store.setString(indexKey, original);
+        await store.setString(rawKey, ' raw bytes untouched\n');
+        remaining = failingCommit;
+        await expectLater(
+          CbioPrivateStateAdapter(store).migrateLegacyArchives(),
+          throwsStateError,
+        );
+        expect(store.getString(indexKey), original);
+        expect(store.getString(rawKey), ' raw bytes untouched\n');
+        if (failingCommit == 1) expect(store.getString(manifestKey), isNull);
+        final restarted = makeStore();
+        await restarted.initialize();
+        expect(restarted.getString(indexKey), original);
+        await CbioPrivateStateAdapter(restarted).migrateLegacyArchives();
+        expect(jsonDecode(restarted.getString(indexKey)!), isEmpty);
+        final manifest =
+            jsonDecode(restarted.getString(manifestKey)!)
+                as Map<String, dynamic>;
+        expect(manifest['archives'], [descriptor]);
+        expect(manifest['sourceIndexes'], [original]);
+        expect(
+          await _historyBlob(directory, rawKey).readAsString(),
+          ' raw bytes untouched\n',
+        );
+        await CbioPrivateStateAdapter(restarted).migrateLegacyArchives();
+        expect(jsonDecode(restarted.getString(manifestKey)!), manifest);
+      },
+    );
+  }
 
   test(
     'CBIO paired blob rolls back atomically and restores in a new store',
