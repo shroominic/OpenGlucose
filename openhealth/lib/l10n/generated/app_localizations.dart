@@ -290,6 +290,18 @@ abstract class AppLocalizations {
   /// **'Sensor archive'**
   String get sensorArchive;
 
+  /// No description provided for @archiveNeedsRecovery.
+  ///
+  /// In en, this message translates to:
+  /// **'History needs recovery'**
+  String get archiveNeedsRecovery;
+
+  /// No description provided for @archiveRecoveryNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'These saved sensor records have not been reconciled with a verified sensor session. Original data is preserved. Readable raw records can be exported, but they are not body-glucose readings. Unreadable records need recovery before export.'**
+  String get archiveRecoveryNotice;
+
   /// No description provided for @glucoseAndDisplay.
   ///
   /// In en, this message translates to:

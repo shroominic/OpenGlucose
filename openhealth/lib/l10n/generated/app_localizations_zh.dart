@@ -107,6 +107,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sensorArchive => '传感器归档';
 
   @override
+  String get archiveNeedsRecovery => '历史记录需要恢复';
+
+  @override
+  String get archiveRecoveryNotice =>
+      '这些已保存的传感器记录尚未与已验证的传感器会话核对。原始数据已保留。可读取的原始记录可以导出，但并不代表人体葡萄糖读数。无法读取的记录需要先恢复才能导出。';
+
+  @override
   String get glucoseAndDisplay => '葡萄糖与显示';
 
   @override

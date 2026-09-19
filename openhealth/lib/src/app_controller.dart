@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_core/cgm_core.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_libre2/cgm_libre2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +19,7 @@ import 'ios_live_activity_bridge.dart';
 import 'live_activity_payload.dart';
 import 'mock_scenarios.dart';
 import 'sensor_archive.dart';
+import 'persistence/cbio_history_state.dart';
 import 'session_presentation.dart';
 
 typedef LiveActivityPrivacySetter =
@@ -113,6 +115,8 @@ class CgmAppController extends ChangeNotifier {
   CgmSessionSnapshot? _snapshot;
   DiscoveredSensor? _selectedSensor;
   List<CgmReading> _persistedHistory = const <CgmReading>[];
+  String? _cbioInputCheckpoint;
+  CbioHistoryState? _cbioObservedState;
   List<ArchivedSensorSession> _archivedSensors =
       const <ArchivedSensorSession>[];
   DisplayPreferences _displayPreferences = const DisplayPreferences();
@@ -242,7 +246,30 @@ class CgmAppController extends ChangeNotifier {
   }
 
   List<CgmReading> readingsForArchivedSensor(ArchivedSensorSession session) {
-    return List<CgmReading>.unmodifiable(_loadHistoryAtKey(session.historyKey));
+    if (session.isUnreconciled) {
+      try {
+        final raw = _healthStateStore.getString(session.historyKey);
+        final decoded = raw == null ? null : jsonDecode(raw);
+        if (decoded is! List || !decoded.every((row) => row is Map)) {
+          return const <CgmReading>[];
+        }
+        return List<CgmReading>.unmodifiable(
+          _loadHistoryAtKey(session.historyKey),
+        );
+      } on Object {
+        // The explicit unreconciled marker is retained; these bytes cannot be
+        // exported as parsed rows or represented as a successful empty session.
+        return const <CgmReading>[];
+      }
+    }
+    return List<CgmReading>.unmodifiable(
+      _loadHistoryAtKey(
+        session.historyKey,
+        cbioSensorKey: session.driverId == 'cbio' && !session.isUnreconciled
+            ? session.storageKey
+            : null,
+      ),
+    );
   }
 
   /// Archived readings suitable for charts and wellness analytics.
@@ -252,8 +279,9 @@ class CgmAppController extends ChangeNotifier {
   List<CgmReading> displayReadingsForArchivedSensor(
     ArchivedSensorSession session,
   ) {
+    if (session.isUnreconciled) return const <CgmReading>[];
     return readingsAfterWarmup(
-      _loadHistoryAtKey(session.historyKey),
+      readingsForArchivedSensor(session),
       sessionStart: session.startedAt,
       warmupMinutes: const CgmSessionInfo().warmupMinutes,
     );
@@ -312,6 +340,9 @@ class CgmAppController extends ChangeNotifier {
     if (raw == null) {
       return null;
     }
+    // CBIO acceptance already reconciles the proven counter era and orders by
+    // index. Generic timestamp ordering would reorder unanchored live rows.
+    if (raw.sensor.driverId == 'cbio') return raw;
     final mergedHistory = isMockDriver
         ? raw.history
         : _mergeHistory(_persistedHistory, raw.history);
@@ -413,7 +444,13 @@ class CgmAppController extends ChangeNotifier {
 
     _selectedSensor = restoredSensor;
     _selectionPersisted = true;
-    _persistedHistory = _loadPersistedHistory(restoredSensor);
+    try {
+      await _retainCbioLegacyArchive(restoredSensor);
+      _persistedHistory = _loadPersistedHistory(restoredSensor);
+    } on Object catch (error) {
+      _showCbioRestoreFailure(restoredSensor, error);
+      return;
+    }
     final interruptedTransfer = _bondTransferTombstone(restoredSensor);
     if (interruptedTransfer != null) {
       _snapshot = CgmSessionSnapshot(
@@ -444,7 +481,9 @@ class CgmAppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final inferredStart = inferSensorStart(_persistedHistory);
+    final inferredStart = restoredSensor.driverId == 'cbio'
+        ? null
+        : inferSensorStart(_persistedHistory);
     if (_persistedSensorHasExpired(
       sensor: restoredSensor,
       history: _persistedHistory,
@@ -658,27 +697,50 @@ class CgmAppController extends ChangeNotifier {
       final inProcessHistory = resumesPendingPromotion
           ? List<CgmReading>.of(_persistedHistory, growable: false)
           : const <CgmReading>[];
-      await disconnect(clearSelection: false);
+      // Prepare the target without rebinding any active state. A corrupt
+      // target must not strand the current sensor's unsaved history.
+      CbioHistoryState? preparedCbioState;
+      try {
+        await _retainCbioLegacyArchive(sensor);
+        if (sensor.driverId == 'cbio') {
+          preparedCbioState = _loadCbioState(sensor);
+        }
+      } on Object catch (error) {
+        _recordPersistenceFailure('Restoring sensor history', error);
+        notifyListeners();
+        return;
+      }
+      await disconnect(clearSelection: false, requireDurableHandoff: true);
       if (_sensorConnectionCleanupUnconfirmed) return;
+      // Same-sensor reconnect must use the checkpoint just flushed, not the
+      // earlier prepared input. Nothing below awaits before identity commit.
+      if (sensor.driverId == 'cbio') {
+        preparedCbioState = _loadCbioState(sensor);
+      }
+      final preparedHistory = sensor.driverId == 'cbio'
+          ? preparedCbioState?.history ?? const <CgmReading>[]
+          : switch ((
+              isMockDriver,
+              resumeVerifiedSelection,
+              resumesPendingPromotion,
+            )) {
+              (true, _, _) => const <CgmReading>[],
+              (false, true, _) => _loadPersistedHistory(sensor),
+              (false, false, true) => _mergeHistory(
+                _loadPersistedHistory(promotionSource!),
+                _mergeHistory(_loadPersistedHistory(sensor), inProcessHistory),
+              ),
+              (false, false, false) => const <CgmReading>[],
+            };
       _allowSessionActivation = allowSessionActivation;
       _selectedSensor = sensor;
+      _cbioInputCheckpoint = preparedCbioState?.checkpoint;
+      _cbioObservedState = null;
       _selectionPersisted = resumeVerifiedSelection;
       if (!resumesPendingPromotion) {
         _selectionPromotionSource = null;
       }
-      _persistedHistory = switch ((
-        isMockDriver,
-        resumeVerifiedSelection,
-        resumesPendingPromotion,
-      )) {
-        (true, _, _) => const <CgmReading>[],
-        (false, true, _) => _loadPersistedHistory(sensor),
-        (false, false, true) => _mergeHistory(
-          _loadPersistedHistory(promotionSource!),
-          _mergeHistory(_loadPersistedHistory(sensor), inProcessHistory),
-        ),
-        (false, false, false) => const <CgmReading>[],
-      };
+      _persistedHistory = preparedHistory;
       _snapshot = CgmSessionSnapshot(
         stage: CgmSyncStage.connecting,
         statusText: 'Connecting',
@@ -726,15 +788,8 @@ class CgmAppController extends ChangeNotifier {
         if (isErrorSnapshot) {
           _debugAppSessionTrace('error-snapshot-received');
         }
-        final nextHistory = isMockDriver
-            ? nextSnapshot.history
-            : _mergeHistory(_persistedHistory, nextSnapshot.history);
-        _snapshot = nextSnapshot.copyWith(
-          history: nextHistory,
-          latestReading:
-              nextSnapshot.latestReading ??
-              (nextHistory.isEmpty ? null : nextHistory.last),
-        );
+        _snapshot = _acceptSessionSnapshot(nextSnapshot);
+        final nextHistory = _snapshot!.history;
         final reconnectingStage =
             nextSnapshot.stage == CgmSyncStage.disconnected ||
             nextSnapshot.stage == CgmSyncStage.error;
@@ -775,19 +830,21 @@ class CgmAppController extends ChangeNotifier {
           // explicit scan selection rather than attempting activation again.
           _allowSessionActivation = false;
         }
-        if (nextSnapshot.stage == CgmSyncStage.ready) {
+        if (_snapshot!.stage == CgmSyncStage.ready) {
           // Once the sensor has proven that an active session exists, future
           // background reconnects must never be allowed to start a new one.
           _allowSessionActivation = false;
           _promoteVerifiedSelection(
-            nextSnapshot.sensor,
+            _snapshot!.sensor,
             history: nextHistory,
           );
         }
         if (!isMockDriver &&
             _selectedSensor != null &&
             nextHistory.isNotEmpty &&
-            !nextSnapshot.historySync.inProgress) {
+            (!nextSnapshot.historySync.inProgress ||
+                (_selectedSensor!.driverId == 'cbio' &&
+                    _cbioObservedState != null))) {
           _schedulePersistHistory(_selectedSensor!, nextHistory);
         }
         if (reconnectingStage &&
@@ -798,7 +855,7 @@ class CgmAppController extends ChangeNotifier {
           _cancelReconnect();
         }
         _trackSyncStageDeadline();
-        if (nextSnapshot.stage == CgmSyncStage.ready) {
+        if (_snapshot!.stage == CgmSyncStage.ready) {
           // The link proved itself, so the next run starts with a full budget.
           _reconnectAttempts = 0;
         }
@@ -815,15 +872,8 @@ class CgmAppController extends ChangeNotifier {
       // This closes the gap in which setup can publish a terminal state after
       // the first read but before the listener exists.
       final currentSnapshot = session.currentSnapshot;
-      final initialHistory = isMockDriver
-          ? currentSnapshot.history
-          : _mergeHistory(_persistedHistory, currentSnapshot.history);
-      _snapshot = currentSnapshot.copyWith(
-        history: initialHistory,
-        latestReading:
-            currentSnapshot.latestReading ??
-            (initialHistory.isEmpty ? null : initialHistory.last),
-      );
+      _snapshot = _acceptSessionSnapshot(currentSnapshot);
+      final initialHistory = _snapshot!.history;
       if (!isMockDriver && initialHistory.isNotEmpty) {
         _persistedHistory = initialHistory;
       }
@@ -850,7 +900,9 @@ class CgmAppController extends ChangeNotifier {
         );
         if (!isMockDriver &&
             initialHistory.isNotEmpty &&
-            !_snapshot!.historySync.inProgress) {
+            (!_snapshot!.historySync.inProgress ||
+                (_selectedSensor!.driverId == 'cbio' &&
+                    _cbioObservedState != null))) {
           _schedulePersistHistory(_selectedSensor!, initialHistory);
         }
       }
@@ -1252,6 +1304,7 @@ class CgmAppController extends ChangeNotifier {
     SensorArchiveReason archiveReason = SensorArchiveReason.disconnected,
     bool archiveWhenClearing = true,
     bool acknowledgeInterruptedTransfer = false,
+    bool requireDurableHandoff = false,
   }) async {
     if (_bondTransferInFlight && !_finalizingBondTransfer) {
       return;
@@ -1283,6 +1336,7 @@ class CgmAppController extends ChangeNotifier {
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     final sensorToArchive = clearSelection ? _selectedSensor : null;
+    final cbioStateToArchive = _cbioObservedState;
     final snapshotToArchive = clearSelection ? snapshot : null;
     final historyToArchive = clearSelection
         ? List<CgmReading>.of(
@@ -1357,6 +1411,30 @@ class CgmAppController extends ChangeNotifier {
       return;
     }
 
+    if (!isMockDriver &&
+        _selectedSensor?.driverId == 'cbio' &&
+        cbioStateToArchive != null) {
+      final promotion = _selectionPromotion;
+      if (promotion != null) await promotion;
+      try {
+        await _persistHistory(
+          _selectedSensor!,
+          cbioStateToArchive.history,
+          cbioState: cbioStateToArchive,
+        );
+        _clearPersistenceFailure('Saving history');
+      } on Object catch (error) {
+        _recordPersistenceFailure('Saving history', error);
+        _snapshot = _snapshot?.copyWith(
+          stage: CgmSyncStage.disconnected,
+          statusText: 'Disconnected — could not save sensor history',
+        );
+        notifyListeners();
+        if (requireDurableHandoff) rethrow;
+        return;
+      }
+    }
+
     if (clearSelection) {
       final selectionPromotion = _selectionPromotion;
       if (selectionPromotion != null) {
@@ -1367,7 +1445,15 @@ class CgmAppController extends ChangeNotifier {
         try {
           if (sensorToArchive != null && archiveWhenClearing) {
             if (historyToArchive.isNotEmpty) {
-              await _persistHistory(sensorToArchive, historyToArchive);
+              await _persistHistory(
+                sensorToArchive,
+                historyToArchive,
+                cbioState:
+                    cbioStateToArchive ??
+                    (sensorToArchive.driverId == 'cbio'
+                        ? _loadCbioState(sensorToArchive)
+                        : null),
+              );
             }
             await _archiveSensor(
               sensor: sensorToArchive,
@@ -1395,6 +1481,8 @@ class CgmAppController extends ChangeNotifier {
         _selectedSensor = null;
         _snapshot = null;
         _persistedHistory = const <CgmReading>[];
+        _cbioObservedState = null;
+        _cbioInputCheckpoint = null;
         _allowSessionActivation = false;
         _selectionPersisted = false;
         _selectionPromotionSource = null;
@@ -1659,7 +1747,12 @@ class CgmAppController extends ChangeNotifier {
     return disconnect(archiveReason: reason);
   }
 
-  String _historyKey(DiscoveredSensor sensor) => sensor.driverId == 'aidex'
+  String _historyKey(DiscoveredSensor sensor) => sensor.driverId == 'cbio'
+      ? 'openHealth.history.cbio.v1.${_encodedStorageIdentity(sensor)}'
+      : _legacyHistoryKey(sensor);
+
+  String _legacyHistoryKey(DiscoveredSensor sensor) =>
+      sensor.driverId == 'aidex'
       ? 'openHealth.history.${sensor.storageKey}'
       : '$_qualifiedHistoryPrefix${_encodedStorageIdentity(sensor)}';
 
@@ -1739,8 +1832,10 @@ class CgmAppController extends ChangeNotifier {
     DateTime? startedAt,
   }) async {
     final sessionInfo = snapshot?.sessionInfo;
-    final start =
-        sessionInfo?.sessionStart ?? startedAt ?? inferSensorStart(history);
+    final cbioState = sensor.driverId == 'cbio' ? _loadCbioState(sensor) : null;
+    final start = sensor.driverId == 'cbio'
+        ? null
+        : sessionInfo?.sessionStart ?? startedAt ?? inferSensorStart(history);
     final incomingLastReadingAt = latestReadingTime(history);
     final now = DateTime.now();
     final naturalEnd = start?.add(
@@ -1757,7 +1852,7 @@ class CgmAppController extends ChangeNotifier {
         .encode(
           utf8.encode(
             '${sensor.driverId}|${sensor.storageKey}|'
-            '${identityTime.toUtc().millisecondsSinceEpoch}',
+            '${sensor.driverId == 'cbio' ? cbioState?.checkpoint ?? endedAt.toUtc().microsecondsSinceEpoch : identityTime.toUtc().millisecondsSinceEpoch}',
           ),
         )
         .replaceAll('=', '');
@@ -1771,14 +1866,26 @@ class CgmAppController extends ChangeNotifier {
     }
     final existingHistory = existingEntry == null
         ? const <CgmReading>[]
-        : _loadHistoryAtKey(existingEntry.historyKey);
-    final archivedHistory = _mergeHistory(existingHistory, history);
+        : readingsForArchivedSensor(existingEntry);
+    final archivedHistory = sensor.driverId == 'cbio'
+        ? cbioState?.history ?? history
+        : _mergeHistory(existingHistory, history);
     final lastReadingAt =
         latestReadingTime(archivedHistory) ??
         existingEntry?.lastReadingAt ??
         incomingLastReadingAt;
     if (archivedHistory.isNotEmpty) {
-      await _persistHistoryAtKey(archiveHistoryKey, archivedHistory);
+      if (sensor.driverId == 'cbio') {
+        final state = cbioState;
+        if (state == null) {
+          throw const FormatException(
+            'CBIO archive needs verified resume state.',
+          );
+        }
+        await _healthStateStore.setString(archiveHistoryKey, state.encode());
+      } else {
+        await _persistHistoryAtKey(archiveHistoryKey, archivedHistory);
+      }
     }
     final entry = ArchivedSensorSession(
       id: archiveId,
@@ -1828,6 +1935,7 @@ class CgmAppController extends ChangeNotifier {
     required DateTime? inferredStart,
     DateTime? now,
   }) {
+    if (sensor.driverId == 'cbio') return false;
     final reference = now ?? DateTime.now();
     final expectedLife = _expectedSensorLifetime(sensor);
     if (inferredStart != null &&
@@ -1855,6 +1963,7 @@ class CgmAppController extends ChangeNotifier {
   }
 
   bool _snapshotHasExpired(CgmSessionSnapshot value) {
+    if (value.sensor.driverId == 'cbio') return false;
     return computeSensorLifecycle(
       value,
       latestReading:
@@ -1879,6 +1988,8 @@ class CgmAppController extends ChangeNotifier {
     DiscoveredSensor sensor, {
     required List<CgmReading> history,
   }) {
+    final cbioState = sensor.driverId == 'cbio' ? _cbioObservedState : null;
+    if (sensor.driverId == 'cbio' && cbioState == null) return;
     final selectedSensor = _selectedSensor;
     final sensorIdentity = _storedSensorIdentity(sensor);
     if (isMockDriver ||
@@ -1919,16 +2030,18 @@ class CgmAppController extends ChangeNotifier {
     }
     _selectionPromotion = () async {
       try {
-        final mergedHistory = _mergeHistory(
-          _loadPersistedHistory(promotionSource),
-          _mergeHistory(_loadPersistedHistory(sensor), currentHistory),
-        );
+        final mergedHistory =
+            cbioState?.history ??
+            _mergeHistory(
+              _loadPersistedHistory(promotionSource),
+              _mergeHistory(_loadPersistedHistory(sensor), currentHistory),
+            );
         _persistedHistory = mergedHistory;
         if (mergedHistory.isNotEmpty) {
           // Write verified history before the durable pointer can name the
           // verified identity. A crash can retain an orphaned new cache, but
           // it cannot restore a stable identity with missing history.
-          await _persistHistory(sensor, mergedHistory);
+          await _persistHistory(sensor, mergedHistory, cbioState: cbioState);
         }
         if (needsSelectionWrite) {
           await _persistSelectedSensor(sensor);
@@ -2010,11 +2123,166 @@ class CgmAppController extends ChangeNotifier {
   String _storedSensorIdentity(DiscoveredSensor sensor) =>
       '${sensor.driverId}\u0000${sensor.storageKey}';
 
+  CbioHistoryState? _loadCbioState(DiscoveredSensor sensor) {
+    final raw = _healthStateStore.getString(_historyKey(sensor));
+    return raw == null
+        ? null
+        : CbioHistoryState.decode(raw, sensorKey: sensor.storageKey);
+  }
+
+  void _showCbioRestoreFailure(DiscoveredSensor sensor, Object error) {
+    _recordPersistenceFailure('Restoring sensor history', error);
+    _snapshot = CgmSessionSnapshot(
+      sensor: sensor,
+      capabilities: sensor.capabilities,
+      stage: CgmSyncStage.error,
+      statusText: 'Saved sensor history needs recovery',
+      lastError: 'cbio.history.restore-invalid',
+      metadata: {
+        cgmAutomaticReconnectAllowedMetadataKey: 'false',
+        cbioLifecycleMetadataKey: 'unknown',
+      },
+    );
+    notifyListeners();
+  }
+
+  Future<void> _retainCbioLegacyArchive(DiscoveredSensor sensor) async {
+    if (sensor.driverId != 'cbio' || isMockDriver) return;
+    final key = _legacyHistoryKey(sensor);
+    final raw = _healthStateStore.getString(key);
+    if (raw == null) return;
+    final id = 'cbio-unreconciled:${_encodedStorageIdentity(sensor)}';
+    if (_archivedSensors.any((entry) => entry.id == id)) return;
+    // Even undecodable bytes need an explicit recovery entry. Do not silently
+    // convert malformed legacy data to an empty successful history load.
+    var readingCount = 0;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List && decoded.every((row) => row is Map)) {
+        readingCount = _loadHistoryAtKey(key).length;
+        if (decoded.isEmpty) return;
+      }
+    } on Object {
+      // Original restricted bytes remain untouched and discoverable below.
+    }
+    final entry = ArchivedSensorSession(
+      id: id,
+      historyKey: key,
+      storageKey: sensor.storageKey,
+      driverId: sensor.driverId,
+      deviceId: sensor.deviceId,
+      displayName: sensor.displayName,
+      reason: SensorArchiveReason.disconnected,
+      readingCount: readingCount,
+      isUnreconciled: true,
+    );
+    final previous = _archivedSensors;
+    _archivedSensors = [...previous, entry];
+    try {
+      await _persistSensorArchive();
+    } on Object {
+      _archivedSensors = previous;
+      rethrow;
+    }
+  }
+
+  CgmSessionSnapshot _acceptSessionSnapshot(CgmSessionSnapshot incoming) {
+    if (incoming.sensor.driverId != 'cbio' || isMockDriver) {
+      final history = isMockDriver
+          ? incoming.history
+          : _mergeHistory(_persistedHistory, incoming.history);
+      return incoming.copyWith(
+        history: history,
+        latestReading: incoming.latestReading ?? history.lastOrNull,
+      );
+    }
+    try {
+      return _acceptCbioSnapshot(incoming);
+    } on Object {
+      return _rejectCbioSnapshot(incoming, 'cbio.history.invalid');
+    }
+  }
+
+  CgmSessionSnapshot _rejectCbioSnapshot(
+    CgmSessionSnapshot incoming,
+    String code,
+  ) => CgmSessionSnapshot(
+    sensor: _selectedSensor ?? incoming.sensor,
+    capabilities: _selectedSensor?.capabilities ?? incoming.capabilities,
+    sessionInfo: _snapshot?.sessionInfo ?? const CgmSessionInfo(),
+    historySync: incoming.historySync,
+    history: _persistedHistory,
+    latestReading: _persistedHistory.lastOrNull,
+    stage: CgmSyncStage.error,
+    statusText: 'Sensor history could not be reconciled',
+    lastError: incoming.lastError ?? code,
+    metadata: {
+      for (final entry in incoming.metadata.entries)
+        if (entry.key != cbioCheckpointMetadataKey &&
+            !entry.key.startsWith('cgm.cbio.clock.') &&
+            !entry.key.startsWith('cgm.cbio.resume.'))
+          entry.key: entry.value,
+      cbioResumeStatusMetadataKey: CbioResumeStatus.failed,
+      cgmAutomaticReconnectAllowedMetadataKey: 'false',
+    },
+  );
+
+  CgmSessionSnapshot _acceptCbioSnapshot(CgmSessionSnapshot incoming) {
+    if (!_sameStoredSensor(_selectedSensor, incoming.sensor)) {
+      return _rejectCbioSnapshot(incoming, 'cbio.history.foreign');
+    }
+    final proven = CbioHistoryState.acceptsSnapshot(
+      incoming.metadata,
+      _cbioInputCheckpoint,
+    );
+    final checkpoint = incoming.metadata[cbioCheckpointMetadataKey];
+    if ((incoming.history.isNotEmpty || incoming.latestReading != null) &&
+        (!proven || checkpoint == null || incoming.history.isEmpty)) {
+      // Pending/failed/older producers cannot append anything to the restored
+      // era. The existing archive remains accessible without re-anchoring.
+      return _rejectCbioSnapshot(incoming, 'cbio.history.unconfirmed');
+    }
+    if (proven) {
+      final savedByIndex = {
+        for (final row in _persistedHistory) row.sensorMinute: row,
+      };
+      for (final row in incoming.history) {
+        final saved = savedByIndex[row.sensorMinute];
+        if (saved != null &&
+            (row.rawValue != saved.rawValue || row.source != saved.source)) {
+          return _rejectCbioSnapshot(incoming, 'cbio.history.conflicting');
+        }
+      }
+    }
+    final history = proven
+        ? _mergeHistory(incoming.history, _persistedHistory)
+        : _persistedHistory;
+    if (proven) {
+      history.sort(
+        (a, b) => (a.sensorMinute ?? -1).compareTo(b.sensorMinute ?? -1),
+      );
+    }
+    if (proven && checkpoint != null && history.isNotEmpty) {
+      _cbioObservedState = CbioHistoryState(
+        sensorKey: incoming.sensor.storageKey,
+        checkpoint: checkpoint,
+        history: history,
+      );
+    }
+    return incoming.copyWith(
+      history: history,
+      latestReading: history.lastOrNull,
+    );
+  }
+
   List<CgmReading> _loadPersistedHistory(DiscoveredSensor sensor) {
+    if (sensor.driverId == 'cbio') {
+      return _loadCbioState(sensor)?.history ?? const <CgmReading>[];
+    }
     return _loadHistoryAtKey(_historyKey(sensor));
   }
 
-  List<CgmReading> _loadHistoryAtKey(String key) {
+  List<CgmReading> _loadHistoryAtKey(String key, {String? cbioSensorKey}) {
     if (isMockDriver) {
       return const <CgmReading>[];
     }
@@ -2023,6 +2291,9 @@ class CgmAppController extends ChangeNotifier {
       return const <CgmReading>[];
     }
     final decoded = jsonDecode(raw);
+    if (cbioSensorKey != null && decoded is Map) {
+      return CbioHistoryState.decode(raw, sensorKey: cbioSensorKey).history;
+    }
     if (decoded is! List<dynamic>) {
       return const <CgmReading>[];
     }
@@ -2034,8 +2305,21 @@ class CgmAppController extends ChangeNotifier {
 
   Future<void> _persistHistory(
     DiscoveredSensor sensor,
-    List<CgmReading> history,
-  ) async {
+    List<CgmReading> history, {
+    CbioHistoryState? cbioState,
+  }) async {
+    if (sensor.driverId == 'cbio') {
+      if (cbioState == null || cbioState.sensorKey != sensor.storageKey) {
+        throw const FormatException(
+          'CBIO history needs verified resume state.',
+        );
+      }
+      await _healthStateStore.setString(
+        _historyKey(sensor),
+        cbioState.encode(),
+      );
+      return;
+    }
     return _persistHistoryAtKey(_historyKey(sensor), history);
   }
 
@@ -2113,10 +2397,12 @@ class CgmAppController extends ChangeNotifier {
       return;
     }
     final snapshot = _historyForPersistence(history);
+    final cbioState = sensor.driverId == 'cbio' ? _cbioObservedState : null;
+    if (sensor.driverId == 'cbio' && cbioState == null) return;
     _historyPersistTimer?.cancel();
     _historyPersistTimer = Timer(_historyPersistDebounce, () {
       unawaited(
-        _persistHistory(sensor, snapshot)
+        _persistHistory(sensor, snapshot, cbioState: cbioState)
             .then((_) {
               if (_persistenceErrors.containsKey('Saving history')) {
                 _clearPersistenceFailure('Saving history');
@@ -2249,13 +2535,27 @@ class CgmAppController extends ChangeNotifier {
     if (decoded is! Map<String, Object?>) {
       return null;
     }
-    return DiscoveredSensor.fromJson(decoded);
+    return _withoutCbioResumeMetadata(DiscoveredSensor.fromJson(decoded));
+  }
+
+  DiscoveredSensor _withoutCbioResumeMetadata(DiscoveredSensor sensor) {
+    if (sensor.driverId != 'cbio') return sensor;
+    return DiscoveredSensor.fromJson({
+      ...sensor.toJson(),
+      'metadata': {
+        for (final entry in sensor.metadata.entries)
+          if (entry.key != cbioCheckpointMetadataKey &&
+              !entry.key.startsWith('cgm.cbio.clock.') &&
+              !entry.key.startsWith('cgm.cbio.resume.'))
+            entry.key: entry.value,
+      },
+    });
   }
 
   Future<void> _persistSelectedSensor(DiscoveredSensor sensor) async {
     await _healthStateStore.setString(
       _lastSensorKey,
-      jsonEncode(sensor.toJson()),
+      jsonEncode(_withoutCbioResumeMetadata(sensor).toJson()),
     );
   }
 
@@ -2524,9 +2824,17 @@ class CgmAppController extends ChangeNotifier {
       advertisement: sensor.advertisement,
       notes: sensor.notes,
       metadata: <String, String>{
-        ...sensor.metadata,
+        for (final entry in sensor.metadata.entries)
+          if (sensor.driverId != 'cbio' ||
+              (entry.key != cbioCheckpointMetadataKey &&
+                  !entry.key.startsWith('cgm.cbio.clock.') &&
+                  !entry.key.startsWith('cgm.cbio.resume.')))
+            entry.key: entry.value,
+        if (sensor.driverId == 'cbio')
+          cbioCheckpointMetadataKey: ?_cbioInputCheckpoint,
         cgmAllowSessionActivationMetadataKey: allowSessionActivation.toString(),
-        if (hasFullEnoughPrefix) ...<String, String>{
+        if (hasFullEnoughPrefix &&
+            sensor.driverId != 'cbio') ...<String, String>{
           _resumeOffsetMetadataKey: latestOffset.toString(),
           _resumeCountMetadataKey: resumableHistory.length.toString(),
           _resumeHistoryMetadataKey: jsonEncode(

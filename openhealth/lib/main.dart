@@ -2146,13 +2146,15 @@ class _SensorArchivePane extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
             subtitle: Text(
-              context.l10n.archiveSessionSummary(
-                _archiveReasonLabel(context, session.reason),
-                context.l10n.readingCount(displayReadingCount),
-                date == null
-                    ? ''
-                    : ' · ${_localizedShortDateTime(context, date)}',
-              ),
+              session.isUnreconciled
+                  ? context.l10n.archiveNeedsRecovery
+                  : context.l10n.archiveSessionSummary(
+                      _archiveReasonLabel(context, session.reason),
+                      context.l10n.readingCount(displayReadingCount),
+                      date == null
+                          ? ''
+                          : ' · ${_localizedShortDateTime(context, date)}',
+                    ),
             ),
             trailing: const Icon(Icons.chevron_right_rounded),
             onTap: () => Navigator.of(context).push(
@@ -2259,14 +2261,23 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
           ),
           const SizedBox(height: 4),
           Text(
-            context.l10n.archiveHistoryOnly(
-              _archiveReasonLabel(context, session.reason),
-            ),
+            session.isUnreconciled
+                ? context.l10n.archiveNeedsRecovery
+                : context.l10n.archiveHistoryOnly(
+                    _archiveReasonLabel(context, session.reason),
+                  ),
             style: theme.textTheme.bodyMedium?.copyWith(
               color: const Color(0xFF5B6E6A),
             ),
           ),
           const SizedBox(height: 16),
+          if (session.isUnreconciled) ...<Widget>[
+            Text(
+              context.l10n.archiveRecoveryNotice,
+              key: const ValueKey<String>('archiveRecoveryNotice'),
+            ),
+            const SizedBox(height: 16),
+          ],
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -2274,7 +2285,9 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
                 children: <Widget>[
                   _KeyValueRow(
                     label: context.l10n.readings,
-                    value: context.l10n.readingCount(readings.length),
+                    value: session.isUnreconciled
+                        ? context.l10n.archiveNeedsRecovery
+                        : context.l10n.readingCount(readings.length),
                   ),
                   _KeyValueRow(
                     label: context.l10n.started,

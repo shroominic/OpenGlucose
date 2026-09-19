@@ -19,6 +19,70 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets(
+    'malformed unreconciled CBIO archive opens recovery without empty export',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      const session = ArchivedSensorSession(
+        id: 'cbio-unreconciled:fixture',
+        historyKey: 'openHealth.history.v2.fixture',
+        storageKey: 'fixture',
+        driverId: 'cbio',
+        deviceId: 'fixture',
+        displayName: 'Retained CBIO',
+        reason: SensorArchiveReason.disconnected,
+        readingCount: 0,
+        isUnreconciled: true,
+      );
+      final store = _MemoryHealthStateStore({
+        session.historyKey: '{',
+        'openHealth.sensorArchive': jsonEncode([session.toJson()]),
+      });
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: _NoSensorDriver(),
+        healthStateStore: store,
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sensor archive'));
+      await tester.pumpAndSettle();
+      expect(find.text('History needs recovery'), findsOneWidget);
+      expect(find.textContaining('0 readings'), findsNothing);
+      await tester.tap(find.text('Retained CBIO'));
+      await tester.pumpAndSettle();
+      expect(find.text('History needs recovery'), findsWidgets);
+      expect(
+        find.byKey(const ValueKey<String>('archiveRecoveryNotice')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('exportArchivedSensorData')),
+        findsNothing,
+      );
+      expect(find.textContaining('0 readings'), findsNothing);
+      expect(tester.takeException(), isNull);
+      expect(store.getString(session.historyKey), '{');
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
     'home connects inline and offers model help after empty Bluetooth search',
     (tester) async {
       SharedPreferences.setMockInitialValues({

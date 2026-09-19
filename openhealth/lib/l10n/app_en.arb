@@ -39,6 +39,8 @@
   "currentSensor": "Current sensor",
   "connectSensor": "Connect a sensor",
   "sensorArchive": "Sensor archive",
+  "archiveNeedsRecovery": "History needs recovery",
+  "archiveRecoveryNotice": "These saved sensor records have not been reconciled with a verified sensor session. Original data is preserved. Readable raw records can be exported, but they are not body-glucose readings. Unreadable records need recovery before export.",
   "glucoseAndDisplay": "Glucose & display",
   "appleHealth": "Apple Health",
   "privacyAndData": "Privacy & data",
