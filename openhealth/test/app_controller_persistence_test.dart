@@ -417,6 +417,65 @@ void main() {
     },
   );
   test(
+    'normalized vendor history participates in active and archived analytics',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final sensor = _multiDriverSensor(
+        driverId: 'cbio',
+        storageKey: 'synthetic-normalized',
+      );
+      final start = DateTime.now().subtract(const Duration(hours: 2));
+      final history = [
+        _reading(
+          valueMgdl: 101,
+          sensorMinute: 30,
+          recordedAt: start.add(const Duration(minutes: 30)),
+        ),
+        _reading(
+          valueMgdl: 123,
+          sensorMinute: 90,
+          recordedAt: start.add(const Duration(minutes: 90)),
+        ),
+        _reading(
+          valueMgdl: 999,
+          sensorMinute: 91,
+          recordedAt: start.add(const Duration(minutes: 91)),
+        ).copyWith(isDisplayProvisional: true),
+      ];
+      final session = _ControlledSession(
+        _testSnapshot(
+          sensor,
+          stage: CgmSyncStage.ready,
+          history: history,
+          sessionInfo: CgmSessionInfo(sessionStart: start),
+        ),
+      );
+      final driver = _ControlledDriver([session], driverId: 'cbio');
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: _ControllableHealthStateStore(),
+        historyNamespace: (_) => 'openHealth.history.normalized.v1.',
+      );
+      await controller.initialize();
+      await controller.connect(sensor);
+      expect(
+        controller.allHistoricalReadings.map((reading) => reading.valueMgdl),
+        [123],
+      );
+      await controller.disconnect();
+      expect(controller.archivedSensors, hasLength(1));
+      expect(
+        controller.allHistoricalReadings.map((reading) => reading.valueMgdl),
+        [123],
+      );
+      controller.dispose();
+      await driver.close();
+    },
+  );
+
+  test(
     'unconfirmed Libre disconnect retains state and blocks new connections',
     () async {
       SharedPreferences.setMockInitialValues(<String, Object>{});

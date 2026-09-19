@@ -325,21 +325,18 @@ class CgmAppController extends ChangeNotifier {
     }
 
     for (final session in _archivedSensors) {
-      if (session.driverId == 'cbio') continue;
       addAll(displayReadingsForArchivedSensor(session));
     }
     final current = snapshot;
     if (current != null) {
-      if (!isCbioSnapshot(current)) {
-        addAll(
-          readingsAfterWarmup(
-            current.history,
-            sessionStart: current.sessionInfo.sessionStart,
-            warmupMinutes: current.sessionInfo.warmupMinutes,
-          ),
-        );
-      }
-    } else if (_selectedSensor?.driverId != 'cbio') {
+      addAll(
+        readingsAfterWarmup(
+          current.history,
+          sessionStart: current.sessionInfo.sessionStart,
+          warmupMinutes: current.sessionInfo.warmupMinutes,
+        ),
+      );
+    } else {
       addAll(
         readingsAfterWarmup(
           _persistedHistory,
