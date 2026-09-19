@@ -105,6 +105,20 @@ void main() {
 
   final now = DateTime.utc(2026, 9, 19, 12);
   for (final driver in ['aidex', 'libre2-gen1', 'cbio']) {
+    test('$driver explicit protocol raw value is not current glucose', () {
+      final raw = CgmReading(
+        valueMgdl: 59,
+        source: CgmRecordSource.raw,
+        rawValue: 59,
+        recordedAt: now,
+      );
+      final snapshot = _snapshot(driver, now: now).copyWith(
+        latestReading: raw,
+        history: [raw],
+      );
+      expect(currentReadingForSnapshot(snapshot, raw), isNull);
+    });
+
     test('$driver verified normalized readings qualify for live surfaces', () {
       final snapshot = _snapshot(driver, now: now);
       expect(
