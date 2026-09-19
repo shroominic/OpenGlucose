@@ -189,6 +189,8 @@ void main() {
           language: language,
         );
         await _pumpApp(tester, controller, preferences);
+        expect(controller.snapshot!.historySync.inProgress, isTrue);
+        expect(controller.snapshot!.lastError, failure.$1);
         final expected = language == 'en' ? failure.$2 : failure.$3;
         expect(find.textContaining(expected), findsOneWidget);
         expect(find.text(failure.$4), findsNothing);
@@ -235,6 +237,7 @@ void main() {
         language: language,
       );
       await _pumpApp(tester, controller, preferences);
+      expect(controller.snapshot!.historySync.inProgress, isTrue);
       final expected = language == 'en'
           ? 'could not continue this sensor session'
           : '无法继续此传感器会话';
