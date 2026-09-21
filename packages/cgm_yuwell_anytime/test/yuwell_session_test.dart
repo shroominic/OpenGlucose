@@ -265,6 +265,43 @@ void main() {
     );
 
     test(
+      'private persistence publishes only a newly durable suffix after restored-prefix proof',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final restoredSlots = <List<int>>[
+          for (var index = 0; index < 14; index++) _recordBytes,
+        ];
+        final wireSlots = <List<int>>[...restoredSlots, _recordBytes];
+        final recordStore = _MemoryRecordStore(events: <String>[]);
+        recordStore.seed(
+          _recordStoreKey(generation),
+          _recordEnvelope(generation: generation, slots: restoredSlots),
+        );
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: wireSlots,
+          negotiatedMtu: 512,
+          glucoseOutputPolicy:
+              YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
+        );
+        final session = await fixture.connect();
+
+        await session.initialize();
+        await _waitUntil(
+          () => session.currentSnapshot.historySync.lastSyncAt != null,
+        );
+
+        expect(fixture.connection.historyStarts, <int>[0, 15]);
+        expect(recordStore.writeCount, 1);
+        expect(session.currentSnapshot.history, hasLength(1));
+        expect(session.currentSnapshot.latestReading?.sensorMinute, 45);
+        expect(session.currentSnapshot.latestReading?.valueMgdl, 100);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
       'private persistence rejects a conflicting durable prefix without replacing it',
       () async {
         final generation = '0123456789abcdef0123456789abcdef';
@@ -295,6 +332,61 @@ void main() {
         expect(session.currentSnapshot.latestReading, isNull);
         expect(session.currentSnapshot.history, isEmpty);
         expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private initialize recovery quarantines a conflicting probe and live overlap',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final key = _recordStoreKey(generation);
+        final envelope = _recordEnvelope(
+          generation: generation,
+          slots: <List<int>>[_recordBytes],
+        );
+        final recordStore = _MemoryRecordStore(events: <String>[])
+          ..seed(key, envelope);
+        final journal = _MemoryIntentStore(
+          initial: const YuwellUnresolvedWriteIntent(
+            token: 'opaque-private-initialize',
+            operation: YuwellActivationWrite.initialize,
+            state: YuwellWriteIntentState.unknown,
+          ),
+        );
+        final conflicting = List<int>.of(_recordBytes)..[1] = 0x65;
+        final fixture = _Fixture(
+          credentials: _activationPreparedCredentials().copyWith(
+            verifiedFirmware: 'V1150',
+            historyGeneration: generation,
+          ),
+          journal: journal,
+          recordStore: recordStore,
+          bindingStatus: true,
+          historySlots: <List<int>>[conflicting],
+          historyResponseDelay: const Duration(milliseconds: 30),
+          lowPowerResponseDelay: const Duration(milliseconds: 30),
+          glucoseOutputPolicy:
+              YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
+        );
+        final session = await fixture.connect();
+
+        await session.initialize();
+        fixture.connection.emitNotification(_liveFrame(0, conflicting));
+        await expectLater(
+          session.refresh(),
+          throwsA(_failure(YuwellSessionFailureKind.recordPersistence)),
+        );
+
+        expect(recordStore.values[key.digest], envelope);
+        expect(recordStore.writeCount, 0);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+        expect(
+          session.currentSnapshot.metadata,
+          isNot(contains('cgm.yuwell.last-source')),
+        );
       },
     );
 
@@ -447,6 +539,85 @@ void main() {
         expect(recordStore.readCount, 0);
         expect(recordStore.writeCount, 0);
         expect(recordStore.deleteCount, 0);
+      },
+    );
+
+    test(
+      'private credential-less set-date recovery rejects missing exact firmware',
+      () async {
+        final journal = _MemoryIntentStore(
+          initial: const YuwellUnresolvedWriteIntent(
+            token: 'opaque-private-date-missing-version',
+            operation: YuwellActivationWrite.setDate,
+            state: YuwellWriteIntentState.unknown,
+          ),
+        );
+        final recordStore = _MemoryRecordStore(events: <String>[]);
+        final fixture = _Fixture(
+          journal: journal,
+          recordStore: recordStore,
+          dropResponseOpcode: YuwellCt5Commands.versionCommand,
+        );
+        final session = await fixture.connect(authorized: true);
+
+        await expectLater(
+          session.initialize(),
+          throwsA(_failure(YuwellSessionFailureKind.responseTimeout)),
+        );
+
+        expect(fixture.connection.opcodeWriteCount(0x01), 1);
+        expect(fixture.connection.opcodeWriteCount(0x30), 0);
+        expect(recordStore.readCount, 0);
+        expect(recordStore.writeCount, 0);
+        expect(recordStore.deleteCount, 0);
+        expect(journal.current, isNotNull);
+      },
+    );
+
+    test(
+      'private credential-less set-date recovery rejects unsupported exact firmware',
+      () async {
+        final journal = _MemoryIntentStore(
+          initial: const YuwellUnresolvedWriteIntent(
+            token: 'opaque-private-date-unsupported-version',
+            operation: YuwellActivationWrite.setDate,
+            state: YuwellWriteIntentState.unknown,
+          ),
+        );
+        final recordStore = _MemoryRecordStore(events: <String>[]);
+        final fixture = _Fixture(
+          journal: journal,
+          recordStore: recordStore,
+          versionResponse: const <int>[
+            1,
+            20,
+            26,
+            9,
+            2,
+            0,
+            1,
+            1,
+            4,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ],
+        );
+        final session = await fixture.connect(authorized: true);
+
+        await expectLater(
+          session.initialize(),
+          throwsA(_failure(YuwellSessionFailureKind.unsupportedFirmware)),
+        );
+
+        expect(fixture.connection.opcodeWriteCount(0x01), 1);
+        expect(fixture.connection.opcodeWriteCount(0x30), 0);
+        expect(recordStore.readCount, 0);
+        expect(recordStore.writeCount, 0);
+        expect(recordStore.deleteCount, 0);
+        expect(journal.current, isNotNull);
       },
     );
 

@@ -35,6 +35,13 @@ const yuwellFirmwareMetadataKey = 'cgm.yuwell.firmware';
 const yuwellBindingStateMetadataKey = 'cgm.yuwell.binding-state';
 const _maximumAheadLiveRecords = 256;
 
+typedef _PendingEngineeringHistoryProof = ({
+  int startIndex,
+  int consumedSlots,
+  int opcode,
+  YuwellHistoryRecordLayout? layout,
+});
+
 void _debugYuwellTrace(String phase, String operation, String outcome) {
   assert(() {
     // Closed debug milestones only. Never add identifiers, packet bytes,
@@ -355,6 +362,8 @@ final class YuwellAnytimeSession implements CgmSession {
   final Set<int> _pendingPrivateObservedSlots = <int>{};
   final Set<int> _pendingPrivatePublishIndexes = <int>{};
   final Set<int> _pendingAheadDrainIndexes = <int>{};
+  final List<_PendingEngineeringHistoryProof> _pendingPrivateEngineeringProofs =
+      <_PendingEngineeringHistoryProof>[];
   final Map<int, CgmReading> _engineeringReadingByIndex = <int, CgmReading>{};
   final Set<int> _observedRecordSlots = <int>{};
   final Set<Future<void>> _notificationTasks = <Future<void>>{};
@@ -486,11 +495,11 @@ final class YuwellAnytimeSession implements CgmSession {
     _log(CgmLogLevel.info, 'yuwell.notify.enabled');
 
     final credentials = _credentials;
-    if ((credentials == null && _unresolvedIntent == null) ||
-        (_recordStore != null && credentials != null)) {
-      // The reference CT5 client queries version only for a new session. A
-      // durable transmitter-computed credential (or a journal created after
-      // that check) resumes directly with authentication.
+    if (_recordStore != null ||
+        (credentials == null && _unresolvedIntent == null)) {
+      // Persistence authority always requires the exact read-only firmware
+      // response, including credential-less journal recovery. Without private
+      // persistence, retain the reference client's new-session-only query.
       await _readAndRequireSupportedFirmware();
     } else {
       _firmware = credentials?.transmitterComputed == false
@@ -752,16 +761,22 @@ final class YuwellAnytimeSession implements CgmSession {
         );
         await _persistCredentials(lowPowerPending);
         await _completeRecoveredIntent(intent);
-        for (final indexed in probe.indexedRecords) {
-          _recordLayout = indexed.record.layout;
-          _storeRecord(
-            indexed.index,
-            indexed.record,
-            isLive: false,
-            publish: false,
-          );
+        if (_recordOwner == null) {
+          for (final indexed in probe.indexedRecords) {
+            _recordLayout = indexed.record.layout;
+            _storeRecord(
+              indexed.index,
+              indexed.record,
+              isLive: false,
+              publish: false,
+            );
+          }
+          _markConsumedHistorySlots(probe);
         }
-        _markConsumedHistorySlots(probe);
+        // With persistence, this one-record activity probe remains evidence
+        // only. The normal zero-based history cycle must revalidate the entire
+        // quarantined prefix through the owner before any driver/projector
+        // state changes.
         await _enterLowPowerAndPublish(lowPowerPending);
         return;
       case YuwellActivationWrite.lowPower:
@@ -1857,6 +1872,7 @@ final class YuwellAnytimeSession implements CgmSession {
       _pendingPrivateObservedSlots.clear();
       _pendingPrivatePublishIndexes.clear();
       _pendingAheadDrainIndexes.clear();
+      _pendingPrivateEngineeringProofs.clear();
     }
     var cursor = recordOwner != null
         ? 0
@@ -2046,6 +2062,13 @@ final class YuwellAnytimeSession implements CgmSession {
       );
     }
 
+    _pendingPrivateEngineeringProofs.add((
+      startIndex: frame.startIndex,
+      consumedSlots: frame.consumedSlots,
+      opcode: frame.opcode,
+      layout: frame.layout,
+    ));
+
     for (var index = frame.startIndex; index < end; index++) {
       _pendingPrivateObservedSlots.add(index);
       if (_aheadLiveRecordByIndex.containsKey(index)) {
@@ -2070,6 +2093,18 @@ final class YuwellAnytimeSession implements CgmSession {
     for (final index in _pendingPrivateObservedSlots) {
       _observedRecordSlots.add(index);
     }
+    // Index-only proof is released only after the complete saved prefix has
+    // matched and the owner has reached its required durability boundary.
+    // Restored records below _privateExpectedPrefixLength are still stored
+    // with publish=false and never enter the projector as records.
+    for (final proof in _pendingPrivateEngineeringProofs) {
+      _observeEngineeringHistorySlots(
+        opcode: proof.opcode,
+        layout: proof.layout,
+        startIndex: proof.startIndex,
+        consumedSlots: proof.consumedSlots,
+      );
+    }
     final indexes = _pendingPrivateRecordByIndex.keys.toList()..sort();
     for (final index in indexes) {
       final record = _pendingPrivateRecordByIndex[index]!;
@@ -2089,6 +2124,7 @@ final class YuwellAnytimeSession implements CgmSession {
     _pendingPrivateObservedSlots.clear();
     _pendingPrivatePublishIndexes.clear();
     _pendingAheadDrainIndexes.clear();
+    _pendingPrivateEngineeringProofs.clear();
   }
 
   int _nextContiguousRecordIndex() {
@@ -2107,16 +2143,30 @@ final class YuwellAnytimeSession implements CgmSession {
       // fact only in memory so a later retry resumes at the first true gap.
       _observedRecordSlots.add(index);
     }
+    _observeEngineeringHistorySlots(
+      opcode: frame.opcode,
+      layout: frame.layout,
+      startIndex: frame.startIndex,
+      consumedSlots: frame.consumedSlots,
+    );
+  }
+
+  void _observeEngineeringHistorySlots({
+    required int opcode,
+    required YuwellHistoryRecordLayout? layout,
+    required int startIndex,
+    required int consumedSlots,
+  }) {
     final credentials = _credentials;
     if (credentials == null) return;
     _engineeringOutput.observeHistorySlots(
       firmware: _firmware ?? '',
       transmitterComputed: credentials.transmitterComputed,
       credentialPhase: credentials.phase,
-      opcode: frame.opcode,
-      layout: frame.layout,
-      startIndex: frame.startIndex,
-      consumedSlots: frame.consumedSlots,
+      opcode: opcode,
+      layout: layout,
+      startIndex: startIndex,
+      consumedSlots: consumedSlots,
       activationStartedAt: credentials.activationStartedAt,
       initializationIndex: credentials.initializationIndex,
     );
