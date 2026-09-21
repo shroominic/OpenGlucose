@@ -114,7 +114,29 @@ final class CaptureHandshake {
 
   File get startFile => File('${_runDirectory.path}/start.json');
   File get ackFile => File('${_runDirectory.path}/ack.json');
-  Future<void> prepare() => _runDirectory.create(recursive: true);
+
+  Future<void> prepare() async {
+    final parent = _runDirectory.parent;
+    await parent.create(recursive: true);
+    final claim = File('${_runDirectory.path}.claim');
+    try {
+      await claim.create(exclusive: true);
+    } on FileSystemException {
+      throw StateError('Capture run is already claimed.');
+    }
+    try {
+      if (FileSystemEntity.typeSync(_runDirectory.path, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        throw StateError('Capture run directory already exists.');
+      }
+      await _runDirectory.create();
+      if (!await _runDirectory.list(followLinks: false).isEmpty) {
+        throw StateError('Capture run directory is not empty.');
+      }
+    } finally {
+      await claim.delete();
+    }
+  }
 
   Future<bool> consumeStartIfValid() async {
     if (!startFile.existsSync()) return false;
@@ -279,12 +301,14 @@ final class CaptureFullRecordStore implements CbioFullRecordStore {
   @override
   Future<String?> read(String sensorKey) async {
     _bind(sensorKey);
+    _requireRunDirectory();
     return null;
   }
 
   @override
   Future<String?> readFullRecords(String sensorKey) async {
     _bind(sensorKey);
+    _requireRunDirectory();
     if (!canonicalFile.existsSync()) return null;
     return canonicalFile.readAsString();
   }
@@ -292,6 +316,7 @@ final class CaptureFullRecordStore implements CbioFullRecordStore {
   @override
   Future<void> write(String sensorKey, String envelope) async {
     _bind(sensorKey);
+    _requireRunDirectory();
     throw StateError('Legacy capture state is not supported.');
   }
 
@@ -315,10 +340,17 @@ final class CaptureFullRecordStore implements CbioFullRecordStore {
   }
 
   Future<void> _replaceCanonical(String envelope) async {
-    await _directory.create(recursive: true);
+    _requireRunDirectory();
     final pending = File('${canonicalFile.path}.next');
     await pending.writeAsString(envelope, flush: true);
     await pending.rename(canonicalFile.path);
+  }
+
+  void _requireRunDirectory() {
+    if (FileSystemEntity.typeSync(_directory.path, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      throw StateError('Capture run directory is unavailable.');
+    }
   }
 }
 
@@ -399,13 +431,36 @@ final class ExactCaptureTransport
   bool _connectStarted = false;
   bool _identityMatched = false;
   bool _topologyMatched = false;
+  bool _writeGateFailed = false;
   int _nextWrite = 0;
 
   bool get identityMatched => _identityMatched;
   bool get topologyMatched => _topologyMatched;
-  bool get commandSequenceComplete => _nextWrite == _allowedWrites.length;
+  bool get writeGateFailed => _writeGateFailed;
+  bool get commandSequenceComplete =>
+      !_writeGateFailed &&
+      _nextWrite == _allowedWrites.length &&
+      _sameFrames(_attemptedWrites, _allowedWrites) &&
+      _sameFrames(_successfulWrites, _allowedWrites);
   List<List<int>> get attemptedWrites => _copyFrames(_attemptedWrites);
   List<List<int>> get successfulWrites => _copyFrames(_successfulWrites);
+
+  String encodeCommandAudit({required String runId}) {
+    if (!CaptureRunContext._hex32.hasMatch(runId)) {
+      throw const FormatException('Capture command audit run id is invalid.');
+    }
+    List<String> digests(List<List<int>> frames) => <String>[
+      for (final frame in frames) crypto.sha256.convert(frame).toString(),
+    ];
+    return jsonEncode(<String, Object>{
+      'schemaVersion': 1,
+      'runId': runId,
+      'attemptedFrameSha256': digests(_attemptedWrites),
+      'successfulFrameSha256': digests(_successfulWrites),
+      'writeGateFailed': _writeGateFailed,
+      'commandSequenceComplete': commandSequenceComplete,
+    });
+  }
 
   @override
   bool get supportsSingleAttemptConnect => true;
@@ -460,6 +515,16 @@ final class ExactCaptureTransport
       List<List<int>>.unmodifiable(
         values.map(List<int>.unmodifiable),
       );
+
+  static bool _sameFrames(List<List<int>> left, List<List<int>> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (!_ExactCaptureConnection._sameBytes(left[index], right[index])) {
+        return false;
+      }
+    }
+    return true;
+  }
 }
 
 String buildCaptureManifest({
@@ -468,6 +533,8 @@ String buildCaptureManifest({
   required String artifactSha256,
   required int artifactBytes,
   required String promptReceiptSha256,
+  required String commandAuditSha256,
+  required int commandAuditBytes,
   required bool authPromptObserved,
   required int authPromptMatchCount,
   required String driverStage,
@@ -481,7 +548,9 @@ String buildCaptureManifest({
 }) {
   if (!CaptureRunContext._hex64.hasMatch(artifactSha256) ||
       !CaptureRunContext._hex64.hasMatch(promptReceiptSha256) ||
+      !CaptureRunContext._hex64.hasMatch(commandAuditSha256) ||
       artifactBytes < 1 ||
+      commandAuditBytes < 1 ||
       authPromptMatchCount < 0 ||
       attemptedWriteCount < 0 ||
       successfulWriteCount < 0 ||
@@ -508,6 +577,8 @@ String buildCaptureManifest({
     'artifactSha256': artifactSha256,
     'artifactBytes': artifactBytes,
     'authPromptReceiptSha256': promptReceiptSha256,
+    'commandAuditSha256': commandAuditSha256,
+    'commandAuditBytes': commandAuditBytes,
     'authPromptObserved': authPromptObserved,
     'authPromptMatchCount': authPromptMatchCount,
     'versionEvidence': authPromptObserved
@@ -630,25 +701,31 @@ final class _ExactCaptureConnection implements BleConnection, BleNegotiatedMtu {
   }) async {
     final attempted = List<int>.unmodifiable(value);
     _owner._attemptedWrites.add(attempted);
-    if (!_owner._topologyMatched || !_owner._identityMatched) {
-      throw StateError('Capture target is not fully bound.');
-    }
-    if (CbioUuids.canonical(characteristic.serviceUuid) !=
+    if (_owner._writeGateFailed ||
+        !_owner._topologyMatched ||
+        !_owner._identityMatched ||
+        CbioUuids.canonical(characteristic.serviceUuid) !=
             CbioUuids.canonical(CbioUuids.service) ||
         CbioUuids.canonical(characteristic.characteristicUuid) !=
             CbioUuids.canonical(CbioUuids.command) ||
         withoutResponse ||
         _owner._nextWrite >= _owner._allowedWrites.length ||
         !_sameBytes(value, _owner._allowedWrites[_owner._nextWrite])) {
+      _owner._writeGateFailed = true;
       throw StateError('Capture vendor write is not authorized.');
     }
-    await _delegate.write(
-      characteristic,
-      value,
-      withoutResponse: withoutResponse,
-    );
     _owner._nextWrite++;
-    _owner._successfulWrites.add(attempted);
+    try {
+      await _delegate.write(
+        characteristic,
+        value,
+        withoutResponse: withoutResponse,
+      );
+      _owner._successfulWrites.add(attempted);
+    } on Object {
+      _owner._writeGateFailed = true;
+      rethrow;
+    }
   }
 
   @override

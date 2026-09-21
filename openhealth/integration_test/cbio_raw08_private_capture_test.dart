@@ -176,7 +176,7 @@ Future<void> _runCapture() async {
   if (envelope == null) {
     throw StateError('Capture full-record envelope is unavailable.');
   }
-  final authenticatedRawQuery = exactTransport.successfulWrites.length == 3;
+  final authenticatedRawQuery = exactTransport.commandSequenceComplete;
   final summary = inspectCaptureEnvelope(
     envelope,
     sensorKey: _context.targetDeviceId,
@@ -189,12 +189,19 @@ Future<void> _runCapture() async {
   final promptSha = _sha256(promptReceipt);
   final promptFile = File('${runDirectory.path}/auth-prompt-receipt.json');
   await _atomicWrite(promptFile, promptReceipt);
+  final commandAudit = exactTransport.encodeCommandAudit(runId: _context.runId);
+  final commandAuditSha = _sha256(commandAudit);
+  final commandAuditBytes = utf8.encode(commandAudit).length;
+  final commandAuditFile = File('${runDirectory.path}/command-audit.json');
+  await _atomicWrite(commandAuditFile, commandAudit);
   final manifest = buildCaptureManifest(
     context: _context,
     summary: summary,
     artifactSha256: fullSha,
     artifactBytes: fullBytes,
     promptReceiptSha256: promptSha,
+    commandAuditSha256: commandAuditSha,
+    commandAuditBytes: commandAuditBytes,
     authPromptObserved: promptSink.observed,
     authPromptMatchCount: promptSink.matchCount,
     driverStage: driverStage,
@@ -219,6 +226,8 @@ Future<void> _runCapture() async {
     'manifest=manifest.json manifest_bytes=$manifestBytes '
     'manifest_sha=$manifestSha prompt=auth-prompt-receipt.json '
     'prompt_bytes=$promptBytes prompt_sha=$promptSha outcome=$outcome '
+    'audit=command-audit.json audit_bytes=$commandAuditBytes '
+    'audit_sha=$commandAuditSha '
     'ack=ack.json',
   );
   await _waitForAck(

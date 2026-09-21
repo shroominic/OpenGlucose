@@ -16,6 +16,7 @@ final _credentials = CbioCredentials(
 );
 const _deviceId = 'AA:BB:CC:DD:EE:FF';
 const _serial = <int>[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa];
+const _runId = '0123456789abcdef0123456789abcdef';
 
 void main() {
   test(
@@ -25,9 +26,23 @@ void main() {
         'cbio-private-driver-test.',
       );
       addTearDown(() => root.delete(recursive: true));
+      await CaptureHandshake(
+        runDirectory: Directory('${root.path}/$_runId'),
+        context: CaptureRunContext.fromValues({
+          'CBIO_CAPTURE_RUN_ID': _runId,
+          'CBIO_CAPTURE_START_NONCE': 'a' * 32,
+          'CBIO_CAPTURE_ACK_NONCE': 'b' * 32,
+          'CBIO_TARGET_DEVICE_ID': _deviceId,
+          'CBIO_EXPECTED_SERIAL_HEX': 'ffeeddccbbaa',
+          'CBIO_LABEL_SHA256': 'c' * 64,
+          'CBIO_REPLAY_CONTEXT': 'V1.1.6A',
+          'CBIO_RAW_START_INDEX': '1',
+          'CBIO_SOURCE_REVISION': 'd' * 40,
+        }),
+      ).prepare();
       final store = CaptureFullRecordStore(
         root: root,
-        runId: '0123456789abcdef0123456789abcdef',
+        runId: _runId,
       );
       final connection = _FragmentedConnection();
       final allowed = <List<int>>[

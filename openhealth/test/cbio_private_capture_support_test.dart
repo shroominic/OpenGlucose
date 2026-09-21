@@ -23,6 +23,7 @@ void main() {
   });
 
   test('capture store starts empty and never admits legacy state', () async {
+    await Directory('${temporaryDirectory.path}/$_runId').create();
     final store = CaptureFullRecordStore(
       root: temporaryDirectory,
       runId: _runId,
@@ -42,6 +43,8 @@ void main() {
   });
 
   test('capture store replaces only the canonical full envelope', () async {
+    final runDirectory = Directory('${temporaryDirectory.path}/$_runId');
+    await runDirectory.create();
     final store = CaptureFullRecordStore(
       root: temporaryDirectory,
       runId: _runId,
@@ -58,6 +61,22 @@ void main() {
     );
     expect(await reopened.readFullRecords(_sensorKey), 'second');
     expect(await store.canonicalFile.readAsString(), 'second');
+  });
+
+  test('capture store never recreates a missing run directory', () async {
+    final runDirectory = Directory('${temporaryDirectory.path}/$_runId');
+    await runDirectory.create();
+    final store = CaptureFullRecordStore(
+      root: temporaryDirectory,
+      runId: _runId,
+    );
+    await runDirectory.delete();
+
+    await expectLater(
+      store.writeFullRecords(_sensorKey, 'record'),
+      throwsA(isA<StateError>()),
+    );
+    expect(runDirectory.existsSync(), isFalse);
   });
 
   test('observing envelope reports a contiguous tail-unproven prefix', () {
@@ -155,6 +174,49 @@ void main() {
     expect(handshake.ackFile.existsSync(), isFalse);
   });
 
+  test('handshake admits only a freshly claimed empty run directory', () async {
+    final staleEntries = <String, bool>{
+      'existing empty directory': false,
+      'start.json': false,
+      'ack.json': false,
+      'start.json.pending': false,
+      'ack.json.pending': false,
+      'full-records.json': false,
+      'full-records.json.next': false,
+      'manifest.json': false,
+      'manifest.json.next': false,
+      'auth-prompt-receipt.json': false,
+      'auth-prompt-receipt.json.next': false,
+      'command-audit.json': false,
+      'command-audit.json.next': false,
+      'trace': true,
+    };
+
+    for (final MapEntry(key: name, value: directory) in staleEntries.entries) {
+      final root = Directory('${temporaryDirectory.path}/${name.hashCode}');
+      final runDirectory = Directory('${root.path}/$_runId');
+      await runDirectory.create(recursive: true);
+      if (name != 'existing empty directory') {
+        final path = '${runDirectory.path}/$name';
+        if (directory) {
+          await Directory(path).create();
+        } else {
+          await File(path).writeAsString('stale', flush: true);
+        }
+      }
+      final handshake = CaptureHandshake(
+        runDirectory: runDirectory,
+        context: CaptureRunContext.fromValues(_contextValues()),
+      );
+
+      await expectLater(
+        handshake.prepare(),
+        throwsA(isA<StateError>()),
+        reason: name,
+      );
+    }
+  });
+
   test('prompt observer retains an exact private incoming receipt', () async {
     final delegate = _CollectingTraceSink();
     final observer = CapturePromptTraceSink(
@@ -193,6 +255,8 @@ void main() {
                 artifactSha256: 'e' * 64,
                 artifactBytes: 123,
                 promptReceiptSha256: 'f' * 64,
+                commandAuditSha256: 'a' * 64,
+                commandAuditBytes: 456,
                 authPromptObserved: false,
                 authPromptMatchCount: 0,
                 driverStage: 'disconnected',
@@ -209,13 +273,15 @@ void main() {
 
     expect(manifest['replayContext'], 'V1.1.6A');
     expect(manifest['authPromptObserved'], isFalse);
+    expect(manifest['commandAuditSha256'], 'a' * 64);
+    expect(manifest['commandAuditBytes'], 456);
     expect(manifest['versionEvidence'], 'declared_context_only');
     expect(
       manifest['captureCompleteness'],
       'authenticated_query_no_records',
     );
     expect(manifest['retainedTailProof'], 'unavailable_no_protocol_watermark');
-    expect(manifest.keys, hasLength(32));
+    expect(manifest.keys, hasLength(34));
   });
 }
 

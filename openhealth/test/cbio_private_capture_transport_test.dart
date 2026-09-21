@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cgm_ble/cgm_ble.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
@@ -7,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../integration_test/support/cbio_private_capture_support.dart';
 
 const _deviceId = 'AA:BB:CC:DD:EE:FF';
+const _runId = '0123456789abcdef0123456789abcdef';
 const _serial = <int>[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa];
 const _allowedWrites = <List<int>>[
   <int>[1, 2, 3],
@@ -40,7 +42,7 @@ void main() {
     expect(delegate.connectOnceCalls, 1);
   });
 
-  test('topology and exact 2A25 bind before any vendor write', () async {
+  test('a pre-identity write poisons the exact command gate', () async {
     final connection = _FakeConnection();
     final transport = ExactCaptureTransport(
       delegate: _FakeTransport(connection),
@@ -68,10 +70,14 @@ void main() {
     expect(connection.writes, isEmpty);
 
     expect(await guarded.read(serial), _serial);
-    await guarded.write(command, _allowedWrites.first);
-    expect(connection.writes, [_allowedWrites.first]);
+    await expectLater(
+      guarded.write(command, _allowedWrites.first),
+      throwsA(isA<StateError>()),
+    );
+    expect(connection.writes, isEmpty);
     expect(transport.identityMatched, isTrue);
     expect(transport.topologyMatched, isTrue);
+    expect(transport.commandSequenceComplete, isFalse);
   });
 
   test('wrong serial blocks the first vendor write', () async {
@@ -124,11 +130,19 @@ void main() {
       guarded.write(command, _allowedWrites.last),
       throwsA(isA<StateError>()),
     );
+    await expectLater(
+      guarded.write(command, _allowedWrites.first),
+      throwsA(isA<StateError>()),
+    );
 
     expect(connection.writes, _allowedWrites);
-    expect(transport.attemptedWrites, [..._allowedWrites, _allowedWrites.last]);
+    expect(transport.attemptedWrites, [
+      ..._allowedWrites,
+      _allowedWrites.last,
+      _allowedWrites.first,
+    ]);
     expect(transport.successfulWrites, _allowedWrites);
-    expect(transport.commandSequenceComplete, isTrue);
+    expect(transport.commandSequenceComplete, isFalse);
   });
 
   test('out-of-order frame is rejected before the delegate', () async {
@@ -157,12 +171,65 @@ void main() {
       guarded.write(command, _allowedWrites[1]),
       throwsA(isA<StateError>()),
     );
+    await expectLater(
+      guarded.write(command, _allowedWrites.first),
+      throwsA(isA<StateError>()),
+    );
     expect(connection.writes, isEmpty);
-    expect(transport.attemptedWrites, [_allowedWrites[1]]);
+    expect(transport.attemptedWrites, [
+      _allowedWrites[1],
+      _allowedWrites.first,
+    ]);
   });
 
   test(
-    'a failed delegate write does not advance the command sequence',
+    'command audit binds the exact attempted and successful order',
+    () async {
+      final connection = _FakeConnection();
+      final transport = ExactCaptureTransport(
+        delegate: _FakeTransport(connection),
+        expectedDeviceId: _deviceId,
+        expectedSerial: _serial,
+        allowedWrites: _allowedWrites,
+      );
+      final guarded = await transport.connect(_deviceId);
+      final services = await guarded.discoverServices();
+      final command = services.single.characteristics.firstWhere(
+        (value) =>
+            CbioUuids.canonical(value.characteristicUuid) ==
+            CbioUuids.canonical(CbioUuids.command),
+      );
+      final serial = services.single.characteristics.firstWhere(
+        (value) =>
+            CbioUuids.canonical(value.characteristicUuid) ==
+            CbioUuids.canonical(CbioUuids.serial),
+      );
+      await guarded.read(serial);
+      for (final value in _allowedWrites) {
+        await guarded.write(command, value);
+      }
+
+      expect(jsonDecode(transport.encodeCommandAudit(runId: _runId)), {
+        'schemaVersion': 1,
+        'runId': _runId,
+        'attemptedFrameSha256': [
+          '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+          '787c798e39a5bc1910355bae6d0cd87a36b2e10fd0202a83e3bb6b005da83472',
+          '66a6757151f8ee55db127716c7e3dce0be8074b64e20eda542e5c1e46ca9c41e',
+        ],
+        'successfulFrameSha256': [
+          '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+          '787c798e39a5bc1910355bae6d0cd87a36b2e10fd0202a83e3bb6b005da83472',
+          '66a6757151f8ee55db127716c7e3dce0be8074b64e20eda542e5c1e46ca9c41e',
+        ],
+        'writeGateFailed': false,
+        'commandSequenceComplete': true,
+      });
+    },
+  );
+
+  test(
+    'a failed delegate write permanently rejects every later write',
     () async {
       final connection = _FakeConnection(failFirstWrite: true);
       final transport = ExactCaptureTransport(
@@ -192,10 +259,17 @@ void main() {
       expect(transport.commandSequenceComplete, isFalse);
       expect(transport.successfulWrites, isEmpty);
 
-      await guarded.write(command, _allowedWrites.first);
-      await guarded.write(command, _allowedWrites[1]);
-      expect(connection.writes, _allowedWrites.take(2));
-      expect(transport.successfulWrites, _allowedWrites.take(2));
+      await expectLater(
+        guarded.write(command, _allowedWrites.first),
+        throwsA(isA<StateError>()),
+      );
+      expect(connection.writeCalls, 1);
+      expect(connection.writes, isEmpty);
+      expect(transport.attemptedWrites, [
+        _allowedWrites.first,
+        _allowedWrites.first,
+      ]);
+      expect(transport.successfulWrites, isEmpty);
       expect(transport.commandSequenceComplete, isFalse);
     },
   );
