@@ -352,7 +352,9 @@ case "$capture_installed_path_output" in
   package:/data/app/*/base.apk) capture_installed_apk=${capture_installed_path_output#package:} ;;
   *) capture_die 'installed package path is invalid' ;;
 esac
-case "$capture_installed_apk" in *[!A-Za-z0-9_./=+-]*) capture_die 'installed package path is unsafe' ;; esac
+case "$capture_installed_apk" in
+  *[!A-Za-z0-9_./=+~-]*|*/../*|*/./*) capture_die 'installed package path is unsafe' ;;
+esac
 capture_installed_dump=$(capture_adb_command shell -n dumpsys package "$capture_app_package") ||
   capture_die 'installed package version preflight failed or timed out'
 capture_installed_version_code=$(printf '%s\n' "$capture_installed_dump" |

@@ -17,6 +17,7 @@ APP_PACKAGE = "com.openglucose.app.debug"
 APP_VERSION_CODE = "29"
 APP_VERSION_NAME = "0.4.0-debug"
 LAUNCH_ACTIVITY = "com.aidex.aidex_flutter.MainActivity"
+MODERN_INSTALLED_PATH = "/data/app/~~fixture-token==/#{APP_PACKAGE}-fixture-token==/base.apk"
 FINAL_ARTIFACTS = %w[
   full-records.json manifest.json auth-prompt-receipt.json command-audit.json
 ].freeze
@@ -53,6 +54,7 @@ def run_capture(
   candidate_version_name: APP_VERSION_NAME,
   candidate_signer: SIGNER_SHA256,
   installed_sha: INSTALLED_APK_SHA256,
+  installed_path: "/data/app/fixture/#{APP_PACKAGE}/base.apk",
   installed_version_code: APP_VERSION_CODE,
   installed_version_name: APP_VERSION_NAME,
   armed: :valid,
@@ -71,7 +73,6 @@ def run_capture(
     context = File.join(private_root, "context.json")
     destination = File.join(private_root, "destination")
     mutation_file = File.join(private_root, "mutation.json")
-    installed_path = "/data/app/fixture/com.openglucose.app.debug/base.apk"
     [File.join(repo, "scripts"), File.join(repo, "openhealth"), private_root, bin, device].each do |path|
       FileUtils.mkdir_p(path, mode: 0o700)
     end
@@ -560,6 +561,33 @@ run_capture do |result|
   assert(audit.index("armed-read") < audit.index("start.json.pending"), "START before valid private ARMED")
   assert(audit.index("capture-start-seen") < audit.index("capture-ack-seen"), "ACK after START")
   assert(result[:flutter_log].lines.grep(/^CBIO-CAPTURE-COMPLETE /) == ["CBIO-CAPTURE-COMPLETE run=#{RUN_ID}\n"], "exact COMPLETE missing")
+end
+
+run_capture(installed_path: "/data/app/fixture/../base.apk") do |result|
+  assert_rejected(result, "installed path traversal")
+  assert(audit_lines(result, /^adb -s \S+ install /).empty?, "path traversal reached install")
+end
+
+{
+  "space" => "/data/app/fixture token/#{APP_PACKAGE}/base.apk",
+  "newline" => "/data/app/fixture\n token/#{APP_PACKAGE}/base.apk",
+  "quote" => "/data/app/fixture'/#{APP_PACKAGE}/base.apk",
+  "shell metacharacters" => "/data/app/fixture;\$(invalid)/#{APP_PACKAGE}/base.apk"
+}.each do |label, installed_path|
+  run_capture(installed_path: installed_path) do |result|
+    assert_rejected(result, "installed path #{label}")
+    assert(
+      audit_lines(result, /^adb -s \S+ install /).empty?,
+      "installed path #{label} reached install"
+    )
+  end
+end
+
+run_capture(installed_path: MODERN_INSTALLED_PATH) do |result|
+  assert(
+    result[:status].success?,
+    "modern Android installed path was rejected: #{result[:stderr]}"
+  )
 end
 
 {
