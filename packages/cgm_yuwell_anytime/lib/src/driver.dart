@@ -375,6 +375,7 @@ final class YuwellAnytimeSession implements CgmSession {
   StreamSubscription<List<int>>? _notificationSubscription;
   StreamSubscription<BleConnectionState>? _connectionSubscription;
   Future<void> _writeTail = Future<void>.value();
+  Future<void> _privateRecordTransitionTail = Future<void>.value();
   Future<void>? _initialization;
   Future<void>? _historyFuture;
   Future<void>? _publicHistoryFuture;
@@ -1552,23 +1553,16 @@ final class YuwellAnytimeSession implements CgmSession {
         final credentials = _credentials;
         if (credentials == null) return;
         final live = YuwellLiveFrame.parse(frame, cipher: credentials.cipher!);
+        if (_recordOwner != null && (live.index < 0 || live.index >= 7695)) {
+          throw const YuwellSessionException(
+            YuwellSessionFailureKind.recordPersistence,
+          );
+        }
         _recordLayout = live.record.layout;
-        if (_recordOwner != null &&
-            live.index >= _nextContiguousRecordIndex()) {
-          final existing = _aheadLiveRecordByIndex[live.index];
-          if (existing != null &&
-              !_sameBytes(existing.rawBytes, live.record.rawBytes)) {
-            throw const YuwellSessionException(
-              YuwellSessionFailureKind.recordPersistence,
-            );
-          }
-          if (existing == null &&
-              _aheadLiveRecordByIndex.length >= _maximumAheadLiveRecords) {
-            throw const YuwellSessionException(
-              YuwellSessionFailureKind.recordPersistence,
-            );
-          }
-          _aheadLiveRecordByIndex.putIfAbsent(live.index, () => live.record);
+        if (_recordOwner != null) {
+          await _serializePrivateRecordTransition(() async {
+            _acceptPrivateLiveFrame(live);
+          });
         } else {
           _storeRecord(
             live.index,
@@ -1613,6 +1607,62 @@ final class YuwellAnytimeSession implements CgmSession {
     } catch (_) {
       if (!_closing) _publishFailure(YuwellSessionFailureKind.notification);
     }
+  }
+
+  Future<T> _serializePrivateRecordTransition<T>(
+    Future<T> Function() operation,
+  ) {
+    final result = Completer<T>();
+    _privateRecordTransitionTail = _privateRecordTransitionTail.then((_) async {
+      try {
+        result.complete(await operation());
+      } catch (error, stackTrace) {
+        result.completeError(error, stackTrace);
+      }
+    });
+    return result.future;
+  }
+
+  void _acceptPrivateLiveFrame(YuwellLiveFrame live) {
+    final pending = _pendingPrivateObservedSlots.contains(live.index);
+    if (pending) {
+      final record = _pendingPrivateRecordByIndex[live.index];
+      if (record == null ||
+          !_sameBytes(record.rawBytes, live.record.rawBytes)) {
+        throw const YuwellSessionException(
+          YuwellSessionFailureKind.recordPersistence,
+        );
+      }
+      return;
+    }
+
+    final committed = _observedRecordSlots.contains(live.index);
+    if (committed) {
+      final record = _recordByIndex[live.index];
+      if (record == null ||
+          !_sameBytes(record.rawBytes, live.record.rawBytes)) {
+        throw const YuwellSessionException(
+          YuwellSessionFailureKind.recordPersistence,
+        );
+      }
+      _storeRecord(live.index, live.record, isLive: true, opcode: live.opcode);
+      return;
+    }
+
+    final existing = _aheadLiveRecordByIndex[live.index];
+    if (existing != null &&
+        !_sameBytes(existing.rawBytes, live.record.rawBytes)) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+    if (existing == null &&
+        _aheadLiveRecordByIndex.length >= _maximumAheadLiveRecords) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+    _aheadLiveRecordByIndex.putIfAbsent(live.index, () => live.record);
   }
 
   void _storeRecord(
@@ -1956,14 +2006,16 @@ final class YuwellAnytimeSession implements CgmSession {
             YuwellSessionFailureKind.recordPersistence,
           );
         }
-        try {
-          await recordOwner.completeHistoryCycle();
-        } catch (_) {
-          throw const YuwellSessionException(
-            YuwellSessionFailureKind.recordPersistence,
-          );
-        }
-        _commitPendingPrivateHistory();
+        await _serializePrivateRecordTransition(() async {
+          try {
+            await recordOwner.completeHistoryCycle();
+          } catch (_) {
+            throw const YuwellSessionException(
+              YuwellSessionFailureKind.recordPersistence,
+            );
+          }
+          _commitPendingPrivateHistory();
+        });
       }
       _debugYuwellTrace(_phase, 'history-cycle', 'complete');
       // The reviewed CT5 chain always checks reset/binding state after a
@@ -2024,7 +2076,7 @@ final class YuwellAnytimeSession implements CgmSession {
   Future<void> _acceptPrivateHistoryFrame(
     YuwellRecordStateOwner owner,
     YuwellHistoryFrame frame,
-  ) async {
+  ) => _serializePrivateRecordTransition(() async {
     final end = frame.startIndex + frame.consumedSlots;
     if (frame.terminated && end < _privateExpectedPrefixLength) {
       throw const YuwellSessionException(
@@ -2087,7 +2139,7 @@ final class YuwellAnytimeSession implements CgmSession {
     if (!owner.isDirty && _privatePrefixValidated) {
       _commitPendingPrivateHistory();
     }
-  }
+  });
 
   void _commitPendingPrivateHistory() {
     for (final index in _pendingPrivateObservedSlots) {

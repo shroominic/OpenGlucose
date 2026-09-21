@@ -504,6 +504,341 @@ void main() {
     );
 
     test(
+      'private persistence revalidates a live overlap arriving during owner write',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final events = <String>[];
+        final writeStarted = Completer<void>();
+        final writeRelease = Completer<void>();
+        final recordStore = _MemoryRecordStore(events: events)
+          ..writeStarted = writeStarted
+          ..writeRelease = writeRelease.future;
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: List<List<int>>.filled(16, _recordBytes),
+          negotiatedMtu: 512,
+          sharedEvents: events,
+        );
+        final session = await fixture.connect();
+        addTearDown(() async {
+          if (!writeRelease.isCompleted) writeRelease.complete();
+          await session.disconnect();
+        });
+        final conflicting = List<int>.of(_recordBytes)..[1] = 0x65;
+
+        final initialization = session.initialize();
+        await writeStarted.future;
+        fixture.connection.emitNotification(_liveFrame(0, conflicting));
+        await _waitUntil(() => events.contains('ack-complete'));
+        writeRelease.complete();
+
+        await expectLater(
+          initialization,
+          throwsA(isA<YuwellSessionException>()),
+        );
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          YuwellSessionFailureKind.recordPersistence.name,
+        );
+        expect(recordStore.writeCount, 1);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private persistence revalidates an empty overlap arriving during owner write',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final events = <String>[];
+        final writeStarted = Completer<void>();
+        final writeRelease = Completer<void>();
+        final recordStore = _MemoryRecordStore(events: events)
+          ..writeStarted = writeStarted
+          ..writeRelease = writeRelease.future;
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: List<List<int>>.filled(16, List<int>.filled(17, 0xff)),
+          negotiatedMtu: 512,
+          sharedEvents: events,
+        );
+        final session = await fixture.connect();
+        addTearDown(() async {
+          if (!writeRelease.isCompleted) writeRelease.complete();
+          await session.disconnect();
+        });
+
+        final initialization = session.initialize();
+        await writeStarted.future;
+        fixture.connection.emitNotification(_liveFrame(0, _recordBytes));
+        await _waitUntil(() => events.contains('ack-complete'));
+        writeRelease.complete();
+
+        await expectLater(
+          initialization,
+          throwsA(isA<YuwellSessionException>()),
+        );
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          YuwellSessionFailureKind.recordPersistence.name,
+        );
+        expect(recordStore.writeCount, 1);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private persistence revalidates a record overlap against a dirty accepted batch',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final events = <String>[];
+        final writeStarted = Completer<void>();
+        final writeRelease = Completer<void>();
+        final recordStore = _MemoryRecordStore(events: events)
+          ..writeStarted = writeStarted
+          ..writeRelease = writeRelease.future;
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: <List<int>>[_recordBytes],
+          sharedEvents: events,
+        );
+        final session = await fixture.connect();
+        addTearDown(() async {
+          if (!writeRelease.isCompleted) writeRelease.complete();
+          await session.disconnect();
+        });
+        final conflicting = List<int>.of(_recordBytes)..[1] = 0x65;
+
+        final initialization = session.initialize();
+        await writeStarted.future;
+        fixture.connection.emitNotification(_liveFrame(0, conflicting));
+        await _waitUntil(() => events.contains('ack-complete'));
+        writeRelease.complete();
+
+        await expectLater(
+          initialization,
+          throwsA(isA<YuwellSessionException>()),
+        );
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          YuwellSessionFailureKind.recordPersistence.name,
+        );
+        expect(recordStore.writeCount, 1);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private persistence revalidates an empty overlap against a dirty accepted batch',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final events = <String>[];
+        final writeStarted = Completer<void>();
+        final writeRelease = Completer<void>();
+        final recordStore = _MemoryRecordStore(events: events)
+          ..writeStarted = writeStarted
+          ..writeRelease = writeRelease.future;
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: <List<int>>[List<int>.filled(17, 0xff)],
+          sharedEvents: events,
+        );
+        final session = await fixture.connect();
+        addTearDown(() async {
+          if (!writeRelease.isCompleted) writeRelease.complete();
+          await session.disconnect();
+        });
+
+        final initialization = session.initialize();
+        await writeStarted.future;
+        fixture.connection.emitNotification(_liveFrame(0, _recordBytes));
+        await _waitUntil(() => events.contains('ack-complete'));
+        writeRelease.complete();
+
+        await expectLater(
+          initialization,
+          throwsA(isA<YuwellSessionException>()),
+        );
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          YuwellSessionFailureKind.recordPersistence.name,
+        );
+        expect(recordStore.writeCount, 1);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private persistence rejects live data for a committed empty slot',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final recordStore = _MemoryRecordStore(events: <String>[]);
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: <List<int>>[List<int>.filled(17, 0xff)],
+          glucoseOutputPolicy:
+              YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
+        );
+        final session = await fixture.connect();
+
+        await session.initialize();
+        final key = _recordStoreKey(generation);
+        final durableEnvelope = recordStore.values[key.digest];
+        expect(durableEnvelope, isNotNull);
+        expect(recordStore.writeCount, 1);
+
+        fixture.connection.emitNotification(_liveFrame(0, _recordBytes));
+        await _waitUntil(
+          () =>
+              fixture.connection.disconnected ||
+              session.currentSnapshot.metadata['cgm.yuwell.last-source'] ==
+                  'live',
+        );
+
+        expect(fixture.connection.disconnected, isTrue);
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          YuwellSessionFailureKind.recordPersistence.name,
+        );
+        expect(recordStore.values[key.digest], durableEnvelope);
+        expect(recordStore.writeCount, 1);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private persistence preserves exact committed-record live behavior',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final events = <String>[];
+        final recordStore = _MemoryRecordStore(events: events);
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          historySlots: List<List<int>>.filled(15, _recordBytes),
+          negotiatedMtu: 512,
+          sharedEvents: events,
+          glucoseOutputPolicy:
+              YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
+        );
+        final session = await fixture.connect();
+
+        await session.initialize();
+        expect(session.currentSnapshot.history, hasLength(1));
+        expect(session.currentSnapshot.latestReading?.sensorMinute, 45);
+
+        fixture.connection.emitNotification(_liveFrame(14, _recordBytes));
+        await _waitUntil(
+          () =>
+              session.currentSnapshot.metadata['cgm.yuwell.last-source'] ==
+              'live',
+        );
+
+        expect(fixture.connection.disconnected, isFalse);
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          isNot(YuwellSessionFailureKind.recordPersistence.name),
+        );
+        expect(
+          session.currentSnapshot.metadata['cgm.yuwell.last-record'],
+          'duplicate',
+        );
+        expect(recordStore.writeCount, 1);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.history, hasLength(1));
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    test(
+      'private persistence buffers live index 7694 without projection',
+      () async {
+        final generation = '0123456789abcdef0123456789abcdef';
+        final events = <String>[];
+        final recordStore = _MemoryRecordStore(events: events);
+        final fixture = _Fixture(
+          credentials: _activeCredentialsV2(generation),
+          recordStore: recordStore,
+          sharedEvents: events,
+          glucoseOutputPolicy:
+              YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
+        );
+        final session = await fixture.connect();
+        await session.initialize();
+
+        fixture.connection.emitNotification(_liveFrame(7694, _recordBytes));
+        fixture.connection.emitNotification(_liveFrame(7694, _recordBytes));
+        await _waitUntil(
+          () => events.where((event) => event == 'ack-complete').length == 2,
+        );
+        await session.disconnect();
+
+        expect(
+          session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+          isNot(YuwellSessionFailureKind.recordPersistence.name),
+        );
+        expect(recordStore.writeCount, 0);
+        expect(recordStore.deleteCount, 0);
+        expect(session.currentSnapshot.latestReading, isNull);
+        expect(session.currentSnapshot.history, isEmpty);
+        expect(session.currentSnapshot.rawHistory, isEmpty);
+      },
+    );
+
+    for (final index in <int>[7695, 65535]) {
+      test(
+        'private persistence rejects out-of-range live index $index before buffering',
+        () async {
+          final generation = '0123456789abcdef0123456789abcdef';
+          final events = <String>[];
+          final recordStore = _MemoryRecordStore(events: events);
+          final fixture = _Fixture(
+            credentials: _activeCredentialsV2(generation),
+            recordStore: recordStore,
+            sharedEvents: events,
+            glucoseOutputPolicy:
+                YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
+          );
+          final session = await fixture.connect();
+          await session.initialize();
+
+          fixture.connection.emitNotification(_liveFrame(index, _recordBytes));
+          await _waitUntil(() => events.contains('ack-complete'));
+          await session.disconnect();
+
+          expect(
+            session.currentSnapshot.metadata[yuwellFailureCodeMetadataKey],
+            YuwellSessionFailureKind.recordPersistence.name,
+          );
+          expect(recordStore.writeCount, 0);
+          expect(recordStore.deleteCount, 0);
+          expect(session.currentSnapshot.latestReading, isNull);
+          expect(session.currentSnapshot.history, isEmpty);
+          expect(session.currentSnapshot.rawHistory, isEmpty);
+        },
+      );
+    }
+
+    test(
       'private persistence never trusts saved V1150 identity over exact firmware',
       () async {
         final generation = '0123456789abcdef0123456789abcdef';
