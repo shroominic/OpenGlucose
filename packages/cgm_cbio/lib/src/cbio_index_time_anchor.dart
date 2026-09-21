@@ -3,11 +3,10 @@
 /// The `08` record's own second counter advances 60 s per stored record, but
 /// the counter on its own carries no epoch: reading it as a wall clock is the
 /// +7 h 28 m skew of #146, so no surface may derive a timestamp from it alone.
-/// This file adds the one reference that does exist. The app writes the sensor
-/// clock once per session (`06 03 LE32(epoch)`), and afterwards the sensor
-/// stamps the records it produces against that clock. When the newest stored
-/// record's own stamp agrees with the app's clock to within
-/// [cbioAnchorTolerance], the index is anchored to absolute time:
+/// Legacy checkpoints may contain one previously established reference from a
+/// session that wrote the sensor clock. Routine sessions no longer create that
+/// reference. After the exact checkpoint witness is confirmed, a stored anchor
+/// remains usable only while each covered record keeps the expected raw stamp:
 ///
 ///   * [CbioIndexTimeAnchor.anchorIndex] - the newest position the sensor
 ///     stamped, and [CbioIndexTimeAnchor.anchorEpochSeconds], that position's
@@ -17,9 +16,9 @@
 ///
 /// Everything the counter cannot support stays unsupported. The anchor is
 /// absent - and every surface says the sensor clock is unsynced instead of
-/// showing a placeholder - when the app never wrote the clock, when no record
-/// exists, when the sensor's stamp disagrees with the app's clock, and for
-/// every position older than the point where the 60 s step is unbroken.
+/// showing a placeholder - for fresh acquisition, when no record exists, when
+/// witness continuity fails, and for every position older than the point where
+/// the 60 s step is unbroken.
 library;
 
 import 'cbio_history_archive.dart';
@@ -28,9 +27,8 @@ import 'cbio_history_archive.dart';
 const int cbioRecordStepSeconds = 60;
 
 /// How far the sensor's own stamp may sit from the app's clock before the
-/// anchor is refused. The clock write happens once per session and the sensor
-/// stamps whole minutes, so a couple of minutes of agreement is expected on a
-/// link that accepted the write; anything larger is an unset or unread clock.
+/// anchor is refused. This remains part of validating legacy anchors; routine
+/// sessions do not write the clock or derive a new anchor.
 const Duration cbioAnchorTolerance = Duration(minutes: 3);
 
 /// Snapshot metadata key: newest anchored position.
@@ -91,7 +89,7 @@ final class CbioIndexTimeAnchor {
   /// When the app observed the pairing, on the app's own clock.
   final DateTime observedAt;
 
-  /// The epoch the app wrote into the sensor clock this session, when it did.
+  /// The epoch an older session wrote into the sensor clock, when preserved.
   final int? clockReferenceEpochSeconds;
 
   /// How the pairing was obtained; see [CbioAnchorSource].
@@ -164,11 +162,10 @@ final class CbioIndexTimeAnchor {
 
 /// The anchor [records] support right now, or null when they support none.
 ///
-/// [clockReferenceEpochSeconds] is the epoch this session wrote into the
-/// sensor clock; without it the app has no reference to offer and the result is
-/// null. The newest record's own stamp must agree with [now] to within
-/// [tolerance], which is what separates a clock the sensor took from the app
-/// from a counter that was never set.
+/// [clockReferenceEpochSeconds] is an explicitly supplied clock-write reference;
+/// without it the result is null. The newest record's own stamp must agree with
+/// [now] to within [tolerance]. Routine sessions do not call this derivation or
+/// write the sensor clock; the helper remains for validating legacy evidence.
 CbioIndexTimeAnchor? deriveCbioIndexTimeAnchor({
   required List<CbioRawGlucoseRecord> records,
   required int? clockReferenceEpochSeconds,

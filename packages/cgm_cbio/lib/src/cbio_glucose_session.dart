@@ -1,21 +1,19 @@
 /// Authenticated live session for the SIBIONICS / CBio GS1 sensor.
 ///
-/// The session follows the vendor link in the order the SiSensing application
-/// uses it: connect, enable FF31 notifications, authenticate the link, set the
-/// sensor clock once, then read glucose. It is deliberately fail-closed and
+/// The session connects, enables FF31 notifications, authenticates the link,
+/// then uses only the observed read path. It is deliberately fail-closed and
 /// write-minimal:
 ///
 ///   * `03 F0 01 C` device information
 ///   * `19 01 00 <6 address octets> <16 credential bytes> C` authentication
-///   * `06 03 LE32(epoch) C` vendor clock, sent at most once per session
 ///   * `06 0A LE16(index) 00 00 C` packed glucose read
 ///   * `06 08 LE16(index) 00 00 C` raw history / live read
 ///
-/// Activation (`07`), reset, threshold, calibration, key-registration, and
-/// firmware frames are not built here and are rejected before the transport
-/// sees them. The vendor material is resolved once per session from an injected
-/// [CbioCredentialSource], and the link credential never reaches a log, a
-/// snapshot, or an exception message.
+/// Clock (`06 03`), activation (`07`), reset, threshold, calibration,
+/// key-registration, and firmware frames are not sent here and are rejected
+/// before the transport sees them. The vendor material is resolved once per
+/// session from an injected [CbioCredentialSource], and the link credential
+/// never reaches a log, a snapshot, or an exception message.
 ///
 /// The sensor answers one `06 08` request with a stream of `08` batches pushed
 /// to the same characteristic, so history is an ingest problem rather than a
@@ -263,7 +261,6 @@ final class CbioGlucoseSession implements CgmSession {
   static const Set<String> allowedCommandKeys = <String>{
     '03f0',
     '1901',
-    '0603',
     '060a',
     '0608',
   };
@@ -342,8 +339,6 @@ final class CbioGlucoseSession implements CgmSession {
   String? _lastError;
   CgmSyncStage _stage = CgmSyncStage.connecting;
   int _readsUsed = 0;
-  bool _clockWritten = false;
-  int? _clockReferenceEpochSeconds;
   CbioIndexTimeAnchor? _anchor;
   bool _anchorLogged = false;
   bool _budgetExhausted = false;
@@ -467,9 +462,6 @@ final class CbioGlucoseSession implements CgmSession {
     if (!await _authenticate()) {
       return;
     }
-    if (!await _writeClock()) {
-      return;
-    }
     if (_closing) {
       return;
     }
@@ -590,29 +582,6 @@ final class CbioGlucoseSession implements CgmSession {
     }
     _log(CgmLogLevel.debug, 'cbio.address.advertised');
     return octets;
-  }
-
-  Future<bool> _writeClock() async {
-    if (_clockWritten) {
-      return true;
-    }
-    final epoch = _clock().toUtc().millisecondsSinceEpoch ~/ 1000;
-    final wrote = await _sendMasked(
-      buildMaskedCbioClock(epoch, key: _streamKey),
-      label: 'clock',
-      isRead: false,
-    );
-    if (!_requireWritten(wrote)) {
-      return false;
-    }
-    _clockWritten = true;
-    // The one reference the app can offer the record index: the epoch it just
-    // pushed into the sensor clock. The index that corresponds to it is
-    // derived later, from the sensor's own stamps, never from the counter
-    // alone.
-    _clockReferenceEpochSeconds = epoch;
-    _log(CgmLogLevel.info, 'cbio.clock.set');
-    return true;
   }
 
   void _beginHistory(int startIndex) {
@@ -1127,31 +1096,21 @@ final class CbioGlucoseSession implements CgmSession {
           ),
       ];
 
-  /// The anchor this session can support right now, recomputed on every
-  /// publication. It appears only once the sensor's own newest record stamp
-  /// agrees with the app's clock, so a sensor that never took the written
-  /// clock publishes no timestamp at all rather than a guessed one.
+  /// Reuses a previously witnessed anchor only while every covered raw stamp
+  /// remains an exact continuation. Fresh epoch-less records never create one.
   CbioIndexTimeAnchor? _publishAnchor() {
-    final derived = deriveCbioIndexTimeAnchor(
-      records: _archive.records,
-      clockReferenceEpochSeconds: _clockReferenceEpochSeconds,
-      now: _clock().toUtc(),
-    );
     final previous = _anchor;
     final anchor =
-        derived ??
-        (previous != null &&
-                _archive.records.every(
-                  (record) =>
-                      !previous.coversIndex(record.index) ||
-                      previous
-                                  .timeForIndex(record.index)
-                                  .millisecondsSinceEpoch ~/
-                              1000 ==
-                          record.rawTime,
-                )
-            ? previous
-            : null);
+        previous != null &&
+            _archive.records.every(
+              (record) =>
+                  !previous.coversIndex(record.index) ||
+                  previous.timeForIndex(record.index).millisecondsSinceEpoch ~/
+                          1000 ==
+                      record.rawTime,
+            )
+        ? previous
+        : null;
     _anchor = anchor;
     if (anchor != null && !_anchorLogged) {
       _anchorLogged = true;
@@ -1363,7 +1322,6 @@ final class CbioGlucoseSession implements CgmSession {
       'cbio.connect.started' ||
       'cbio.ff31.subscribed' ||
       'cbio.auth.ok' ||
-      'cbio.clock.set' ||
       'cbio.write.raw-history' ||
       CbioSessionFailure.disconnected => message,
       _ => null,

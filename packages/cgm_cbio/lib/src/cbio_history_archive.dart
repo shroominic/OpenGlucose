@@ -45,10 +45,9 @@ final class CbioRawGlucoseRecord {
   /// from it without the sensor's activation time.
   ///
   /// The app never renders it: the only timestamp a record can carry comes from
-  /// an anchor, and an anchor exists only once the sensor's own counter agreed
-  /// with the clock the app wrote into it. The live-edge gate compares the
-  /// counter against the app's own clock as an observation and fails closed
-  /// when the counter was never set.
+  /// a previously witnessed anchor that remains an exact continuation. Fresh
+  /// acquisition has no anchor, and routine sessions do not write the sensor
+  /// clock to manufacture one.
   final int rawTime;
 
   final int reindex;
