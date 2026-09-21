@@ -1,7 +1,7 @@
 # Anytime private record persistence design
 
-Status: proposed for `feature/anytime-5p` / PR106  
-Date: 2026-09-21  
+Status: proposed for `feature/anytime-5p` / PR106
+Date: 2026-09-21
 Risk class: R2 — health/device data and serialized local state
 
 ## Problem

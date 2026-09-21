@@ -11,7 +11,12 @@ const _flushSlotThreshold = 16;
 final _generationPattern = RegExp(r'^[0-9a-f]{32}$');
 
 final class YuwellRecordStoreKey {
-  YuwellRecordStoreKey._(this.digest);
+  YuwellRecordStoreKey._({
+    required this.digest,
+    required String sensorBinding,
+    required String historyGeneration,
+  }) : _sensorBinding = sensorBinding,
+       _historyGeneration = historyGeneration;
 
   factory YuwellRecordStoreKey.forGeneration({
     required String sensorStorageKey,
@@ -34,10 +39,25 @@ final class YuwellRecordStoreKey {
       ..add(storageKeyBytes)
       ..add(<int>[generationBytes.length >> 8, generationBytes.length & 0xff])
       ..add(generationBytes);
-    return YuwellRecordStoreKey._(sha256.convert(input.takeBytes()).toString());
+    return YuwellRecordStoreKey._(
+      digest: sha256.convert(input.takeBytes()).toString(),
+      sensorBinding: sha256.convert(storageKeyBytes).toString(),
+      historyGeneration: historyGeneration,
+    );
   }
 
   final String digest;
+  final String _sensorBinding;
+  final String _historyGeneration;
+
+  void _requireBinding(YuwellRecordBinding binding) {
+    if (_sensorBinding != binding.sensorBinding ||
+        _historyGeneration != binding.historyGeneration) {
+      throw const YuwellProtocolFormatException(
+        'record store namespace belongs to a different binding',
+      );
+    }
+  }
 
   @override
   String toString() => 'YuwellRecordStoreKey(<redacted>)';
@@ -66,6 +86,7 @@ final class YuwellRecordStateOwner {
     required YuwellRecordStoreKey key,
     required YuwellRecordBinding binding,
   }) async {
+    key._requireBinding(binding);
     final encoded = await store.read(key);
     final state = encoded == null
         ? YuwellRecordState.empty(binding: binding)

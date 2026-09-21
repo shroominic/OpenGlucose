@@ -55,6 +55,43 @@ void main() {
   });
 
   group('YuwellRecordStateOwner', () {
+    test('rejects a sensor-mismatched store key before store access', () async {
+      final store = _MemoryRecordStore();
+
+      await expectLater(
+        YuwellRecordStateOwner.restore(
+          store: store,
+          key: _storeKey(),
+          binding: _binding(sensorBinding: 'c' * 64),
+        ),
+        throwsA(isA<YuwellProtocolFormatException>()),
+      );
+
+      expect(store.reads, 0);
+      expect(store.writes, 0);
+      expect(store.deletes, 0);
+    });
+
+    test(
+      'rejects a generation-mismatched store key before store access',
+      () async {
+        final store = _MemoryRecordStore();
+
+        await expectLater(
+          YuwellRecordStateOwner.restore(
+            store: store,
+            key: _storeKey(),
+            binding: _binding(historyGeneration: 'c' * 32),
+          ),
+          throwsA(isA<YuwellProtocolFormatException>()),
+        );
+
+        expect(store.reads, 0);
+        expect(store.writes, 0);
+        expect(store.deletes, 0);
+      },
+    );
+
     test('restores a missing value as a clean empty state', () async {
       final store = _MemoryRecordStore();
 
@@ -255,14 +292,18 @@ YuwellRecordStoreKey _storeKey() => YuwellRecordStoreKey.forGeneration(
   historyGeneration: 'b' * 32,
 );
 
-YuwellRecordBinding _binding({String firmware = 'V1150'}) =>
-    YuwellRecordBinding(
-      sensorBinding: 'a' * 64,
-      historyGeneration: 'b' * 32,
-      firmware: firmware,
-      historyOpcode: YuwellCt5Commands.alternateHistoryCommand,
-      layout: YuwellHistoryRecordLayout.alert17,
-    );
+YuwellRecordBinding _binding({
+  String sensorBinding =
+      '51e7b3c9aa446a1901c32f083bbbf57e5e102e452587eb397022cf823ee3472b',
+  String historyGeneration = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  String firmware = 'V1150',
+}) => YuwellRecordBinding(
+  sensorBinding: sensorBinding,
+  historyGeneration: historyGeneration,
+  firmware: firmware,
+  historyOpcode: YuwellCt5Commands.alternateHistoryCommand,
+  layout: YuwellHistoryRecordLayout.alert17,
+);
 
 Future<YuwellRecordStateOwner> _restore(_MemoryRecordStore store) =>
     YuwellRecordStateOwner.restore(
