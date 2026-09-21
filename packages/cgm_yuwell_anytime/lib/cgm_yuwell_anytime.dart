@@ -11,6 +11,8 @@ export 'src/errors.dart';
 export 'src/frames.dart';
 export 'src/history_record.dart';
 export 'src/packed_record.dart';
+export 'src/record_state.dart';
+export 'src/record_store.dart';
 export 'src/session_security.dart';
 export 'src/transform.dart';
 export 'src/transmitter_glucose_validation.dart';

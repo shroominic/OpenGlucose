@@ -13,5 +13,8 @@
   setup-date completion while preserving the internal setup history chain.
 - Reject explicit history layouts that conflict with their response opcode,
   including ambiguous base-opcode payload lengths.
+- Add a strict versioned private raw-slot codec, generation-aware store key and
+  serialized persistence owner with bounded atomic flush/retry semantics. This
+  package boundary does not yet wire app storage or authorize cursor restore.
 - Keep all transmitter glucose private until physical differential validation;
   pre-V1150 firmware and all unsafe administrative operations fail closed.
