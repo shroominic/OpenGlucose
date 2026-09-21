@@ -2,6 +2,7 @@ import 'package:cgm_core/cgm_core.dart';
 
 import 'demo_driver.dart';
 import 'mock_scenarios.dart';
+import 'health_state_store.dart';
 
 /// Initial mock scenario for web/demo builds, e.g.
 /// `--dart-define=OG_SCENARIO=activeHigh`. Unknown/empty values fall back to
@@ -18,5 +19,5 @@ bool get platformLibreGen1StreamingEnabled => false;
 
 Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() async => null;
 
-CgmDriver buildPlatformDriver() =>
+CgmDriver buildPlatformDriver([HealthStateStore? healthStateStore]) =>
     DemoCgmDriver(initialScenario: MockScenario.fromId(kOgScenario));

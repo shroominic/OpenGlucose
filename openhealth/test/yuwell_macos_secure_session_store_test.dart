@@ -21,6 +21,11 @@ void main() {
     activationStartedAt: DateTime.utc(2026, 9, 2, 3, 4, 5),
   );
 
+  YuwellSessionCredentials credentialsV2() => credentials().copyWith(
+    verifiedFirmware: 'V1150',
+    historyGeneration: 'b' * 32,
+  );
+
   test('credentials round-trip through the Keychain-backed store', () async {
     await store.write('private-sensor-identity', credentials());
     final restored = await store.read('private-sensor-identity');
@@ -38,6 +43,17 @@ void main() {
     for (final key in fakeStore.data.keys) {
       expect(key, isNot(contains('private-sensor-identity')));
     }
+  });
+
+  test('v2 history identity round-trips through the Keychain store', () async {
+    await store.write('private-v2-identity', credentialsV2());
+
+    final restored = await store.read('private-v2-identity');
+
+    expect(restored, isNotNull);
+    expect(restored!.verifiedFirmware, 'V1150');
+    expect(restored.historyGeneration, 'b' * 32);
+    expect(restored.canRestoreHistory, isTrue);
   });
 
   test('credential deletion does not affect another alias', () async {
