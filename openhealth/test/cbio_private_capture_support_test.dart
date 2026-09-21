@@ -283,6 +283,27 @@ void main() {
     expect(manifest['retainedTailProof'], 'unavailable_no_protocol_watermark');
     expect(manifest.keys, hasLength(34));
   });
+
+  test('caught capture failure is bound into exported driver error', () {
+    expect(
+      captureExportDriverError(
+        driverError: null,
+        runFailure: StateError('private detail must not be exported'),
+      ),
+      'capture_run_failure',
+    );
+    expect(
+      captureExportDriverError(
+        driverError: 'driver_reported_error',
+        runFailure: StateError('later teardown failure'),
+      ),
+      'driver_reported_error',
+    );
+    expect(
+      captureExportDriverError(driverError: null, runFailure: null),
+      isNull,
+    );
+  });
 }
 
 Map<String, String> _contextValues() => <String, String>{

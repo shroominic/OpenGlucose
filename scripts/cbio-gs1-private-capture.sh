@@ -419,20 +419,19 @@ ruby -rjson -e '
     manifest["attemptedWriteCount"] == attempted.length &&
     manifest["successfulWriteCount"] == successful.length
   abort "manifest driver" unless
-    %w[connecting authenticating syncing ready error disconnected].include?(manifest["driverStage"]) &&
-    (manifest["driverError"].nil? || manifest["driverError"].is_a?(String))
+    %w[connecting authenticating syncing ready].include?(manifest["driverStage"]) &&
+    manifest["driverError"].nil?
   abort "manifest types" unless
     [true, false].include?(manifest["prefixValid"]) &&
     [true, false].include?(manifest["historyWindowClosed"]) &&
     manifest["anchorPresent"] == false && manifest["bootstrap"] == "fresh" &&
-    %w[pending observing].include?(manifest["state"]) &&
+    manifest["state"] == "observing" && manifest["prefixValid"] == true &&
     %w[recordCount indexGapCount rawTimeBreakCount rawTimeSegmentCount].all? { |key|
       integer.call(manifest[key]) && manifest[key] >= 0
     } && ["firstIndex", "lastIndex"].all? { |key| manifest[key].nil? || integer.call(manifest[key]) }
 
-  pending = full["state"] == "pending"
   full_keys = %w[bootstrap captureId driverId profile records schemaVersion sensorKey state]
-  full_keys += %w[currentCheckpoint firstObservation] unless pending
+  full_keys += %w[currentCheckpoint firstObservation]
   abort "full shape" unless exact.call(full, full_keys)
   abort "full binding" unless full["schemaVersion"] == 1 && full["driverId"] == "cbio" &&
     full["profile"] == "raw08-observed" && full["sensorKey"] == target &&
@@ -448,30 +447,23 @@ ruby -rjson -e '
       }
   end
   abort "record count" unless manifest["recordCount"] == rows.length
-  if pending
-    abort "pending state" unless rows.empty? && manifest["prefixValid"] == false &&
-      manifest["firstIndex"].nil? && manifest["lastIndex"].nil? &&
-      manifest["indexGapCount"] == 0 && manifest["rawTimeBreakCount"] == 0 &&
-      manifest["rawTimeSegmentCount"] == 0 &&
-      manifest["captureCompleteness"] == "authenticated_query_no_records"
-  else
-    abort "observing empty" if rows.empty?
-    indexes = rows.map(&:first)
-    gaps = indexes.each_cons(2).count { |left, right| right != left + 1 }
-    breaks = rows.map { |row| row[1] }.each_cons(2).count { |left, right| right - left != 60 }
-    checkpoint = JSON.parse(full["currentCheckpoint"])
-    abort "checkpoint" unless exact.call(checkpoint, %w[index rawTime sensorKey version]) &&
-      checkpoint["version"] == 1 && checkpoint["sensorKey"] == target &&
-      checkpoint["index"] == rows.last[0] && checkpoint["rawTime"] == rows.last[1]
-    abort "first observation" unless full["firstObservation"] == rows.first.take(2)
-    abort "observing summary" unless indexes.first == 1 && gaps == 0 &&
-      manifest["prefixValid"] == true && manifest["firstIndex"] == indexes.first &&
-      manifest["lastIndex"] == indexes.last && manifest["indexGapCount"] == gaps &&
-      manifest["rawTimeBreakCount"] == breaks && manifest["rawTimeSegmentCount"] == breaks + 1
-    expected = manifest["historyWindowClosed"] ?
-      "contiguous_prefix_tail_unproven" : "contiguous_prefix_cut_off"
-    abort "observing completeness" unless manifest["captureCompleteness"] == expected
-  end
+  abort "observing state" unless full["state"] == "observing"
+  abort "observing empty" if rows.empty?
+  indexes = rows.map(&:first)
+  gaps = indexes.each_cons(2).count { |left, right| right != left + 1 }
+  breaks = rows.map { |row| row[1] }.each_cons(2).count { |left, right| right - left != 60 }
+  checkpoint = JSON.parse(full["currentCheckpoint"])
+  abort "checkpoint" unless exact.call(checkpoint, %w[index rawTime sensorKey version]) &&
+    checkpoint["version"] == 1 && checkpoint["sensorKey"] == target &&
+    checkpoint["index"] == rows.last[0] && checkpoint["rawTime"] == rows.last[1]
+  abort "first observation" unless full["firstObservation"] == rows.first.take(2)
+  abort "observing summary" unless indexes.first == 1 && gaps == 0 &&
+    manifest["prefixValid"] == true && manifest["firstIndex"] == indexes.first &&
+    manifest["lastIndex"] == indexes.last && manifest["indexGapCount"] == gaps &&
+    manifest["rawTimeBreakCount"] == breaks && manifest["rawTimeSegmentCount"] == breaks + 1
+  expected = manifest["historyWindowClosed"] ?
+    "contiguous_prefix_tail_unproven" : "contiguous_prefix_cut_off"
+  abort "observing completeness" unless manifest["captureCompleteness"] == expected
 ' "$capture_full_pending" "$capture_manifest_pending" "$capture_prompt_pending" \
   "$capture_audit_pending" "$capture_run_id" "$capture_source_revision" \
   "$capture_label_sha" "$capture_full_sha" "$capture_full_bytes" \

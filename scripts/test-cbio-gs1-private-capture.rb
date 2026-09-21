@@ -35,6 +35,7 @@ def run_capture(
   hang: nil,
   corrupt_pull: false,
   switch_after_ready: false,
+  scenario: :valid_cutoff,
   initial_user: "10",
   source_change: nil,
   allow_expected_untracked: false,
@@ -200,7 +201,7 @@ def run_capture(
       printf 'flutter-start-seen\n' >>"$FAKE_AUDIT"
       printf 'CBIO-CAPTURE-STARTED run=%s\n' "$run"
       ruby -rjson -rdigest -e '
-        root, run, revision, target, mutation_path = ARGV
+        root, run, revision, target, mutation_path, scenario = ARGV
         mutation = mutation_path.empty? ? nil : JSON.parse(File.read(mutation_path))
         apply = lambda do |name, value|
           next value unless mutation && mutation.fetch("artifact") == name
@@ -210,11 +211,26 @@ def run_capture(
           mutation["delete"] ? cursor.delete(path.last) : cursor[path.last] = mutation["value"]
           value
         end
-        full = apply.call("full", {
+        pending = scenario == "pending"
+        rows = pending ? [] : [
+          [1, 120, 9, 321, 7, 432, 5],
+          [2, 180, 9, 322, 8, 433, 5],
+          [3, 240, 9, 323, 9, 434, 5]
+        ]
+        full = {
           "schemaVersion" => 1, "driverId" => "cbio", "profile" => "raw08-observed",
-          "sensorKey" => target, "captureId" => run, "state" => "pending",
-          "bootstrap" => {"kind" => "fresh"}, "records" => []
-        })
+          "sensorKey" => target, "captureId" => run,
+          "state" => pending ? "pending" : "observing",
+          "bootstrap" => {"kind" => "fresh"}, "records" => rows
+        }
+        unless pending
+          full["firstObservation"] = rows.first.take(2)
+          full["currentCheckpoint"] = JSON.generate({
+            "version" => 1, "sensorKey" => target,
+            "index" => rows.last[0], "rawTime" => rows.last[1]
+          })
+        end
+        full = apply.call("full", full)
         prompt = apply.call("prompt", {
           "schemaVersion" => 1, "runId" => run, "observed" => false,
           "matchCount" => 0, "maskedBytesHex" => nil
@@ -232,6 +248,15 @@ def run_capture(
         full_sha = Digest::SHA256.hexdigest(full_json)
         prompt_sha = Digest::SHA256.hexdigest(prompt_json)
         audit_sha = Digest::SHA256.hexdigest(audit_json)
+        driver_stage = case scenario
+        when "actual_error" then "error"
+        when "premature_disconnect" then "disconnected"
+        else "syncing"
+        end
+        driver_error = case scenario
+        when "driver_error", "caught_failure" then "capture_run_failure"
+        when "actual_error" then "driver_reported_error"
+        end
         manifest = {
           "schemaVersion" => 1, "sourceRevision" => revision,
           "packageId" => "com.openglucose.app.debug", "runId" => run,
@@ -241,23 +266,27 @@ def run_capture(
           "commandAuditSha256" => audit_sha, "commandAuditBytes" => audit_json.bytesize,
           "authPromptObserved" => prompt["observed"], "authPromptMatchCount" => prompt["matchCount"],
           "versionEvidence" => prompt["observed"] ? "incoming_auth_prompt_exact_match" : "declared_context_only",
-          "driverStage" => "disconnected", "driverError" => nil,
+          "driverStage" => driver_stage, "driverError" => driver_error,
           "identityMatched" => true, "topologyMatched" => true,
           "attemptedWriteCount" => 3, "successfulWriteCount" => 3,
-          "commandSequenceComplete" => true, "state" => "pending", "bootstrap" => "fresh",
-          "prefixValid" => false, "recordCount" => 0, "firstIndex" => nil,
-          "lastIndex" => nil, "indexGapCount" => 0, "rawTimeBreakCount" => 0,
-          "rawTimeSegmentCount" => 0, "anchorPresent" => false,
+          "commandSequenceComplete" => true,
+          "state" => pending ? "pending" : "observing", "bootstrap" => "fresh",
+          "prefixValid" => !pending, "recordCount" => rows.length,
+          "firstIndex" => pending ? nil : rows.first[0],
+          "lastIndex" => pending ? nil : rows.last[0],
+          "indexGapCount" => 0, "rawTimeBreakCount" => 0,
+          "rawTimeSegmentCount" => pending ? 0 : 1, "anchorPresent" => false,
           "historyWindowClosed" => false,
           "retainedTailProof" => "unavailable_no_protocol_watermark",
-          "captureCompleteness" => "authenticated_query_no_records"
+          "captureCompleteness" => pending ?
+            "authenticated_query_no_records" : "contiguous_prefix_cut_off"
         }
         manifest = apply.call("manifest", manifest)
         File.write(File.join(root, "full-records.json"), full_json)
         File.write(File.join(root, "auth-prompt-receipt.json"), prompt_json)
         File.write(File.join(root, "command-audit.json"), audit_json)
         File.write(File.join(root, "manifest.json"), JSON.generate(manifest))
-      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE"
+      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE" "$FAKE_SCENARIO"
       full_bytes=$(wc -c <"$FAKE_DEVICE/$relative/full-records.json" | tr -d ' ')
       full_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/full-records.json" | awk '{print $1}')
       manifest_bytes=$(wc -c <"$FAKE_DEVICE/$relative/manifest.json" | tr -d ' ')
@@ -267,13 +296,18 @@ def run_capture(
       audit_bytes=$(wc -c <"$FAKE_DEVICE/$relative/command-audit.json" | tr -d ' ')
       audit_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/command-audit.json" | awk '{print $1}')
       [ "$FAKE_SWITCH_AFTER_READY" != 1 ] || printf '0\n' >"$FAKE_USER_FILE"
-      printf 'CBIO-CAPTURE-READY run=%s full=full-records.json full_bytes=%s full_sha=%s manifest=manifest.json manifest_bytes=%s manifest_sha=%s prompt=auth-prompt-receipt.json prompt_bytes=%s prompt_sha=%s outcome=authenticated_query_no_records audit=command-audit.json audit_bytes=%s audit_sha=%s ack=ack.json\n' \
-        "$run" "$full_bytes" "$full_sha" "$manifest_bytes" "$manifest_sha" "$prompt_bytes" "$prompt_sha" "$audit_bytes" "$audit_sha"
+      case "$FAKE_SCENARIO" in
+        pending) outcome=authenticated_query_no_records ;;
+        *) outcome=contiguous_prefix_cut_off ;;
+      esac
+      printf 'CBIO-CAPTURE-READY run=%s full=full-records.json full_bytes=%s full_sha=%s manifest=manifest.json manifest_bytes=%s manifest_sha=%s prompt=auth-prompt-receipt.json prompt_bytes=%s prompt_sha=%s outcome=%s audit=command-audit.json audit_bytes=%s audit_sha=%s ack=ack.json\n' \
+        "$run" "$full_bytes" "$full_sha" "$manifest_bytes" "$manifest_sha" "$prompt_bytes" "$prompt_sha" "$outcome" "$audit_bytes" "$audit_sha"
       until [ -f "$FAKE_DEVICE/$relative/ack.json" ]; do sleep 0.02; done
       for name in full-records.json manifest.json auth-prompt-receipt.json command-audit.json; do
         [ ! -e "$FAKE_DESTINATION/$name" ] || exit 9
       done
       printf 'flutter-ack-seen\n' >>"$FAKE_AUDIT"
+      [ "$FAKE_SCENARIO" != caught_failure ] || exit 7
     SH
 
     actual_destination = destination_env.start_with?("/") ? destination_env : File.join(private_root, destination_env)
@@ -293,6 +327,7 @@ def run_capture(
       "FAKE_AUDIT" => audit, "FAKE_DEVICE" => device, "FAKE_USER_FILE" => user_file,
       "FAKE_RUN_ID" => RUN_ID, "FAKE_SOURCE_REVISION" => head, "FAKE_TARGET" => DEVICE_ID,
       "FAKE_MUTATION_FILE" => mutation ? mutation_file : "",
+      "FAKE_SCENARIO" => scenario.to_s,
       "FAKE_CORRUPT_PULL" => corrupt_pull ? "1" : "0",
       "FAKE_SWITCH_AFTER_READY" => switch_after_ready ? "1" : "0",
       "FAKE_HANG" => hang.to_s, "FAKE_DESTINATION" => actual_destination
@@ -356,6 +391,27 @@ run_capture do |result|
   assert(audit.index("flutter-start-seen") < audit.index("flutter-ack-seen"), "ACK after START")
 end
 
+admission_failures = []
+{
+  pending: "empty pending capture",
+  driver_error: "non-null driver error",
+  actual_error: "terminal driver error",
+  premature_disconnect: "premature disconnect",
+  caught_failure: "caught run failure"
+}.each do |scenario, label|
+  begin
+    run_capture(scenario: scenario) do |result|
+      assert_rejected(result, label, pulled: true)
+    end
+  rescue RuntimeError => error
+    admission_failures << "#{label}: #{error.message}"
+  end
+end
+assert(
+  admission_failures.empty?,
+  "unsafe success admission:\n#{admission_failures.join("\n")}",
+)
+
 run_capture(allow_expected_untracked: true) do |result|
   assert(result[:status].success?, "exact preserved untracked path was rejected: #{result[:stderr]}")
 end
@@ -398,9 +454,9 @@ manifest_mutations = {
   "driverStage" => "invalid", "driverError" => 1, "identityMatched" => false,
   "topologyMatched" => false, "attemptedWriteCount" => 4,
   "successfulWriteCount" => 2, "commandSequenceComplete" => false,
-  "state" => "observing", "bootstrap" => "legacy", "prefixValid" => true,
-  "recordCount" => 1, "firstIndex" => 1, "lastIndex" => 1,
-  "indexGapCount" => 1, "rawTimeBreakCount" => 1, "rawTimeSegmentCount" => 1,
+  "state" => "pending", "bootstrap" => "legacy", "prefixValid" => false,
+  "recordCount" => 0, "firstIndex" => nil, "lastIndex" => nil,
+  "indexGapCount" => 1, "rawTimeBreakCount" => 1, "rawTimeSegmentCount" => 2,
   "anchorPresent" => true, "historyWindowClosed" => "false",
   "retainedTailProof" => "invalid", "captureCompleteness" => "no_authenticated_raw_query"
 }

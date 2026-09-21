@@ -119,7 +119,10 @@ Future<void> _runCapture() async {
 
   CgmSession? session;
   var historyWindowClosed = false;
-  var driverStage = CgmSyncStage.connecting.name;
+  // This is the last acquisition state observed before intentional teardown.
+  // A successful cleanup disconnect must not be confused with a premature
+  // acquisition disconnect.
+  var acquisitionStage = CgmSyncStage.connecting.name;
   String? driverError;
   Object? runFailure;
   try {
@@ -141,7 +144,7 @@ Future<void> _runCapture() async {
     session = await driver.connect(sensor);
     while (stopwatch.elapsed < _captureCutoff) {
       final snapshot = session.currentSnapshot;
-      driverStage = snapshot.stage.name;
+      acquisitionStage = snapshot.stage.name;
       driverError = snapshot.lastError;
       if (snapshot.stage == CgmSyncStage.ready) {
         historyWindowClosed = true;
@@ -177,6 +180,10 @@ Future<void> _runCapture() async {
     throw StateError('Capture full-record envelope is unavailable.');
   }
   final authenticatedRawQuery = exactTransport.commandSequenceComplete;
+  driverError = captureExportDriverError(
+    driverError: driverError,
+    runFailure: runFailure,
+  );
   final summary = inspectCaptureEnvelope(
     envelope,
     sensorKey: _context.targetDeviceId,
@@ -204,7 +211,7 @@ Future<void> _runCapture() async {
     commandAuditBytes: commandAuditBytes,
     authPromptObserved: promptSink.observed,
     authPromptMatchCount: promptSink.matchCount,
-    driverStage: driverStage,
+    driverStage: acquisitionStage,
     driverError: driverError,
     identityMatched: exactTransport.identityMatched,
     topologyMatched: exactTransport.topologyMatched,

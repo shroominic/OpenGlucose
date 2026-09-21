@@ -607,6 +607,11 @@ String buildCaptureManifest({
   });
 }
 
+String? captureExportDriverError({
+  required String? driverError,
+  required Object? runFailure,
+}) => driverError ?? (runFailure == null ? null : 'capture_run_failure');
+
 final class _ExactCaptureConnection implements BleConnection, BleNegotiatedMtu {
   _ExactCaptureConnection({
     required BleConnection delegate,
