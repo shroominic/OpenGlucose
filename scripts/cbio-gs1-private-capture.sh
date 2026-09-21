@@ -5,13 +5,20 @@ umask 077
 capture_script_dir=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)
 capture_root=$(CDPATH='' cd -P "$capture_script_dir/.." && pwd)
 capture_app_package=com.openglucose.app.debug
+capture_app_version_code=29
+capture_app_version_name=0.4.0-debug
+capture_launch_activity=com.aidex.aidex_flutter.MainActivity
+capture_expected_installed_sha=70547d756cae308d45cd76739e93ad3727225175fdd2a8cf8a7862cc1859eb4a
+capture_expected_signer_sha=ad5e6dd01a944d2ea159d1bb1b1376de8a3962beaa95ddb0d7af513fe84ebcb5
 capture_device_id=${DEVICE_ID:-}
 capture_android_user=${ANDROID_USER_ID:-}
 capture_context=${CBIO_DART_DEFINE_FROM_FILE:-}
 capture_destination=${CAPTURE_DIR:-}
 capture_build_timeout=${CBIO_BUILD_TIMEOUT_SECONDS:-900}
+capture_operation_timeout=${CBIO_OPERATION_TIMEOUT_SECONDS:-30}
 capture_radio_seconds=${CBIO_CAPTURE_TIMEOUT_SECONDS:-300}
-capture_flutter_pid=
+capture_logcat_pid=
+capture_prearmed_deadline_ms=
 capture_radio_deadline_ms=
 
 capture_die() {
@@ -20,9 +27,13 @@ capture_die() {
 }
 
 capture_cleanup() {
-  if [ -n "$capture_flutter_pid" ] && kill -0 "$capture_flutter_pid" 2>/dev/null; then
-    kill "$capture_flutter_pid" 2>/dev/null || true
-    wait "$capture_flutter_pid" 2>/dev/null || true
+  if [ -n "$capture_logcat_pid" ] && kill -0 "$capture_logcat_pid" 2>/dev/null; then
+    kill "$capture_logcat_pid" 2>/dev/null || true
+    sleep 0.1
+    if kill -0 "$capture_logcat_pid" 2>/dev/null; then
+      kill -KILL "$capture_logcat_pid" 2>/dev/null || true
+    fi
+    wait "$capture_logcat_pid" 2>/dev/null || true
   fi
 }
 trap capture_cleanup EXIT HUP INT TERM
@@ -39,11 +50,10 @@ capture_monotonic_ms() {
   ruby -e 'puts((Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).floor)'
 }
 
-capture_run_budgeted() {
-  [ -n "$capture_radio_deadline_ms" ] || capture_die 'capture watchdog is unavailable'
-  capture_budget_now=$(capture_monotonic_ms)
-  capture_budget_remaining=$((capture_radio_deadline_ms - capture_budget_now))
-  [ "$capture_budget_remaining" -gt 0 ] || return 124
+capture_run_limited() {
+  capture_limit_ms=$1
+  shift
+  [ "$capture_limit_ms" -gt 0 ] || return 124
   ruby -e '
     budget = Integer(ARGV.shift) / 1000.0
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + budget
@@ -65,14 +75,41 @@ capture_run_budgeted() {
       sleep 0.02
     end
     exit(status.exitstatus || 128 + status.termsig)
-  ' "$capture_budget_remaining" "$@"
+  ' "$capture_limit_ms" "$@"
+}
+
+capture_deadline_remaining() {
+  capture_deadline=$1
+  capture_remaining=$((capture_deadline - $(capture_monotonic_ms)))
+  [ "$capture_remaining" -gt 0 ] || return 124
+  printf '%s\n' "$capture_remaining"
+}
+
+capture_run_prearmed() {
+  capture_prearmed_remaining=$(capture_deadline_remaining "$capture_prearmed_deadline_ms") || return 124
+  capture_operation_ms=$((capture_operation_timeout * 1000))
+  if [ "$capture_prearmed_remaining" -lt "$capture_operation_ms" ]; then
+    capture_operation_ms=$capture_prearmed_remaining
+  fi
+  capture_run_limited "$capture_operation_ms" "$@"
+}
+
+capture_run_build() {
+  capture_build_remaining=$(capture_deadline_remaining "$capture_prearmed_deadline_ms") || return 124
+  capture_run_limited "$capture_build_remaining" "$@"
+}
+
+capture_run_budgeted() {
+  [ -n "$capture_radio_deadline_ms" ] || capture_die 'capture watchdog is unavailable'
+  capture_budget_remaining=$(capture_deadline_remaining "$capture_radio_deadline_ms") || return 124
+  capture_run_limited "$capture_budget_remaining" "$@"
 }
 
 capture_adb_command() {
   if [ -n "$capture_radio_deadline_ms" ]; then
     capture_run_budgeted "$capture_adb" -s "$capture_device_id" "$@"
   else
-    "$capture_adb" -s "$capture_device_id" "$@"
+    capture_run_prearmed "$capture_adb" -s "$capture_device_id" "$@"
   fi
 }
 
@@ -117,6 +154,22 @@ capture_run_as_pull() {
 capture_sha256() { LC_ALL=C shasum -a 256 "$1" | awk '{print $1}'; }
 capture_file_bytes() { wc -c <"$1" | tr -d '[:space:]'; }
 
+capture_validate_source() {
+  capture_checked_revision=$(capture_run_prearmed git -C "$capture_root" rev-parse HEAD) ||
+    capture_die 'source revision check exceeded the build-to-ARMED deadline'
+  [ "$capture_checked_revision" = "$capture_source_revision" ] ||
+    capture_die 'capture source revision changed after admission'
+  capture_checked_status=$(capture_run_prearmed git -C "$capture_root" status --porcelain=v1 --untracked-files=all) ||
+    capture_die 'source status check exceeded the build-to-ARMED deadline'
+  case "$capture_checked_status" in
+    '') ;;
+    '?? docs/superpowers/cbio-offset4-evidence-report.md') ;;
+    *) capture_die 'capture source worktree changed after admission' ;;
+  esac
+  [ "$(capture_sha256 "$capture_context")" = "$capture_context_sha" ] ||
+    capture_die 'private capture context changed after admission'
+}
+
 [ -n "$capture_device_id" ] || capture_die 'DEVICE_ID is required'
 [ -n "$capture_android_user" ] || capture_die 'ANDROID_USER_ID is required'
 case "$capture_android_user" in
@@ -126,19 +179,36 @@ esac
   capture_die 'this capture is authorized only for Android user 10'
 [ -n "$capture_context" ] || capture_die 'CBIO_DART_DEFINE_FROM_FILE is required'
 [ -n "$capture_destination" ] || capture_die 'CAPTURE_DIR is required'
-case "$capture_build_timeout:$capture_radio_seconds" in
+case "$capture_build_timeout:$capture_operation_timeout:$capture_radio_seconds" in
   *[!0-9:]*|:*|*:) capture_die 'capture timeouts must be integers' ;;
 esac
 [ "$capture_build_timeout" -gt 0 ] || capture_die 'build timeout must be positive'
+[ "$capture_operation_timeout" -gt 0 ] || capture_die 'operation timeout must be positive'
 [ "$capture_radio_seconds" -gt 0 ] && [ "$capture_radio_seconds" -le 300 ] ||
   capture_die 'capture timeout must be between 1 and 300 seconds'
 command -v ruby >/dev/null 2>&1 || capture_die 'ruby is required'
 command -v shasum >/dev/null 2>&1 || capture_die 'shasum is required'
 capture_adb=$(command -v adb 2>/dev/null || true)
 [ -n "$capture_adb" ] || capture_die 'adb is required'
-command -v flutter >/dev/null 2>&1 || capture_die 'flutter is required'
+capture_flutter=$(command -v flutter 2>/dev/null || true)
+[ -n "$capture_flutter" ] || capture_die 'flutter is required'
+capture_aapt=$(command -v aapt 2>/dev/null || true)
+capture_apksigner=$(command -v apksigner 2>/dev/null || true)
+if [ -z "$capture_aapt" ] || [ -z "$capture_apksigner" ]; then
+  capture_sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+  if [ -z "$capture_sdk" ] && [ -f "$capture_root/openhealth/android/local.properties" ]; then
+    capture_sdk=$(sed -n 's/^sdk\.dir=//p' "$capture_root/openhealth/android/local.properties" | tail -n 1)
+  fi
+  if [ -n "$capture_sdk" ]; then
+    [ -n "$capture_aapt" ] || capture_aapt=$(find "$capture_sdk/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt -print 2>/dev/null | sort -V | tail -n 1)
+    [ -n "$capture_apksigner" ] || capture_apksigner=$(find "$capture_sdk/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print 2>/dev/null | sort -V | tail -n 1)
+  fi
+fi
+[ -n "$capture_aapt" ] && [ -x "$capture_aapt" ] || capture_die 'aapt is required'
+[ -n "$capture_apksigner" ] && [ -x "$capture_apksigner" ] || capture_die 'apksigner is required'
+capture_prearmed_deadline_ms=$(( $(capture_monotonic_ms) + capture_build_timeout * 1000 ))
 
-ruby -rpathname -e '
+capture_run_prearmed ruby -rpathname -e '
   context, destination, root, uid_text = ARGV
   uid = Integer(uid_text)
   abort "context path" unless Pathname.new(context).absolute?
@@ -174,7 +244,9 @@ ruby -rpathname -e '
 ' "$capture_context" "$capture_destination" "$capture_root" "$(id -u)" ||
   capture_die 'private capture paths are invalid'
 
-capture_metadata=$(ruby -rjson -e '
+capture_context_sha=$(capture_sha256 "$capture_context")
+
+capture_metadata=$(capture_run_prearmed ruby -rjson -e '
   value = JSON.parse(File.read(ARGV.fetch(0)))
   keys = %w[
     CBIO_VENDOR_STREAM_KEY_HEX CBIO_VENDOR_AUTH_MATERIAL_HEX
@@ -215,10 +287,12 @@ capture_label_sha=$(printf '%s\n' "$capture_metadata" | sed -n '4p')
 capture_source_revision=$(printf '%s\n' "$capture_metadata" | sed -n '5p')
 capture_prompt_hex=$(printf '%s\n' "$capture_metadata" | sed -n '6p')
 capture_target_id=$(printf '%s\n' "$capture_metadata" | sed -n '7p')
-capture_actual_revision=$(git -C "$capture_root" rev-parse HEAD)
+capture_actual_revision=$(capture_run_prearmed git -C "$capture_root" rev-parse HEAD) ||
+  capture_die 'source revision preflight exceeded the build-to-ARMED deadline'
 [ "$capture_source_revision" = "$capture_actual_revision" ] ||
   capture_die 'capture source revision does not match the worktree HEAD'
-capture_source_status=$(git -C "$capture_root" status --porcelain=v1 --untracked-files=all)
+capture_source_status=$(capture_run_prearmed git -C "$capture_root" status --porcelain=v1 --untracked-files=all) ||
+  capture_die 'source status preflight exceeded the build-to-ARMED deadline'
 case "$capture_source_status" in
   '') ;;
   '?? docs/superpowers/cbio-offset4-evidence-report.md') ;;
@@ -229,26 +303,110 @@ capture_require_current_user
 mkdir -m 700 "$capture_destination"
 capture_quarantine=$capture_destination/quarantine
 mkdir -m 700 "$capture_quarantine"
-capture_log=$capture_destination/flutter.log
+capture_log=$capture_destination/capture.log
 : >"$capture_log"
 chmod 600 "$capture_log"
 
+capture_apk=$capture_root/openhealth/build/app/outputs/flutter-apk/app-debug.apk
+capture_build_started=$(capture_now)
 (
   cd "$capture_root/openhealth"
-  exec flutter test --no-pub integration_test/cbio_raw08_private_capture_test.dart \
-    -d "$capture_device_id" --dart-define-from-file="$capture_context"
-) >"$capture_log" 2>&1 &
-capture_flutter_pid=$!
+  capture_run_build "$capture_flutter" build apk --debug --no-pub \
+    --target integration_test/cbio_raw08_private_capture_test.dart \
+    --target-platform android-arm64 \
+    --dart-define-from-file="$capture_context" \
+    --dart-define=CBIO_CAPTURE_STANDALONE=true
+) >>"$capture_log" 2>&1 || capture_die 'host-only standalone APK build failed or timed out'
 
-capture_build_deadline=$(( $(capture_now) + capture_build_timeout ))
-capture_armed="CBIO-CAPTURE-ARMED run=$capture_run_id start=start.json"
-while ! grep -Fqx "$capture_armed" "$capture_log"; do
-  if ! kill -0 "$capture_flutter_pid" 2>/dev/null; then
-    wait "$capture_flutter_pid" 2>/dev/null || true
-    capture_die 'Flutter exited before the capture was armed'
+capture_validate_source
+[ -f "$capture_apk" ] || capture_die 'standalone APK was not produced'
+capture_apk_mtime=$(capture_run_prearmed ruby -e 'puts File.mtime(ARGV.fetch(0)).to_i' "$capture_apk") ||
+  capture_die 'standalone APK freshness check timed out'
+[ "$capture_apk_mtime" -ge "$capture_build_started" ] || capture_die 'standalone APK is stale'
+chmod 600 "$capture_apk"
+capture_candidate_sha=$(capture_sha256 "$capture_apk")
+capture_hex "$capture_candidate_sha" 64 || capture_die 'standalone APK digest is invalid'
+
+capture_badging=$(capture_run_prearmed "$capture_aapt" dump badging "$capture_apk") ||
+  capture_die 'standalone APK metadata preflight failed or timed out'
+capture_candidate_package=$(printf '%s\n' "$capture_badging" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+capture_candidate_version_code=$(printf '%s\n' "$capture_badging" | sed -n "s/^package:.*versionCode='\([^']*\)'.*/\1/p")
+capture_candidate_version_name=$(printf '%s\n' "$capture_badging" | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p")
+capture_candidate_activity=$(printf '%s\n' "$capture_badging" | sed -n "s/^launchable-activity: name='\([^']*\)'.*/\1/p")
+[ "$capture_candidate_package" = "$capture_app_package" ] || capture_die 'standalone APK package mismatch'
+[ "$capture_candidate_version_code" = "$capture_app_version_code" ] || capture_die 'standalone APK versionCode mismatch'
+[ "$capture_candidate_version_name" = "$capture_app_version_name" ] || capture_die 'standalone APK versionName mismatch'
+[ "$capture_candidate_activity" = "$capture_launch_activity" ] || capture_die 'standalone APK launch activity mismatch'
+
+capture_signature_report=$(capture_run_prearmed "$capture_apksigner" verify --print-certs "$capture_apk") ||
+  capture_die 'standalone APK signature preflight failed or timed out'
+capture_candidate_signer=$(printf '%s\n' "$capture_signature_report" |
+  sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+  tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')
+[ "$capture_candidate_signer" = "$capture_expected_signer_sha" ] ||
+  capture_die 'standalone APK signer mismatch'
+
+capture_installed_path_output=$(capture_adb_command shell -n pm path --user "$capture_android_user" "$capture_app_package") ||
+  capture_die 'installed package path preflight failed or timed out'
+case "$capture_installed_path_output" in
+  package:/data/app/*/base.apk) capture_installed_apk=${capture_installed_path_output#package:} ;;
+  *) capture_die 'installed package path is invalid' ;;
+esac
+case "$capture_installed_apk" in *[!A-Za-z0-9_./=+-]*) capture_die 'installed package path is unsafe' ;; esac
+capture_installed_dump=$(capture_adb_command shell -n dumpsys package "$capture_app_package") ||
+  capture_die 'installed package version preflight failed or timed out'
+capture_installed_version_code=$(printf '%s\n' "$capture_installed_dump" |
+  sed -n 's/^[[:space:]]*versionCode=\([0-9][0-9]*\).*/\1/p' | sort -u)
+capture_installed_version_name=$(printf '%s\n' "$capture_installed_dump" |
+  sed -n 's/^[[:space:]]*versionName=\([^[:space:]]*\).*/\1/p' | sort -u)
+[ "$capture_installed_version_code" = "$capture_app_version_code" ] ||
+  capture_die 'installed package versionCode mismatch'
+[ "$capture_installed_version_name" = "$capture_app_version_name" ] ||
+  capture_die 'installed package versionName mismatch'
+capture_installed_sha_output=$(capture_adb_command shell -n sha256sum "$capture_installed_apk") ||
+  capture_die 'installed package digest preflight failed or timed out'
+capture_installed_sha=$(printf '%s\n' "$capture_installed_sha_output" | awk 'NR == 1 {print $1}')
+[ "$capture_installed_sha" = "$capture_expected_installed_sha" ] ||
+  capture_die 'installed package digest no longer matches the accepted receipt'
+
+capture_validate_source
+[ "$(capture_sha256 "$capture_apk")" = "$capture_candidate_sha" ] ||
+  capture_die 'standalone APK changed after preflight'
+capture_require_current_user
+capture_adb_command install -r --user "$capture_android_user" --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
+  capture_die 'single approved package replacement failed or timed out'
+
+capture_deadline_remaining "$capture_prearmed_deadline_ms" >/dev/null ||
+  capture_die 'build-to-ARMED deadline expired before logcat start'
+"$capture_adb" -s "$capture_device_id" logcat -v raw 'flutter:I' '*:S' >>"$capture_log" 2>&1 &
+capture_logcat_pid=$!
+sleep 0.1
+kill -0 "$capture_logcat_pid" 2>/dev/null || capture_die 'filtered logcat failed to start'
+
+capture_validate_source
+[ "$(capture_sha256 "$capture_apk")" = "$capture_candidate_sha" ] ||
+  capture_die 'standalone APK changed before launch'
+capture_require_current_user
+capture_adb_command shell -n am start --user "$capture_android_user" -n \
+  "$capture_app_package/$capture_launch_activity" >>"$capture_log" 2>&1 ||
+  capture_die 'explicit user-10 activity launch failed or timed out'
+
+capture_relative_root=files/gs1-private-capture/$capture_run_id
+capture_armed_pending=$capture_quarantine/armed.json.pending
+capture_armed_expected=$(printf '{"schemaVersion":1,"runId":"%s","state":"armed"}' "$capture_run_id")
+while :; do
+  if capture_run_as_pull "$capture_relative_root/armed.json" "$capture_armed_pending" 2>/dev/null; then
+    capture_armed_actual=$(cat "$capture_armed_pending")
+    rm -f "$capture_armed_pending"
+    [ "$capture_armed_actual" = "$capture_armed_expected" ] ||
+      capture_die 'private ARMED marker is invalid'
+    break
   fi
-  [ "$(capture_now)" -lt "$capture_build_deadline" ] ||
-    capture_die 'Flutter build/install/start timeout expired before ARMED'
+  rm -f "$capture_armed_pending"
+  [ "$(capture_monotonic_ms)" -lt "$capture_prearmed_deadline_ms" ] ||
+    capture_die 'build-to-ARMED deadline expired before private ARMED marker'
+  kill -0 "$capture_logcat_pid" 2>/dev/null ||
+    capture_die 'filtered logcat exited before private ARMED marker'
   sleep 0.1
 done
 
@@ -261,7 +419,6 @@ do
   capture_grant "$capture_permission"
 done
 
-capture_relative_root=files/gs1-private-capture/$capture_run_id
 capture_radio_deadline_ms=$(( $(capture_monotonic_ms) + capture_radio_seconds * 1000 ))
 printf '{"runId":"%s","nonce":"%s"}' "$capture_run_id" "$capture_start_nonce" |
   capture_run_as_publish "$capture_relative_root/start.json" ||
@@ -271,8 +428,9 @@ capture_started="CBIO-CAPTURE-STARTED run=$capture_run_id"
 while ! grep -Fqx "$capture_started" "$capture_log"; do
   [ "$(capture_monotonic_ms)" -lt "$capture_radio_deadline_ms" ] ||
     capture_die 'five-minute radio/capture/pull deadline expired before STARTED'
-  kill -0 "$capture_flutter_pid" 2>/dev/null ||
-    capture_die 'Flutter exited before the capture started'
+  if ! kill -0 "$capture_logcat_pid" 2>/dev/null && ! grep -Fqx "$capture_started" "$capture_log"; then
+    capture_die 'filtered logcat exited before the capture started'
+  fi
   sleep 0.1
 done
 
@@ -282,8 +440,10 @@ while [ -z "$capture_ready" ]; do
   [ -z "$capture_ready" ] || break
   [ "$(capture_monotonic_ms)" -lt "$capture_radio_deadline_ms" ] ||
     capture_die 'five-minute radio/capture/pull deadline expired before READY'
-  kill -0 "$capture_flutter_pid" 2>/dev/null ||
-    capture_die 'Flutter exited before private capture export'
+  if ! kill -0 "$capture_logcat_pid" 2>/dev/null; then
+    capture_ready=$(grep -E '^CBIO-CAPTURE-READY ' "$capture_log" | tail -n 1 || true)
+    [ -n "$capture_ready" ] || capture_die 'filtered logcat exited before private capture export'
+  fi
   sleep 0.1
 done
 
@@ -476,17 +636,15 @@ printf '{"runId":"%s","nonce":"%s","manifestSha256":"%s"}' \
   capture_run_as_publish "$capture_relative_root/ack.json" ||
   capture_die 'ACK publication exceeded the capture deadline'
 
-while kill -0 "$capture_flutter_pid" 2>/dev/null; do
+capture_complete="CBIO-CAPTURE-COMPLETE run=$capture_run_id"
+while ! grep -Fqx "$capture_complete" "$capture_log"; do
   [ "$(capture_monotonic_ms)" -lt "$capture_radio_deadline_ms" ] ||
-    capture_die 'five-minute radio/capture/pull deadline expired before Flutter exit'
+    capture_die 'five-minute radio/capture/pull deadline expired before COMPLETE'
+  if ! kill -0 "$capture_logcat_pid" 2>/dev/null && ! grep -Fqx "$capture_complete" "$capture_log"; then
+    capture_die 'filtered logcat exited before exact COMPLETE marker'
+  fi
   sleep 0.1
 done
-set +e
-wait "$capture_flutter_pid"
-capture_flutter_status=$?
-set -e
-capture_flutter_pid=
-[ "$capture_flutter_status" -eq 0 ] || capture_die 'capture harness reported failure'
 
 mv "$capture_full_pending" "$capture_destination/full-records.json"
 mv "$capture_manifest_pending" "$capture_destination/manifest.json"

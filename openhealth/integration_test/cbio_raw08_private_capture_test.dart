@@ -7,6 +7,7 @@ import 'package:cgm_ble_flutter/cgm_ble_flutter.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:openglucose/src/local_ble_trace_sink.dart';
@@ -18,6 +19,7 @@ const _captureCutoff = Duration(minutes: 4);
 const _hardDeadline = Duration(minutes: 5);
 const _teardownBudget = Duration(seconds: 15);
 const _startWait = Duration(minutes: 1);
+const _standaloneCapture = bool.fromEnvironment('CBIO_CAPTURE_STANDALONE');
 
 final _context = CaptureRunContext.fromValues(<String, String>{
   'CBIO_CAPTURE_RUN_ID': const String.fromEnvironment('CBIO_CAPTURE_RUN_ID'),
@@ -43,7 +45,14 @@ final _context = CaptureRunContext.fromValues(<String, String>{
 
 const _credentialSource = CbioDefineCredentialSource();
 
-void main() {
+Future<void> main() async {
+  if (_standaloneCapture) {
+    WidgetsFlutterBinding.ensureInitialized();
+    await _runCapture();
+    _emit('CBIO-CAPTURE-COMPLETE run=${_context.runId}');
+    return;
+  }
+
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets(
@@ -111,6 +120,7 @@ Future<void> _runCapture() async {
     ),
   );
 
+  await handshake.markArmed();
   _emit('CBIO-CAPTURE-ARMED run=${_context.runId} start=start.json');
   await _waitForStart(handshake);
 

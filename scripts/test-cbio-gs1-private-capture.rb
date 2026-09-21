@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "digest"
 require "json"
 require "open3"
 require "tmpdir"
@@ -10,6 +11,12 @@ SOURCE_SCRIPT = File.join(__dir__, "cbio-gs1-private-capture.sh")
 RUN_ID = "0123456789abcdef0123456789abcdef"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF"
 TRIGGER = "22" * 5
+INSTALLED_APK_SHA256 = "70547d756cae308d45cd76739e93ad3727225175fdd2a8cf8a7862cc1859eb4a"
+SIGNER_SHA256 = "ad5e6dd01a944d2ea159d1bb1b1376de8a3962beaa95ddb0d7af513fe84ebcb5"
+APP_PACKAGE = "com.openglucose.app.debug"
+APP_VERSION_CODE = "29"
+APP_VERSION_NAME = "0.4.0-debug"
+LAUNCH_ACTIVITY = "com.aidex.aidex_flutter.MainActivity"
 FINAL_ARTIFACTS = %w[
   full-records.json manifest.json auth-prompt-receipt.json command-audit.json
 ].freeze
@@ -40,7 +47,18 @@ def run_capture(
   source_change: nil,
   allow_expected_untracked: false,
   context_case: nil,
-  destination_case: nil
+  destination_case: nil,
+  candidate_package: APP_PACKAGE,
+  candidate_version_code: APP_VERSION_CODE,
+  candidate_version_name: APP_VERSION_NAME,
+  candidate_signer: SIGNER_SHA256,
+  installed_sha: INSTALLED_APK_SHA256,
+  installed_version_code: APP_VERSION_CODE,
+  installed_version_name: APP_VERSION_NAME,
+  armed: :valid,
+  install_failure: false,
+  complete: :valid,
+  post_build_mutation: nil
 )
   Dir.mktmpdir("cbio-private-capture-contract.") do |temporary|
     root = File.realpath(temporary)
@@ -53,11 +71,13 @@ def run_capture(
     context = File.join(private_root, "context.json")
     destination = File.join(private_root, "destination")
     mutation_file = File.join(private_root, "mutation.json")
+    installed_path = "/data/app/fixture/com.openglucose.app.debug/base.apk"
     [File.join(repo, "scripts"), File.join(repo, "openhealth"), private_root, bin, device].each do |path|
       FileUtils.mkdir_p(path, mode: 0o700)
     end
     FileUtils.cp(SOURCE_SCRIPT, File.join(repo, "scripts", "cbio-gs1-private-capture.sh"))
     File.write(File.join(repo, "openhealth", ".fixture"), "fixture\n")
+    File.write(File.join(repo, ".gitignore"), "openhealth/build/\n")
     git(repo, "init", "-q")
     git(repo, "config", "user.email", "fixture@example.invalid")
     git(repo, "config", "user.name", "Capture Fixture")
@@ -145,12 +165,64 @@ def run_capture(
       printf 'adb %s\n' "$*" >>"$FAKE_AUDIT"
       [ "$1" = -s ] && shift 2
       case "$1" in
+        install)
+          [ "$FAKE_HANG" != install ] || sleep 20
+          [ "$FAKE_INSTALL_FAILURE" != 1 ] || exit 23
+          exit 0
+          ;;
+        logcat)
+          [ "$FAKE_HANG" != logcat ] || sleep 20
+          exec flutter emit
+          ;;
         shell)
           shift
           [ "${1:-}" = -n ] && shift
           [ "${1:-}" = -T ] && shift
           if [ "$1 $2" = "am get-current-user" ]; then cat "$FAKE_USER_FILE"; exit 0; fi
+          if [ "$1 $2" = "pm path" ]; then
+            [ "$3" = --user ] && [ "$4" = 10 ] && [ "$5" = com.openglucose.app.debug ] || exit 2
+            printf 'package:%s\n' "$FAKE_INSTALLED_PATH"
+            exit 0
+          fi
+          if [ "$1 $2" = "dumpsys package" ]; then
+            [ "$3" = com.openglucose.app.debug ] || exit 2
+            [ "$FAKE_HANG" != preflight ] || sleep 20
+            printf 'Packages:\n  Package [com.openglucose.app.debug]:\n    versionCode=%s minSdk=26 targetSdk=36\n    versionName=%s\n' \
+              "$FAKE_INSTALLED_VERSION_CODE" "$FAKE_INSTALLED_VERSION_NAME"
+            exit 0
+          fi
+          if [ "$1" = sha256sum ]; then
+            [ "$2" = "$FAKE_INSTALLED_PATH" ] || exit 2
+            printf '%s  %s\n' "$FAKE_INSTALLED_SHA" "$FAKE_INSTALLED_PATH"
+            exit 0
+          fi
           if [ "$1 $2" = "pm grant" ]; then exit 0; fi
+          if [ "$1 $2" = "am start" ]; then
+            [ "$3" = --user ] && [ "$4" = 10 ] && [ "$5" = -n ] && \
+              [ "$6" = com.openglucose.app.debug/com.aidex.aidex_flutter.MainActivity ] || exit 2
+            [ "$FAKE_HANG" != launch ] || sleep 20
+            relative=files/gs1-private-capture/$FAKE_RUN_ID
+            mkdir -p "$FAKE_DEVICE/$relative"
+            case "$FAKE_ARMED" in
+              valid)
+                printf '{"schemaVersion":1,"runId":"%s","state":"armed"}' "$FAKE_RUN_ID" \
+                  >"$FAKE_DEVICE/$relative/armed.json"
+                ;;
+              invalid)
+                printf '{"schemaVersion":2,"runId":"%s","state":"armed"}' "$FAKE_RUN_ID" \
+                  >"$FAKE_DEVICE/$relative/armed.json"
+                ;;
+              duplicate)
+                printf '{"schemaVersion":1,"runId":"%s","runId":"%s","state":"armed"}' \
+                  "$FAKE_RUN_ID" "$FAKE_RUN_ID" >"$FAKE_DEVICE/$relative/armed.json"
+                ;;
+              missing) ;;
+            esac
+            printf 'armed-created %s\n' "$FAKE_ARMED" >>"$FAKE_AUDIT"
+            : >"$FAKE_DEVICE/launched"
+            printf 'Starting: Intent\n'
+            exit 0
+          fi
           if [ "$1" = run-as ]; then
             shift
             [ "$1" = com.openglucose.app.debug ]; shift
@@ -175,7 +247,8 @@ def run_capture(
           [ "$1" = --user ] && [ "$2" = 10 ]; shift 2
           [ "$1" = cat ]
           relative=$2
-          [ "$FAKE_HANG" != pull ] || sleep 20
+          case "$relative" in *armed.json) printf 'armed-read\n' >>"$FAKE_AUDIT" ;; esac
+          if [ "$FAKE_HANG" = pull ] && [ "${relative##*/}" != armed.json ]; then sleep 20; fi
           if [ "$FAKE_CORRUPT_PULL" = 1 ] && [ "${relative##*/}" = full-records.json ]; then
             printf corrupt
           else
@@ -187,18 +260,66 @@ def run_capture(
       exit 1
     SH
 
+    write_executable(File.join(bin, "aapt"), <<~'SH')
+      #!/bin/sh
+      set -eu
+      printf 'aapt %s\n' "$*" >>"$FAKE_AUDIT"
+      [ "$FAKE_HANG" != preflight ] || sleep 20
+      [ "$1 $2" = "dump badging" ] || exit 2
+      printf "package: name='%s' versionCode='%s' versionName='%s'\n" \
+        "$FAKE_CANDIDATE_PACKAGE" "$FAKE_CANDIDATE_VERSION_CODE" "$FAKE_CANDIDATE_VERSION_NAME"
+      printf "launchable-activity: name='%s' label='' icon=''\n" "$FAKE_LAUNCH_ACTIVITY"
+    SH
+
+    write_executable(File.join(bin, "apksigner"), <<~'SH')
+      #!/bin/sh
+      set -eu
+      printf 'apksigner %s\n' "$*" >>"$FAKE_AUDIT"
+      [ "$1 $2" = "verify --print-certs" ] || exit 2
+      printf 'Signer #1 certificate SHA-256 digest: %s\n' "$FAKE_CANDIDATE_SIGNER"
+    SH
+
     write_executable(File.join(bin, "flutter"), <<~'SH')
       #!/bin/sh
       set -eu
       trap 'printf "flutter-stopped\n" >>"$FAKE_AUDIT"; exit 143' TERM INT
-      printf 'flutter-launch %s\n' "$*" >>"$FAKE_AUDIT"
+      case "${1:-}" in
+        build)
+          printf 'flutter-build %s\n' "$*" >>"$FAKE_AUDIT"
+          [ "$FAKE_HANG" != build ] || sleep 20
+          mkdir -p "$FAKE_REPO/openhealth/build/app/outputs/flutter-apk"
+          printf 'fixture standalone apk\n' \
+            >"$FAKE_REPO/openhealth/build/app/outputs/flutter-apk/app-debug.apk"
+          case "$FAKE_POST_BUILD_MUTATION" in
+            source) printf 'changed after build\n' >"$FAKE_REPO/openhealth/.fixture" ;;
+            context) printf '\n' >>"$CBIO_DART_DEFINE_FROM_FILE" ;;
+          esac
+          exit 0
+          ;;
+        test)
+          printf 'flutter-launch %s\n' "$*" >>"$FAKE_AUDIT"
+          run=$FAKE_RUN_ID
+          relative=files/gs1-private-capture/$run
+          mkdir -p "$FAKE_DEVICE/$relative"
+          printf '{"schemaVersion":1,"runId":"%s","state":"armed"}' "$run" \
+            >"$FAKE_DEVICE/$relative/armed.json"
+          : >"$FAKE_DEVICE/launched"
+          printf 'CBIO-CAPTURE-ARMED run=%s start=start.json\n' "$run"
+          FAKE_LEGACY=1
+          export FAKE_LEGACY
+          ;;
+        emit)
+          printf 'logcat-stream\n' >>"$FAKE_AUDIT"
+          ;;
+        *) exit 2 ;;
+      esac
       run=$FAKE_RUN_ID
       relative=files/gs1-private-capture/$run
       mkdir -p "$FAKE_DEVICE/$relative"
-      printf 'flutter-armed\n' >>"$FAKE_AUDIT"
-      printf 'CBIO-CAPTURE-ARMED run=%s start=start.json\n' "$run"
+      until [ -f "$FAKE_DEVICE/launched" ]; do sleep 0.02; done
+      printf 'capture-armed\n' >>"$FAKE_AUDIT"
       until [ -f "$FAKE_DEVICE/$relative/start.json" ]; do sleep 0.02; done
-      printf 'flutter-start-seen\n' >>"$FAKE_AUDIT"
+      printf 'capture-start-seen\n' >>"$FAKE_AUDIT"
       printf 'CBIO-CAPTURE-STARTED run=%s\n' "$run"
       ruby -rjson -rdigest -e '
         root, run, revision, target, mutation_path, scenario = ARGV
@@ -306,8 +427,14 @@ def run_capture(
       for name in full-records.json manifest.json auth-prompt-receipt.json command-audit.json; do
         [ ! -e "$FAKE_DESTINATION/$name" ] || exit 9
       done
-      printf 'flutter-ack-seen\n' >>"$FAKE_AUDIT"
+      printf 'capture-ack-seen\n' >>"$FAKE_AUDIT"
       [ "$FAKE_SCENARIO" != caught_failure ] || exit 7
+      if [ "${FAKE_LEGACY:-0}" = 1 ]; then exit 0; fi
+      case "$FAKE_COMPLETE" in
+        valid) printf 'CBIO-CAPTURE-COMPLETE run=%s\n' "$run" ;;
+        wrong) printf 'CBIO-CAPTURE-COMPLETE run=%s\n' ffffffffffffffffffffffffffffffff ;;
+        missing) ;;
+      esac
     SH
 
     actual_destination = destination_env.start_with?("/") ? destination_env : File.join(private_root, destination_env)
@@ -316,7 +443,8 @@ def run_capture(
       "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
       "DEVICE_ID" => "FAKE-DEVICE", "ANDROID_USER_ID" => "10",
       "CBIO_DART_DEFINE_FROM_FILE" => context_env, "CAPTURE_DIR" => destination_env,
-      "CBIO_BUILD_TIMEOUT_SECONDS" => "10",
+      "CBIO_BUILD_TIMEOUT_SECONDS" => hang == :build ? "1" : "10",
+      "CBIO_OPERATION_TIMEOUT_SECONDS" => "1",
       "CBIO_CAPTURE_TIMEOUT_SECONDS" => if hang == :ack
         "2"
       elsif hang
@@ -325,12 +453,24 @@ def run_capture(
         "3"
       end,
       "FAKE_AUDIT" => audit, "FAKE_DEVICE" => device, "FAKE_USER_FILE" => user_file,
+      "FAKE_REPO" => repo, "FAKE_INSTALLED_PATH" => installed_path,
+      "FAKE_INSTALLED_SHA" => installed_sha,
+      "FAKE_INSTALLED_VERSION_CODE" => installed_version_code,
+      "FAKE_INSTALLED_VERSION_NAME" => installed_version_name,
+      "FAKE_CANDIDATE_PACKAGE" => candidate_package,
+      "FAKE_CANDIDATE_VERSION_CODE" => candidate_version_code,
+      "FAKE_CANDIDATE_VERSION_NAME" => candidate_version_name,
+      "FAKE_CANDIDATE_SIGNER" => candidate_signer,
+      "FAKE_LAUNCH_ACTIVITY" => LAUNCH_ACTIVITY,
       "FAKE_RUN_ID" => RUN_ID, "FAKE_SOURCE_REVISION" => head, "FAKE_TARGET" => DEVICE_ID,
       "FAKE_MUTATION_FILE" => mutation ? mutation_file : "",
       "FAKE_SCENARIO" => scenario.to_s,
       "FAKE_CORRUPT_PULL" => corrupt_pull ? "1" : "0",
       "FAKE_SWITCH_AFTER_READY" => switch_after_ready ? "1" : "0",
-      "FAKE_HANG" => hang.to_s, "FAKE_DESTINATION" => actual_destination
+      "FAKE_HANG" => hang.to_s, "FAKE_DESTINATION" => actual_destination,
+      "FAKE_ARMED" => armed.to_s, "FAKE_INSTALL_FAILURE" => install_failure ? "1" : "0",
+      "FAKE_COMPLETE" => complete.to_s,
+      "FAKE_POST_BUILD_MUTATION" => post_build_mutation.to_s
     }
     script = File.join(repo, "scripts", "cbio-gs1-private-capture.sh")
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -339,8 +479,10 @@ def run_capture(
     yield({
       root: root, repo: repo, device: device, destination: actual_destination,
       audit: audit, stdout: stdout, stderr: stderr, status: status, elapsed: elapsed,
-      flutter_log: File.file?(File.join(actual_destination, "flutter.log")) ?
-        File.read(File.join(actual_destination, "flutter.log")) : "",
+      flutter_log: File.file?(File.join(actual_destination, "capture.log")) ?
+        File.read(File.join(actual_destination, "capture.log")) :
+        (File.file?(File.join(actual_destination, "flutter.log")) ?
+          File.read(File.join(actual_destination, "flutter.log")) : ""),
       quarantine_sizes: Dir.glob(File.join(actual_destination, "quarantine", "*")).to_h do |path|
         [File.basename(path), File.file?(path) ? File.size(path) : nil]
       end
@@ -370,10 +512,15 @@ def assert_rejected(result, label, pulled: false)
   end
 end
 
+def audit_lines(result, pattern)
+  File.read(result[:audit]).lines.grep(pattern)
+end
+
 run_capture do |result|
   assert(
     result[:status].success?,
-    "happy path failed: #{result[:stderr]} log=#{result[:flutter_log]} quarantine=#{result[:quarantine_sizes]}"
+    "happy path failed: #{result[:stderr]} log=#{result[:flutter_log]} " \
+      "audit=#{File.read(result[:audit])} quarantine=#{result[:quarantine_sizes]}"
   )
   assert(File.stat(result[:destination]).mode & 0o777 == 0o700, "destination mode")
   FINAL_ARTIFACTS.each do |name|
@@ -382,13 +529,90 @@ run_capture do |result|
     assert(File.stat(path).mode & 0o777 == 0o600, "#{name} mode")
   end
   audit = File.read(result[:audit])
+  assert(
+    audit.lines.one? do |line|
+      line.start_with?("flutter-build build apk ") &&
+        line.include?("--target integration_test/cbio_raw08_private_capture_test.dart") &&
+        line.include?("--target-platform android-arm64") &&
+        line.include?("--dart-define=CBIO_CAPTURE_STANDALONE=true")
+    end,
+    "capture did not use one host-only standalone APK build"
+  )
+  assert(!audit.include?("flutter-launch test "), "capture used Flutter's implicit device lifecycle")
+  installs = audit.lines.grep(/^adb -s \S+ install /)
+  assert(
+    installs == ["adb -s FAKE-DEVICE install -r --user 10 --no-streaming #{File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")}\n"],
+    "capture did not use exactly one approved install: #{installs.inspect}"
+  )
+  assert(!audit.match?(/\badb .*\b(?:uninstall|pm clear)\b/), "capture used a destructive fallback")
+  assert(
+    audit.include?("adb -s FAKE-DEVICE shell -n am start --user 10 -n #{APP_PACKAGE}/#{LAUNCH_ACTIVITY}\n"),
+    "capture did not explicitly launch user 10"
+  )
+  candidate = File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")
+  assert(File.stat(candidate).mode & 0o777 == 0o600, "private candidate APK mode")
   run_as = audit.lines.grep(/run-as/)
   assert(!run_as.empty? && run_as.all? { |line| line.include?("--user 10") }, "user-bound run-as")
   assert(audit.lines.grep(/pm grant/).all? { |line| line.include?("--user 10") }, "user-bound grants")
   assert(audit.include?("start.json.pending -> files/gs1-private-capture/#{RUN_ID}/start.json"), "START was not atomic")
   assert(audit.include?("ack.json.pending -> files/gs1-private-capture/#{RUN_ID}/ack.json"), "ACK was not atomic")
-  assert(audit.index("flutter-armed") < audit.index("flutter-start-seen"), "START after ARMED")
-  assert(audit.index("flutter-start-seen") < audit.index("flutter-ack-seen"), "ACK after START")
+  assert(audit.index("adb -s FAKE-DEVICE logcat") < audit.index("adb -s FAKE-DEVICE shell -n am start"), "logcat started after launch")
+  assert(audit.index("armed-read") < audit.index("start.json.pending"), "START before valid private ARMED")
+  assert(audit.index("capture-start-seen") < audit.index("capture-ack-seen"), "ACK after START")
+  assert(result[:flutter_log].lines.grep(/^CBIO-CAPTURE-COMPLETE /) == ["CBIO-CAPTURE-COMPLETE run=#{RUN_ID}\n"], "exact COMPLETE missing")
+end
+
+{
+  "candidate package" => {candidate_package: "invalid.package"},
+  "candidate version code" => {candidate_version_code: "30"},
+  "candidate version name" => {candidate_version_name: "0.4.1-debug"},
+  "candidate signer" => {candidate_signer: "f" * 64},
+  "installed digest" => {installed_sha: "e" * 64},
+  "installed version code" => {installed_version_code: "30"},
+  "installed version name" => {installed_version_name: "0.4.1-debug"}
+}.each do |label, options|
+  run_capture(**options) do |result|
+    assert_rejected(result, label)
+    assert(audit_lines(result, /^adb -s \S+ install /).empty?, "#{label} reached install")
+  end
+end
+
+run_capture(install_failure: true) do |result|
+  assert_rejected(result, "install failure")
+  assert(audit_lines(result, /^adb -s \S+ install /).length == 1, "failed install was retried")
+  assert(audit_lines(result, /(?:uninstall|pm clear)/).empty?, "failed install used fallback")
+  assert(audit_lines(result, /am start --user/).empty?, "launch followed failed install")
+end
+
+%i[missing invalid duplicate].each do |variant|
+  run_capture(armed: variant) do |result|
+    assert_rejected(result, "#{variant} ARMED")
+    assert(audit_lines(result, /start\.json\.pending/).empty?, "#{variant} ARMED published START")
+  end
+end
+
+%i[missing wrong].each do |variant|
+  run_capture(complete: variant) do |result|
+    assert(!result[:status].success?, "#{variant} COMPLETE unexpectedly succeeded")
+    assert(File.exist?(ack_path(result)), "#{variant} COMPLETE failed before ACK")
+    FINAL_ARTIFACTS.each do |name|
+      assert(!File.exist?(File.join(result[:destination], name)), "#{variant} COMPLETE promoted #{name}")
+    end
+  end
+end
+
+%i[build preflight install launch logcat].each do |stage|
+  run_capture(hang: stage) do |result|
+    assert_rejected(result, "hung #{stage}")
+    assert(result[:elapsed] < 12, "hung #{stage} exceeded end-to-end watchdog: #{result[:elapsed]}")
+  end
+end
+
+%i[source context].each do |kind|
+  run_capture(post_build_mutation: kind) do |result|
+    assert_rejected(result, "post-build #{kind} mutation")
+    assert(audit_lines(result, /^adb -s \S+ install /).empty?, "post-build #{kind} mutation reached install")
+  end
 end
 
 admission_failures = []
@@ -433,7 +657,7 @@ run_capture(corrupt_pull: true) { |result| assert_rejected(result, "corrupt pull
 %i[start pull ack].each do |stage|
   run_capture(hang: stage) do |result|
     assert_rejected(result, "hung #{stage}", pulled: stage != :start)
-    assert(result[:elapsed] < 5, "hung #{stage} exceeded watchdog: #{result[:elapsed]}")
+    assert(result[:elapsed] < 12, "hung #{stage} exceeded end-to-end watchdog: #{result[:elapsed]}")
     assert(File.read(result[:audit]).include?("flutter-stopped"), "hung #{stage} did not stop Flutter")
     expected_error = {
       start: "START publication exceeded",

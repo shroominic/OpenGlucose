@@ -112,6 +112,7 @@ final class CaptureHandshake {
   final Directory _runDirectory;
   final CaptureRunContext _context;
 
+  File get armedFile => File('${_runDirectory.path}/armed.json');
   File get startFile => File('${_runDirectory.path}/start.json');
   File get ackFile => File('${_runDirectory.path}/ack.json');
 
@@ -135,6 +136,34 @@ final class CaptureHandshake {
       }
     } finally {
       await claim.delete();
+    }
+  }
+
+  Future<void> markArmed() async {
+    if (FileSystemEntity.typeSync(_runDirectory.path, followLinks: false) !=
+        FileSystemEntityType.directory) {
+      throw StateError('Capture run directory is unavailable.');
+    }
+    final pending = File('${armedFile.path}.pending');
+    if (FileSystemEntity.typeSync(armedFile.path, followLinks: false) !=
+            FileSystemEntityType.notFound ||
+        FileSystemEntity.typeSync(pending.path, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+      throw StateError('Capture ARMED marker already exists.');
+    }
+    try {
+      await pending.create(exclusive: true);
+      await pending.writeAsString(
+        jsonEncode({
+          'schemaVersion': 1,
+          'runId': _context.runId,
+          'state': 'armed',
+        }),
+        flush: true,
+      );
+      await pending.rename(armedFile.path);
+    } on FileSystemException {
+      throw StateError('Capture ARMED marker could not be published.');
     }
   }
 

@@ -174,10 +174,39 @@ void main() {
     expect(handshake.ackFile.existsSync(), isFalse);
   });
 
+  test(
+    'handshake publishes one exact run-bound private ARMED marker',
+    () async {
+      final context = CaptureRunContext.fromValues(_contextValues());
+      final runDirectory = Directory('${temporaryDirectory.path}/$_runId');
+      final handshake = CaptureHandshake(
+        runDirectory: runDirectory,
+        context: context,
+      );
+
+      await expectLater(handshake.markArmed(), throwsA(isA<StateError>()));
+      await handshake.prepare();
+      await handshake.markArmed();
+
+      expect(
+        jsonDecode(await handshake.armedFile.readAsString()),
+        <String, Object>{
+          'schemaVersion': 1,
+          'runId': _runId,
+          'state': 'armed',
+        },
+      );
+      expect(File('${handshake.armedFile.path}.pending').existsSync(), isFalse);
+      await expectLater(handshake.markArmed(), throwsA(isA<StateError>()));
+    },
+  );
+
   test('handshake admits only a freshly claimed empty run directory', () async {
     final staleEntries = <String, bool>{
       'existing empty directory': false,
       'start.json': false,
+      'armed.json': false,
+      'armed.json.pending': false,
       'ack.json': false,
       'start.json.pending': false,
       'ack.json.pending': false,
