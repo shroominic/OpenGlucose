@@ -58,7 +58,7 @@ existing `HealthStateStore`, Android Keystore bridge through the existing
 - Modify: `packages/cgm_yuwell_anytime/lib/cgm_yuwell_anytime.dart`
 - Create: `packages/cgm_yuwell_anytime/test/record_state_test.dart`
 - Create: `packages/cgm_yuwell_anytime/test/record_store_test.dart`
-- Create: `docs/architecture/adr/0005-yuwell-private-record-persistence.md`
+- Create: `docs/architecture/adr/0006-yuwell-private-record-persistence.md`
 - Modify: `docs/architecture/adr/README.md`
 
 ### Step 1: RED — define the immutable envelope contract
@@ -177,7 +177,7 @@ dart analyze
 
 ### Step 5: Document the R2 boundary
 
-Write ADR 0005 with:
+Write ADR 0006 with:
 
 - decision and rejected alternatives (process memory, normalized repository,
   new database, credential payload containing all records);

@@ -397,7 +397,7 @@ repair, or cross-generation merge path.
 ## Documentation and release gates
 
 The delivery updates package README/changelog, compatibility documentation, and
-adds ADR 0005 for the package/app persistence boundary and recovery contract.
+adds ADR 0006 for the package/app persistence boundary and recovery contract.
 Required automated gates are focused Dart format, analyze, package tests, app
 adapter/composition tests, and the existing protocol-capture safety tests.
 

@@ -1,4 +1,4 @@
-# ADR 0005: Persist Yuwell raw history as a private contiguous prefix
+# ADR 0006: Persist Yuwell raw history as a private contiguous prefix
 
 - Status: Accepted
 - Date: 2026-09-21
