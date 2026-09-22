@@ -30,6 +30,7 @@ void main() {
         runDirectory: Directory('${root.path}/$_runId'),
         context: CaptureRunContext.fromValues({
           'CBIO_CAPTURE_RUN_ID': _runId,
+          'CBIO_CAPTURE_APP_PACKAGE': 'com.openglucose.app.debug',
           'CBIO_CAPTURE_START_NONCE': 'a' * 32,
           'CBIO_CAPTURE_ACK_NONCE': 'b' * 32,
           'CBIO_TARGET_DEVICE_ID': _deviceId,
