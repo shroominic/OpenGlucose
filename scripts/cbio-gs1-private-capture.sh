@@ -4,7 +4,7 @@ umask 077
 
 capture_script_dir=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)
 capture_root=$(CDPATH='' cd -P "$capture_script_dir/.." && pwd)
-capture_app_package=com.openglucose.app.debug
+capture_app_package=${CBIO_CAPTURE_APP_PACKAGE:-com.openglucose.app.debug}
 capture_app_version_code=29
 capture_app_version_name=0.4.0-debug
 capture_launch_activity=com.aidex.aidex_flutter.MainActivity
@@ -123,6 +123,17 @@ capture_require_current_user() {
     capture_die 'current Android user does not match the selected capture user'
 }
 
+capture_require_owner_unlocked() {
+  [ "$capture_app_package" = com.openglucose.app.debug.owner ] || return 0
+  capture_owner_user_state=$(capture_adb_command shell -n am get-started-user-state 0 2>/dev/null || true)
+  capture_cr=$(printf '\r')
+  case "$capture_owner_user_state" in
+    *"$capture_cr") capture_owner_user_state=${capture_owner_user_state%"$capture_cr"} ;;
+  esac
+  [ "$capture_owner_user_state" = RUNNING_UNLOCKED ] ||
+    capture_die 'Android user 0 must be running and unlocked for Owner capture'
+}
+
 capture_grant() {
   capture_require_current_user
   capture_adb_command shell -n pm grant --user "$capture_android_user" \
@@ -177,8 +188,11 @@ capture_validate_source() {
 case "$capture_android_user" in
   *[!0-9]*|'') capture_die 'ANDROID_USER_ID must be a decimal integer' ;;
 esac
-[ "$capture_android_user" = 10 ] ||
-  capture_die 'this capture is authorized only for Android user 10'
+case "$capture_android_user:$capture_app_package" in
+  10:com.openglucose.app.debug) capture_application_id_suffix=.debug ;;
+  0:com.openglucose.app.debug.owner) capture_application_id_suffix=.debug.owner ;;
+  *) capture_die 'capture package is not authorized for the selected Android user' ;;
+esac
 [ -n "$capture_context" ] || capture_die 'CBIO_DART_DEFINE_FROM_FILE is required'
 [ -n "$capture_destination" ] || capture_die 'CAPTURE_DIR is required'
 case "$capture_build_timeout:$capture_operation_timeout:$capture_radio_seconds" in
@@ -301,6 +315,7 @@ case "$capture_source_status" in
   *) capture_die 'capture source worktree is not clean' ;;
 esac
 capture_require_current_user
+capture_require_owner_unlocked
 
 mkdir -m 700 "$capture_destination"
 capture_quarantine=$capture_destination/quarantine
@@ -313,11 +328,14 @@ capture_apk=$capture_root/openhealth/build/app/outputs/flutter-apk/app-debug.apk
 capture_build_started=$(capture_now)
 (
   cd "$capture_root/openhealth"
-  capture_run_build "$capture_flutter" build apk --debug --no-pub \
+  capture_run_build env \
+    OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX="$capture_application_id_suffix" \
+    "$capture_flutter" build apk --debug --no-pub \
     --target integration_test/cbio_raw08_private_capture_test.dart \
     --target-platform android-arm64 \
     --dart-define-from-file="$capture_context" \
-    --dart-define=CBIO_CAPTURE_STANDALONE=true
+    --dart-define=CBIO_CAPTURE_STANDALONE=true \
+    --dart-define=CBIO_CAPTURE_APP_PACKAGE="$capture_app_package"
 ) >>"$capture_log" 2>&1 || capture_die 'host-only standalone APK build failed or timed out'
 
 capture_validate_source
@@ -348,37 +366,54 @@ capture_candidate_signer=$(printf '%s\n' "$capture_signature_report" |
 [ "$capture_candidate_signer" = "$capture_expected_signer_sha" ] ||
   capture_die 'standalone APK signer mismatch'
 
-capture_installed_path_output=$(capture_adb_command shell -n pm path --user "$capture_android_user" "$capture_app_package") ||
-  capture_die 'installed package path preflight failed or timed out'
-case "$capture_installed_path_output" in
-  package:/data/app/*/base.apk) capture_installed_apk=${capture_installed_path_output#package:} ;;
-  *) capture_die 'installed package path is invalid' ;;
-esac
-case "$capture_installed_apk" in
-  *[!A-Za-z0-9_./=+~-]*|*/../*|*/./*) capture_die 'installed package path is unsafe' ;;
-esac
-capture_installed_dump=$(capture_adb_command shell -n dumpsys package "$capture_app_package") ||
-  capture_die 'installed package version preflight failed or timed out'
-capture_installed_version_code=$(printf '%s\n' "$capture_installed_dump" |
-  sed -n 's/^[[:space:]]*versionCode=\([0-9][0-9]*\).*/\1/p' | sort -u)
-capture_installed_version_name=$(printf '%s\n' "$capture_installed_dump" |
-  sed -n 's/^[[:space:]]*versionName=\([^[:space:]]*\).*/\1/p' | sort -u)
-[ "$capture_installed_version_code" = "$capture_app_version_code" ] ||
-  capture_die 'installed package versionCode mismatch'
-[ "$capture_installed_version_name" = "$capture_app_version_name" ] ||
-  capture_die 'installed package versionName mismatch'
-capture_installed_sha_output=$(capture_adb_command shell -n sha256sum "$capture_installed_apk") ||
-  capture_die 'installed package digest preflight failed or timed out'
-capture_installed_sha=$(printf '%s\n' "$capture_installed_sha_output" | awk 'NR == 1 {print $1}')
-[ "$capture_installed_sha" = "$capture_expected_installed_sha" ] ||
-  capture_die 'installed package digest no longer matches the accepted receipt'
+if [ "$capture_app_package" = com.openglucose.app.debug.owner ]; then
+  capture_owner_global_packages=$(capture_adb_command shell -n pm list packages -u "$capture_app_package") ||
+    capture_die 'global Owner package absence check failed or timed out'
+  [ -z "$capture_owner_global_packages" ] ||
+    capture_die 'Owner package is already installed globally; first-install capture refused'
+  capture_owner_user_packages=$(capture_adb_command shell -n pm list packages --user 0 "$capture_app_package") ||
+    capture_die 'user-0 Owner package absence check failed or timed out'
+  [ -z "$capture_owner_user_packages" ] ||
+    capture_die 'Owner package is already installed for user 0; first-install capture refused'
+else
+  capture_installed_path_output=$(capture_adb_command shell -n pm path --user "$capture_android_user" "$capture_app_package") ||
+    capture_die 'installed package path preflight failed or timed out'
+  case "$capture_installed_path_output" in
+    package:/data/app/*/base.apk) capture_installed_apk=${capture_installed_path_output#package:} ;;
+    *) capture_die 'installed package path is invalid' ;;
+  esac
+  case "$capture_installed_apk" in
+    *[!A-Za-z0-9_./=+~-]*|*/../*|*/./*) capture_die 'installed package path is unsafe' ;;
+  esac
+  capture_installed_dump=$(capture_adb_command shell -n dumpsys package "$capture_app_package") ||
+    capture_die 'installed package version preflight failed or timed out'
+  capture_installed_version_code=$(printf '%s\n' "$capture_installed_dump" |
+    sed -n 's/^[[:space:]]*versionCode=\([0-9][0-9]*\).*/\1/p' | sort -u)
+  capture_installed_version_name=$(printf '%s\n' "$capture_installed_dump" |
+    sed -n 's/^[[:space:]]*versionName=\([^[:space:]]*\).*/\1/p' | sort -u)
+  [ "$capture_installed_version_code" = "$capture_app_version_code" ] ||
+    capture_die 'installed package versionCode mismatch'
+  [ "$capture_installed_version_name" = "$capture_app_version_name" ] ||
+    capture_die 'installed package versionName mismatch'
+  capture_installed_sha_output=$(capture_adb_command shell -n sha256sum "$capture_installed_apk") ||
+    capture_die 'installed package digest preflight failed or timed out'
+  capture_installed_sha=$(printf '%s\n' "$capture_installed_sha_output" | awk 'NR == 1 {print $1}')
+  [ "$capture_installed_sha" = "$capture_expected_installed_sha" ] ||
+    capture_die 'installed package digest no longer matches the accepted receipt'
+fi
 
 capture_validate_source
 [ "$(capture_sha256 "$capture_apk")" = "$capture_candidate_sha" ] ||
   capture_die 'standalone APK changed after preflight'
 capture_require_current_user
-capture_adb_command install -r --user "$capture_android_user" --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
-  capture_die 'single approved package replacement failed or timed out'
+capture_require_owner_unlocked
+if [ "$capture_app_package" = com.openglucose.app.debug.owner ]; then
+  capture_adb_command install --user 0 --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
+    capture_die 'single approved Owner package first-install failed or timed out'
+else
+  capture_adb_command install -r --user "$capture_android_user" --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
+    capture_die 'single approved package replacement failed or timed out'
+fi
 
 capture_deadline_remaining "$capture_prearmed_deadline_ms" >/dev/null ||
   capture_die 'build-to-ARMED deadline expired before logcat start'
@@ -393,7 +428,7 @@ capture_validate_source
 capture_require_current_user
 capture_adb_command shell -n am start --user "$capture_android_user" -n \
   "$capture_app_package/$capture_launch_activity" >>"$capture_log" 2>&1 ||
-  capture_die 'explicit user-10 activity launch failed or timed out'
+  capture_die 'explicit selected-user activity launch failed or timed out'
 
 capture_relative_root=files/gs1-private-capture/$capture_run_id
 capture_armed_pending=$capture_quarantine/armed.json.pending
@@ -518,7 +553,7 @@ capture_run_as_pull "$capture_relative_root/command-audit.json" "$capture_audit_
 ruby -rjson -e '
   full_path, manifest_path, prompt_path, audit_path, run, revision, label,
     full_sha, full_bytes, prompt_sha, audit_sha, audit_bytes, outcome,
-    prompt_hex, target = ARGV
+    prompt_hex, target, package = ARGV
   full = JSON.parse(File.read(full_path))
   manifest = JSON.parse(File.read(manifest_path))
   prompt = JSON.parse(File.read(prompt_path))
@@ -567,7 +602,7 @@ ruby -rjson -e '
   abort "manifest binding" unless
     manifest["schemaVersion"] == 1 && manifest["runId"] == run &&
     manifest["sourceRevision"] == revision &&
-    manifest["packageId"] == "com.openglucose.app.debug" &&
+    manifest["packageId"] == package &&
     manifest["replayContext"] == "V1.1.6A" && manifest["labelSha256"] == label &&
     manifest["artifactSha256"] == full_sha && manifest["artifactBytes"] == Integer(full_bytes) &&
     manifest["authPromptReceiptSha256"] == prompt_sha &&
@@ -636,7 +671,8 @@ ruby -rjson -e '
   "$capture_audit_pending" "$capture_run_id" "$capture_source_revision" \
   "$capture_label_sha" "$capture_full_sha" "$capture_full_bytes" \
   "$capture_prompt_sha" "$capture_audit_sha" "$capture_audit_bytes" \
-  "$capture_outcome" "$capture_prompt_hex" "$capture_target_id" ||
+  "$capture_outcome" "$capture_prompt_hex" "$capture_target_id" \
+  "$capture_app_package" ||
   capture_die 'capture artifact validation failed'
 
 printf '{"runId":"%s","nonce":"%s","manifestSha256":"%s"}' \

@@ -41,6 +41,9 @@ final _context = CaptureRunContext.fromValues(<String, String>{
     'CBIO_RAW_START_INDEX',
   ),
   'CBIO_SOURCE_REVISION': const String.fromEnvironment('CBIO_SOURCE_REVISION'),
+  'CBIO_CAPTURE_APP_PACKAGE': const String.fromEnvironment(
+    'CBIO_CAPTURE_APP_PACKAGE',
+  ),
 });
 
 const _credentialSource = CbioDefineCredentialSource();
