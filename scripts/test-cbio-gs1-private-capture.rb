@@ -60,7 +60,9 @@ def run_capture(
   armed: :valid,
   install_failure: false,
   complete: :valid,
-  post_build_mutation: nil
+  post_build_mutation: nil,
+  ready_full_field: "full=full-records.json",
+  matching_ready_host_file: nil
 )
   Dir.mktmpdir("cbio-private-capture-contract.") do |temporary|
     root = File.realpath(temporary)
@@ -107,6 +109,9 @@ def run_capture(
       File.chmod(0o600, mutation_file)
     end
     File.write(user_file, "#{initial_user}\n")
+    if matching_ready_host_file
+      File.write(File.join(private_root, matching_ready_host_file), "host fixture\n")
+    end
 
     if allow_expected_untracked
       allowed = File.join(repo, "docs", "superpowers", "cbio-offset4-evidence-report.md")
@@ -422,8 +427,8 @@ def run_capture(
         pending) outcome=authenticated_query_no_records ;;
         *) outcome=contiguous_prefix_cut_off ;;
       esac
-      printf 'CBIO-CAPTURE-READY run=%s full=full-records.json full_bytes=%s full_sha=%s manifest=manifest.json manifest_bytes=%s manifest_sha=%s prompt=auth-prompt-receipt.json prompt_bytes=%s prompt_sha=%s outcome=%s audit=command-audit.json audit_bytes=%s audit_sha=%s ack=ack.json\n' \
-        "$run" "$full_bytes" "$full_sha" "$manifest_bytes" "$manifest_sha" "$prompt_bytes" "$prompt_sha" "$outcome" "$audit_bytes" "$audit_sha"
+      printf 'CBIO-CAPTURE-READY run=%s %s full_bytes=%s full_sha=%s manifest=manifest.json manifest_bytes=%s manifest_sha=%s prompt=auth-prompt-receipt.json prompt_bytes=%s prompt_sha=%s outcome=%s audit=command-audit.json audit_bytes=%s audit_sha=%s ack=ack.json\n' \
+        "$run" "$FAKE_READY_FULL_FIELD" "$full_bytes" "$full_sha" "$manifest_bytes" "$manifest_sha" "$prompt_bytes" "$prompt_sha" "$outcome" "$audit_bytes" "$audit_sha"
       until [ -f "$FAKE_DEVICE/$relative/ack.json" ]; do sleep 0.02; done
       for name in full-records.json manifest.json auth-prompt-receipt.json command-audit.json; do
         [ ! -e "$FAKE_DESTINATION/$name" ] || exit 9
@@ -471,7 +476,8 @@ def run_capture(
       "FAKE_HANG" => hang.to_s, "FAKE_DESTINATION" => actual_destination,
       "FAKE_ARMED" => armed.to_s, "FAKE_INSTALL_FAILURE" => install_failure ? "1" : "0",
       "FAKE_COMPLETE" => complete.to_s,
-      "FAKE_POST_BUILD_MUTATION" => post_build_mutation.to_s
+      "FAKE_POST_BUILD_MUTATION" => post_build_mutation.to_s,
+      "FAKE_READY_FULL_FIELD" => ready_full_field
     }
     script = File.join(repo, "scripts", "cbio-gs1-private-capture.sh")
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -735,6 +741,14 @@ end
 run_capture(switch_after_ready: true) do |result|
   assert_rejected(result, "Owner switch")
   assert(result[:stderr].include?("current Android user"), "missing user-switch failure")
+end
+
+run_capture(
+  ready_full_field: "full=*",
+  matching_ready_host_file: "full=full-records.json"
+) do |result|
+  assert_rejected(result, "wildcard READY field")
+  assert(result[:stderr].include?("READY full path"), "missing wildcard READY rejection")
 end
 
 run_capture(initial_user: "0") do |result|
