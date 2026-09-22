@@ -73,7 +73,10 @@ Future<_BootstrapResult> _bootstrap() async {
   await healthStateStore.initialize();
   final privateState = CbioPrivateStateAdapter(healthStateStore);
   await privateState.migrateLegacyArchives();
-  final driver = buildDefaultDriver(privateStateStore: privateState);
+  final driver = buildDefaultDriver(
+    privateStateStore: privateState,
+    healthStateStore: healthStateStore,
+  );
   final controller = CgmAppController(
     preferences: preferences,
     driver: driver,

@@ -97,9 +97,19 @@ void main() {
     );
     expect(normalRegistry, isNot(contains('YuwellAnytimeDriver')));
     expect(normalRegistry, isNot(contains('YuwellSecureSessionStore')));
+    expect(normalRegistry, isNot(contains('YuwellHealthRecordStore')));
+    expect(normalRegistry, isNot(contains('recordStore:')));
     expect(
       driverFactory.substring(captureRegistryStart),
       contains('YuwellAnytimeDriver'),
+    );
+    expect(
+      driverFactory.substring(captureRegistryStart),
+      contains('YuwellHealthRecordStore(healthStateStore)'),
+    );
+    expect(
+      driverFactory.substring(captureRegistryStart),
+      contains('recordStore:'),
     );
     expect(
       driverFactory.substring(captureRegistryStart),

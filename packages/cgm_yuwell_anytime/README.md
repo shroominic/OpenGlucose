@@ -34,6 +34,8 @@ for the Yuwell Anytime CT5 family.
 - notify-before-write topology verification, strict response routing, and
   immediate live ACK before parsing;
 - injected Keychain/Keystore credential and atomic write-journal contracts;
+- an optional generation-bound private raw-slot store whose complete durable
+  prefix is wire-validated from index zero before any suffix is trusted;
 - explicit one-shot activation authorization, durable pre-write identity and
   initialization state, and read-only interrupted-write recovery; and
 - automatic private history synchronization with negotiated-MTU batching when
@@ -65,6 +67,17 @@ history, and live records private in memory. A caller can explicitly inject the
 engineering-provisional policy to project only authenticated, contiguous,
 post-warmup V1150 packed values as provisional `CgmReading` values. Normal
 OpenGlucose builds do not inject that policy. Pre-`V1150` firmware fails closed.
+
+Private raw durability is additive and disabled when no record store is
+injected. Schema-v1 credentials remain valid for authentication but never
+authorize raw-history restoration; an enabled saved session first reads exact
+firmware, completes the unchanged check-ID exchange, and atomically upgrades
+to a generation-bound schema-v2 identity. Restart recovery preserves the old
+blob, validates every durable record and empty slot from index zero, then
+re-fetches and commits only the suffix. OpenGlucose supplies this store only in
+its explicit debug-capture composition. This does not enable normalized
+Anytime glucose output, and physical process-kill/restart proof remains
+pending.
 
 ## Offline example
 

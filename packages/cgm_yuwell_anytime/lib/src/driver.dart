@@ -12,6 +12,8 @@ import 'discovery.dart';
 import 'errors.dart';
 import 'frames.dart';
 import 'history_record.dart';
+import 'record_state.dart';
+import 'record_store.dart';
 import 'session_security.dart';
 import 'v1150_engineering_output.dart';
 import 'authentication.dart';
@@ -31,6 +33,14 @@ const yuwellFirmwareMetadataKey = 'cgm.yuwell.firmware';
 // resumed session; _tryReadBindingStatusForEvidence reuses the same key for
 // a non-V1150 unit's pre-fail-closed evidence.
 const yuwellBindingStateMetadataKey = 'cgm.yuwell.binding-state';
+const _maximumAheadLiveRecords = 256;
+
+typedef _PendingEngineeringHistoryProof = ({
+  int startIndex,
+  int consumedSlots,
+  int opcode,
+  YuwellHistoryRecordLayout? layout,
+});
 
 void _debugYuwellTrace(String phase, String operation, String outcome) {
   assert(() {
@@ -62,6 +72,7 @@ enum YuwellSessionFailureKind {
   unsupportedCapability,
   historyIncomplete,
   sessionInUse,
+  recordPersistence,
 }
 
 final class YuwellSessionException implements Exception {
@@ -152,6 +163,8 @@ final class YuwellAnytimeDriver implements CgmDriver {
     YuwellSensorCodeDecoder sensorCodeDecoder =
         const YuwellCt5SensorCodeDecoder(),
     YuwellSecureIdentityGenerator? identityGenerator,
+    YuwellRecordStore? recordStore,
+    YuwellHistoryGenerationGenerator? historyGenerationGenerator,
     YuwellTimingProfile timingProfile = const YuwellTimingProfile(),
     YuwellV1150GlucoseOutputPolicy glucoseOutputPolicy =
         YuwellV1150GlucoseOutputPolicy.disabled,
@@ -164,6 +177,10 @@ final class YuwellAnytimeDriver implements CgmDriver {
        _sensorCodeDecoder = sensorCodeDecoder,
        _identityGenerator =
            identityGenerator ?? YuwellSecureIdentityGenerator(),
+       _recordStore = recordStore,
+       _historyGenerationGenerator =
+           historyGenerationGenerator ??
+           YuwellSecureHistoryGenerationGenerator(),
        _timing = timingProfile,
        _glucoseOutputPolicy = glucoseOutputPolicy,
        _sessionLeases = sessionLeaseRegistry ?? _processYuwellSessionLeases,
@@ -185,6 +202,8 @@ final class YuwellAnytimeDriver implements CgmDriver {
   final YuwellActivationGate? _activationGate;
   final YuwellSensorCodeDecoder _sensorCodeDecoder;
   final YuwellSecureIdentityGenerator _identityGenerator;
+  final YuwellRecordStore? _recordStore;
+  final YuwellHistoryGenerationGenerator _historyGenerationGenerator;
   final YuwellTimingProfile _timing;
   final YuwellV1150GlucoseOutputPolicy _glucoseOutputPolicy;
   final YuwellSessionLeaseRegistry _sessionLeases;
@@ -240,6 +259,8 @@ final class YuwellAnytimeDriver implements CgmDriver {
         activationGate: _activationGate,
         sensorCodeDecoder: _sensorCodeDecoder,
         identityGenerator: _identityGenerator,
+        recordStore: _recordStore,
+        historyGenerationGenerator: _historyGenerationGenerator,
         timing: _timing,
         glucoseOutputPolicy: _glucoseOutputPolicy,
         clock: _clock,
@@ -268,6 +289,8 @@ final class YuwellAnytimeSession implements CgmSession {
     required YuwellActivationGate? activationGate,
     required YuwellSensorCodeDecoder sensorCodeDecoder,
     required YuwellSecureIdentityGenerator identityGenerator,
+    required YuwellRecordStore? recordStore,
+    required YuwellHistoryGenerationGenerator historyGenerationGenerator,
     required YuwellTimingProfile timing,
     required YuwellV1150GlucoseOutputPolicy glucoseOutputPolicy,
     required DateTime Function() clock,
@@ -278,6 +301,8 @@ final class YuwellAnytimeSession implements CgmSession {
        _activationGate = activationGate,
        _sensorCodeDecoder = sensorCodeDecoder,
        _identityGenerator = identityGenerator,
+       _recordStore = recordStore,
+       _historyGenerationGenerator = historyGenerationGenerator,
        _timing = timing,
        _engineeringOutput = YuwellV1150EngineeringOutput(
          policy: glucoseOutputPolicy,
@@ -315,6 +340,8 @@ final class YuwellAnytimeSession implements CgmSession {
   final YuwellActivationGate? _activationGate;
   final YuwellSensorCodeDecoder _sensorCodeDecoder;
   final YuwellSecureIdentityGenerator _identityGenerator;
+  final YuwellRecordStore? _recordStore;
+  final YuwellHistoryGenerationGenerator _historyGenerationGenerator;
   final YuwellTimingProfile _timing;
   final YuwellV1150EngineeringOutput _engineeringOutput;
   final void Function() _releaseLeaseCallback;
@@ -328,6 +355,15 @@ final class YuwellAnytimeSession implements CgmSession {
       <int, Queue<Completer<List<int>>>>{};
   final Map<int, YuwellHistoryRecord> _recordByIndex =
       <int, YuwellHistoryRecord>{};
+  final Map<int, YuwellHistoryRecord> _aheadLiveRecordByIndex =
+      <int, YuwellHistoryRecord>{};
+  final Map<int, YuwellHistoryRecord> _pendingPrivateRecordByIndex =
+      <int, YuwellHistoryRecord>{};
+  final Set<int> _pendingPrivateObservedSlots = <int>{};
+  final Set<int> _pendingPrivatePublishIndexes = <int>{};
+  final Set<int> _pendingAheadDrainIndexes = <int>{};
+  final List<_PendingEngineeringHistoryProof> _pendingPrivateEngineeringProofs =
+      <_PendingEngineeringHistoryProof>[];
   final Map<int, CgmReading> _engineeringReadingByIndex = <int, CgmReading>{};
   final Set<int> _observedRecordSlots = <int>{};
   final Set<Future<void>> _notificationTasks = <Future<void>>{};
@@ -339,10 +375,14 @@ final class YuwellAnytimeSession implements CgmSession {
   StreamSubscription<List<int>>? _notificationSubscription;
   StreamSubscription<BleConnectionState>? _connectionSubscription;
   Future<void> _writeTail = Future<void>.value();
+  Future<void> _privateRecordTransitionTail = Future<void>.value();
   Future<void>? _initialization;
   Future<void>? _historyFuture;
   Future<void>? _publicHistoryFuture;
   YuwellSessionCredentials? _credentials;
+  YuwellRecordStateOwner? _recordOwner;
+  int _privateExpectedPrefixLength = 0;
+  bool _privatePrefixValidated = false;
   YuwellUnresolvedWriteIntent? _unresolvedIntent;
   YuwellHistoryRecordLayout? _recordLayout;
   String? _firmware;
@@ -383,8 +423,10 @@ final class YuwellAnytimeSession implements CgmSession {
         firmware: failure.firmware,
         bound: failure.bound,
       );
-      if (!_closing) await _cleanupAfterInitializationFailure();
-      _releaseLease();
+      if (!_closing) {
+        await _cleanupAfterInitializationFailure();
+        _releaseLease();
+      }
       Error.throwWithStackTrace(failure, stackTrace);
     } finally {
       _initializationFinished = true;
@@ -454,28 +496,12 @@ final class YuwellAnytimeSession implements CgmSession {
     _log(CgmLogLevel.info, 'yuwell.notify.enabled');
 
     final credentials = _credentials;
-    if (credentials == null && _unresolvedIntent == null) {
-      // The reference CT5 client queries version only for a new session. A
-      // durable transmitter-computed credential (or a journal created after
-      // that check) resumes directly with authentication.
-      _setPhase('P04', 'version');
-      final versionResponse = await _sendAndWait(
-        operation: 'version',
-        frame: YuwellCt5Commands.readVersion(),
-        responseOpcode: YuwellCt5Commands.versionCommand,
-      );
-      final version = _validate(
-        () => YuwellCt5Responses.version(versionResponse),
-      );
-      _firmware = _parseFirmware(version);
-      if (_firmware != 'V1150') {
-        final bound = await _tryReadBindingStatusForEvidence();
-        throw YuwellSessionException(
-          YuwellSessionFailureKind.unsupportedFirmware,
-          firmware: _firmware,
-          bound: bound,
-        );
-      }
+    if (_recordStore != null ||
+        (credentials == null && _unresolvedIntent == null)) {
+      // Persistence authority always requires the exact read-only firmware
+      // response, including credential-less journal recovery. Without private
+      // persistence, retain the reference client's new-session-only query.
+      await _readAndRequireSupportedFirmware();
     } else {
       _firmware = credentials?.transmitterComputed == false
           ? 'unsupported'
@@ -587,10 +613,12 @@ final class YuwellAnytimeSession implements CgmSession {
         YuwellSessionFailureKind.authenticationRejected,
       );
     }
+    final recoveryCredentials =
+        await _prepareRecordPersistenceAfterAuthentication(credentials);
 
     switch (intent.operation) {
       case YuwellActivationWrite.setDate:
-        if (credentials.phase != YuwellCredentialPhase.active) {
+        if (recoveryCredentials.phase != YuwellCredentialPhase.active) {
           throw const YuwellSessionException(
             YuwellSessionFailureKind.unresolvedWrite,
           );
@@ -600,7 +628,7 @@ final class YuwellAnytimeSession implements CgmSession {
         await _syncSavedSessionHistory();
         return;
       case YuwellActivationWrite.setCommunicationId:
-        if (credentials.phase == YuwellCredentialPhase.authenticated) {
+        if (recoveryCredentials.phase == YuwellCredentialPhase.authenticated) {
           await _requireActivationAuthorization();
           await _completeRecoveredIntent(intent);
           await _completeActivationFromAuthenticated();
@@ -611,17 +639,17 @@ final class YuwellAnytimeSession implements CgmSession {
         );
       case YuwellActivationWrite.configure:
         if (intent.state == YuwellWriteIntentState.prepared &&
-            credentials.phase == YuwellCredentialPhase.authenticated) {
+            recoveryCredentials.phase == YuwellCredentialPhase.authenticated) {
           // The pre-BLE uncertainty barrier proves configuration was never
           // attempted. Cancel it and continue the already-authorized flow.
           await _cancelRecoveredPreparedIntent(intent);
           await _completeActivationFromAuthenticated();
           return;
         }
-        if (credentials.phase == YuwellCredentialPhase.configured) {
+        if (recoveryCredentials.phase == YuwellCredentialPhase.configured) {
           await _requireActivationAuthorization();
           await _completeRecoveredIntent(intent);
-          await _initializeConfigured(credentials);
+          await _initializeConfigured(recoveryCredentials);
           return;
         }
         throw const YuwellSessionException(
@@ -629,27 +657,29 @@ final class YuwellAnytimeSession implements CgmSession {
         );
       case YuwellActivationWrite.initialize:
         if (intent.state == YuwellWriteIntentState.prepared &&
-            credentials.phase == YuwellCredentialPhase.activationPrepared) {
+            recoveryCredentials.phase ==
+                YuwellCredentialPhase.activationPrepared) {
           // activationPrepared was persisted before the journal, and a
           // prepared journal now proves initialize did not enter BLE.
           await _cancelRecoveredPreparedIntent(intent);
-          await _initializeConfigured(credentials);
+          await _initializeConfigured(recoveryCredentials);
           return;
         }
-        if (credentials.phase == YuwellCredentialPhase.lowPowerPending) {
+        if (recoveryCredentials.phase ==
+            YuwellCredentialPhase.lowPowerPending) {
           // This phase is written only after a valid initialize response.
           // Complete the stale initialize tombstone, then run the separately
           // journaled low-power step without repeating initialize.
           await _completeRecoveredIntent(intent);
-          await _enterLowPowerAndPublish(credentials);
+          await _enterLowPowerAndPublish(recoveryCredentials);
           return;
         }
-        if (credentials.phase == YuwellCredentialPhase.active) {
+        if (recoveryCredentials.phase == YuwellCredentialPhase.active) {
           // Compatibility with the pre-lowPowerPending schema: its active
           // phase proved initialize but did not prove low-power. Downgrade to
           // the explicit pending phase before clearing the stale initialize
           // tombstone, then run low-power once under its own journal.
-          final lowPowerPending = credentials.copyWith(
+          final lowPowerPending = recoveryCredentials.copyWith(
             phase: YuwellCredentialPhase.lowPowerPending,
           );
           await _persistCredentials(lowPowerPending);
@@ -657,8 +687,9 @@ final class YuwellAnytimeSession implements CgmSession {
           await _enterLowPowerAndPublish(lowPowerPending);
           return;
         }
-        if (credentials.phase != YuwellCredentialPhase.activationPrepared ||
-            credentials.activationStartedAt == null) {
+        if (recoveryCredentials.phase !=
+                YuwellCredentialPhase.activationPrepared ||
+            recoveryCredentials.activationStartedAt == null) {
           throw const YuwellSessionException(
             YuwellSessionFailureKind.unresolvedWrite,
           );
@@ -687,7 +718,7 @@ final class YuwellAnytimeSession implements CgmSession {
         final decoded = _validate(
           () => YuwellCt5Responses.decodedSensorCode(
             sensorCodeResponse,
-            cipher: credentials.cipher!,
+            cipher: recoveryCredentials.cipher!,
           ),
         );
         YuwellActivationParameters recovered;
@@ -698,8 +729,8 @@ final class YuwellAnytimeSession implements CgmSession {
             YuwellSessionFailureKind.calibrationCode,
           );
         }
-        if ((recovered.k - credentials.k).abs() > 0.0001 ||
-            (recovered.r - credentials.r).abs() > 0.0001) {
+        if ((recovered.k - recoveryCredentials.k).abs() > 0.0001 ||
+            (recovered.r - recoveryCredentials.r).abs() > 0.0001) {
           throw const YuwellSessionException(
             YuwellSessionFailureKind.calibrationCode,
           );
@@ -715,7 +746,7 @@ final class YuwellAnytimeSession implements CgmSession {
         final probe = _validate(
           () => YuwellHistoryFrame.parse(
             historyResponse,
-            cipher: credentials.cipher!,
+            cipher: recoveryCredentials.cipher!,
             expectedLayout: YuwellHistoryRecordLayout.alert17,
           ),
         );
@@ -726,26 +757,33 @@ final class YuwellAnytimeSession implements CgmSession {
             YuwellSessionFailureKind.unresolvedWrite,
           );
         }
-        final lowPowerPending = credentials.copyWith(
+        final lowPowerPending = recoveryCredentials.copyWith(
           phase: YuwellCredentialPhase.lowPowerPending,
         );
         await _persistCredentials(lowPowerPending);
         await _completeRecoveredIntent(intent);
-        for (final indexed in probe.indexedRecords) {
-          _recordLayout = indexed.record.layout;
-          _storeRecord(
-            indexed.index,
-            indexed.record,
-            isLive: false,
-            publish: false,
-          );
+        if (_recordOwner == null) {
+          for (final indexed in probe.indexedRecords) {
+            _recordLayout = indexed.record.layout;
+            _storeRecord(
+              indexed.index,
+              indexed.record,
+              isLive: false,
+              publish: false,
+            );
+          }
+          _markConsumedHistorySlots(probe);
         }
-        _markConsumedHistorySlots(probe);
+        // With persistence, this one-record activity probe remains evidence
+        // only. The normal zero-based history cycle must revalidate the entire
+        // quarantined prefix through the owner before any driver/projector
+        // state changes.
         await _enterLowPowerAndPublish(lowPowerPending);
         return;
       case YuwellActivationWrite.lowPower:
-        if (credentials.phase != YuwellCredentialPhase.lowPowerPending &&
-            credentials.phase != YuwellCredentialPhase.active) {
+        if (recoveryCredentials.phase !=
+                YuwellCredentialPhase.lowPowerPending &&
+            recoveryCredentials.phase != YuwellCredentialPhase.active) {
           throw const YuwellSessionException(
             YuwellSessionFailureKind.unresolvedWrite,
           );
@@ -756,12 +794,13 @@ final class YuwellAnytimeSession implements CgmSession {
         // an uncertain outcome. Persist the pending phase before clearing the
         // old tombstone so every process-death boundary remains recoverable.
         final lowPowerPending =
-            credentials.phase == YuwellCredentialPhase.lowPowerPending
-            ? credentials
-            : credentials.copyWith(
+            recoveryCredentials.phase == YuwellCredentialPhase.lowPowerPending
+            ? recoveryCredentials
+            : recoveryCredentials.copyWith(
                 phase: YuwellCredentialPhase.lowPowerPending,
               );
-        if (credentials.phase != YuwellCredentialPhase.lowPowerPending) {
+        if (recoveryCredentials.phase !=
+            YuwellCredentialPhase.lowPowerPending) {
           await _persistCredentials(lowPowerPending);
         }
         await _completeRecoveredIntent(intent);
@@ -896,6 +935,10 @@ final class YuwellAnytimeSession implements CgmSession {
           r: 0,
           transmitterComputed: true,
           phase: YuwellCredentialPhase.authenticated,
+          verifiedFirmware: _recordStore == null ? null : _firmware,
+          historyGeneration: _recordStore == null
+              ? null
+              : _historyGenerationGenerator.generate(),
         );
         await _persistCredentials(credentials);
       },
@@ -903,6 +946,10 @@ final class YuwellAnytimeSession implements CgmSession {
     // Ensure malformed responses cannot be accidentally accepted if a store
     // implementation invokes the callback differently.
     _validate(() => identity.deriveCipherFromSetIdResponse(setIdResponse));
+    final credentials = _credentials;
+    if (_recordStore != null && credentials != null) {
+      await _restoreRecordOwner(credentials);
+    }
   }
 
   Future<void> _resume(YuwellSessionCredentials credentials) async {
@@ -933,7 +980,10 @@ final class YuwellAnytimeSession implements CgmSession {
       );
     }
 
-    switch (credentials.phase) {
+    final resumedCredentials =
+        await _prepareRecordPersistenceAfterAuthentication(credentials);
+
+    switch (resumedCredentials.phase) {
       case YuwellCredentialPhase.identityPrepared:
         throw const YuwellSessionException(
           YuwellSessionFailureKind.unresolvedWrite,
@@ -948,16 +998,101 @@ final class YuwellAnytimeSession implements CgmSession {
         return;
       case YuwellCredentialPhase.configured:
         await _requireActivationAuthorization();
-        await _initializeConfigured(credentials);
+        await _initializeConfigured(resumedCredentials);
         return;
       case YuwellCredentialPhase.activationPrepared:
         // This phase is persisted immediately before the initialize journal.
         // With no unresolved intent, the process died before BLE was entered.
-        await _initializeConfigured(credentials);
+        await _initializeConfigured(resumedCredentials);
         return;
       case YuwellCredentialPhase.lowPowerPending:
-        await _enterLowPowerAndPublish(credentials);
+        await _enterLowPowerAndPublish(resumedCredentials);
         return;
+    }
+  }
+
+  Future<YuwellSessionCredentials> _prepareRecordPersistenceAfterAuthentication(
+    YuwellSessionCredentials credentials,
+  ) async {
+    if (_recordStore == null) return credentials;
+    final firmware = _firmware;
+    if (firmware == null || firmware != 'V1150') {
+      throw YuwellSessionException(
+        YuwellSessionFailureKind.unsupportedFirmware,
+        firmware: firmware,
+      );
+    }
+    var prepared = credentials;
+    if (credentials.canRestoreHistory) {
+      if (credentials.verifiedFirmware != firmware) {
+        throw YuwellSessionException(
+          YuwellSessionFailureKind.unsupportedFirmware,
+          firmware: firmware,
+        );
+      }
+    } else {
+      prepared = credentials.copyWith(
+        verifiedFirmware: firmware,
+        historyGeneration: _historyGenerationGenerator.generate(),
+      );
+      await _persistCredentials(prepared);
+    }
+    await _restoreRecordOwner(prepared);
+    return prepared;
+  }
+
+  Future<void> _restoreRecordOwner(YuwellSessionCredentials credentials) async {
+    final store = _recordStore;
+    final firmware = credentials.verifiedFirmware;
+    final generation = credentials.historyGeneration;
+    if (store == null || firmware == null || generation == null) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+    final binding = YuwellRecordBinding(
+      sensorBinding: sha256.convert(utf8.encode(sensor.storageKey)).toString(),
+      historyGeneration: generation,
+      firmware: firmware,
+      historyOpcode: YuwellCt5Commands.alternateHistoryCommand,
+      layout: YuwellHistoryRecordLayout.alert17,
+    );
+    final key = YuwellRecordStoreKey.forGeneration(
+      sensorStorageKey: sensor.storageKey,
+      historyGeneration: generation,
+    );
+    try {
+      _recordOwner = await YuwellRecordStateOwner.restore(
+        store: store,
+        key: key,
+        binding: binding,
+      );
+      _recordLayout = binding.layout;
+    } catch (_) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+  }
+
+  Future<void> _readAndRequireSupportedFirmware() async {
+    _setPhase('P04', 'version');
+    final versionResponse = await _sendAndWait(
+      operation: 'version',
+      frame: YuwellCt5Commands.readVersion(),
+      responseOpcode: YuwellCt5Commands.versionCommand,
+    );
+    final version = _validate(
+      () => YuwellCt5Responses.version(versionResponse),
+    );
+    _firmware = _parseFirmware(version);
+    if (_firmware != 'V1150') {
+      final bound = await _tryReadBindingStatusForEvidence();
+      throw YuwellSessionException(
+        YuwellSessionFailureKind.unsupportedFirmware,
+        firmware: _firmware,
+        bound: bound,
+      );
     }
   }
 
@@ -1418,15 +1553,29 @@ final class YuwellAnytimeSession implements CgmSession {
         final credentials = _credentials;
         if (credentials == null) return;
         final live = YuwellLiveFrame.parse(frame, cipher: credentials.cipher!);
+        if (_recordOwner != null && (live.index < 0 || live.index >= 7695)) {
+          throw const YuwellSessionException(
+            YuwellSessionFailureKind.recordPersistence,
+          );
+        }
         _recordLayout = live.record.layout;
-        _storeRecord(
-          live.index,
-          live.record,
-          isLive: true,
-          opcode: live.opcode,
-        );
-      } catch (_) {
-        _publishFailure(YuwellSessionFailureKind.malformedResponse);
+        if (_recordOwner != null) {
+          await _serializePrivateRecordTransition(() async {
+            _acceptPrivateLiveFrame(live);
+          });
+        } else {
+          _storeRecord(
+            live.index,
+            live.record,
+            isLive: true,
+            opcode: live.opcode,
+          );
+        }
+      } catch (error) {
+        final kind = error is YuwellSessionException
+            ? error.kind
+            : YuwellSessionFailureKind.malformedResponse;
+        _publishFailure(kind);
         await _connection?.disconnect();
       }
       return;
@@ -1458,6 +1607,62 @@ final class YuwellAnytimeSession implements CgmSession {
     } catch (_) {
       if (!_closing) _publishFailure(YuwellSessionFailureKind.notification);
     }
+  }
+
+  Future<T> _serializePrivateRecordTransition<T>(
+    Future<T> Function() operation,
+  ) {
+    final result = Completer<T>();
+    _privateRecordTransitionTail = _privateRecordTransitionTail.then((_) async {
+      try {
+        result.complete(await operation());
+      } catch (error, stackTrace) {
+        result.completeError(error, stackTrace);
+      }
+    });
+    return result.future;
+  }
+
+  void _acceptPrivateLiveFrame(YuwellLiveFrame live) {
+    final pending = _pendingPrivateObservedSlots.contains(live.index);
+    if (pending) {
+      final record = _pendingPrivateRecordByIndex[live.index];
+      if (record == null ||
+          !_sameBytes(record.rawBytes, live.record.rawBytes)) {
+        throw const YuwellSessionException(
+          YuwellSessionFailureKind.recordPersistence,
+        );
+      }
+      return;
+    }
+
+    final committed = _observedRecordSlots.contains(live.index);
+    if (committed) {
+      final record = _recordByIndex[live.index];
+      if (record == null ||
+          !_sameBytes(record.rawBytes, live.record.rawBytes)) {
+        throw const YuwellSessionException(
+          YuwellSessionFailureKind.recordPersistence,
+        );
+      }
+      _storeRecord(live.index, live.record, isLive: true, opcode: live.opcode);
+      return;
+    }
+
+    final existing = _aheadLiveRecordByIndex[live.index];
+    if (existing != null &&
+        !_sameBytes(existing.rawBytes, live.record.rawBytes)) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+    if (existing == null &&
+        _aheadLiveRecordByIndex.length >= _maximumAheadLiveRecords) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+    _aheadLiveRecordByIndex.putIfAbsent(live.index, () => live.record);
   }
 
   void _storeRecord(
@@ -1709,7 +1914,19 @@ final class YuwellAnytimeSession implements CgmSession {
         _snapshot.stage == CgmSyncStage.disconnected) {
       throw const YuwellSessionException(YuwellSessionFailureKind.disconnected);
     }
-    var cursor = requestedStartOffset == null
+    final recordOwner = _recordOwner;
+    if (recordOwner != null) {
+      _privateExpectedPrefixLength = recordOwner.state.nextIndex;
+      _privatePrefixValidated = _privateExpectedPrefixLength == 0;
+      _pendingPrivateRecordByIndex.clear();
+      _pendingPrivateObservedSlots.clear();
+      _pendingPrivatePublishIndexes.clear();
+      _pendingAheadDrainIndexes.clear();
+      _pendingPrivateEngineeringProofs.clear();
+    }
+    var cursor = recordOwner != null
+        ? 0
+        : requestedStartOffset == null
         ? _nextContiguousRecordIndex()
         : (requestedStartOffset + 1) ~/ 3;
     cursor = cursor.clamp(0, 7694);
@@ -1754,16 +1971,20 @@ final class YuwellAnytimeSession implements CgmSession {
             YuwellSessionFailureKind.malformedResponse,
           );
         }
-        _recordLayout = historyFrame.layout ?? _recordLayout;
-        _markConsumedHistorySlots(historyFrame);
-        for (final indexed in historyFrame.indexedRecords) {
-          _recordLayout = indexed.record.layout;
-          _storeRecord(
-            indexed.index,
-            indexed.record,
-            isLive: false,
-            opcode: historyFrame.opcode,
-          );
+        if (recordOwner == null) {
+          _recordLayout = historyFrame.layout ?? _recordLayout;
+          _markConsumedHistorySlots(historyFrame);
+          for (final indexed in historyFrame.indexedRecords) {
+            _recordLayout = indexed.record.layout;
+            _storeRecord(
+              indexed.index,
+              indexed.record,
+              isLive: false,
+              opcode: historyFrame.opcode,
+            );
+          }
+        } else {
+          await _acceptPrivateHistoryFrame(recordOwner, historyFrame);
         }
         if (historyFrame.terminated || historyFrame.consumedSlots == 0) {
           completed = true;
@@ -1778,6 +1999,23 @@ final class YuwellAnytimeSession implements CgmSession {
         throw const YuwellSessionException(
           YuwellSessionFailureKind.historyIncomplete,
         );
+      }
+      if (recordOwner != null) {
+        if (!_privatePrefixValidated) {
+          throw const YuwellSessionException(
+            YuwellSessionFailureKind.recordPersistence,
+          );
+        }
+        await _serializePrivateRecordTransition(() async {
+          try {
+            await recordOwner.completeHistoryCycle();
+          } catch (_) {
+            throw const YuwellSessionException(
+              YuwellSessionFailureKind.recordPersistence,
+            );
+          }
+          _commitPendingPrivateHistory();
+        });
       }
       _debugYuwellTrace(_phase, 'history-cycle', 'complete');
       // The reviewed CT5 chain always checks reset/binding state after a
@@ -1835,6 +2073,112 @@ final class YuwellAnytimeSession implements CgmSession {
     }
   }
 
+  Future<void> _acceptPrivateHistoryFrame(
+    YuwellRecordStateOwner owner,
+    YuwellHistoryFrame frame,
+  ) => _serializePrivateRecordTransition(() async {
+    final end = frame.startIndex + frame.consumedSlots;
+    if (frame.terminated && end < _privateExpectedPrefixLength) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+    if (frame.consumedSlots == 0) return;
+
+    final recordsByIndex = <int, YuwellHistoryRecord>{
+      for (final indexed in frame.indexedRecords) indexed.index: indexed.record,
+    };
+    for (var index = frame.startIndex; index < end; index++) {
+      final live = _aheadLiveRecordByIndex[index];
+      if (live == null) continue;
+      final historical = recordsByIndex[index];
+      if (historical == null ||
+          !_sameBytes(live.rawBytes, historical.rawBytes)) {
+        throw const YuwellSessionException(
+          YuwellSessionFailureKind.recordPersistence,
+        );
+      }
+    }
+
+    try {
+      await owner.acceptBatch(
+        YuwellRecordBatch(
+          startIndex: frame.startIndex,
+          consumedSlots: frame.consumedSlots,
+          records: frame.indexedRecords,
+        ),
+      );
+    } catch (_) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
+    }
+
+    _pendingPrivateEngineeringProofs.add((
+      startIndex: frame.startIndex,
+      consumedSlots: frame.consumedSlots,
+      opcode: frame.opcode,
+      layout: frame.layout,
+    ));
+
+    for (var index = frame.startIndex; index < end; index++) {
+      _pendingPrivateObservedSlots.add(index);
+      if (_aheadLiveRecordByIndex.containsKey(index)) {
+        _pendingAheadDrainIndexes.add(index);
+      }
+    }
+    for (final indexed in frame.indexedRecords) {
+      _pendingPrivateRecordByIndex[indexed.index] = indexed.record;
+      if (indexed.index >= _privateExpectedPrefixLength) {
+        _pendingPrivatePublishIndexes.add(indexed.index);
+      }
+    }
+    if (end >= _privateExpectedPrefixLength) {
+      _privatePrefixValidated = true;
+    }
+    if (!owner.isDirty && _privatePrefixValidated) {
+      _commitPendingPrivateHistory();
+    }
+  });
+
+  void _commitPendingPrivateHistory() {
+    for (final index in _pendingPrivateObservedSlots) {
+      _observedRecordSlots.add(index);
+    }
+    // Index-only proof is released only after the complete saved prefix has
+    // matched and the owner has reached its required durability boundary.
+    // Restored records below _privateExpectedPrefixLength are still stored
+    // with publish=false and never enter the projector as records.
+    for (final proof in _pendingPrivateEngineeringProofs) {
+      _observeEngineeringHistorySlots(
+        opcode: proof.opcode,
+        layout: proof.layout,
+        startIndex: proof.startIndex,
+        consumedSlots: proof.consumedSlots,
+      );
+    }
+    final indexes = _pendingPrivateRecordByIndex.keys.toList()..sort();
+    for (final index in indexes) {
+      final record = _pendingPrivateRecordByIndex[index]!;
+      _recordLayout = record.layout;
+      _storeRecord(
+        index,
+        record,
+        isLive: false,
+        opcode: YuwellCt5Commands.alternateHistoryCommand,
+        publish: _pendingPrivatePublishIndexes.contains(index),
+      );
+    }
+    for (final index in _pendingAheadDrainIndexes) {
+      _aheadLiveRecordByIndex.remove(index);
+    }
+    _pendingPrivateRecordByIndex.clear();
+    _pendingPrivateObservedSlots.clear();
+    _pendingPrivatePublishIndexes.clear();
+    _pendingAheadDrainIndexes.clear();
+    _pendingPrivateEngineeringProofs.clear();
+  }
+
   int _nextContiguousRecordIndex() {
     var index = 0;
     while (index < 7695 && _observedRecordSlots.contains(index)) {
@@ -1851,16 +2195,30 @@ final class YuwellAnytimeSession implements CgmSession {
       // fact only in memory so a later retry resumes at the first true gap.
       _observedRecordSlots.add(index);
     }
+    _observeEngineeringHistorySlots(
+      opcode: frame.opcode,
+      layout: frame.layout,
+      startIndex: frame.startIndex,
+      consumedSlots: frame.consumedSlots,
+    );
+  }
+
+  void _observeEngineeringHistorySlots({
+    required int opcode,
+    required YuwellHistoryRecordLayout? layout,
+    required int startIndex,
+    required int consumedSlots,
+  }) {
     final credentials = _credentials;
     if (credentials == null) return;
     _engineeringOutput.observeHistorySlots(
       firmware: _firmware ?? '',
       transmitterComputed: credentials.transmitterComputed,
       credentialPhase: credentials.phase,
-      opcode: frame.opcode,
-      layout: frame.layout,
-      startIndex: frame.startIndex,
-      consumedSlots: frame.consumedSlots,
+      opcode: opcode,
+      layout: layout,
+      startIndex: startIndex,
+      consumedSlots: consumedSlots,
       activationStartedAt: credentials.activationStartedAt,
       initializationIndex: credentials.initializationIndex,
     );
@@ -1923,17 +2281,10 @@ final class YuwellAnytimeSession implements CgmSession {
     _closing = true;
     _failPending(YuwellSessionFailureKind.disconnected);
     await _notificationSubscription?.cancel();
+    Object? drainError;
     try {
-      await _connection?.disconnect();
-    } finally {
-      await _connectionSubscription?.cancel();
       if (_notificationTasks.isNotEmpty) {
         await Future.wait<void>(List<Future<void>>.of(_notificationTasks));
-      }
-      try {
-        await _initialization;
-      } catch (_) {
-        // The terminal snapshot below is authoritative for an explicit close.
       }
       try {
         await _historyFuture;
@@ -1944,6 +2295,20 @@ final class YuwellAnytimeSession implements CgmSession {
         await _writeTail;
       } catch (_) {
         // Queued writes are failed by the closing guard above.
+      }
+      try {
+        await _recordOwner?.drain();
+      } catch (error) {
+        drainError = error;
+        _log(CgmLogLevel.error, 'yuwell.failure.recordPersistence');
+      }
+      await _connection?.disconnect();
+    } finally {
+      await _connectionSubscription?.cancel();
+      try {
+        await _initialization;
+      } catch (_) {
+        // The terminal snapshot below is authoritative for an explicit close.
       }
       _snapshot = _snapshot.copyWith(
         stage: CgmSyncStage.disconnected,
@@ -1956,6 +2321,11 @@ final class YuwellAnytimeSession implements CgmSession {
       } finally {
         _releaseLease();
       }
+    }
+    if (drainError != null) {
+      throw const YuwellSessionException(
+        YuwellSessionFailureKind.recordPersistence,
+      );
     }
   }
 

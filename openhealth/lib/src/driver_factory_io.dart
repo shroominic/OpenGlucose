@@ -17,12 +17,14 @@ import 'cgm_driver_registry.dart';
 import 'demo_driver.dart';
 import 'display_awake_gate.dart';
 import 'local_ble_trace_sink.dart';
+import 'health_state_store.dart';
 import 'libre_gen1_secure_store.dart';
 import 'mock_scenarios.dart';
 import 'protocol_capture_observation_driver.dart';
 import 'protocol_capture_profile.dart';
 import 'protocol_capture_status.dart';
 import 'yuwell_secure_session_store.dart';
+import 'yuwell_private_record_store.dart';
 
 /// Where the GS1 driver resolves the vendor material its link needs.
 ///
@@ -184,7 +186,10 @@ Future<void> configurePlatformPrivacyDefaults() async {
   }
 }
 
-CgmDriver buildPlatformDriver({CbioPrivateStateStore? privateStateStore}) {
+CgmDriver buildPlatformDriver({
+  CbioPrivateStateStore? privateStateStore,
+  HealthStateStore? healthStateStore,
+}) {
   _rejectIncompatibleDebugModes();
   if (kOgDemo && kReleaseMode) {
     throw UnsupportedError('OG_DEMO is disabled in release builds.');
@@ -206,7 +211,10 @@ CgmDriver buildPlatformDriver({CbioPrivateStateStore? privateStateStore}) {
         !kOgProtocolCaptureLiveLibre) {
       return const ProtocolCaptureObservationDriver();
     }
-    return _buildCaptureRegistry(_sharedProtocolTransport());
+    return _buildCaptureRegistry(
+      _sharedProtocolTransport(),
+      healthStateStore: healthStateStore,
+    );
   }
   return _buildPlatformRegistry(
     const FlutterBluePlusTransport(),
@@ -249,7 +257,10 @@ CgmDriver _buildPlatformRegistry(
   );
 }
 
-CgmDriver _buildCaptureRegistry(BleTransport transport) {
+CgmDriver _buildCaptureRegistry(
+  BleTransport transport, {
+  required HealthStateStore? healthStateStore,
+}) {
   final registrations = <CgmDriverRegistration>[];
   _protocolLibreDriver = null;
   if (kOgProtocolCaptureLiveLibre) {
@@ -283,6 +294,11 @@ CgmDriver _buildCaptureRegistry(BleTransport transport) {
     );
   }
   if (kOgProtocolCaptureLiveYuwell) {
+    if (healthStateStore == null) {
+      throw StateError(
+        'Live Yuwell capture requires initialized restricted storage.',
+      );
+    }
     const discovery = YuwellAnytimeDiscovery();
     final secureStore = YuwellSecureSessionStore();
     registrations.add(
@@ -291,6 +307,7 @@ CgmDriver _buildCaptureRegistry(BleTransport transport) {
           transport,
           credentialStore: secureStore,
           writeIntentStore: secureStore,
+          recordStore: YuwellHealthRecordStore(healthStateStore),
           glucoseOutputPolicy:
               YuwellV1150GlucoseOutputPolicy.engineeringProvisional,
           discovery: discovery,

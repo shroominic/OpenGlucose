@@ -2,6 +2,8 @@ import 'package:cgm_core/cgm_core.dart';
 import 'package:cgm_cbio/cgm_cbio.dart';
 import 'cgm_driver_registry.dart';
 
+import 'health_state_store.dart';
+
 import 'driver_factory_stub.dart'
     if (dart.library.io) 'driver_factory_io.dart'
     as platform;
@@ -22,8 +24,13 @@ bool get isPlatformLibreGen1StreamingEnabled =>
 Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() =>
     platform.preparePlatformLibreGen1Connection();
 
-CgmDriver buildDefaultDriver({CbioPrivateStateStore? privateStateStore}) =>
-    platform.buildPlatformDriver(privateStateStore: privateStateStore);
+CgmDriver buildDefaultDriver({
+  CbioPrivateStateStore? privateStateStore,
+  HealthStateStore? healthStateStore,
+}) => platform.buildPlatformDriver(
+  privateStateStore: privateStateStore,
+  healthStateStore: healthStateStore,
+);
 
 CbioSensorDriver? _privateDriver(CgmDriver driver) {
   final candidate = driver is CgmDriverRegistry
