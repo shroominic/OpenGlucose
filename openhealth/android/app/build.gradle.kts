@@ -8,6 +8,17 @@ val releaseKeystoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
 val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
 val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
+val debugApplicationIdSuffix = providers
+    .environmentVariable("OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX")
+    .orElse(".debug")
+    .map { suffix ->
+        if (suffix !in setOf(".debug", ".debug.owner")) {
+            throw GradleException(
+                "OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX must be .debug or .debug.owner."
+            )
+        }
+        suffix
+    }
 val releaseSigningConfigured = listOf(
     releaseKeystoreFile,
     releaseKeystorePassword,
@@ -65,7 +76,7 @@ android {
         debug {
             // Keep USB development builds separate from a tester's signed
             // OpenGlucose install so `flutter run` never replaces user data.
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = debugApplicationIdSuffix.get()
             versionNameSuffix = "-debug"
         }
         release {

@@ -27,6 +27,7 @@ final class CaptureRunContext {
     required this.replayContext,
     required this.rawStartIndex,
     required this.sourceRevision,
+    required this.appPackage,
   }) : expectedSerial = List<int>.unmodifiable(expectedSerial);
 
   factory CaptureRunContext.fromValues(Map<String, String> values) {
@@ -47,6 +48,7 @@ final class CaptureRunContext {
     final replayContext = require('CBIO_REPLAY_CONTEXT');
     final rawStartIndex = int.tryParse(require('CBIO_RAW_START_INDEX'));
     final sourceRevision = require('CBIO_SOURCE_REVISION');
+    final appPackage = require('CBIO_CAPTURE_APP_PACKAGE');
     if (!_hex32.hasMatch(runId) ||
         !_hex32.hasMatch(startNonce) ||
         !_hex32.hasMatch(ackNonce) ||
@@ -56,7 +58,8 @@ final class CaptureRunContext {
         !_hex64.hasMatch(labelSha256) ||
         replayContext != 'V1.1.6A' ||
         rawStartIndex != 1 ||
-        !_hex40.hasMatch(sourceRevision)) {
+        !_hex40.hasMatch(sourceRevision) ||
+        !_appPackages.contains(appPackage)) {
       throw const FormatException('Capture context is invalid.');
     }
     return CaptureRunContext._(
@@ -72,6 +75,7 @@ final class CaptureRunContext {
       replayContext: replayContext,
       rawStartIndex: rawStartIndex!,
       sourceRevision: sourceRevision,
+      appPackage: appPackage,
     );
   }
 
@@ -82,6 +86,10 @@ final class CaptureRunContext {
   static final _deviceIdPattern = RegExp(
     r'^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$',
   );
+  static const _appPackages = <String>{
+    'com.openglucose.app.debug',
+    'com.openglucose.app.debug.owner',
+  };
 
   final String runId;
   final String startNonce;
@@ -92,6 +100,7 @@ final class CaptureRunContext {
   final String replayContext;
   final int rawStartIndex;
   final String sourceRevision;
+  final String appPackage;
 
   @override
   String toString() => 'CaptureRunContext(<redacted>)';
@@ -599,7 +608,7 @@ String buildCaptureManifest({
   return jsonEncode(<String, Object?>{
     'schemaVersion': 1,
     'sourceRevision': context.sourceRevision,
-    'packageId': 'com.openglucose.app.debug',
+    'packageId': context.appPackage,
     'runId': context.runId,
     'replayContext': context.replayContext,
     'labelSha256': context.labelSha256,

@@ -14,6 +14,7 @@ TRIGGER = "22" * 5
 INSTALLED_APK_SHA256 = "70547d756cae308d45cd76739e93ad3727225175fdd2a8cf8a7862cc1859eb4a"
 SIGNER_SHA256 = "ad5e6dd01a944d2ea159d1bb1b1376de8a3962beaa95ddb0d7af513fe84ebcb5"
 APP_PACKAGE = "com.openglucose.app.debug"
+OWNER_APP_PACKAGE = "com.openglucose.app.debug.owner"
 APP_VERSION_CODE = "29"
 APP_VERSION_NAME = "0.4.0-debug"
 LAUNCH_ACTIVITY = "com.aidex.aidex_flutter.MainActivity"
@@ -45,16 +46,18 @@ def run_capture(
   switch_after_ready: false,
   scenario: :valid_cutoff,
   initial_user: "10",
+  android_user: "10",
+  app_package: APP_PACKAGE,
   source_change: nil,
   allow_expected_untracked: false,
   context_case: nil,
   destination_case: nil,
-  candidate_package: APP_PACKAGE,
+  candidate_package: nil,
   candidate_version_code: APP_VERSION_CODE,
   candidate_version_name: APP_VERSION_NAME,
   candidate_signer: SIGNER_SHA256,
   installed_sha: INSTALLED_APK_SHA256,
-  installed_path: "/data/app/fixture/#{APP_PACKAGE}/base.apk",
+  installed_path: nil,
   installed_version_code: APP_VERSION_CODE,
   installed_version_name: APP_VERSION_NAME,
   armed: :valid,
@@ -62,9 +65,15 @@ def run_capture(
   complete: :valid,
   post_build_mutation: nil,
   ready_full_field: "full=full-records.json",
-  matching_ready_host_file: nil
+  matching_ready_host_file: nil,
+  owner_global_present: false,
+  owner_user_present: false,
+  owner_user_state: "RUNNING_UNLOCKED",
+  mutate_candidate_after_signer: false
 )
   Dir.mktmpdir("cbio-private-capture-contract.") do |temporary|
+    candidate_package ||= app_package
+    installed_path ||= "/data/app/fixture/#{app_package}/base.apk"
     root = File.realpath(temporary)
     repo = File.join(root, "source")
     private_root = File.join(root, "private")
@@ -185,16 +194,46 @@ def run_capture(
           [ "${1:-}" = -n ] && shift
           [ "${1:-}" = -T ] && shift
           if [ "$1 $2" = "am get-current-user" ]; then cat "$FAKE_USER_FILE"; exit 0; fi
+          if [ "$1 $2" = "am get-started-user-state" ]; then
+            [ "$3" = 0 ] || exit 2
+            printf '%s\n' "$FAKE_OWNER_USER_STATE"
+            exit 0
+          fi
+          if [ "$1 $2 ${3:-}" = "pm list packages" ]; then
+            case "$4" in
+              -u)
+                [ "$5" = "$FAKE_APP_PACKAGE" ] || exit 2
+                [ "$FAKE_OWNER_GLOBAL_PRESENT" = 1 ] || exit 0
+                ;;
+              --user)
+                [ "$5" = 0 ] && [ "$6" = "$FAKE_APP_PACKAGE" ] || exit 2
+                [ "$FAKE_OWNER_USER_PRESENT" = 1 ] || exit 0
+                ;;
+              *) exit 2 ;;
+            esac
+            printf 'package:%s\n' "$FAKE_APP_PACKAGE"
+            exit 0
+          fi
           if [ "$1 $2" = "pm path" ]; then
-            [ "$3" = --user ] && [ "$4" = 10 ] && [ "$5" = com.openglucose.app.debug ] || exit 2
+            if [ "$3" = --user ]; then
+              [ "$4" = "$FAKE_ANDROID_USER" ] && [ "$5" = "$FAKE_APP_PACKAGE" ] || exit 2
+              if [ "$FAKE_APP_PACKAGE" = com.openglucose.app.debug.owner ]; then
+                [ "$FAKE_OWNER_USER_PRESENT" = 1 ] || exit 0
+              fi
+              printf 'package:%s\n' "$FAKE_INSTALLED_PATH"
+              exit 0
+            fi
+            [ "$3" = "$FAKE_APP_PACKAGE" ] || exit 2
+            [ "$FAKE_APP_PACKAGE" = com.openglucose.app.debug.owner ] || exit 2
+            [ "$FAKE_OWNER_GLOBAL_PRESENT" = 1 ] || exit 0
             printf 'package:%s\n' "$FAKE_INSTALLED_PATH"
             exit 0
           fi
           if [ "$1 $2" = "dumpsys package" ]; then
-            [ "$3" = com.openglucose.app.debug ] || exit 2
+            [ "$3" = "$FAKE_APP_PACKAGE" ] || exit 2
             [ "$FAKE_HANG" != preflight ] || sleep 20
-            printf 'Packages:\n  Package [com.openglucose.app.debug]:\n    versionCode=%s minSdk=26 targetSdk=36\n    versionName=%s\n' \
-              "$FAKE_INSTALLED_VERSION_CODE" "$FAKE_INSTALLED_VERSION_NAME"
+            printf 'Packages:\n  Package [%s]:\n    versionCode=%s minSdk=26 targetSdk=36\n    versionName=%s\n' \
+              "$FAKE_APP_PACKAGE" "$FAKE_INSTALLED_VERSION_CODE" "$FAKE_INSTALLED_VERSION_NAME"
             exit 0
           fi
           if [ "$1" = sha256sum ]; then
@@ -204,8 +243,8 @@ def run_capture(
           fi
           if [ "$1 $2" = "pm grant" ]; then exit 0; fi
           if [ "$1 $2" = "am start" ]; then
-            [ "$3" = --user ] && [ "$4" = 10 ] && [ "$5" = -n ] && \
-              [ "$6" = com.openglucose.app.debug/com.aidex.aidex_flutter.MainActivity ] || exit 2
+            [ "$3" = --user ] && [ "$4" = "$FAKE_ANDROID_USER" ] && [ "$5" = -n ] && \
+              [ "$6" = "$FAKE_APP_PACKAGE/com.aidex.aidex_flutter.MainActivity" ] || exit 2
             [ "$FAKE_HANG" != launch ] || sleep 20
             relative=files/gs1-private-capture/$FAKE_RUN_ID
             mkdir -p "$FAKE_DEVICE/$relative"
@@ -231,8 +270,8 @@ def run_capture(
           fi
           if [ "$1" = run-as ]; then
             shift
-            [ "$1" = com.openglucose.app.debug ]; shift
-            [ "$1" = --user ] && [ "$2" = 10 ]; shift 2
+            [ "$1" = "$FAKE_APP_PACKAGE" ]; shift
+            [ "$1" = --user ] && [ "$2" = "$FAKE_ANDROID_USER" ]; shift 2
             [ "$1" = sh ] && [ "$2" = -c ] || exit 2
             pending=$5
             final=$6
@@ -249,8 +288,8 @@ def run_capture(
         exec-out)
           shift
           [ "$1" = run-as ]; shift
-          [ "$1" = com.openglucose.app.debug ]; shift
-          [ "$1" = --user ] && [ "$2" = 10 ]; shift 2
+          [ "$1" = "$FAKE_APP_PACKAGE" ]; shift
+          [ "$1" = --user ] && [ "$2" = "$FAKE_ANDROID_USER" ]; shift 2
           [ "$1" = cat ]
           relative=$2
           case "$relative" in *armed.json) printf 'armed-read\n' >>"$FAKE_AUDIT" ;; esac
@@ -283,6 +322,7 @@ def run_capture(
       printf 'apksigner %s\n' "$*" >>"$FAKE_AUDIT"
       [ "$1 $2" = "verify --print-certs" ] || exit 2
       printf 'Signer #1 certificate SHA-256 digest: %s\n' "$FAKE_CANDIDATE_SIGNER"
+      [ "$FAKE_MUTATE_CANDIDATE_AFTER_SIGNER" != 1 ] || printf mutation >>"$3"
     SH
 
     write_executable(File.join(bin, "flutter"), <<~'SH')
@@ -291,7 +331,8 @@ def run_capture(
       trap 'printf "flutter-stopped\n" >>"$FAKE_AUDIT"; exit 143' TERM INT
       case "${1:-}" in
         build)
-          printf 'flutter-build %s\n' "$*" >>"$FAKE_AUDIT"
+          printf 'OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX=%s flutter-build %s\n' \
+            "${OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX:-}" "$*" >>"$FAKE_AUDIT"
           [ "$FAKE_HANG" != build ] || sleep 20
           mkdir -p "$FAKE_REPO/openhealth/build/app/outputs/flutter-apk"
           printf 'fixture standalone apk\n' \
@@ -328,7 +369,7 @@ def run_capture(
       printf 'capture-start-seen\n' >>"$FAKE_AUDIT"
       printf 'CBIO-CAPTURE-STARTED run=%s\n' "$run"
       ruby -rjson -rdigest -e '
-        root, run, revision, target, mutation_path, scenario = ARGV
+        root, run, revision, target, mutation_path, scenario, package = ARGV
         mutation = mutation_path.empty? ? nil : JSON.parse(File.read(mutation_path))
         apply = lambda do |name, value|
           next value unless mutation && mutation.fetch("artifact") == name
@@ -386,7 +427,7 @@ def run_capture(
         end
         manifest = {
           "schemaVersion" => 1, "sourceRevision" => revision,
-          "packageId" => "com.openglucose.app.debug", "runId" => run,
+          "packageId" => package, "runId" => run,
           "replayContext" => "V1.1.6A", "labelSha256" => "c" * 64,
           "artifactSha256" => full_sha, "artifactBytes" => full_json.bytesize,
           "authPromptReceiptSha256" => prompt_sha,
@@ -413,7 +454,7 @@ def run_capture(
         File.write(File.join(root, "auth-prompt-receipt.json"), prompt_json)
         File.write(File.join(root, "command-audit.json"), audit_json)
         File.write(File.join(root, "manifest.json"), JSON.generate(manifest))
-      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE" "$FAKE_SCENARIO"
+      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE" "$FAKE_SCENARIO" "$FAKE_APP_PACKAGE"
       full_bytes=$(wc -c <"$FAKE_DEVICE/$relative/full-records.json" | tr -d ' ')
       full_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/full-records.json" | awk '{print $1}')
       manifest_bytes=$(wc -c <"$FAKE_DEVICE/$relative/manifest.json" | tr -d ' ')
@@ -447,7 +488,7 @@ def run_capture(
     env = {
       "LC_ALL" => "C", "LANG" => "C",
       "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
-      "DEVICE_ID" => "FAKE-DEVICE", "ANDROID_USER_ID" => "10",
+      "DEVICE_ID" => "FAKE-DEVICE", "ANDROID_USER_ID" => android_user,
       "CBIO_DART_DEFINE_FROM_FILE" => context_env, "CAPTURE_DIR" => destination_env,
       "CBIO_BUILD_TIMEOUT_SECONDS" => hang == :build ? "1" : "10",
       "CBIO_OPERATION_TIMEOUT_SECONDS" => "1",
@@ -467,6 +508,8 @@ def run_capture(
       "FAKE_CANDIDATE_VERSION_CODE" => candidate_version_code,
       "FAKE_CANDIDATE_VERSION_NAME" => candidate_version_name,
       "FAKE_CANDIDATE_SIGNER" => candidate_signer,
+      "FAKE_ANDROID_USER" => android_user,
+      "FAKE_APP_PACKAGE" => app_package,
       "FAKE_LAUNCH_ACTIVITY" => LAUNCH_ACTIVITY,
       "FAKE_RUN_ID" => RUN_ID, "FAKE_SOURCE_REVISION" => head, "FAKE_TARGET" => DEVICE_ID,
       "FAKE_MUTATION_FILE" => mutation ? mutation_file : "",
@@ -475,10 +518,15 @@ def run_capture(
       "FAKE_SWITCH_AFTER_READY" => switch_after_ready ? "1" : "0",
       "FAKE_HANG" => hang.to_s, "FAKE_DESTINATION" => actual_destination,
       "FAKE_ARMED" => armed.to_s, "FAKE_INSTALL_FAILURE" => install_failure ? "1" : "0",
+      "FAKE_OWNER_GLOBAL_PRESENT" => owner_global_present ? "1" : "0",
+      "FAKE_OWNER_USER_PRESENT" => owner_user_present ? "1" : "0",
+      "FAKE_OWNER_USER_STATE" => owner_user_state,
+      "FAKE_MUTATE_CANDIDATE_AFTER_SIGNER" => mutate_candidate_after_signer ? "1" : "0",
       "FAKE_COMPLETE" => complete.to_s,
       "FAKE_POST_BUILD_MUTATION" => post_build_mutation.to_s,
       "FAKE_READY_FULL_FIELD" => ready_full_field
     }
+    env["CBIO_CAPTURE_APP_PACKAGE"] = app_package unless app_package == APP_PACKAGE
     script = File.join(repo, "scripts", "cbio-gs1-private-capture.sh")
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     stdout, stderr, status = Open3.capture3(env, script, chdir: private_root)
@@ -538,10 +586,12 @@ run_capture do |result|
   audit = File.read(result[:audit])
   assert(
     audit.lines.one? do |line|
-      line.start_with?("flutter-build build apk ") &&
+      line.include?("flutter-build build apk ") &&
         line.include?("--target integration_test/cbio_raw08_private_capture_test.dart") &&
         line.include?("--target-platform android-arm64") &&
-        line.include?("--dart-define=CBIO_CAPTURE_STANDALONE=true")
+        line.include?("--dart-define=CBIO_CAPTURE_STANDALONE=true") &&
+        line.include?("--dart-define=CBIO_CAPTURE_APP_PACKAGE=#{APP_PACKAGE}") &&
+        line.start_with?("OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX=.debug ")
     end,
     "capture did not use one host-only standalone APK build"
   )
@@ -567,6 +617,111 @@ run_capture do |result|
   assert(audit.index("armed-read") < audit.index("start.json.pending"), "START before valid private ARMED")
   assert(audit.index("capture-start-seen") < audit.index("capture-ack-seen"), "ACK after START")
   assert(result[:flutter_log].lines.grep(/^CBIO-CAPTURE-COMPLETE /) == ["CBIO-CAPTURE-COMPLETE run=#{RUN_ID}\n"], "exact COMPLETE missing")
+end
+
+run_capture(
+  initial_user: "0",
+  android_user: "0",
+  app_package: OWNER_APP_PACKAGE
+) do |result|
+  assert(
+    result[:status].success?,
+    "Owner happy path failed: #{result[:stderr]} audit=#{File.file?(result[:audit]) ? File.read(result[:audit]) : '<none>'}"
+  )
+  audit = File.read(result[:audit])
+  assert(
+    audit.include?("OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX=.debug.owner flutter-build build apk "),
+    "Owner build did not use the exact application ID suffix"
+  )
+  assert(
+    audit.include?("--dart-define=CBIO_CAPTURE_APP_PACKAGE=#{OWNER_APP_PACKAGE}"),
+    "Owner build did not bind the exact package into Dart"
+  )
+  assert(
+    audit.include?("adb -s FAKE-DEVICE shell -n am start --user 0 -n #{OWNER_APP_PACKAGE}/#{LAUNCH_ACTIVITY}\n"),
+    "Owner build did not explicitly launch user 0"
+  )
+  owner_installs = audit.lines.grep(/^adb -s \S+ install /)
+  assert(
+    owner_installs == ["adb -s FAKE-DEVICE install --user 0 --no-streaming #{File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")}\n"],
+    "Owner path was not an exact first install: #{owner_installs.inspect}"
+  )
+  assert(
+    audit.include?("adb -s FAKE-DEVICE shell -n pm list packages -u #{OWNER_APP_PACKAGE}\n") &&
+      audit.include?("adb -s FAKE-DEVICE shell -n pm list packages --user 0 #{OWNER_APP_PACKAGE}\n"),
+    "Owner path did not prove global and user-0 absence"
+  )
+  assert(
+    audit.lines.grep(/am get-started-user-state 0/).length >= 2,
+    "Owner path did not revalidate unlocked state before install"
+  )
+  assert(!audit.include?("sha256sum /data/app/"), "Owner path reused a preinstalled APK hash")
+  manifest = JSON.parse(File.read(File.join(result[:destination], "manifest.json")))
+  assert(manifest.fetch("packageId") == OWNER_APP_PACKAGE, "Owner manifest package mismatch")
+end
+
+run_capture(
+  initial_user: "0",
+  android_user: "0",
+  app_package: OWNER_APP_PACKAGE,
+  owner_user_state: "RUNNING_LOCKED"
+) do |result|
+  assert_rejected(result, "locked Owner")
+  audit = File.read(result[:audit])
+  assert(!audit.include?("flutter-build"), "locked Owner reached Flutter build")
+  assert(audit.lines.grep(/^adb -s \S+ install /).empty?, "locked Owner reached install")
+end
+
+{
+  "globally installed Owner package" => {owner_global_present: true},
+  "user-0 installed Owner package" => {owner_user_present: true}
+}.each do |label, options|
+  run_capture(
+    initial_user: "0",
+    android_user: "0",
+    app_package: OWNER_APP_PACKAGE,
+    **options
+  ) do |result|
+    assert_rejected(result, label)
+    assert(audit_lines(result, /^adb -s \S+ install /).empty?, "#{label} reached install")
+  end
+end
+
+run_capture(
+  initial_user: "0",
+  android_user: "0",
+  app_package: OWNER_APP_PACKAGE,
+  candidate_package: APP_PACKAGE
+) do |result|
+  assert_rejected(result, "default candidate on Owner path")
+  assert(audit_lines(result, /^adb -s \S+ install /).empty?, "cross-package candidate reached install")
+end
+
+run_capture(
+  initial_user: "0",
+  android_user: "0",
+  app_package: OWNER_APP_PACKAGE,
+  mutate_candidate_after_signer: true
+) do |result|
+  assert_rejected(result, "mutated Owner candidate")
+  assert(audit_lines(result, /^adb -s \S+ install /).empty?, "mutated Owner candidate reached install")
+end
+
+[
+  ["10", OWNER_APP_PACKAGE, "mismatched Owner package"],
+  ["0", APP_PACKAGE, "mismatched default package"],
+  ["0", "example.invalid", "arbitrary package"]
+].each do |android_user, app_package, label|
+  run_capture(
+    initial_user: android_user,
+    android_user: android_user,
+    app_package: app_package
+  ) do |result|
+    assert_rejected(result, label)
+    audit = File.file?(result[:audit]) ? File.read(result[:audit]) : ""
+    assert(!audit.include?("flutter-build"), "#{label} reached Flutter build")
+    assert(!audit.include?("adb "), "#{label} reached ADB")
+  end
 end
 
 run_capture(installed_path: "/data/app/fixture/../base.apk") do |result|

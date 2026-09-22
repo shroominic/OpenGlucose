@@ -130,6 +130,7 @@ void main() {
     final context = CaptureRunContext.fromValues(_contextValues());
 
     expect(context.runId, _runId);
+    expect(context.appPackage, 'com.openglucose.app.debug');
     expect(context.targetDeviceId, 'AA:BB:CC:DD:EE:FF');
     expect(context.expectedSerial, [0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa]);
     expect(context.replayContext, 'V1.1.6A');
@@ -138,6 +139,21 @@ void main() {
     expect(
       () => CaptureRunContext.fromValues(
         _contextValues()..['CBIO_RAW_START_INDEX'] = '0',
+      ),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('run context admits only the exact default and Owner packages', () {
+    final ownerContext = CaptureRunContext.fromValues(
+      _contextValues()
+        ..['CBIO_CAPTURE_APP_PACKAGE'] = 'com.openglucose.app.debug.owner',
+    );
+
+    expect(ownerContext.appPackage, 'com.openglucose.app.debug.owner');
+    expect(
+      () => CaptureRunContext.fromValues(
+        _contextValues()..['CBIO_CAPTURE_APP_PACKAGE'] = 'example.invalid',
       ),
       throwsA(isA<FormatException>()),
     );
@@ -269,7 +285,10 @@ void main() {
   });
 
   test('manifest keeps declared version separate from prompt evidence', () {
-    final context = CaptureRunContext.fromValues(_contextValues());
+    final context = CaptureRunContext.fromValues(
+      _contextValues()
+        ..['CBIO_CAPTURE_APP_PACKAGE'] = 'com.openglucose.app.debug.owner',
+    );
     final summary = inspectCaptureEnvelope(
       _pendingEnvelope(),
       sensorKey: _sensorKey,
@@ -301,6 +320,7 @@ void main() {
             as Map<String, dynamic>;
 
     expect(manifest['replayContext'], 'V1.1.6A');
+    expect(manifest['packageId'], 'com.openglucose.app.debug.owner');
     expect(manifest['authPromptObserved'], isFalse);
     expect(manifest['commandAuditSha256'], 'a' * 64);
     expect(manifest['commandAuditBytes'], 456);
@@ -345,6 +365,7 @@ Map<String, String> _contextValues() => <String, String>{
   'CBIO_REPLAY_CONTEXT': 'V1.1.6A',
   'CBIO_RAW_START_INDEX': '1',
   'CBIO_SOURCE_REVISION': 'd' * 40,
+  'CBIO_CAPTURE_APP_PACKAGE': 'com.openglucose.app.debug',
 };
 
 String _pendingEnvelope() => jsonEncode({
