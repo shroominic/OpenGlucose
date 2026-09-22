@@ -1,0 +1,745 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "digest"
+require "json"
+require "open3"
+require "tmpdir"
+
+SOURCE_SCRIPT = File.join(__dir__, "cbio-gs1-private-capture.sh")
+RUN_ID = "0123456789abcdef0123456789abcdef"
+DEVICE_ID = "AA:BB:CC:DD:EE:FF"
+TRIGGER = "22" * 5
+INSTALLED_APK_SHA256 = "70547d756cae308d45cd76739e93ad3727225175fdd2a8cf8a7862cc1859eb4a"
+SIGNER_SHA256 = "ad5e6dd01a944d2ea159d1bb1b1376de8a3962beaa95ddb0d7af513fe84ebcb5"
+APP_PACKAGE = "com.openglucose.app.debug"
+APP_VERSION_CODE = "29"
+APP_VERSION_NAME = "0.4.0-debug"
+LAUNCH_ACTIVITY = "com.aidex.aidex_flutter.MainActivity"
+MODERN_INSTALLED_PATH = "/data/app/~~fixture-token==/#{APP_PACKAGE}-fixture-token==/base.apk"
+FINAL_ARTIFACTS = %w[
+  full-records.json manifest.json auth-prompt-receipt.json command-audit.json
+].freeze
+
+def assert(condition, message)
+  raise message unless condition
+end
+
+def write_executable(path, body)
+  File.write(path, body)
+  File.chmod(0o755, path)
+end
+
+def git(repo, *args)
+  stdout, stderr, status = Open3.capture3("git", "-C", repo, *args)
+  raise "git #{args.join(' ')} failed: #{stderr}" unless status.success?
+
+  stdout.strip
+end
+
+def run_capture(
+  mutation: nil,
+  hang: nil,
+  corrupt_pull: false,
+  switch_after_ready: false,
+  scenario: :valid_cutoff,
+  initial_user: "10",
+  source_change: nil,
+  allow_expected_untracked: false,
+  context_case: nil,
+  destination_case: nil,
+  candidate_package: APP_PACKAGE,
+  candidate_version_code: APP_VERSION_CODE,
+  candidate_version_name: APP_VERSION_NAME,
+  candidate_signer: SIGNER_SHA256,
+  installed_sha: INSTALLED_APK_SHA256,
+  installed_path: "/data/app/fixture/#{APP_PACKAGE}/base.apk",
+  installed_version_code: APP_VERSION_CODE,
+  installed_version_name: APP_VERSION_NAME,
+  armed: :valid,
+  install_failure: false,
+  complete: :valid,
+  post_build_mutation: nil
+)
+  Dir.mktmpdir("cbio-private-capture-contract.") do |temporary|
+    root = File.realpath(temporary)
+    repo = File.join(root, "source")
+    private_root = File.join(root, "private")
+    bin = File.join(root, "bin")
+    device = File.join(root, "device")
+    audit = File.join(root, "audit.log")
+    user_file = File.join(root, "current-user")
+    context = File.join(private_root, "context.json")
+    destination = File.join(private_root, "destination")
+    mutation_file = File.join(private_root, "mutation.json")
+    [File.join(repo, "scripts"), File.join(repo, "openhealth"), private_root, bin, device].each do |path|
+      FileUtils.mkdir_p(path, mode: 0o700)
+    end
+    FileUtils.cp(SOURCE_SCRIPT, File.join(repo, "scripts", "cbio-gs1-private-capture.sh"))
+    File.write(File.join(repo, "openhealth", ".fixture"), "fixture\n")
+    File.write(File.join(repo, ".gitignore"), "openhealth/build/\n")
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "fixture@example.invalid")
+    git(repo, "config", "user.name", "Capture Fixture")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "fixture")
+    head = git(repo, "rev-parse", "HEAD")
+
+    values = {
+      "CBIO_VENDOR_STREAM_KEY_HEX" => "00" * 16,
+      "CBIO_VENDOR_AUTH_MATERIAL_HEX" => "11" * 16,
+      "CBIO_VENDOR_AUTH_TRIGGER_HEX" => TRIGGER,
+      "CBIO_CAPTURE_RUN_ID" => RUN_ID,
+      "CBIO_CAPTURE_START_NONCE" => "a" * 32,
+      "CBIO_CAPTURE_ACK_NONCE" => "b" * 32,
+      "CBIO_TARGET_DEVICE_ID" => DEVICE_ID,
+      "CBIO_EXPECTED_SERIAL_HEX" => "ffeeddccbbaa",
+      "CBIO_LABEL_SHA256" => "c" * 64,
+      "CBIO_REPLAY_CONTEXT" => "V1.1.6A",
+      "CBIO_RAW_START_INDEX" => "1",
+      "CBIO_SOURCE_REVISION" => head
+    }
+    File.write(context, JSON.generate(values))
+    File.chmod(0o600, context)
+    if mutation
+      File.write(mutation_file, JSON.generate(mutation))
+      File.chmod(0o600, mutation_file)
+    end
+    File.write(user_file, "#{initial_user}\n")
+
+    if allow_expected_untracked
+      allowed = File.join(repo, "docs", "superpowers", "cbio-offset4-evidence-report.md")
+      FileUtils.mkdir_p(File.dirname(allowed))
+      File.write(allowed, "preserved fixture\n")
+    end
+    case source_change
+    when :tracked
+      File.write(File.join(repo, "openhealth", ".fixture"), "dirty\n")
+    when :staged
+      File.write(File.join(repo, "openhealth", ".fixture"), "staged\n")
+      git(repo, "add", "openhealth/.fixture")
+    when :untracked
+      File.write(File.join(repo, "unexpected.txt"), "unexpected\n")
+    end
+
+    context_env = context
+    case context_case
+    when :relative
+      context_env = "context.json"
+    when :inside_repo
+      context_env = File.join(repo, "context.json")
+      FileUtils.cp(context, context_env)
+    when :symlink
+      context_env = File.join(private_root, "context-link.json")
+      File.symlink(context, context_env)
+    when :bad_mode
+      File.chmod(0o640, context)
+    when :unsafe_parent
+      File.chmod(0o755, private_root)
+    end
+
+    destination_env = destination
+    case destination_case
+    when :relative
+      destination_env = "destination"
+    when :inside_repo
+      destination_env = File.join(repo, "destination")
+    when :symlink_parent
+      real_parent = File.join(root, "destination-real")
+      FileUtils.mkdir_p(real_parent, mode: 0o700)
+      linked_parent = File.join(private_root, "destination-link")
+      File.symlink(real_parent, linked_parent)
+      destination_env = File.join(linked_parent, "capture")
+    when :unsafe_parent
+      unsafe = File.join(root, "unsafe")
+      FileUtils.mkdir_p(unsafe, mode: 0o755)
+      File.chmod(0o755, unsafe)
+      destination_env = File.join(unsafe, "capture")
+    when :existing
+      FileUtils.mkdir_p(destination)
+    end
+
+    write_executable(File.join(bin, "adb"), <<~'SH')
+      #!/bin/sh
+      set -eu
+      printf 'adb %s\n' "$*" >>"$FAKE_AUDIT"
+      [ "$1" = -s ] && shift 2
+      case "$1" in
+        install)
+          [ "$FAKE_HANG" != install ] || sleep 20
+          [ "$FAKE_INSTALL_FAILURE" != 1 ] || exit 23
+          exit 0
+          ;;
+        logcat)
+          [ "$FAKE_HANG" != logcat ] || sleep 20
+          exec flutter emit
+          ;;
+        shell)
+          shift
+          [ "${1:-}" = -n ] && shift
+          [ "${1:-}" = -T ] && shift
+          if [ "$1 $2" = "am get-current-user" ]; then cat "$FAKE_USER_FILE"; exit 0; fi
+          if [ "$1 $2" = "pm path" ]; then
+            [ "$3" = --user ] && [ "$4" = 10 ] && [ "$5" = com.openglucose.app.debug ] || exit 2
+            printf 'package:%s\n' "$FAKE_INSTALLED_PATH"
+            exit 0
+          fi
+          if [ "$1 $2" = "dumpsys package" ]; then
+            [ "$3" = com.openglucose.app.debug ] || exit 2
+            [ "$FAKE_HANG" != preflight ] || sleep 20
+            printf 'Packages:\n  Package [com.openglucose.app.debug]:\n    versionCode=%s minSdk=26 targetSdk=36\n    versionName=%s\n' \
+              "$FAKE_INSTALLED_VERSION_CODE" "$FAKE_INSTALLED_VERSION_NAME"
+            exit 0
+          fi
+          if [ "$1" = sha256sum ]; then
+            [ "$2" = "$FAKE_INSTALLED_PATH" ] || exit 2
+            printf '%s  %s\n' "$FAKE_INSTALLED_SHA" "$FAKE_INSTALLED_PATH"
+            exit 0
+          fi
+          if [ "$1 $2" = "pm grant" ]; then exit 0; fi
+          if [ "$1 $2" = "am start" ]; then
+            [ "$3" = --user ] && [ "$4" = 10 ] && [ "$5" = -n ] && \
+              [ "$6" = com.openglucose.app.debug/com.aidex.aidex_flutter.MainActivity ] || exit 2
+            [ "$FAKE_HANG" != launch ] || sleep 20
+            relative=files/gs1-private-capture/$FAKE_RUN_ID
+            mkdir -p "$FAKE_DEVICE/$relative"
+            case "$FAKE_ARMED" in
+              valid)
+                printf '{"schemaVersion":1,"runId":"%s","state":"armed"}' "$FAKE_RUN_ID" \
+                  >"$FAKE_DEVICE/$relative/armed.json"
+                ;;
+              invalid)
+                printf '{"schemaVersion":2,"runId":"%s","state":"armed"}' "$FAKE_RUN_ID" \
+                  >"$FAKE_DEVICE/$relative/armed.json"
+                ;;
+              duplicate)
+                printf '{"schemaVersion":1,"runId":"%s","runId":"%s","state":"armed"}' \
+                  "$FAKE_RUN_ID" "$FAKE_RUN_ID" >"$FAKE_DEVICE/$relative/armed.json"
+                ;;
+              missing) ;;
+            esac
+            printf 'armed-created %s\n' "$FAKE_ARMED" >>"$FAKE_AUDIT"
+            : >"$FAKE_DEVICE/launched"
+            printf 'Starting: Intent\n'
+            exit 0
+          fi
+          if [ "$1" = run-as ]; then
+            shift
+            [ "$1" = com.openglucose.app.debug ]; shift
+            [ "$1" = --user ] && [ "$2" = 10 ]; shift 2
+            [ "$1" = sh ] && [ "$2" = -c ] || exit 2
+            pending=$5
+            final=$6
+            case "$FAKE_HANG:$final" in
+              start:*start.json|ack:*ack.json) sleep 20 ;;
+            esac
+            mkdir -p "$FAKE_DEVICE/${pending%/*}"
+            cat >"$FAKE_DEVICE/$pending"
+            mv "$FAKE_DEVICE/$pending" "$FAKE_DEVICE/$final"
+            printf 'publish %s -> %s\n' "$pending" "$final" >>"$FAKE_AUDIT"
+            exit 0
+          fi
+          ;;
+        exec-out)
+          shift
+          [ "$1" = run-as ]; shift
+          [ "$1" = com.openglucose.app.debug ]; shift
+          [ "$1" = --user ] && [ "$2" = 10 ]; shift 2
+          [ "$1" = cat ]
+          relative=$2
+          case "$relative" in *armed.json) printf 'armed-read\n' >>"$FAKE_AUDIT" ;; esac
+          if [ "$FAKE_HANG" = pull ] && [ "${relative##*/}" != armed.json ]; then sleep 20; fi
+          if [ "$FAKE_CORRUPT_PULL" = 1 ] && [ "${relative##*/}" = full-records.json ]; then
+            printf corrupt
+          else
+            cat "$FAKE_DEVICE/$relative"
+          fi
+          exit 0
+          ;;
+      esac
+      exit 1
+    SH
+
+    write_executable(File.join(bin, "aapt"), <<~'SH')
+      #!/bin/sh
+      set -eu
+      printf 'aapt %s\n' "$*" >>"$FAKE_AUDIT"
+      [ "$FAKE_HANG" != preflight ] || sleep 20
+      [ "$1 $2" = "dump badging" ] || exit 2
+      printf "package: name='%s' versionCode='%s' versionName='%s'\n" \
+        "$FAKE_CANDIDATE_PACKAGE" "$FAKE_CANDIDATE_VERSION_CODE" "$FAKE_CANDIDATE_VERSION_NAME"
+      printf "launchable-activity: name='%s' label='' icon=''\n" "$FAKE_LAUNCH_ACTIVITY"
+    SH
+
+    write_executable(File.join(bin, "apksigner"), <<~'SH')
+      #!/bin/sh
+      set -eu
+      printf 'apksigner %s\n' "$*" >>"$FAKE_AUDIT"
+      [ "$1 $2" = "verify --print-certs" ] || exit 2
+      printf 'Signer #1 certificate SHA-256 digest: %s\n' "$FAKE_CANDIDATE_SIGNER"
+    SH
+
+    write_executable(File.join(bin, "flutter"), <<~'SH')
+      #!/bin/sh
+      set -eu
+      trap 'printf "flutter-stopped\n" >>"$FAKE_AUDIT"; exit 143' TERM INT
+      case "${1:-}" in
+        build)
+          printf 'flutter-build %s\n' "$*" >>"$FAKE_AUDIT"
+          [ "$FAKE_HANG" != build ] || sleep 20
+          mkdir -p "$FAKE_REPO/openhealth/build/app/outputs/flutter-apk"
+          printf 'fixture standalone apk\n' \
+            >"$FAKE_REPO/openhealth/build/app/outputs/flutter-apk/app-debug.apk"
+          case "$FAKE_POST_BUILD_MUTATION" in
+            source) printf 'changed after build\n' >"$FAKE_REPO/openhealth/.fixture" ;;
+            context) printf '\n' >>"$CBIO_DART_DEFINE_FROM_FILE" ;;
+          esac
+          exit 0
+          ;;
+        test)
+          printf 'flutter-launch %s\n' "$*" >>"$FAKE_AUDIT"
+          run=$FAKE_RUN_ID
+          relative=files/gs1-private-capture/$run
+          mkdir -p "$FAKE_DEVICE/$relative"
+          printf '{"schemaVersion":1,"runId":"%s","state":"armed"}' "$run" \
+            >"$FAKE_DEVICE/$relative/armed.json"
+          : >"$FAKE_DEVICE/launched"
+          printf 'CBIO-CAPTURE-ARMED run=%s start=start.json\n' "$run"
+          FAKE_LEGACY=1
+          export FAKE_LEGACY
+          ;;
+        emit)
+          printf 'logcat-stream\n' >>"$FAKE_AUDIT"
+          ;;
+        *) exit 2 ;;
+      esac
+      run=$FAKE_RUN_ID
+      relative=files/gs1-private-capture/$run
+      mkdir -p "$FAKE_DEVICE/$relative"
+      until [ -f "$FAKE_DEVICE/launched" ]; do sleep 0.02; done
+      printf 'capture-armed\n' >>"$FAKE_AUDIT"
+      until [ -f "$FAKE_DEVICE/$relative/start.json" ]; do sleep 0.02; done
+      printf 'capture-start-seen\n' >>"$FAKE_AUDIT"
+      printf 'CBIO-CAPTURE-STARTED run=%s\n' "$run"
+      ruby -rjson -rdigest -e '
+        root, run, revision, target, mutation_path, scenario = ARGV
+        mutation = mutation_path.empty? ? nil : JSON.parse(File.read(mutation_path))
+        apply = lambda do |name, value|
+          next value unless mutation && mutation.fetch("artifact") == name
+          cursor = value
+          path = mutation.fetch("path")
+          path[0...-1].each { |key| cursor = cursor.fetch(key) }
+          mutation["delete"] ? cursor.delete(path.last) : cursor[path.last] = mutation["value"]
+          value
+        end
+        pending = scenario == "pending"
+        rows = pending ? [] : [
+          [1, 120, 9, 321, 7, 432, 5],
+          [2, 180, 9, 322, 8, 433, 5],
+          [3, 240, 9, 323, 9, 434, 5]
+        ]
+        full = {
+          "schemaVersion" => 1, "driverId" => "cbio", "profile" => "raw08-observed",
+          "sensorKey" => target, "captureId" => run,
+          "state" => pending ? "pending" : "observing",
+          "bootstrap" => {"kind" => "fresh"}, "records" => rows
+        }
+        unless pending
+          full["firstObservation"] = rows.first.take(2)
+          full["currentCheckpoint"] = JSON.generate({
+            "version" => 1, "sensorKey" => target,
+            "index" => rows.last[0], "rawTime" => rows.last[1]
+          })
+        end
+        full = apply.call("full", full)
+        prompt = apply.call("prompt", {
+          "schemaVersion" => 1, "runId" => run, "observed" => false,
+          "matchCount" => 0, "maskedBytesHex" => nil
+        })
+        digests = ["0" * 64, "1" * 64, "2" * 64]
+        audit = apply.call("audit", {
+          "schemaVersion" => 1, "runId" => run,
+          "attemptedFrameSha256" => digests.dup,
+          "successfulFrameSha256" => digests.dup,
+          "writeGateFailed" => false, "commandSequenceComplete" => true
+        })
+        full_json = JSON.generate(full)
+        prompt_json = JSON.generate(prompt)
+        audit_json = JSON.generate(audit)
+        full_sha = Digest::SHA256.hexdigest(full_json)
+        prompt_sha = Digest::SHA256.hexdigest(prompt_json)
+        audit_sha = Digest::SHA256.hexdigest(audit_json)
+        driver_stage = case scenario
+        when "actual_error" then "error"
+        when "premature_disconnect" then "disconnected"
+        else "syncing"
+        end
+        driver_error = case scenario
+        when "driver_error", "caught_failure" then "capture_run_failure"
+        when "actual_error" then "driver_reported_error"
+        end
+        manifest = {
+          "schemaVersion" => 1, "sourceRevision" => revision,
+          "packageId" => "com.openglucose.app.debug", "runId" => run,
+          "replayContext" => "V1.1.6A", "labelSha256" => "c" * 64,
+          "artifactSha256" => full_sha, "artifactBytes" => full_json.bytesize,
+          "authPromptReceiptSha256" => prompt_sha,
+          "commandAuditSha256" => audit_sha, "commandAuditBytes" => audit_json.bytesize,
+          "authPromptObserved" => prompt["observed"], "authPromptMatchCount" => prompt["matchCount"],
+          "versionEvidence" => prompt["observed"] ? "incoming_auth_prompt_exact_match" : "declared_context_only",
+          "driverStage" => driver_stage, "driverError" => driver_error,
+          "identityMatched" => true, "topologyMatched" => true,
+          "attemptedWriteCount" => 3, "successfulWriteCount" => 3,
+          "commandSequenceComplete" => true,
+          "state" => pending ? "pending" : "observing", "bootstrap" => "fresh",
+          "prefixValid" => !pending, "recordCount" => rows.length,
+          "firstIndex" => pending ? nil : rows.first[0],
+          "lastIndex" => pending ? nil : rows.last[0],
+          "indexGapCount" => 0, "rawTimeBreakCount" => 0,
+          "rawTimeSegmentCount" => pending ? 0 : 1, "anchorPresent" => false,
+          "historyWindowClosed" => false,
+          "retainedTailProof" => "unavailable_no_protocol_watermark",
+          "captureCompleteness" => pending ?
+            "authenticated_query_no_records" : "contiguous_prefix_cut_off"
+        }
+        manifest = apply.call("manifest", manifest)
+        File.write(File.join(root, "full-records.json"), full_json)
+        File.write(File.join(root, "auth-prompt-receipt.json"), prompt_json)
+        File.write(File.join(root, "command-audit.json"), audit_json)
+        File.write(File.join(root, "manifest.json"), JSON.generate(manifest))
+      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE" "$FAKE_SCENARIO"
+      full_bytes=$(wc -c <"$FAKE_DEVICE/$relative/full-records.json" | tr -d ' ')
+      full_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/full-records.json" | awk '{print $1}')
+      manifest_bytes=$(wc -c <"$FAKE_DEVICE/$relative/manifest.json" | tr -d ' ')
+      manifest_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/manifest.json" | awk '{print $1}')
+      prompt_bytes=$(wc -c <"$FAKE_DEVICE/$relative/auth-prompt-receipt.json" | tr -d ' ')
+      prompt_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/auth-prompt-receipt.json" | awk '{print $1}')
+      audit_bytes=$(wc -c <"$FAKE_DEVICE/$relative/command-audit.json" | tr -d ' ')
+      audit_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/command-audit.json" | awk '{print $1}')
+      [ "$FAKE_SWITCH_AFTER_READY" != 1 ] || printf '0\n' >"$FAKE_USER_FILE"
+      case "$FAKE_SCENARIO" in
+        pending) outcome=authenticated_query_no_records ;;
+        *) outcome=contiguous_prefix_cut_off ;;
+      esac
+      printf 'CBIO-CAPTURE-READY run=%s full=full-records.json full_bytes=%s full_sha=%s manifest=manifest.json manifest_bytes=%s manifest_sha=%s prompt=auth-prompt-receipt.json prompt_bytes=%s prompt_sha=%s outcome=%s audit=command-audit.json audit_bytes=%s audit_sha=%s ack=ack.json\n' \
+        "$run" "$full_bytes" "$full_sha" "$manifest_bytes" "$manifest_sha" "$prompt_bytes" "$prompt_sha" "$outcome" "$audit_bytes" "$audit_sha"
+      until [ -f "$FAKE_DEVICE/$relative/ack.json" ]; do sleep 0.02; done
+      for name in full-records.json manifest.json auth-prompt-receipt.json command-audit.json; do
+        [ ! -e "$FAKE_DESTINATION/$name" ] || exit 9
+      done
+      printf 'capture-ack-seen\n' >>"$FAKE_AUDIT"
+      [ "$FAKE_SCENARIO" != caught_failure ] || exit 7
+      if [ "${FAKE_LEGACY:-0}" = 1 ]; then exit 0; fi
+      case "$FAKE_COMPLETE" in
+        valid) printf 'CBIO-CAPTURE-COMPLETE run=%s\n' "$run" ;;
+        wrong) printf 'CBIO-CAPTURE-COMPLETE run=%s\n' ffffffffffffffffffffffffffffffff ;;
+        missing) ;;
+      esac
+    SH
+
+    actual_destination = destination_env.start_with?("/") ? destination_env : File.join(private_root, destination_env)
+    env = {
+      "LC_ALL" => "C", "LANG" => "C",
+      "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
+      "DEVICE_ID" => "FAKE-DEVICE", "ANDROID_USER_ID" => "10",
+      "CBIO_DART_DEFINE_FROM_FILE" => context_env, "CAPTURE_DIR" => destination_env,
+      "CBIO_BUILD_TIMEOUT_SECONDS" => hang == :build ? "1" : "10",
+      "CBIO_OPERATION_TIMEOUT_SECONDS" => "1",
+      "CBIO_CAPTURE_TIMEOUT_SECONDS" => if hang == :ack
+        "2"
+      elsif hang
+        "1"
+      else
+        "3"
+      end,
+      "FAKE_AUDIT" => audit, "FAKE_DEVICE" => device, "FAKE_USER_FILE" => user_file,
+      "FAKE_REPO" => repo, "FAKE_INSTALLED_PATH" => installed_path,
+      "FAKE_INSTALLED_SHA" => installed_sha,
+      "FAKE_INSTALLED_VERSION_CODE" => installed_version_code,
+      "FAKE_INSTALLED_VERSION_NAME" => installed_version_name,
+      "FAKE_CANDIDATE_PACKAGE" => candidate_package,
+      "FAKE_CANDIDATE_VERSION_CODE" => candidate_version_code,
+      "FAKE_CANDIDATE_VERSION_NAME" => candidate_version_name,
+      "FAKE_CANDIDATE_SIGNER" => candidate_signer,
+      "FAKE_LAUNCH_ACTIVITY" => LAUNCH_ACTIVITY,
+      "FAKE_RUN_ID" => RUN_ID, "FAKE_SOURCE_REVISION" => head, "FAKE_TARGET" => DEVICE_ID,
+      "FAKE_MUTATION_FILE" => mutation ? mutation_file : "",
+      "FAKE_SCENARIO" => scenario.to_s,
+      "FAKE_CORRUPT_PULL" => corrupt_pull ? "1" : "0",
+      "FAKE_SWITCH_AFTER_READY" => switch_after_ready ? "1" : "0",
+      "FAKE_HANG" => hang.to_s, "FAKE_DESTINATION" => actual_destination,
+      "FAKE_ARMED" => armed.to_s, "FAKE_INSTALL_FAILURE" => install_failure ? "1" : "0",
+      "FAKE_COMPLETE" => complete.to_s,
+      "FAKE_POST_BUILD_MUTATION" => post_build_mutation.to_s
+    }
+    script = File.join(repo, "scripts", "cbio-gs1-private-capture.sh")
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    stdout, stderr, status = Open3.capture3(env, script, chdir: private_root)
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    yield({
+      root: root, repo: repo, device: device, destination: actual_destination,
+      audit: audit, stdout: stdout, stderr: stderr, status: status, elapsed: elapsed,
+      flutter_log: File.file?(File.join(actual_destination, "capture.log")) ?
+        File.read(File.join(actual_destination, "capture.log")) :
+        (File.file?(File.join(actual_destination, "flutter.log")) ?
+          File.read(File.join(actual_destination, "flutter.log")) : ""),
+      quarantine_sizes: Dir.glob(File.join(actual_destination, "quarantine", "*")).to_h do |path|
+        [File.basename(path), File.file?(path) ? File.size(path) : nil]
+      end
+    })
+  end
+end
+
+def ack_path(result)
+  File.join(result[:device], "files", "gs1-private-capture", RUN_ID, "ack.json")
+end
+
+def assert_rejected(result, label, pulled: false)
+  assert(!result[:status].success?, "#{label} unexpectedly succeeded")
+  assert(!File.exist?(ack_path(result)), "#{label} was ACKed")
+  FINAL_ARTIFACTS.each do |name|
+    assert(!File.exist?(File.join(result[:destination], name)), "#{label} promoted #{name}")
+  end
+  return unless pulled
+
+  quarantine = File.join(result[:destination], "quarantine")
+  assert(File.directory?(quarantine), "#{label} missing quarantine")
+  assert(File.stat(quarantine).mode & 0o777 == 0o700, "#{label} quarantine mode")
+  assert(Dir.children(quarantine).any?, "#{label} quarantine is empty")
+  Dir.children(quarantine).each do |name|
+    path = File.join(quarantine, name)
+    assert(File.stat(path).mode & 0o777 == 0o600, "#{label} quarantine file mode") if File.file?(path)
+  end
+end
+
+def audit_lines(result, pattern)
+  File.read(result[:audit]).lines.grep(pattern)
+end
+
+run_capture do |result|
+  assert(
+    result[:status].success?,
+    "happy path failed: #{result[:stderr]} log=#{result[:flutter_log]} " \
+      "audit=#{File.read(result[:audit])} quarantine=#{result[:quarantine_sizes]}"
+  )
+  assert(File.stat(result[:destination]).mode & 0o777 == 0o700, "destination mode")
+  FINAL_ARTIFACTS.each do |name|
+    path = File.join(result[:destination], name)
+    assert(File.file?(path), "missing #{name}")
+    assert(File.stat(path).mode & 0o777 == 0o600, "#{name} mode")
+  end
+  audit = File.read(result[:audit])
+  assert(
+    audit.lines.one? do |line|
+      line.start_with?("flutter-build build apk ") &&
+        line.include?("--target integration_test/cbio_raw08_private_capture_test.dart") &&
+        line.include?("--target-platform android-arm64") &&
+        line.include?("--dart-define=CBIO_CAPTURE_STANDALONE=true")
+    end,
+    "capture did not use one host-only standalone APK build"
+  )
+  assert(!audit.include?("flutter-launch test "), "capture used Flutter's implicit device lifecycle")
+  installs = audit.lines.grep(/^adb -s \S+ install /)
+  assert(
+    installs == ["adb -s FAKE-DEVICE install -r --user 10 --no-streaming #{File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")}\n"],
+    "capture did not use exactly one approved install: #{installs.inspect}"
+  )
+  assert(!audit.match?(/\badb .*\b(?:uninstall|pm clear)\b/), "capture used a destructive fallback")
+  assert(
+    audit.include?("adb -s FAKE-DEVICE shell -n am start --user 10 -n #{APP_PACKAGE}/#{LAUNCH_ACTIVITY}\n"),
+    "capture did not explicitly launch user 10"
+  )
+  candidate = File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")
+  assert(File.stat(candidate).mode & 0o777 == 0o600, "private candidate APK mode")
+  run_as = audit.lines.grep(/run-as/)
+  assert(!run_as.empty? && run_as.all? { |line| line.include?("--user 10") }, "user-bound run-as")
+  assert(audit.lines.grep(/pm grant/).all? { |line| line.include?("--user 10") }, "user-bound grants")
+  assert(audit.include?("start.json.pending -> files/gs1-private-capture/#{RUN_ID}/start.json"), "START was not atomic")
+  assert(audit.include?("ack.json.pending -> files/gs1-private-capture/#{RUN_ID}/ack.json"), "ACK was not atomic")
+  assert(audit.index("adb -s FAKE-DEVICE logcat") < audit.index("adb -s FAKE-DEVICE shell -n am start"), "logcat started after launch")
+  assert(audit.index("armed-read") < audit.index("start.json.pending"), "START before valid private ARMED")
+  assert(audit.index("capture-start-seen") < audit.index("capture-ack-seen"), "ACK after START")
+  assert(result[:flutter_log].lines.grep(/^CBIO-CAPTURE-COMPLETE /) == ["CBIO-CAPTURE-COMPLETE run=#{RUN_ID}\n"], "exact COMPLETE missing")
+end
+
+run_capture(installed_path: "/data/app/fixture/../base.apk") do |result|
+  assert_rejected(result, "installed path traversal")
+  assert(audit_lines(result, /^adb -s \S+ install /).empty?, "path traversal reached install")
+end
+
+{
+  "space" => "/data/app/fixture token/#{APP_PACKAGE}/base.apk",
+  "newline" => "/data/app/fixture\n token/#{APP_PACKAGE}/base.apk",
+  "quote" => "/data/app/fixture'/#{APP_PACKAGE}/base.apk",
+  "shell metacharacters" => "/data/app/fixture;\$(invalid)/#{APP_PACKAGE}/base.apk"
+}.each do |label, installed_path|
+  run_capture(installed_path: installed_path) do |result|
+    assert_rejected(result, "installed path #{label}")
+    assert(
+      audit_lines(result, /^adb -s \S+ install /).empty?,
+      "installed path #{label} reached install"
+    )
+  end
+end
+
+run_capture(installed_path: MODERN_INSTALLED_PATH) do |result|
+  assert(
+    result[:status].success?,
+    "modern Android installed path was rejected: #{result[:stderr]}"
+  )
+end
+
+{
+  "candidate package" => {candidate_package: "invalid.package"},
+  "candidate version code" => {candidate_version_code: "30"},
+  "candidate version name" => {candidate_version_name: "0.4.1-debug"},
+  "candidate signer" => {candidate_signer: "f" * 64},
+  "installed digest" => {installed_sha: "e" * 64},
+  "installed version code" => {installed_version_code: "30"},
+  "installed version name" => {installed_version_name: "0.4.1-debug"}
+}.each do |label, options|
+  run_capture(**options) do |result|
+    assert_rejected(result, label)
+    assert(audit_lines(result, /^adb -s \S+ install /).empty?, "#{label} reached install")
+  end
+end
+
+run_capture(install_failure: true) do |result|
+  assert_rejected(result, "install failure")
+  assert(audit_lines(result, /^adb -s \S+ install /).length == 1, "failed install was retried")
+  assert(audit_lines(result, /(?:uninstall|pm clear)/).empty?, "failed install used fallback")
+  assert(audit_lines(result, /am start --user/).empty?, "launch followed failed install")
+end
+
+%i[missing invalid duplicate].each do |variant|
+  run_capture(armed: variant) do |result|
+    assert_rejected(result, "#{variant} ARMED")
+    assert(audit_lines(result, /start\.json\.pending/).empty?, "#{variant} ARMED published START")
+  end
+end
+
+%i[missing wrong].each do |variant|
+  run_capture(complete: variant) do |result|
+    assert(!result[:status].success?, "#{variant} COMPLETE unexpectedly succeeded")
+    assert(File.exist?(ack_path(result)), "#{variant} COMPLETE failed before ACK")
+    FINAL_ARTIFACTS.each do |name|
+      assert(!File.exist?(File.join(result[:destination], name)), "#{variant} COMPLETE promoted #{name}")
+    end
+  end
+end
+
+%i[build preflight install launch logcat].each do |stage|
+  run_capture(hang: stage) do |result|
+    assert_rejected(result, "hung #{stage}")
+    assert(result[:elapsed] < 12, "hung #{stage} exceeded end-to-end watchdog: #{result[:elapsed]}")
+  end
+end
+
+%i[source context].each do |kind|
+  run_capture(post_build_mutation: kind) do |result|
+    assert_rejected(result, "post-build #{kind} mutation")
+    assert(audit_lines(result, /^adb -s \S+ install /).empty?, "post-build #{kind} mutation reached install")
+  end
+end
+
+admission_failures = []
+{
+  pending: "empty pending capture",
+  driver_error: "non-null driver error",
+  actual_error: "terminal driver error",
+  premature_disconnect: "premature disconnect",
+  caught_failure: "caught run failure"
+}.each do |scenario, label|
+  begin
+    run_capture(scenario: scenario) do |result|
+      assert_rejected(result, label, pulled: true)
+    end
+  rescue RuntimeError => error
+    admission_failures << "#{label}: #{error.message}"
+  end
+end
+assert(
+  admission_failures.empty?,
+  "unsafe success admission:\n#{admission_failures.join("\n")}",
+)
+
+run_capture(allow_expected_untracked: true) do |result|
+  assert(result[:status].success?, "exact preserved untracked path was rejected: #{result[:stderr]}")
+end
+
+%i[tracked staged untracked].each do |change|
+  run_capture(source_change: change) { |result| assert_rejected(result, "#{change} source") }
+end
+
+%i[relative inside_repo symlink bad_mode unsafe_parent].each do |variant|
+  run_capture(context_case: variant) { |result| assert_rejected(result, "#{variant} context") }
+end
+
+%i[relative inside_repo symlink_parent unsafe_parent existing].each do |variant|
+  run_capture(destination_case: variant) { |result| assert_rejected(result, "#{variant} destination") }
+end
+
+run_capture(corrupt_pull: true) { |result| assert_rejected(result, "corrupt pull", pulled: true) }
+
+%i[start pull ack].each do |stage|
+  run_capture(hang: stage) do |result|
+    assert_rejected(result, "hung #{stage}", pulled: stage != :start)
+    assert(result[:elapsed] < 12, "hung #{stage} exceeded end-to-end watchdog: #{result[:elapsed]}")
+    assert(File.read(result[:audit]).include?("flutter-stopped"), "hung #{stage} did not stop Flutter")
+    expected_error = {
+      start: "START publication exceeded",
+      pull: "full-record pull exceeded",
+      ack: "ACK publication exceeded"
+    }.fetch(stage)
+    assert(result[:stderr].include?(expected_error), "hung #{stage} masked its watchdog failure")
+  end
+end
+
+manifest_mutations = {
+  "schemaVersion" => 2, "sourceRevision" => "0" * 40, "packageId" => "invalid",
+  "runId" => "f" * 32, "replayContext" => "invalid", "labelSha256" => "d" * 64,
+  "artifactSha256" => "e" * 64, "artifactBytes" => 999,
+  "authPromptReceiptSha256" => "f" * 64, "commandAuditSha256" => "a" * 64,
+  "commandAuditBytes" => 999, "authPromptObserved" => "false",
+  "authPromptMatchCount" => -1, "versionEvidence" => "invalid",
+  "driverStage" => "invalid", "driverError" => 1, "identityMatched" => false,
+  "topologyMatched" => false, "attemptedWriteCount" => 4,
+  "successfulWriteCount" => 2, "commandSequenceComplete" => false,
+  "state" => "pending", "bootstrap" => "legacy", "prefixValid" => false,
+  "recordCount" => 0, "firstIndex" => nil, "lastIndex" => nil,
+  "indexGapCount" => 1, "rawTimeBreakCount" => 1, "rawTimeSegmentCount" => 2,
+  "anchorPresent" => true, "historyWindowClosed" => "false",
+  "retainedTailProof" => "invalid", "captureCompleteness" => "no_authenticated_raw_query"
+}
+manifest_mutations.each do |field, value|
+  mutation = {"artifact" => "manifest", "path" => [field], "value" => value}
+  run_capture(mutation: mutation) { |result| assert_rejected(result, "manifest #{field}", pulled: true) }
+end
+
+[
+  {"artifact" => "manifest", "path" => ["runId"], "delete" => true},
+  {"artifact" => "prompt", "path" => ["runId"], "value" => "f" * 32},
+  {"artifact" => "prompt", "path" => ["observed"], "value" => true},
+  {"artifact" => "prompt", "path" => ["maskedBytesHex"], "value" => "33" * 5},
+  {"artifact" => "audit", "path" => ["runId"], "value" => "f" * 32},
+  {"artifact" => "audit", "path" => ["attemptedFrameSha256"], "value" => ["0" * 64, "1" * 64]},
+  {"artifact" => "audit", "path" => ["successfulFrameSha256"], "value" => ["2" * 64, "1" * 64, "0" * 64]},
+  {"artifact" => "audit", "path" => ["writeGateFailed"], "value" => true},
+  {"artifact" => "audit", "path" => ["commandSequenceComplete"], "value" => false},
+  {"artifact" => "full", "path" => ["captureId"], "value" => "f" * 32}
+].each_with_index do |mutation, index|
+  run_capture(mutation: mutation) { |result| assert_rejected(result, "cross-artifact mutation #{index}", pulled: true) }
+end
+
+run_capture(switch_after_ready: true) do |result|
+  assert_rejected(result, "Owner switch")
+  assert(result[:stderr].include?("current Android user"), "missing user-switch failure")
+end
+
+run_capture(initial_user: "0") do |result|
+  assert_rejected(result, "Owner launch")
+  assert(!File.read(result[:audit]).include?("flutter-launch"), "Flutter launched before the user-10 check")
+end
+
+puts "cbio-gs1-private-capture contract: PASS"

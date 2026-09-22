@@ -115,9 +115,10 @@ identifies an unverified Cbio / SiSensing candidate, not an exact model or
 software version: GS1 and GS3 share that UUID. Exact-model admission and
 calibrated glucose compatibility remain unverified.
 
-The permitted session writes are authentication, clock synchronization and
-read queries. Activation, reset, calibration, threshold, key-registration and
-firmware operations are not enabled. Raw samples, checkpoint/clock details and
+The permitted routine session writes are authentication and read queries.
+Fresh startup, reconnect and recovery never write the sensor clock. Activation,
+reset, calibration, threshold, key-registration and firmware operations are not
+enabled. Raw samples, checkpoint/clock details and
 acquisition counters remain inside the driver and restricted private storage;
 they are not published as `CgmReading` values, advertisement glucose, or public
 diagnostics. GS1 uses the unchanged shared normalized AiDEX/Libre2 presentation,
@@ -172,9 +173,12 @@ recovery metadata is limited to 4096 UTF8 bytes and the complete capsule to
 4198400 bytes. Failure never truncates state. Legacy/full-only stores keep their
 previous contract. Older builds ignore the new route, so downgrade after
 selection is unsupported; retain the complete restricted store and roll forward.
-Each new session still clock-writes and rechecks its own exact witness: another
-mismatch can stop acquisition. This capability establishes neither continuity
-with the predecessor nor calibrated glucose or physical reconnect reliability.
+Each fresh, reconnect and recovery session remains read-only after
+authentication and rechecks its own exact witness. Fresh epoch-less records do
+not create a wall-clock anchor; an existing stored anchor is reused only while
+every covered raw timestamp matches its exact anchor witness. Another mismatch
+can stop acquisition. This capability establishes neither continuity with the
+predecessor nor calibrated glucose or physical reconnect reliability.
 
 The driver owns raw checkpoint/history in a versioned restricted envelope and
 requires exact input-witness proof before merging a resumed suffix. The app's

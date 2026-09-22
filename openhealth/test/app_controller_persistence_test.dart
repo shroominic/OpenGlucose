@@ -750,13 +750,16 @@ void main() {
         driverId: 'libre2-gen1',
         storageKey: 'synthetic-receiver',
       );
+      final fixtureAnchor = DateTime.now().toUtc().subtract(
+        const Duration(hours: 1),
+      );
       final readings = List.generate(
         3,
         (index) => CgmReading(
           valueMgdl: 100.0 + index,
           source: CgmRecordSource.vendor,
           sensorMinute: 100 + index,
-          recordedAt: DateTime.utc(2026, 9, 6, 8, index),
+          recordedAt: fixtureAnchor.add(Duration(minutes: index)),
           isDisplayProvisional: true,
         ),
       );

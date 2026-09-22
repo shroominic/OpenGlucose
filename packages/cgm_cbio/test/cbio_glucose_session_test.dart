@@ -799,7 +799,6 @@ void main() {
       'notify',
       'serial',
       'write-1',
-      'write-3',
       'write-10',
     ]) {
       test(
@@ -929,7 +928,6 @@ void main() {
                     'CBIO milestone=cbio.connect.started',
                     'CBIO milestone=cbio.ff31.subscribed',
                     'CBIO milestone=cbio.auth.ok',
-                    'CBIO milestone=cbio.clock.set',
                     'CBIO failure=cbio.counter.restart counterFailureReason=witness-time-mismatch',
                     'CBIO milestone=cbio.connect.started',
                     'CBIO milestone=cbio.ff31.subscribed',
@@ -937,7 +935,6 @@ void main() {
                       'CBIO failure=cbio.auth.rejected'
                     else ...[
                       'CBIO milestone=cbio.auth.ok',
-                      'CBIO milestone=cbio.clock.set',
                       'CBIO milestone=cbio.write.raw-history',
                     ],
                   ]
@@ -984,6 +981,15 @@ void main() {
                 .first
                 .sublist(2, 4),
             [1, 0],
+          );
+          expect(
+            [transport.connection, transport.successor].expand(
+              (connection) => connection.writes
+                  .map(_unmaskWrite)
+                  .where((frame) => frame[1] == 0x03),
+            ),
+            isEmpty,
+            reason: 'neither recovery session may mutate the sensor clock',
           );
           expect(
             snapshots.where(
@@ -1587,7 +1593,6 @@ void main() {
                     'CBIO milestone=cbio.ff31.subscribed',
                     if (scenario == 'success' || scenario == 'witness') ...[
                       'CBIO milestone=cbio.auth.ok',
-                      'CBIO milestone=cbio.clock.set',
                     ],
                     if (scenario == 'success')
                       'CBIO milestone=cbio.write.raw-history',
@@ -1673,7 +1678,6 @@ void main() {
                       'CBIO milestone=cbio.ff31.subscribed',
                     if (stage == 'history') ...[
                       'CBIO milestone=cbio.auth.ok',
-                      'CBIO milestone=cbio.clock.set',
                       'CBIO milestone=cbio.write.raw-history',
                     ],
                     'CBIO milestone=cbio.disconnected',
@@ -2476,7 +2480,7 @@ void main() {
   );
   group('CbioGlucoseSession lifecycle', () {
     test(
-      'authenticates with the vendor frames and never writes anything else',
+      'fresh startup authenticates and reads without clock mutation',
       () async {
         final connection = _FakeConnection();
         final transport = _FakeTransport(connection);
@@ -2518,6 +2522,11 @@ void main() {
           isEmpty,
           reason: 'activation must never be sent',
         );
+        expect(
+          CbioGlucoseSession.allowedCommandKeys,
+          isNot(contains('0603')),
+          reason: 'routine sessions must not permit clock mutation',
+        );
         final auth = plaintext.firstWhere((frame) => frame[1] == 0x01);
         expect(auth.sublist(0, 3), <int>[0x19, 0x01, 0x00]);
         expect(auth.sublist(3, 9), _serialOctets);
@@ -2529,7 +2538,11 @@ void main() {
           reason: 'serial reads must use the discovered service UUID',
         );
         final clocks = plaintext.where((frame) => frame[1] == 0x03).toList();
-        expect(clocks, hasLength(1));
+        expect(
+          clocks,
+          isEmpty,
+          reason: 'authenticated raw acquisition is read-only after link setup',
+        );
         await session.disconnect();
       },
     );
@@ -2844,22 +2857,20 @@ void main() {
       // The archive publishes no glucose unit, so the session publishes the
       // same unit-free number the hero renders - not a converted mg/dL value.
       expect(latest.valueMgdl, 9.7);
-      // These records stamp the clock this session wrote, so the index is
-      // anchored to it and each position steps 60 s back from the newest.
-      // The counter itself is never the source: the clock-anchor group below
-      // holds the case where it does not agree with the app's clock.
       expect(
         (await _storedHistory(
           session,
           privateStore,
         )).map((reading) => reading.recordedAt),
-        <DateTime?>[
-          for (final offset in <int>[0, 60, 120])
-            DateTime.fromMillisecondsSinceEpoch(
-              (base + offset) * 1000,
-              isUtc: true,
-            ),
-        ],
+        everyElement(isNull),
+        reason: 'epoch-less raw counters must not become wall-clock time',
+      );
+      expect(
+        CbioSessionCheckpoint.decode(
+          _privateCheckpoint(session)!,
+          _sensor.storageKey,
+        )?.anchor,
+        isNull,
       );
       expect(
         (await _storedHistory(
@@ -3798,10 +3809,10 @@ void main() {
         timing: _fastTiming.copyWith(maxReadsPerSession: 1),
       );
       await session.initialize();
-      await _pumpUntil(() => connection.writes.length >= 3);
+      await _pumpUntil(() => connection.writes.length >= 2);
       await Future<void>.delayed(const Duration(milliseconds: 120));
 
-      expect(connection.writes, hasLength(3));
+      expect(connection.writes, hasLength(2));
       expect(
         connection.writes.map(_unmaskWrite).map((frame) => frame[1]),
         isNot(contains(0x08)),
@@ -4004,39 +4015,49 @@ void main() {
     );
 
     test(
-      'round-tripped checkpoint rechecks witness and retains old time',
+      'reconnect rechecks witness and retains an existing anchor without a clock write',
       () async {
         final privateStore = _PrivateStore();
         final then = DateTime.utc(2026, 1, 1);
         final epoch = then.millisecondsSinceEpoch ~/ 1000;
-        final firstConnection = _FakeConnection();
-        await _defaultResponder(
-          firstConnection,
-          rawBatches: [
-            _rawBatch(
-              startIndex: 1,
-              baseEpochSeconds: epoch - 60,
-              baseReindex: 2,
-              currents: [60, 61],
-            ),
-          ],
+        final anchor = CbioIndexTimeAnchor(
+          anchorIndex: 2,
+          coveredFromIndex: 1,
+          anchorEpochSeconds: epoch,
+          observedAt: then,
+          clockReferenceEpochSeconds: epoch,
         );
-        final first = await _privateSession(
-          privateStateStore: privateStore,
-          sensor: _sensor,
-          transport: _FakeTransport(firstConnection),
-          credentials: _syntheticSource,
-          timing: _fastTiming,
-          clock: () => then,
+        final checkpoint = CbioSessionCheckpoint(
+          sensorKey: _sensor.storageKey,
+          index: 2,
+          rawTime: epoch,
+          anchor: anchor,
+        ).encode();
+        await privateStore.write(
+          _sensor.storageKey,
+          CbioHistoryState(
+            sensorKey: _sensor.storageKey,
+            checkpoint: checkpoint,
+            history: [
+              CgmReading(
+                valueMgdl: 6,
+                rawValue: 60,
+                source: CgmRecordSource.raw,
+                sensorMinute: 1,
+                recordedAt: then.subtract(const Duration(minutes: 1)),
+                isDisplayProvisional: true,
+              ),
+              CgmReading(
+                valueMgdl: 6.1,
+                rawValue: 61,
+                source: CgmRecordSource.raw,
+                sensorMinute: 2,
+                recordedAt: then,
+                isDisplayProvisional: true,
+              ),
+            ],
+          ).encode(),
         );
-        await first.initialize();
-        await _pumpUntil(() async => await _rawCount(first) == 2);
-        final metadata = Map<String, String>.from({
-          cbioCheckpointMetadataKey: _privateCheckpoint(first)!,
-        });
-        expect(metadata['cgm.cbio.checkpoint'], isNotNull);
-        await first.disconnect();
-        expect(_privateCheckpoint(first), metadata[cbioCheckpointMetadataKey]);
 
         final connection = _FakeConnection();
         await _defaultResponder(
@@ -4052,7 +4073,7 @@ void main() {
         );
         final restored = await _privateSession(
           privateStateStore: privateStore,
-          sensor: _withMetadata(metadata),
+          sensor: _sensor,
           transport: _FakeTransport(connection),
           credentials: _syntheticSource,
           timing: _fastTiming,
@@ -4085,6 +4106,10 @@ void main() {
             .firstWhere((frame) => frame[1] == 0x08);
         expect(query[2] | (query[3] << 8), 2);
         expect(
+          connection.writes.map(_unmaskWrite).where((frame) => frame[1] == 3),
+          isEmpty,
+        );
+        expect(
           (await _storedHistory(restored, privateStore))[1].recordedAt,
           then,
         );
@@ -4114,6 +4139,79 @@ void main() {
           isNull,
         );
         expect(_privateCheckpoint(restored), advancedCheckpoint);
+      },
+    );
+
+    test(
+      'reconnect witness mismatch preserves the existing anchored archive',
+      () async {
+        final privateStore = _PrivateStore();
+        final then = DateTime.utc(2026, 1, 1);
+        final epoch = then.millisecondsSinceEpoch ~/ 1000;
+        final checkpoint = CbioSessionCheckpoint(
+          sensorKey: _sensor.storageKey,
+          index: 2,
+          rawTime: epoch,
+          anchor: CbioIndexTimeAnchor(
+            anchorIndex: 2,
+            coveredFromIndex: 1,
+            anchorEpochSeconds: epoch,
+            observedAt: then,
+            clockReferenceEpochSeconds: epoch,
+          ),
+        ).encode();
+        final saved = CbioHistoryState(
+          sensorKey: _sensor.storageKey,
+          checkpoint: checkpoint,
+          history: [
+            CgmReading(
+              valueMgdl: 6.1,
+              rawValue: 61,
+              source: CgmRecordSource.raw,
+              sensorMinute: 2,
+              recordedAt: then,
+              isDisplayProvisional: true,
+            ),
+          ],
+        ).encode();
+        await privateStore.write(_sensor.storageKey, saved);
+        final connection = _FakeConnection();
+        await _defaultResponder(
+          connection,
+          rawBatches: [
+            _rawBatch(
+              startIndex: 2,
+              baseEpochSeconds: epoch + 3600,
+              baseReindex: 2,
+              currents: [99],
+            ),
+          ],
+        );
+        final session = await _privateSession(
+          privateStateStore: privateStore,
+          sensor: _sensor,
+          transport: _FakeTransport(connection),
+          credentials: _syntheticSource,
+          timing: _fastTiming,
+        );
+
+        await session.initialize();
+        await _pumpUntil(
+          () => session.currentSnapshot.stage == CgmSyncStage.error,
+        );
+
+        expect(
+          session.currentSnapshot.lastError,
+          CbioSessionFailure.counterRestart,
+        );
+        expect(_privateCheckpoint(session), checkpoint);
+        expect(privateStore.envelope, saved);
+        expect(
+          connection.writes.map(_unmaskWrite).where((frame) => frame[1] == 3),
+          isEmpty,
+        );
+        await session.disconnect();
+        expect(privateStore.envelope, saved);
       },
     );
 
@@ -4343,7 +4441,7 @@ void main() {
   });
 
   group('CbioGlucoseSession clock anchor', () {
-    test('stamps stored history once the sensor took the clock', () async {
+    test('fresh records persist without an epoch anchor', () async {
       final privateStore = _PrivateStore();
       final connection = _FakeConnection();
       final transport = _FakeTransport(connection);
@@ -4391,31 +4489,14 @@ void main() {
         ),
         isEmpty,
       );
-      expect(anchor, isNotNull);
-      expect(anchor!.anchorIndex, 3);
-      expect(anchor.coveredFromIndex, 1);
-      expect(anchor.anchorEpochSeconds, nowSeconds);
-      expect(
-        anchor.clockReferenceEpochSeconds,
-        nowSeconds,
-        reason: 'the reference is the epoch this session wrote to the sensor',
-      );
-      expect(anchor.clockAgreement, Duration.zero);
+      expect(anchor, isNull);
       expect(
         (await _storedHistory(
           session,
           privateStore,
         )).map((reading) => reading.recordedAt),
-        <DateTime?>[
-          for (final offset in <int>[-120, -60, 0])
-            DateTime.fromMillisecondsSinceEpoch(
-              (nowSeconds + offset) * 1000,
-              isUtc: true,
-            ),
-        ],
-        reason:
-            'positions step 60 s from the anchored record, not from the '
-            'counter',
+        everyElement(isNull),
+        reason: 'rawTime is epoch-less without a pre-existing proven anchor',
       );
       expect(
         (await session.refreshDiagnostics()).single.fields.keys,

@@ -93,8 +93,11 @@ recovery metadata is bounded to 4096 bytes and the whole capsule to 4198400 byte
 Overflow fails before writing, without truncation or rotation. Atomic files
 need additional space alongside the immutable originals; device headroom is
 unknown. Raw seven-field persistence still publishes no normalized glucose.
-Every new session retains the existing clock write, so a later reconnect may
-fail the exact witness guard again; the one-capsule budget is not replenished.
+Routine startup, reconnect and recovery do not write the sensor clock. Fresh
+records therefore persist without an absolute epoch anchor. A stored anchor is
+reused only after the exact index plus raw-time witness and continued stamp
+agreement; mismatch still fails closed, and the one-capsule budget is not
+replenished.
 
 ## Handoff and archives
 

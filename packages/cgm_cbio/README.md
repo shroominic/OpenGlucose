@@ -70,9 +70,9 @@ fresh state, a 4096-byte fresh header, 4096 bytes of recovery metadata and
 Older builds do not understand the selected recovery route. Downgrade is
 unsupported; preserve the complete restricted store and roll forward. A fresh
 capture is not evidence of a new sensor era or calibrated glucose. Every new
-session still uses the existing clock write and exact resume witness guard;
-reconnect can fail again, with the recovery budget already consumed. Public
-latest/history/rawHistory stay empty and the shared UI remains unchanged.
+session uses the exact resume witness guard without writing the sensor clock;
+a mismatch can still fail again, with the recovery budget already consumed.
+Public latest/history/rawHistory stay empty and the shared UI remains unchanged.
 
 ## Driver boundary
 
@@ -87,16 +87,17 @@ receive, `FF32` command, and `2A25` serial characteristics. Name-only matches,
 characteristic-only matches, and empty device IDs are rejected.
 
 `CbioGlucoseSession` opens the authenticated vendor link: connect, subscribe to
-`FF31`, authenticate, set the sensor clock once, then read. It is fail-closed
-and write-minimal. `CbioGlucoseSession.allowedCommandKeys` is the complete list
-of frames the session may ever put on the radio (`03 F0` device information,
-`19 01` authentication, `06 03` clock, `06 0A` packed read, `06 08` raw read);
-anything else is rejected before the transport sees it. Activation (`07`),
-reset, thresholds, calibration, key registration, and firmware frames are never
-built. The vendor material the link authenticates with is resolved once per
-session from an injected `CbioCredentialSource`; it is never logged, published
-in a snapshot, or attached to an exception, and the app's platform registry
-leaves the driver out entirely when a build did not supply it.
+`FF31`, authenticate, then read without setting the sensor clock. It is
+fail-closed and write-minimal. `CbioGlucoseSession.allowedCommandKeys` is the
+complete list of frames the session may ever put on the radio (`03 F0` device
+information, `19 01` authentication, `06 0A` packed read, `06 08` raw read);
+anything else is rejected before the transport sees it. Clock (`06 03`),
+activation (`07`), reset, thresholds, calibration, key registration, and
+firmware frames are never sent by a normal session. The vendor material the
+link authenticates with is resolved once per session from an injected
+`CbioCredentialSource`; it is never logged, published in a snapshot, or
+attached to an exception, and the app's platform registry leaves the driver out
+entirely when a build did not supply it.
 
 The sensor answers one `06 08` request with a stream of `08` batches pushed to
 the same characteristic, so history is an ingest problem rather than a
@@ -125,18 +126,17 @@ also emits exactly these allowed lifecycle milestone tokens:
 CBIO milestone=cbio.connect.started
 CBIO milestone=cbio.ff31.subscribed
 CBIO milestone=cbio.auth.ok
-CBIO milestone=cbio.clock.set
 CBIO milestone=cbio.write.raw-history
 CBIO milestone=cbio.disconnected
 ```
 
-`connect.started` marks an attempt, not an established link. Subscription,
-authentication and clock milestones reflect their existing completion events;
-`write.raw-history` marks write completion while the session remains active,
-not returned records or a confirmed witness. `disconnected` marks the driver's
-accepted transport drop, including notification-stream errors; it does not
-identify native status8 or its cause. Repeated drop callbacks emit only once,
-and forwarding successor logs does not duplicate their milestone output.
+`connect.started` marks an attempt, not an established link. Subscription and
+authentication milestones reflect their completion events; `write.raw-history`
+marks write completion while the session remains active, not returned records
+or a confirmed witness. `disconnected` marks the driver's accepted transport
+drop, including notification-stream errors; it does not identify native status8
+or its cause. Repeated drop callbacks emit only once, and forwarding successor
+logs does not duplicate their milestone output.
 
 The flag defaults to false in every build mode. Output has no raw records,
 sensor identifiers, credentials, timing payloads or arbitrary exception/log

@@ -2,9 +2,18 @@
 
 ## 0.1.0
 
-- Extend default-off `CBIO_FAILURE_TRACE` with six closed lifecycle milestones:
-  connect attempt, FF31 subscription, authentication accepted, clock write,
-  raw-history write completion and accepted transport drop. Preserve existing
+- Keep routine GS1 startup, reconnect and one-capsule recovery read-only after
+  authentication by removing the `06 03` clock write from session setup and
+  its normal command allowlist. Fresh raw history persists with no invented
+  absolute timestamp; a previously stored anchor remains usable only after the
+  unchanged exact index plus raw-time witness and continued stamp agreement.
+  Witness mismatch still fails closed and preserves the prior archive and
+  checkpoint. The packed `06 0A` query, normalized-output guard and shared UI
+  are unchanged; no activation, reset or replacement clock command is added.
+
+- Extend default-off `CBIO_FAILURE_TRACE` with five closed lifecycle milestones:
+  connect attempt, FF31 subscription, authentication accepted, raw-history
+  write completion and accepted transport drop. Preserve existing
   failure lines. Repeated drop callbacks and successor log forwarding do not
   duplicate milestones; arbitrary log/exception text, identifiers, raw records
   and timing payloads are excluded. Trace-sink exceptions cannot affect
