@@ -133,6 +133,8 @@ capture_run_as_publish() {
   capture_relative=$1
   capture_pending=$capture_relative.pending
   capture_require_current_user
+  # Positional parameters expand in the remote shell, not on the host.
+  # shellcheck disable=SC2016
   capture_adb_command shell -T run-as "$capture_app_package" \
     --user "$capture_android_user" sh -c \
     'set -eu; umask 077; cat >"$1"; sync "$1" 2>/dev/null || true; mv "$1" "$2"' \
@@ -449,7 +451,11 @@ while [ -z "$capture_ready" ]; do
   sleep 0.1
 done
 
+# Split the marker into fields without allowing host filenames to rewrite them.
+set -f
+# shellcheck disable=SC2086
 set -- $capture_ready
+set +f
 [ "$#" -eq 16 ] || capture_die 'READY line has an invalid field count'
 [ "$1" = CBIO-CAPTURE-READY ] || capture_die 'READY marker is invalid'
 [ "$2" = "run=$capture_run_id" ] || capture_die 'READY run binding is invalid'
