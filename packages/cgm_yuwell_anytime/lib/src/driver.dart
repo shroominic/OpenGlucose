@@ -132,7 +132,7 @@ final class YuwellAnytimeDiscovery {
   const YuwellAnytimeDiscovery();
 
   DiscoveredSensor? mapScanResult(BleScanResult result) {
-    final name = result.deviceName.trim();
+    final name = result.deviceName;
     if (result.deviceId.isEmpty ||
         classifyYuwellAnytimeDeviceName(name) !=
             YuwellAnytimeNameKind.anytimeFamily) {
