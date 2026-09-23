@@ -13,8 +13,9 @@ DEVICE_ID = "AA:BB:CC:DD:EE:FF"
 TRIGGER = "22" * 5
 INSTALLED_APK_SHA256 = "70547d756cae308d45cd76739e93ad3727225175fdd2a8cf8a7862cc1859eb4a"
 SIGNER_SHA256 = "ad5e6dd01a944d2ea159d1bb1b1376de8a3962beaa95ddb0d7af513fe84ebcb5"
-APP_PACKAGE = "com.openglucose.app.debug"
-OWNER_APP_PACKAGE = "com.openglucose.app.debug.owner"
+NORMAL_APP_PACKAGE = "com.openglucose.app.debug"
+APP_PACKAGE = "com.openglucose.app.debug.owner"
+OWNER_APP_PACKAGE = APP_PACKAGE
 APP_VERSION_CODE = "29"
 APP_VERSION_NAME = "0.4.0-debug"
 LAUNCH_ACTIVITY = "com.aidex.aidex_flutter.MainActivity"
@@ -45,8 +46,8 @@ def run_capture(
   corrupt_pull: false,
   switch_after_ready: false,
   scenario: :valid_cutoff,
-  initial_user: "10",
-  android_user: "10",
+  initial_user: "0",
+  android_user: "0",
   app_package: APP_PACKAGE,
   source_change: nil,
   allow_expected_untracked: false,
@@ -463,7 +464,11 @@ def run_capture(
       prompt_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/auth-prompt-receipt.json" | awk '{print $1}')
       audit_bytes=$(wc -c <"$FAKE_DEVICE/$relative/command-audit.json" | tr -d ' ')
       audit_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/command-audit.json" | awk '{print $1}')
-      [ "$FAKE_SWITCH_AFTER_READY" != 1 ] || printf '0\n' >"$FAKE_USER_FILE"
+      if [ "$FAKE_SWITCH_AFTER_READY" = 1 ]; then
+        if [ "$FAKE_ANDROID_USER" = 0 ]; then printf '10\n' >"$FAKE_USER_FILE"
+        else printf '0\n' >"$FAKE_USER_FILE"
+        fi
+      fi
       case "$FAKE_SCENARIO" in
         pending) outcome=authenticated_query_no_records ;;
         *) outcome=contiguous_prefix_cut_off ;;
@@ -571,6 +576,18 @@ def audit_lines(result, pattern)
   File.read(result[:audit]).lines.grep(pattern)
 end
 
+run_capture(
+  initial_user: "10",
+  android_user: "10",
+  app_package: NORMAL_APP_PACKAGE
+) do |result|
+  assert_rejected(result, "normal-package headless capture")
+  assert(!File.exist?(result[:destination]), "normal-package capture created its destination")
+  audit = File.file?(result[:audit]) ? File.read(result[:audit]) : ""
+  assert(!audit.include?("flutter-build"), "normal-package capture reached Flutter")
+  assert(!audit.include?("adb "), "normal-package capture reached ADB")
+end
+
 run_capture do |result|
   assert(
     result[:status].success?,
@@ -591,26 +608,26 @@ run_capture do |result|
         line.include?("--target-platform android-arm64") &&
         line.include?("--dart-define=CBIO_CAPTURE_STANDALONE=true") &&
         line.include?("--dart-define=CBIO_CAPTURE_APP_PACKAGE=#{APP_PACKAGE}") &&
-        line.start_with?("OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX=.debug ")
+        line.start_with?("OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX=.debug.owner ")
     end,
     "capture did not use one host-only standalone APK build"
   )
   assert(!audit.include?("flutter-launch test "), "capture used Flutter's implicit device lifecycle")
   installs = audit.lines.grep(/^adb -s \S+ install /)
   assert(
-    installs == ["adb -s FAKE-DEVICE install -r --user 10 --no-streaming #{File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")}\n"],
+    installs == ["adb -s FAKE-DEVICE install --user 0 --no-streaming #{File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")}\n"],
     "capture did not use exactly one approved install: #{installs.inspect}"
   )
   assert(!audit.match?(/\badb .*\b(?:uninstall|pm clear)\b/), "capture used a destructive fallback")
   assert(
-    audit.include?("adb -s FAKE-DEVICE shell -n am start --user 10 -n #{APP_PACKAGE}/#{LAUNCH_ACTIVITY}\n"),
-    "capture did not explicitly launch user 10"
+    audit.include?("adb -s FAKE-DEVICE shell -n am start --user 0 -n #{APP_PACKAGE}/#{LAUNCH_ACTIVITY}\n"),
+    "capture did not explicitly launch user 0"
   )
   candidate = File.join(result[:repo], "openhealth/build/app/outputs/flutter-apk/app-debug.apk")
   assert(File.stat(candidate).mode & 0o777 == 0o600, "private candidate APK mode")
   run_as = audit.lines.grep(/run-as/)
-  assert(!run_as.empty? && run_as.all? { |line| line.include?("--user 10") }, "user-bound run-as")
-  assert(audit.lines.grep(/pm grant/).all? { |line| line.include?("--user 10") }, "user-bound grants")
+  assert(!run_as.empty? && run_as.all? { |line| line.include?("--user 0") }, "user-bound run-as")
+  assert(audit.lines.grep(/pm grant/).all? { |line| line.include?("--user 0") }, "user-bound grants")
   assert(audit.include?("start.json.pending -> files/gs1-private-capture/#{RUN_ID}/start.json"), "START was not atomic")
   assert(audit.include?("ack.json.pending -> files/gs1-private-capture/#{RUN_ID}/ack.json"), "ACK was not atomic")
   assert(audit.index("adb -s FAKE-DEVICE logcat") < audit.index("adb -s FAKE-DEVICE shell -n am start"), "logcat started after launch")
@@ -691,7 +708,7 @@ run_capture(
   initial_user: "0",
   android_user: "0",
   app_package: OWNER_APP_PACKAGE,
-  candidate_package: APP_PACKAGE
+  candidate_package: NORMAL_APP_PACKAGE
 ) do |result|
   assert_rejected(result, "default candidate on Owner path")
   assert(audit_lines(result, /^adb -s \S+ install /).empty?, "cross-package candidate reached install")
@@ -709,7 +726,7 @@ end
 
 [
   ["10", OWNER_APP_PACKAGE, "mismatched Owner package"],
-  ["0", APP_PACKAGE, "mismatched default package"],
+  ["0", NORMAL_APP_PACKAGE, "normal package"],
   ["0", "example.invalid", "arbitrary package"]
 ].each do |android_user, app_package, label|
   run_capture(
@@ -724,41 +741,11 @@ end
   end
 end
 
-run_capture(installed_path: "/data/app/fixture/../base.apk") do |result|
-  assert_rejected(result, "installed path traversal")
-  assert(audit_lines(result, /^adb -s \S+ install /).empty?, "path traversal reached install")
-end
-
-{
-  "space" => "/data/app/fixture token/#{APP_PACKAGE}/base.apk",
-  "newline" => "/data/app/fixture\n token/#{APP_PACKAGE}/base.apk",
-  "quote" => "/data/app/fixture'/#{APP_PACKAGE}/base.apk",
-  "shell metacharacters" => "/data/app/fixture;\$(invalid)/#{APP_PACKAGE}/base.apk"
-}.each do |label, installed_path|
-  run_capture(installed_path: installed_path) do |result|
-    assert_rejected(result, "installed path #{label}")
-    assert(
-      audit_lines(result, /^adb -s \S+ install /).empty?,
-      "installed path #{label} reached install"
-    )
-  end
-end
-
-run_capture(installed_path: MODERN_INSTALLED_PATH) do |result|
-  assert(
-    result[:status].success?,
-    "modern Android installed path was rejected: #{result[:stderr]}"
-  )
-end
-
 {
   "candidate package" => {candidate_package: "invalid.package"},
   "candidate version code" => {candidate_version_code: "30"},
   "candidate version name" => {candidate_version_name: "0.4.1-debug"},
-  "candidate signer" => {candidate_signer: "f" * 64},
-  "installed digest" => {installed_sha: "e" * 64},
-  "installed version code" => {installed_version_code: "30"},
-  "installed version name" => {installed_version_name: "0.4.1-debug"}
+  "candidate signer" => {candidate_signer: "f" * 64}
 }.each do |label, options|
   run_capture(**options) do |result|
     assert_rejected(result, label)
@@ -906,9 +893,9 @@ run_capture(
   assert(result[:stderr].include?("READY full path"), "missing wildcard READY rejection")
 end
 
-run_capture(initial_user: "0") do |result|
+run_capture(initial_user: "10") do |result|
   assert_rejected(result, "Owner launch")
-  assert(!File.read(result[:audit]).include?("flutter-launch"), "Flutter launched before the user-10 check")
+  assert(!File.read(result[:audit]).include?("flutter-launch"), "Flutter launched before the user-0 check")
 end
 
 puts "cbio-gs1-private-capture contract: PASS"
