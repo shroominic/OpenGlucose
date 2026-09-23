@@ -95,40 +95,74 @@ void main() {
       expect(session.currentSnapshot.capabilities.supportsRawHistory, isFalse);
     });
 
-    test('prefers ATT write response and otherwise uses WWR', () async {
-      final withResponse = _Fixture(
-        writeProperties: const BleCharacteristicProperties(
-          write: true,
-          writeWithoutResponse: true,
-        ),
-      );
-      final first = await withResponse.connect(authorized: false);
-      await expectLater(
-        first.initialize(),
-        throwsA(isA<YuwellSessionException>()),
-      );
-      expect(withResponse.connection.writes, isNotEmpty);
-      expect(
-        withResponse.connection.writes.every((write) => !write.withoutResponse),
-        isTrue,
-      );
+    test(
+      'prefers ATT write response when both write modes are available',
+      () async {
+        final withResponse = _Fixture(
+          writeProperties: const BleCharacteristicProperties(
+            write: true,
+            writeWithoutResponse: true,
+          ),
+        );
+        final first = await withResponse.connect(authorized: false);
+        await expectLater(
+          first.initialize(),
+          throwsA(isA<YuwellSessionException>()),
+        );
+        expect(withResponse.connection.writes, isNotEmpty);
+        expect(
+          withResponse.connection.writes.every(
+            (write) => !write.withoutResponse,
+          ),
+          isTrue,
+        );
+      },
+    );
 
-      final wwr = _Fixture(
-        writeProperties: const BleCharacteristicProperties(
-          writeWithoutResponse: true,
-        ),
-      );
-      final second = await wwr.connect(authorized: false);
-      await expectLater(
-        second.initialize(),
-        throwsA(isA<YuwellSessionException>()),
-      );
-      expect(wwr.connection.writes, isNotEmpty);
-      expect(
-        wwr.connection.writes.every((write) => write.withoutResponse),
-        isTrue,
-      );
-    });
+    test(
+      'observed notify-only and WWR-only topology sends version via WWR',
+      () async {
+        final fixture = _Fixture(
+          serviceOverride: const <BleService>[
+            BleService(
+              uuid: yuwellCt5ServiceUuid,
+              characteristics: <BleCharacteristicRef>[
+                BleCharacteristicRef(
+                  serviceUuid: yuwellCt5ServiceUuid,
+                  characteristicUuid: yuwellCt5NotifyCharacteristicUuid,
+                  properties: BleCharacteristicProperties(notify: true),
+                ),
+                BleCharacteristicRef(
+                  serviceUuid: yuwellCt5ServiceUuid,
+                  characteristicUuid: yuwellCt5WriteCharacteristicUuid,
+                  properties: BleCharacteristicProperties(
+                    writeWithoutResponse: true,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+        final session = await fixture.connect(authorized: false);
+
+        await expectLater(
+          session.initialize(),
+          throwsA(_failure(YuwellSessionFailureKind.activationRequired)),
+        );
+
+        expect(fixture.connection.writes, isNotEmpty);
+        expect(fixture.connection.writes.first.value, <int>[0x01]);
+        expect(
+          fixture.connection.writes.every((write) => write.withoutResponse),
+          isTrue,
+        );
+        _expectBefore(fixture.events, 'notify:on', 'write:01');
+        expect(
+          fixture.connection.writes.map((write) => write.value.first),
+          contains(YuwellCt5Commands.bindingStatusCommand),
+        );
+      },
+    );
 
     test(
       'restores active credentials, auto-syncs index zero, and keeps records private',
