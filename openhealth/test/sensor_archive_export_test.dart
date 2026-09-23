@@ -61,7 +61,7 @@ void main() {
     expect(lines[1], contains('2026-08-01T01:57:00.000Z,90,5.000,vendor,17'));
     expect(
       lines[2],
-      contains('2026-08-01T02:02:03.000Z,103.5,5.750,raw,22,982,7,true'),
+      contains('2026-08-01T02:02:03.000Z,,,raw,22,982,7,true'),
     );
     expect(lines[1], startsWith('expired,'));
     expect(lines[1], isNot(contains(session.id)));
@@ -84,6 +84,70 @@ void main() {
 
     final dataRow = csv.split('\r\n')[1];
     expect(dataRow, contains(',2,,72,4.000,broadcast,,700,,false'));
+  });
+
+  test('explicit raw-quality archives leave glucose cells blank', () {
+    final cbioSession = ArchivedSensorSession.fromJson({
+      ...session.toJson(),
+      'driverId': 'cbio',
+    });
+    const readings = [
+      CgmReading(
+        valueMgdl: 5.9,
+        source: CgmRecordSource.raw,
+        sensorMinute: 120,
+        rawValue: 59,
+      ),
+    ];
+    final row = buildArchivedSensorCsv(
+      session: cbioSession,
+      readings: readings,
+    ).split('\r\n')[1].split(',');
+    expect(row[6], isEmpty);
+    expect(row[7], isEmpty);
+    expect(row[9], '120');
+    expect(row[10], '59');
+    final sheet = _archiveText(
+      ZipDecoder().decodeBytes(
+        buildArchivedSensorXlsx(session: cbioSession, readings: readings),
+      ),
+      'xl/worksheets/sheet1.xml',
+    );
+    expect(sheet, isNot(contains('<c r="G2"')));
+    expect(sheet, isNot(contains('<c r="H2"')));
+    expect(sheet, contains('<c r="K2" s="2"><v>59</v></c>'));
+  });
+
+  test('normalized GS1 archive uses the shared glucose export contract', () {
+    final normalizedSession = ArchivedSensorSession.fromJson({
+      ...session.toJson(),
+      'driverId': 'cbio',
+      'historyKey': 'openHealth.history.normalized.v1.synthetic.archive.1',
+    });
+    final readings = [
+      CgmReading(
+        valueMgdl: 108,
+        source: CgmRecordSource.standard,
+        recordedAt: DateTime.utc(2026, 9, 19, 12),
+      ),
+    ];
+    final row = buildArchivedSensorCsv(
+      session: normalizedSession,
+      readings: readings,
+    ).split('\r\n')[1].split(',');
+    expect(row[6], '108');
+    expect(row[7], '6.000');
+    final sheet = _archiveText(
+      ZipDecoder().decodeBytes(
+        buildArchivedSensorXlsx(
+          session: normalizedSession,
+          readings: readings,
+        ),
+      ),
+      'xl/worksheets/sheet1.xml',
+    );
+    expect(sheet, contains('<c r="G2" s="3"><v>108</v></c>'));
+    expect(sheet, contains('<c r="H2" s="4"><v>6.000</v></c>'));
   });
 
   test('metadata-only archives still produce a data row', () {
@@ -173,7 +237,7 @@ void main() {
 
     final lines = text.split('\r\n');
     expect(lines.first, archivedSensorCsvColumns.join('\t'));
-    expect(lines[1], contains('2026-08-01T02:02:03.000Z\t103.5\t5.750\traw'));
+    expect(lines[1], contains('2026-08-01T02:02:03.000Z\t\t\traw'));
     expect(lines[1].split('\t'), hasLength(archivedSensorCsvColumns.length));
     expect(text, isNot(contains(session.id)));
     expect(text, isNot(contains(session.serial)));
@@ -305,8 +369,10 @@ void main() {
     final workbook = ZipDecoder().decodeBytes(bytes);
     final sheet = _archiveText(workbook, 'xl/worksheets/sheet1.xml');
 
-    expect(sheet, contains('<c r="G2" s="3"><v>103.5</v></c>'));
-    expect(sheet, contains('<c r="H2" s="4"><v>5.750</v></c>'));
+    expect(sheet, isNot(contains('<c r="G2"')));
+    expect(sheet, isNot(contains('<c r="H2"')));
+    expect(sheet, contains('<c r="G3" s="3"><v>110</v></c>'));
+    expect(sheet, contains('<c r="H3" s="4"><v>6.111</v></c>'));
     expect(sheet, contains('<c r="J2" s="2"><v>22</v></c>'));
     expect(sheet, contains('<c r="K2" s="2"><v>982</v></c>'));
     expect(sheet, contains('<c r="L2" s="2"><v>7</v></c>'));

@@ -32,6 +32,13 @@ instead requires exactly five environment secrets:
 artifact. Verify the APK/AAB signer, certificate fingerprint, package ID,
 version, and checksum before upload.
 
+The 0.4.0 CBIO GS1 build also requires the protected GitHub secrets
+`CBIO_VENDOR_STREAM_KEY_HEX`, `CBIO_VENDOR_AUTH_MATERIAL_HEX`, and
+`CBIO_VENDOR_AUTH_TRIGGER_HEX`. The workflow writes them to a mode-600,
+runner-local Dart define file, passes that file to the Flutter build, and
+removes it before the job ends. A release build without these inputs fails
+closed so the signed artifact cannot silently omit the GS1 driver.
+
 GitHub Android releases use `.github/workflows/release-android.yml`. A new
 strict `vMAJOR.MINOR.PATCH` tag starts the lane. An accountable owner can also
 dispatch the same lane for an existing tag to rebuild the exact tagged source
@@ -236,6 +243,12 @@ The current native release-tool pins are Fastlane 2.232.2, Xcode 26.6, and
 CocoaPods 1.16.2 in root version files. Updating one is an R3 release change:
 review the new version, change the checked-in pin, and validate a signed app
 plus extension rather than overriding the version from the release environment.
+
+The protected TestFlight upload job requires the same three CBIO secrets. It
+creates the define file inside its private release-material directory and
+deletes that directory with the signing material after the build. Follow-up
+upload, review, and notification phases do not rebuild the app and therefore
+do not receive or retain the vendor values.
 
 Resolve the two profile UUIDs from freshly downloaded App Store distribution
 profiles after decoding them with `security cms -D`; do not substitute profile

@@ -42,11 +42,13 @@ ruby "$repo_root/scripts/test-android-release-workflow-contract.rb"
 ruby "$repo_root/scripts/test-macos-preview-workflow-contract.rb"
 ruby "$repo_root/scripts/test-testflight-release-workflow-contract.rb"
 ruby "$repo_root/scripts/test-testflight-release-tag-contract.rb"
+ruby "$repo_root/scripts/test-libre-protocol-capture-contract.rb"
 
 if [ -f "$repo_root/openhealth/fastlane/Fastfile" ]; then
   ruby -c "$repo_root/openhealth/fastlane/Fastfile" >/dev/null
   ruby "$repo_root/scripts/test-external-testflight-release-contract.rb"
   ruby "$repo_root/scripts/test-notification-receipt.rb"
   ruby "$repo_root/scripts/test-internal-testflight-policy.rb"
+  ruby "$repo_root/scripts/test-workspace-integration-runner.rb"
   ruby "$repo_root/openhealth/scripts/test-testflight-signing-contract.rb"
 fi

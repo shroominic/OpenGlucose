@@ -1,0 +1,6 @@
+include: package:lints/recommended.yaml
+
+linter:
+  rules:
+    # Opaque protocol values can contain restricted device or health data.
+    avoid_print: true

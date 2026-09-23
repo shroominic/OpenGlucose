@@ -8,6 +8,17 @@ val releaseKeystoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
 val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
 val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
+val debugApplicationIdSuffix = providers
+    .environmentVariable("OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX")
+    .orElse(".debug")
+    .map { suffix ->
+        if (suffix !in setOf(".debug", ".debug.owner")) {
+            throw GradleException(
+                "OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX must be .debug or .debug.owner."
+            )
+        }
+        suffix
+    }
 val releaseSigningConfigured = listOf(
     releaseKeystoreFile,
     releaseKeystorePassword,
@@ -65,7 +76,7 @@ android {
         debug {
             // Keep USB development builds separate from a tester's signed
             // OpenGlucose install so `flutter run` never replaces user data.
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = debugApplicationIdSuffix.get()
             versionNameSuffix = "-debug"
         }
         release {
@@ -76,4 +87,18 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // The device-backed harnesses under `integration_test/` run through the
+    // SDK-provided `integration_test` package, which pins
+    // androidx.test.espresso 3.2.0. In that release `espresso-core` and
+    // `espresso-idling-resource` both declare the `androidx.test.espresso`
+    // Android namespace, which AGP 8 rejects during manifest merging. Raise
+    // both to the first release with unique namespaces so the debug host can
+    // build. Debug-only: no release artifact or production behavior changes.
+    debugImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    debugImplementation(
+        "androidx.test.espresso:espresso-idling-resource:3.5.1",
+    )
 }

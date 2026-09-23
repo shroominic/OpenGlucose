@@ -599,6 +599,42 @@ head_commit=$(git rev-parse HEAD)
   fail "RELEASE_COMMIT does not match HEAD ($head_commit)"
 assert_clean_source "release startup"
 
+cbio_build_define_args=()
+if [[ "${TESTFLIGHT_RESUME_UPLOAD:-no}" == "no" ]]; then
+  : "${CBIO_DART_DEFINE_FROM_FILE:?missing CBIO_DART_DEFINE_FROM_FILE for the GS1 release build}"
+  [[ "$CBIO_DART_DEFINE_FROM_FILE" == /* ]] || \
+    fail "CBIO_DART_DEFINE_FROM_FILE must be an absolute path"
+  [[ -f "$CBIO_DART_DEFINE_FROM_FILE" && ! -L "$CBIO_DART_DEFINE_FROM_FILE" ]] || \
+    fail "CBIO_DART_DEFINE_FROM_FILE must be a regular file"
+  cbio_define_mode=$(/usr/bin/stat -f '%Lp' "$CBIO_DART_DEFINE_FROM_FILE")
+  [[ "$cbio_define_mode" == 600 ]] || \
+    fail "CBIO_DART_DEFINE_FROM_FILE must have mode 600 (found $cbio_define_mode)"
+  case "$CBIO_DART_DEFINE_FROM_FILE" in
+    "$REPOSITORY_ROOT/"*)
+      fail "CBIO_DART_DEFINE_FROM_FILE must be outside the repository"
+      ;;
+  esac
+  python3 - "$CBIO_DART_DEFINE_FROM_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = json.load(source)
+
+required = (
+    "CBIO_VENDOR_STREAM_KEY_HEX",
+    "CBIO_VENDOR_AUTH_MATERIAL_HEX",
+    "CBIO_VENDOR_AUTH_TRIGGER_HEX",
+)
+if not isinstance(values, dict) or any(
+    not isinstance(values.get(name), str) or not values[name]
+    for name in required
+):
+    raise SystemExit("release blocked: CBIO vendor material define file is incomplete")
+PY
+  cbio_build_define_args+=("--dart-define-from-file=$CBIO_DART_DEFINE_FROM_FILE")
+fi
+
 verify_stable_tag_freshness() {
   [[ "$TESTFLIGHT_REQUIRE_STABLE_TAG_FRESHNESS" == "yes" ]] || return 0
   "$REPOSITORY_ROOT/scripts/verify-testflight-release-tag.sh" \
@@ -811,6 +847,7 @@ PLIST
     flutter build ipa \
       --release \
       --no-pub \
+      "${cbio_build_define_args[@]}" \
       --export-options-plist="$internal_export_options"
   else
   external_export_options="$release_temp/external-export-options.plist"
@@ -846,6 +883,7 @@ PLIST
     flutter build ipa \
       --release \
       --no-pub \
+      "${cbio_build_define_args[@]}" \
       --export-options-plist="$external_export_options"
   fi
 
