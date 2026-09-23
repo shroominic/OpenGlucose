@@ -2,6 +2,13 @@ package com.aidex.aidex_flutter;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.os.Build;
+import android.os.Process;
+import android.os.SystemClock;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -14,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Collections;
@@ -51,6 +59,7 @@ final class YuwellSecureStoreBridge {
       "openglucose_yuwell_ct5_hmac_sha256_v2";
   private static final String CREDENTIAL_PREFIX = "credential.";
   private static final String INTENT_PREFIX = "intent.";
+  private static final String PAIR_RUN_PREFIX = "v1140_pair_run.";
   private static final byte ENVELOPE_VERSION = 1;
   private static final int GCM_IV_BYTES = 12;
   private static final int GCM_TAG_BITS = 128;
@@ -79,16 +88,19 @@ final class YuwellSecureStoreBridge {
   private static final Object STORE_LOCK = new Object();
   private static final YuwellStoreHealth STORE_HEALTH =
       new YuwellStoreHealth();
+  private static final YuwellPairRunAuthority.ProcessState PAIR_RUN_STATE =
+      new YuwellPairRunAuthority.ProcessState();
 
+  private final Context applicationContext;
   private final SharedPreferences preferences;
   private final SecureRandom secureRandom;
   private final YuwellWriteJournal writeJournal;
+  private final YuwellPairRunAuthority pairRunAuthority;
 
   YuwellSecureStoreBridge(Context context) {
+    applicationContext = context.getApplicationContext();
     preferences =
-        context
-            .getApplicationContext()
-            .getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+        applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
     secureRandom = new SecureRandom();
     writeJournal =
         new YuwellWriteJournal(
@@ -126,6 +138,55 @@ final class YuwellSecureStoreBridge {
                 return hex(bytes);
               }
             });
+    pairRunAuthority =
+        new YuwellPairRunAuthority(
+            new YuwellPairRunAuthority.Backend() {
+              @Override
+              public String aliasFor(String storageKey) throws Exception {
+                return storageAlias(storageKey);
+              }
+
+              @Override
+              public boolean contains(String alias) {
+                return preferences.contains(PAIR_RUN_PREFIX + alias);
+              }
+
+              @Override
+              public String read(String alias) throws Exception {
+                return readEncrypted(PAIR_RUN_PREFIX + alias, "v1140_pair_run", alias);
+              }
+
+              @Override
+              public void write(String alias, String record) throws Exception {
+                writeEncrypted(PAIR_RUN_PREFIX + alias, "v1140_pair_run", alias, record);
+              }
+
+              @Override
+              public String newNonce() {
+                final byte[] bytes = new byte[RANDOM_NONCE_BYTES];
+                secureRandom.nextBytes(bytes);
+                return hex(bytes);
+              }
+
+              @Override
+              public YuwellPairRunAuthority.InstalledIdentity installedIdentity()
+                  throws Exception {
+                return readInstalledIdentity();
+              }
+
+              @Override
+              public long wallTimeMillis() {
+                return System.currentTimeMillis();
+              }
+
+              @Override
+              public long elapsedRealtimeMillis() {
+                return SystemClock.elapsedRealtime();
+              }
+            },
+            STORE_LOCK,
+            STORE_HEALTH,
+            PAIR_RUN_STATE);
   }
 
   void register(BinaryMessenger messenger) {
@@ -137,6 +198,33 @@ final class YuwellSecureStoreBridge {
     try {
       requireStoreHealthy();
       switch (call.method) {
+        case "readV1140AppIdentity":
+          requireExactKeys(call.arguments);
+          result.success(identityMap(readInstalledIdentity()));
+          return;
+        case "claimV1140Run":
+          requireExactKeys(call.arguments, "storageKey", "observedAtUtcMillis",
+              "expectedPackageName", "expectedSignerSha256", "expectedVersionCode",
+              "receiptSha256");
+          final YuwellPairRunAuthority.Claim claim = pairRunAuthority.claim(
+              requireStorageKey(call.arguments),
+              requireLong(call.arguments, "observedAtUtcMillis"),
+              new YuwellPairRunAuthority.ExpectedBuild(
+                  requireString(call.arguments, "expectedPackageName"),
+                  requireString(call.arguments, "expectedSignerSha256"),
+                  requireLong(call.arguments, "expectedVersionCode"),
+                  requireString(call.arguments, "receiptSha256")));
+          final Map<String, Object> claimResult = new HashMap<>();
+          claimResult.put("runNonce", claim.runNonce);
+          claimResult.put("expiresAtUtcMillis", claim.expiresAtUtcMillis);
+          result.success(claimResult);
+          return;
+        case "consumeV1140Run":
+          requireExactKeys(call.arguments, "runNonce", "storageKey");
+          result.success(pairRunAuthority.consume(
+              requireString(call.arguments, "runNonce"),
+              requireStorageKey(call.arguments)));
+          return;
         case "readCredential":
           result.success(readCredential(requireStorageKey(call.arguments)));
           return;
@@ -201,6 +289,10 @@ final class YuwellSecureStoreBridge {
       result.error("bad_args", "Invalid Yuwell secure-store request.", null);
     } catch (YuwellWriteJournal.ConflictException error) {
       result.error("conflict", "Yuwell write journal is unresolved.", null);
+    } catch (YuwellPairRunAuthority.ConflictException error) {
+      result.error("run_conflict", "V1140 run claim is unavailable.", null);
+    } catch (YuwellPairRunAuthority.RejectedException error) {
+      result.error("run_rejected", "V1140 run claim was rejected.", null);
     } catch (Exception error) {
       // Do not forward exception text or details. Crypto providers and storage
       // decoders can include private material in diagnostic messages.
@@ -209,6 +301,62 @@ final class YuwellSecureStoreBridge {
           "Yuwell secure storage failed closed.",
           null);
     }
+  }
+
+  private YuwellPairRunAuthority.InstalledIdentity readInstalledIdentity()
+      throws Exception {
+    final String packageName = applicationContext.getPackageName();
+    final PackageManager manager = applicationContext.getPackageManager();
+    final int flags = Build.VERSION.SDK_INT >= 28
+        ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
+    final PackageInfo info = manager.getPackageInfo(packageName, flags);
+    final Signature[] signers = Build.VERSION.SDK_INT >= 28
+        ? (info.signingInfo == null ? null : info.signingInfo.getApkContentsSigners())
+        : info.signatures;
+    if (signers == null || signers.length != 1 || signers[0] == null) {
+      throw new StoreException();
+    }
+    final byte[] certificate = signers[0].toByteArray();
+    if (certificate == null || certificate.length == 0) throw new StoreException();
+    final long version = Build.VERSION.SDK_INT >= 28
+        ? info.getLongVersionCode() : info.versionCode;
+    if (version <= 0) throw new StoreException();
+    final String signerHash = hex(MessageDigest.getInstance("SHA-256").digest(certificate));
+    final ApplicationInfo appInfo = applicationContext.getApplicationInfo();
+    if (appInfo == null) throw new StoreException();
+    return new YuwellPairRunAuthority.InstalledIdentity(
+        packageName, signerHash, version, Process.myUid(),
+        (appInfo.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
+  }
+
+  private static Map<String, Object> identityMap(
+      YuwellPairRunAuthority.InstalledIdentity identity) {
+    final Map<String, Object> result = new HashMap<>();
+    result.put("packageName", identity.packageName);
+    result.put("signerSha256", identity.signerSha256);
+    result.put("versionCode", identity.versionCode);
+    result.put("uid", identity.uid);
+    result.put("debuggable", identity.debuggable);
+    return result;
+  }
+
+  private static void requireExactKeys(Object arguments, String... keys)
+      throws BadArgumentsException {
+    if (!(arguments instanceof Map<?, ?>)) throw new BadArgumentsException();
+    final Map<?, ?> map = (Map<?, ?>) arguments;
+    if (map.size() != keys.length) throw new BadArgumentsException();
+    for (String key : keys) {
+      if (!map.containsKey(key)) throw new BadArgumentsException();
+    }
+  }
+
+  private static long requireLong(Object arguments, String key)
+      throws BadArgumentsException {
+    final Object value = ((Map<?, ?>) arguments).get(key);
+    if (!(value instanceof Long) && !(value instanceof Integer)) {
+      throw new BadArgumentsException();
+    }
+    return ((Number) value).longValue();
   }
 
   private String readCredential(String storageKey)

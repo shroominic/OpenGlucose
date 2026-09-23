@@ -63,9 +63,10 @@ Future<_BootstrapResult> _bootstrap() async {
   }
   final preferences = await SharedPreferences.getInstance();
   final healthStateStore = createHealthStateStore(preferences);
+  await healthStateStore.initialize();
   final controller = CgmAppController(
     preferences: preferences,
-    driver: buildDefaultDriver(),
+    driver: buildDefaultDriver(healthStateStore),
     healthStateStore: healthStateStore,
   );
   await controller.initialize();

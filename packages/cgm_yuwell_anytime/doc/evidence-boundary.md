@@ -13,10 +13,21 @@ fixture, redistribution asset, or physical-device compatibility result.
 ## Evidence status
 
 - GATT UUIDs, candidate names, frame shapes, checksums, transforms, and record
-  layouts are reference-verified and target-unverified.
+  layouts are reference-verified. As of 2026-09-09, discovery, GATT topology,
+  and the version handshake are additionally target-confirmed on one physical
+  Anytime 5P over macOS BLE — that session's firmware branch was not
+  `V1150`, so it stopped there by design. See "First physical observation"
+  in [`docs/testing/yuwell-anytime-5p-protocol.md`](../../../docs/testing/yuwell-anytime-5p-protocol.md)
+  for the full, sanitized account. Everything past the version handshake
+  remains target-unverified.
 - The CT5 calibration-code decoder is a clean-room expression of three strict
   fixed-width layouts and decimal field formulas. It does not require or embed
   the reference app's native library.
+- The internal CT5 selector-11 temperature-state research primitive reproduces
+  only the independently reviewed reachable clamp and binary32 recurrence. It
+  is not wired into the driver and does not implement sample admission,
+  effective-temperature selection, compensation, smoothing, quality, trend,
+  warnings, glucose, or support for another firmware branch.
 - The native algorithm's input, output, reset, and contiguous-index contract is
   documented, but its final stateful glucose mathematics is not implemented.
   This package must fail closed when no independently validated final-value

@@ -6,6 +6,9 @@ import 'authentication.dart';
 import 'calibration_code.dart';
 import 'errors.dart';
 
+final _verifiedFirmwarePattern = RegExp(r'^[A-Z][A-Z0-9._-]{0,31}$');
+final _historyGenerationPattern = RegExp(r'^[0-9a-f]{32}$');
+
 /// Closed activation phases safe to persist in a secure credential record.
 enum YuwellCredentialPhase {
   identityPrepared,
@@ -31,6 +34,8 @@ final class YuwellSessionCredentials {
     required this.phase,
     this.activationStartedAt,
     this.initializationIndex = 15,
+    this.verifiedFirmware,
+    this.historyGeneration,
   });
 
   final YuwellCommunicationIdentity communicationIdentity;
@@ -41,6 +46,14 @@ final class YuwellSessionCredentials {
   final YuwellCredentialPhase phase;
   final DateTime? activationStartedAt;
   final int initializationIndex;
+  final String? verifiedFirmware;
+  final String? historyGeneration;
+
+  bool get canRestoreHistory =>
+      verifiedFirmware != null &&
+      historyGeneration != null &&
+      _verifiedFirmwarePattern.hasMatch(verifiedFirmware!) &&
+      _historyGenerationPattern.hasMatch(historyGeneration!);
 
   YuwellSessionCredentials copyWith({
     double? k,
@@ -49,34 +62,69 @@ final class YuwellSessionCredentials {
     YuwellCredentialPhase? phase,
     DateTime? activationStartedAt,
     int? initializationIndex,
-  }) => YuwellSessionCredentials(
-    communicationIdentity: communicationIdentity,
-    cipher: cipher,
-    k: k ?? this.k,
-    r: r ?? this.r,
-    transmitterComputed: transmitterComputed ?? this.transmitterComputed,
-    phase: phase ?? this.phase,
-    activationStartedAt: activationStartedAt ?? this.activationStartedAt,
-    initializationIndex: initializationIndex ?? this.initializationIndex,
-  );
+    String? verifiedFirmware,
+    String? historyGeneration,
+  }) {
+    final nextFirmware = verifiedFirmware ?? this.verifiedFirmware;
+    final nextGeneration = historyGeneration ?? this.historyGeneration;
+    if ((nextFirmware == null) != (nextGeneration == null)) {
+      throw const YuwellProtocolFormatException(
+        'secure credential history identity is incomplete',
+      );
+    }
+    return YuwellSessionCredentials(
+      communicationIdentity: communicationIdentity,
+      cipher: cipher,
+      k: k ?? this.k,
+      r: r ?? this.r,
+      transmitterComputed: transmitterComputed ?? this.transmitterComputed,
+      phase: phase ?? this.phase,
+      activationStartedAt: activationStartedAt ?? this.activationStartedAt,
+      initializationIndex: initializationIndex ?? this.initializationIndex,
+      verifiedFirmware: nextFirmware,
+      historyGeneration: nextGeneration,
+    );
+  }
 
   /// Produces a sensitive record for immediate encryption by a secure store.
-  Map<String, Object?> serializeForSecureStorage() => <String, Object?>{
-    'version': 1,
-    'communicationIdentity': communicationIdentity.serializeForSecureStorage(),
-    'cipher': cipher,
-    'k': k,
-    'r': r,
-    'transmitterComputed': transmitterComputed,
-    'phase': phase.name,
-    'activationStartedAt': activationStartedAt?.toUtc().toIso8601String(),
-    'initializationIndex': initializationIndex,
-  };
+  Map<String, Object?> serializeForSecureStorage() {
+    final hasFirmware = verifiedFirmware != null;
+    final hasGeneration = historyGeneration != null;
+    if (hasFirmware != hasGeneration || (hasFirmware && !canRestoreHistory)) {
+      throw const YuwellProtocolFormatException(
+        'secure credential history identity is invalid',
+      );
+    }
+    return <String, Object?>{
+      'version': canRestoreHistory ? 2 : 1,
+      'communicationIdentity': communicationIdentity
+          .serializeForSecureStorage(),
+      'cipher': cipher,
+      'k': k,
+      'r': r,
+      'transmitterComputed': transmitterComputed,
+      'phase': phase.name,
+      'activationStartedAt': activationStartedAt?.toUtc().toIso8601String(),
+      'initializationIndex': initializationIndex,
+      if (canRestoreHistory) ...<String, Object?>{
+        'verifiedFirmware': verifiedFirmware,
+        'historyGeneration': historyGeneration,
+      },
+    };
+  }
 
   factory YuwellSessionCredentials.restoreFromSecureStorage(
     Map<String, Object?> record,
   ) {
-    if (record['version'] != 1 ||
+    final version = record['version'];
+    final expectedKeys = version == 1
+        ? _credentialV1Keys
+        : version == 2
+        ? _credentialV2Keys
+        : const <String>{};
+    if (expectedKeys.isEmpty ||
+        record.keys.toSet().difference(expectedKeys).isNotEmpty ||
+        expectedKeys.difference(record.keys.toSet()).isNotEmpty ||
         record['communicationIdentity'] is! String ||
         (record['cipher'] != null && record['cipher'] is! int) ||
         record['k'] is! num ||
@@ -86,6 +134,17 @@ final class YuwellSessionCredentials {
         record['initializationIndex'] is! int) {
       throw const YuwellProtocolFormatException(
         'secure credential record has an unsupported shape',
+      );
+    }
+    final verifiedFirmware = version == 2 ? record['verifiedFirmware'] : null;
+    final historyGeneration = version == 2 ? record['historyGeneration'] : null;
+    if (version == 2 &&
+        (verifiedFirmware is! String ||
+            historyGeneration is! String ||
+            !_verifiedFirmwarePattern.hasMatch(verifiedFirmware) ||
+            !_historyGenerationPattern.hasMatch(historyGeneration))) {
+      throw const YuwellProtocolFormatException(
+        'secure credential history identity is invalid',
       );
     }
     final cipher = record['cipher'] as int?;
@@ -161,11 +220,49 @@ final class YuwellSessionCredentials {
       phase: phase,
       activationStartedAt: activationStartedAt,
       initializationIndex: initializationIndex,
+      verifiedFirmware: verifiedFirmware as String?,
+      historyGeneration: historyGeneration as String?,
     );
   }
 
   @override
   String toString() => 'YuwellSessionCredentials(<redacted>)';
+}
+
+const _credentialV1Keys = <String>{
+  'version',
+  'communicationIdentity',
+  'cipher',
+  'k',
+  'r',
+  'transmitterComputed',
+  'phase',
+  'activationStartedAt',
+  'initializationIndex',
+};
+
+const _credentialV2Keys = <String>{
+  ..._credentialV1Keys,
+  'verifiedFirmware',
+  'historyGeneration',
+};
+
+abstract interface class YuwellHistoryGenerationGenerator {
+  String generate();
+}
+
+final class YuwellSecureHistoryGenerationGenerator
+    implements YuwellHistoryGenerationGenerator {
+  YuwellSecureHistoryGenerationGenerator({math.Random? random})
+    : _random = random ?? math.Random.secure();
+
+  final math.Random _random;
+
+  @override
+  String generate() => List<String>.generate(
+    16,
+    (_) => _random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
 }
 
 abstract interface class YuwellCredentialStore {

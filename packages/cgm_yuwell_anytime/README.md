@@ -4,10 +4,15 @@ Pure Dart clean-room protocol primitives and a safety-gated BLE session driver
 for the Yuwell Anytime CT5 family.
 
 > [!CAUTION]
-> These primitives are **reference-verified and target-unverified**. A matching
-> name, UUID, frame, or decoded value does not establish Anytime 5P hardware
-> compatibility. OpenGlucose is wellness/reference software. Do not use this
-> package for diagnosis, dosing, treatment, or emergency monitoring.
+> These primitives are **reference-verified**, and discovery/GATT
+> topology/version handshake are additionally **target-confirmed on one
+> physical Anytime 5P** (macOS BLE, 2026-09-09 — see
+> [the evidence boundary](doc/evidence-boundary.md)). A matching name, UUID,
+> frame, or version handshake does not establish full Anytime 5P hardware
+> compatibility or a working glucose value: that unit's firmware branch was
+> not `V1150`, so the session stopped at the version check by design.
+> OpenGlucose is wellness/reference software. Do not use this package for
+> diagnosis, dosing, treatment, or emergency monitoring.
 
 ## Implemented boundary
 
@@ -29,6 +34,8 @@ for the Yuwell Anytime CT5 family.
 - notify-before-write topology verification, strict response routing, and
   immediate live ACK before parsing;
 - injected Keychain/Keystore credential and atomic write-journal contracts;
+- an optional generation-bound private raw-slot store whose complete durable
+  prefix is wire-validated from index zero before any suffix is trusted;
 - explicit one-shot activation authorization, durable pre-write identity and
   initialization state, and read-only interrupted-write recovery; and
 - automatic private history synchronization with negotiated-MTU batching when
@@ -60,6 +67,17 @@ history, and live records private in memory. A caller can explicitly inject the
 engineering-provisional policy to project only authenticated, contiguous,
 post-warmup V1150 packed values as provisional `CgmReading` values. Normal
 OpenGlucose builds do not inject that policy. Pre-`V1150` firmware fails closed.
+
+Private raw durability is additive and disabled when no record store is
+injected. Schema-v1 credentials remain valid for authentication but never
+authorize raw-history restoration; an enabled saved session first reads exact
+firmware, completes the unchanged check-ID exchange, and atomically upgrades
+to a generation-bound schema-v2 identity. Restart recovery preserves the old
+blob, validates every durable record and empty slot from index zero, then
+re-fetches and commits only the suffix. OpenGlucose supplies this store only in
+its explicit debug-capture composition. This does not enable normalized
+Anytime glucose output, and physical process-kill/restart proof remains
+pending.
 
 ## Offline example
 

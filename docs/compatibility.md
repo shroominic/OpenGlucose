@@ -139,6 +139,16 @@ not establish Anytime 5P compatibility or reproduce the vendor-native glucose
 algorithm. See the physical-evidence and V1150 production-publication gates
 before changing that boundary.
 
+That explicit debug composition can also inject additive private raw-record
+durability. Credential schema v1 remains readable for authentication but does
+not authorize restore. Schema v2 binds the exact sensor-key digest, verified
+firmware, opaque generation, history opcode, and record layout. Recovery starts
+at history index zero, compares every durable record and empty slot in
+quarantine, and only then fetches and commits the suffix. Conflicts preserve
+the old blob and fail closed. This path does not register Yuwell in normal
+builds, enable normalized Anytime glucose, or establish physical restart
+durability; an authorized process-kill/restart device test remains pending.
+
 Restricted health-state schema three changes history-blob filenames from a
 reversible base64 storage key to `history-<sha256>.blob`. Schema-zero/one
 embedded histories and schema-two filenames migrate automatically. The rename

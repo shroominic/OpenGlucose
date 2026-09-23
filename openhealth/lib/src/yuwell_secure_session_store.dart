@@ -4,6 +4,8 @@ import 'package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'v1140_pair_authority.dart';
+
 /// Android Keystore persistence for Yuwell CT5 credentials and write intents.
 ///
 /// The Android bridge derives opaque aliases with a device-local HMAC key,
@@ -11,7 +13,10 @@ import 'package:flutter/services.dart';
 /// this class completes an awaited call. Unsupported platforms fail closed;
 /// there is no preferences, file, or non-Keychain Apple fallback.
 final class YuwellSecureSessionStore
-    implements YuwellCredentialStore, YuwellWriteIntentStore {
+    implements
+        YuwellCredentialStore,
+        YuwellWriteIntentStore,
+        V1140OneShotAuthorization {
   YuwellSecureSessionStore()
     : _channel = const MethodChannel(channelName),
       _supported = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -27,6 +32,111 @@ final class YuwellSecureSessionStore
 
   final MethodChannel _channel;
   final bool _supported;
+
+  Future<V1140InstalledAppIdentity> readV1140AppIdentity() async {
+    final value = await _invoke<Object>(
+      'readV1140AppIdentity',
+      <String, Object?>{},
+    );
+    final fields = _v1140Map(value, <String>{
+      'packageName',
+      'signerSha256',
+      'versionCode',
+      'uid',
+      'debuggable',
+    });
+    if (fields['packageName'] is! String ||
+        fields['signerSha256'] is! String ||
+        fields['versionCode'] is! int ||
+        fields['uid'] is! int ||
+        fields['debuggable'] is! bool) {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+    try {
+      return V1140InstalledAppIdentity(
+        packageName: fields['packageName']! as String,
+        signerSha256: fields['signerSha256']! as String,
+        versionCode: fields['versionCode']! as int,
+        uid: fields['uid']! as int,
+        debuggable: fields['debuggable']! as bool,
+      );
+    } on Object {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+  }
+
+  Future<V1140RunClaim> claimV1140Run({
+    required String storageKey,
+    required DateTime observedAtUtc,
+    required V1140PairBuildBinding build,
+  }) async {
+    if (!_v1140StorageKey(storageKey) ||
+        !observedAtUtc.isUtc ||
+        observedAtUtc.millisecondsSinceEpoch < 0) {
+      throw ArgumentError('Invalid V1140 run claim request.');
+    }
+    final value = await _invoke<Object>('claimV1140Run', <String, Object?>{
+      'storageKey': storageKey,
+      'observedAtUtcMillis': observedAtUtc.millisecondsSinceEpoch,
+      'expectedPackageName': build.packageName,
+      'expectedSignerSha256': build.signerSha256,
+      'expectedVersionCode': build.versionCode,
+      'receiptSha256': build.receiptSha256,
+    });
+    final fields = _v1140Map(value, <String>{
+      'runNonce',
+      'expiresAtUtcMillis',
+    });
+    if (fields['runNonce'] is! String || fields['expiresAtUtcMillis'] is! int) {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+    final expiryMillis = fields['expiresAtUtcMillis']! as int;
+    if (expiryMillis < 0 ||
+        expiryMillis != observedAtUtc.millisecondsSinceEpoch + 30000) {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+    try {
+      return V1140RunClaim(
+        runNonce: fields['runNonce']! as String,
+        expiresAtUtc: DateTime.fromMillisecondsSinceEpoch(
+          expiryMillis,
+          isUtc: true,
+        ),
+      );
+    } on Object {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+  }
+
+  @override
+  Future<bool> consume({
+    required String runNonce,
+    required String storageKey,
+  }) async {
+    if (!v1140CanonicalHash(runNonce) || !_v1140StorageKey(storageKey)) {
+      throw ArgumentError('Invalid V1140 run consume request.');
+    }
+    final result = await _invoke<Object>('consumeV1140Run', <String, Object?>{
+      'runNonce': runNonce,
+      'storageKey': storageKey,
+    });
+    if (result is! bool) {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+    return result;
+  }
+
+  static Map<String, Object?> _v1140Map(Object? value, Set<String> keys) {
+    if (value is! Map ||
+        value.length != keys.length ||
+        value.keys.any((key) => key is! String || !keys.contains(key))) {
+      throw StateError('Yuwell secure storage returned an invalid result.');
+    }
+    return value.cast<String, Object?>();
+  }
+
+  static bool _v1140StorageKey(String value) =>
+      value.trim().isNotEmpty && utf8.encode(value).length <= 4096;
 
   @override
   Future<YuwellSessionCredentials?> read(String storageKey) async {
@@ -194,6 +304,12 @@ final class YuwellSecureSessionStore
       // cause private identifiers, keys, or records to reach crash reports.
       if (error.code == 'conflict') {
         throw StateError('A Yuwell activation write is already unresolved.');
+      }
+      if (error.code == 'run_conflict') {
+        throw StateError('A V1140 run claim is unavailable.');
+      }
+      if (error.code == 'run_rejected') {
+        throw StateError('V1140 run authorization was rejected.');
       }
       if (error.code == 'bad_args') {
         throw ArgumentError('Invalid Yuwell secure-store request.');

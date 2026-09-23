@@ -131,4 +131,75 @@ void main() {
       );
     });
   });
+
+  group('construction-time range validation', () {
+    // These two factories are the fail-closed input boundary for the whole
+    // evidence-gate report above: every RangeError here is a value that
+    // must never silently become part of a promotion decision. Boundary
+    // values themselves (the last accepted value on each side) must not
+    // throw -- that is the actual admitted range, not just its interior.
+    test('YuwellV1150GlucoseObservation rejects out-of-range fields', () {
+      YuwellV1150GlucoseObservation build({
+        int index = 0,
+        int transmitterGlucoseMgDl = 0,
+        int officialGlucoseMgDl = 0,
+        int connectionEpoch = 0,
+      }) => YuwellV1150GlucoseObservation(
+        index: index,
+        transmitterGlucoseMgDl: transmitterGlucoseMgDl,
+        officialGlucoseMgDl: officialGlucoseMgDl,
+        source: YuwellV1150ObservationSource.history,
+        connectionEpoch: connectionEpoch,
+      );
+
+      expect(() => build(index: -1), throwsRangeError);
+      expect(() => build(index: 7695), throwsRangeError);
+      expect(() => build(transmitterGlucoseMgDl: -1), throwsRangeError);
+      expect(() => build(transmitterGlucoseMgDl: 0x1000), throwsRangeError);
+      expect(() => build(officialGlucoseMgDl: -0x8001), throwsRangeError);
+      expect(() => build(officialGlucoseMgDl: 0x8000), throwsRangeError);
+      expect(() => build(connectionEpoch: -1), throwsRangeError);
+
+      expect(() => build(index: 7694), returnsNormally);
+      expect(() => build(transmitterGlucoseMgDl: 0x0fff), returnsNormally);
+      expect(() => build(officialGlucoseMgDl: -0x8000), returnsNormally);
+      expect(() => build(officialGlucoseMgDl: 0x7fff), returnsNormally);
+    });
+
+    test('YuwellV1150ValidationRequirements rejects out-of-range fields', () {
+      YuwellV1150ValidationRequirements build({
+        int minimumUniqueIndexes = 1,
+        int minimumConnectionEpochs = 1,
+        int minimumHistoryLiveOverlapIndexes = 0,
+        int? requiredLastIndex,
+      }) => YuwellV1150ValidationRequirements(
+        minimumUniqueIndexes: minimumUniqueIndexes,
+        minimumConnectionEpochs: minimumConnectionEpochs,
+        minimumHistoryLiveOverlapIndexes: minimumHistoryLiveOverlapIndexes,
+        requiredLastIndex: requiredLastIndex,
+      );
+
+      expect(() => build(minimumUniqueIndexes: 0), throwsRangeError);
+      expect(() => build(minimumUniqueIndexes: 7696), throwsRangeError);
+      expect(() => build(minimumConnectionEpochs: 0), throwsRangeError);
+      expect(
+        () => build(minimumHistoryLiveOverlapIndexes: -1),
+        throwsRangeError,
+      );
+      expect(
+        () => build(minimumHistoryLiveOverlapIndexes: 7696),
+        throwsRangeError,
+      );
+      expect(() => build(requiredLastIndex: -1), throwsRangeError);
+      expect(() => build(requiredLastIndex: 7695), throwsRangeError);
+
+      expect(() => build(minimumUniqueIndexes: 7695), returnsNormally);
+      expect(
+        () => build(minimumHistoryLiveOverlapIndexes: 7695),
+        returnsNormally,
+      );
+      expect(() => build(requiredLastIndex: 7694), returnsNormally);
+      expect(() => build(requiredLastIndex: null), returnsNormally);
+    });
+  });
 }

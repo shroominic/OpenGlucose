@@ -10,6 +10,7 @@ enforcement detail is already implemented.
 | [0002](0002-local-first-health-data.md) | Accepted | Keep health data local by default and make movement explicit                            |
 | [0003](0003-platform-release-model.md)  | Accepted | Build source-bound mobile artifacts and release only through fail-closed platform lanes |
 | [0004](0004-private-libre-glucose-decoder.md) | Accepted for private bench work | Separate the optional GPL decoder; preserve MIT provenance and gate combined distribution |
+| [0006](0006-yuwell-private-record-persistence.md) | Accepted | Persist bound private Yuwell raw slots and revalidate the durable prefix before cursor resume |
 
 ## Adding an ADR
 

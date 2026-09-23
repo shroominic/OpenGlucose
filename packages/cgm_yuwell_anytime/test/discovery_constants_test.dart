@@ -67,6 +67,48 @@ void main() {
       );
     });
 
+    test('mapper accepts the canonical exact candidate name', () {
+      const discovery = YuwellAnytimeDiscovery();
+
+      final candidate = discovery.mapScanResult(
+        const BleScanResult(
+          deviceId: 'synthetic-address',
+          deviceName: 'Anytime0123456789',
+          rssi: -50,
+        ),
+      );
+
+      expect(candidate, isNotNull);
+    });
+
+    test('mapper rejects a candidate with leading whitespace', () {
+      const discovery = YuwellAnytimeDiscovery();
+
+      final candidate = discovery.mapScanResult(
+        const BleScanResult(
+          deviceId: 'synthetic-address',
+          deviceName: ' Anytime0123456789',
+          rssi: -50,
+        ),
+      );
+
+      expect(candidate, isNull);
+    });
+
+    test('mapper rejects a candidate with trailing whitespace', () {
+      const discovery = YuwellAnytimeDiscovery();
+
+      final candidate = discovery.mapScanResult(
+        const BleScanResult(
+          deviceId: 'synthetic-address',
+          deviceName: 'Anytime0123456789 ',
+          rssi: -50,
+        ),
+      );
+
+      expect(candidate, isNull);
+    });
+
     test('rejects substring, case, whitespace, and word false positives', () {
       for (final name in <String?>[
         null,

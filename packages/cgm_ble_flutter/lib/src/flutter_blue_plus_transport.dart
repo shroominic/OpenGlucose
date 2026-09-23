@@ -79,7 +79,8 @@ class FlutterBluePlusTransport
     StreamSubscription<List<fbp.ScanResult>>? resultsSubscription;
     StreamSubscription<bool>? scanningSubscription;
     Future<void>? startupFuture;
-    Future<void>? closeFuture;
+    final closeOnce = SingleFlightTeardown();
+    Timer? boundTimer;
     var startedScan = false;
     var closed = false;
 
@@ -87,17 +88,19 @@ class FlutterBluePlusTransport
       bool stopScan = true,
       bool waitForStartup = true,
     }) {
-      final existing = closeFuture;
-      if (existing != null) {
-        return existing;
-      }
+      // `closed`/`boundTimer.cancel()` are safe to repeat — the guard that
+      // must not repeat is `closeOnce.run`, which is the only path to the
+      // plugin's `stopScan()`. Only the first caller's `stopScan`/
+      // `waitForStartup` are honored; later concurrent or sequential callers
+      // (the bound timer, a consumer cancel, the `isScanning` listener, a
+      // startup error) all observe that same first outcome instead of
+      // re-running teardown. See [SingleFlightTeardown].
       closed = true;
-      final completer = Completer<void>();
-      closeFuture = completer.future;
+      boundTimer?.cancel();
       final results = resultsSubscription;
       final scanning = scanningSubscription;
-      unawaited(
-        closeFlutterBluePlusScanResources(
+      return closeOnce.run(
+        () => closeFlutterBluePlusScanResources(
           cancelResults: results?.cancel,
           cancelScanning: scanning?.cancel,
           awaitPendingStart: waitForStartup
@@ -116,13 +119,8 @@ class FlutterBluePlusTransport
                 }
               : null,
           closeController: controller.close,
-        ).then<void>(
-          (_) => completer.complete(),
-          onError: (Object error, StackTrace stackTrace) =>
-              completer.completeError(error, stackTrace),
         ),
       );
-      return completer.future;
     }
 
     void closeStreamSafely({bool stopScan = true, bool waitForStartup = true}) {
@@ -197,21 +195,40 @@ class FlutterBluePlusTransport
         if (closed) {
           return;
         }
+        // No `timeout:` passed to the plugin here, on purpose. flutter_blue_plus
+        // races its own internal `Timer(timeout, stopScan)` against whatever
+        // stops this wrapper's stream (consumer cancel, error, or the
+        // `isScanning` listener below) — both paths call the plugin's public
+        // `stopScan()`, which serializes on a process-global mutex
+        // (`_MutexFactory.getMutexForKey("scan")`). If the plugin's own
+        // timer wins that race and its native stop invocation never returns
+        // (observed on macOS: see "M3" in the Yuwell Anytime 5P status
+        // notes), the loser blocks on that mutex forever — wedging every
+        // later scan/connect call in the process, since the mutex is never
+        // released. Owning the single bound timer here instead means exactly
+        // one code path (`closeStream`, already idempotent via `closeFuture`)
+        // ever calls the plugin's `stopScan()` for a given scan attempt.
         await fbp.FlutterBluePlus.startScan(
           withServices: (withServices ?? const <String>[])
               .map(fbp.Guid.new)
               .toList(growable: false),
-          timeout: timeout,
           continuousUpdates: true,
           oneByOne: true,
           androidUsesFineLocation: androidUsesFineLocation,
           androidCheckLocationServices: androidCheckLocationServices,
         );
         startedScan = true;
-        if (!closed && scanAttempt != null) {
-          tracker!._acknowledge(scanAttempt);
-        } else if (closed && fbp.FlutterBluePlus.isScanningNow) {
-          await fbp.FlutterBluePlus.stopScan();
+        if (closed) {
+          if (fbp.FlutterBluePlus.isScanningNow) {
+            await fbp.FlutterBluePlus.stopScan();
+          }
+        } else {
+          if (scanAttempt != null) {
+            tracker!._acknowledge(scanAttempt);
+          }
+          if (timeout != null) {
+            boundTimer = Timer(timeout, closeStreamSafely);
+          }
         }
       } catch (error, stackTrace) {
         if (!closed && !controller.isClosed) {
@@ -403,6 +420,29 @@ class FlutterBluePlusTransport
     final message = error.toString().toUpperCase();
     return message.contains('ANDROID_SPECIFIC_ERROR') ||
         message.contains('CONNECT') && message.contains('133');
+  }
+}
+
+/// Runs one teardown at most once; every caller — the first and any later
+/// concurrent or sequential one — awaits that same first outcome.
+///
+/// [FlutterBluePlusTransport.scan] keys one of these per scan attempt so a
+/// consumer cancelling its subscription, the wrapper's own bound timeout
+/// timer, an externally observed `isScanning` drop, and a startup error can
+/// all race to end the scan without [run] ever executing [teardown] twice.
+/// A second, concurrent call to the plugin's `stopScan()` for the same
+/// attempt can hang forever on this transport's process-wide scan mutex —
+/// see the comment above the `startScan` call in
+/// [FlutterBluePlusTransport.scan].
+@visibleForTesting
+final class SingleFlightTeardown {
+  Future<void>? _future;
+
+  /// True once [run] has been called at least once.
+  bool get started => _future != null;
+
+  Future<void> run(Future<void> Function() teardown) {
+    return _future ??= teardown();
   }
 }
 
