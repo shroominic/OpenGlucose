@@ -4,11 +4,10 @@ umask 077
 
 capture_script_dir=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)
 capture_root=$(CDPATH='' cd -P "$capture_script_dir/.." && pwd)
-capture_app_package=${CBIO_CAPTURE_APP_PACKAGE:-com.openglucose.app.debug}
+capture_app_package=${CBIO_CAPTURE_APP_PACKAGE:-com.openglucose.app.debug.owner}
 capture_app_version_code=29
 capture_app_version_name=0.4.0-debug
 capture_launch_activity=com.aidex.aidex_flutter.MainActivity
-capture_expected_installed_sha=70547d756cae308d45cd76739e93ad3727225175fdd2a8cf8a7862cc1859eb4a
 capture_expected_signer_sha=ad5e6dd01a944d2ea159d1bb1b1376de8a3962beaa95ddb0d7af513fe84ebcb5
 capture_device_id=${DEVICE_ID:-}
 capture_android_user=${ANDROID_USER_ID:-}
@@ -25,6 +24,9 @@ capture_die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+[ "$capture_app_package" != com.openglucose.app.debug ] ||
+  capture_die 'headless capture must not replace the normal debug package'
 
 capture_cleanup() {
   if [ -n "$capture_logcat_pid" ] && kill -0 "$capture_logcat_pid" 2>/dev/null; then
@@ -189,7 +191,6 @@ case "$capture_android_user" in
   *[!0-9]*|'') capture_die 'ANDROID_USER_ID must be a decimal integer' ;;
 esac
 case "$capture_android_user:$capture_app_package" in
-  10:com.openglucose.app.debug) capture_application_id_suffix=.debug ;;
   0:com.openglucose.app.debug.owner) capture_application_id_suffix=.debug.owner ;;
   *) capture_die 'capture package is not authorized for the selected Android user' ;;
 esac
@@ -366,54 +367,22 @@ capture_candidate_signer=$(printf '%s\n' "$capture_signature_report" |
 [ "$capture_candidate_signer" = "$capture_expected_signer_sha" ] ||
   capture_die 'standalone APK signer mismatch'
 
-if [ "$capture_app_package" = com.openglucose.app.debug.owner ]; then
-  capture_owner_global_packages=$(capture_adb_command shell -n pm list packages -u "$capture_app_package") ||
-    capture_die 'global Owner package absence check failed or timed out'
-  [ -z "$capture_owner_global_packages" ] ||
-    capture_die 'Owner package is already installed globally; first-install capture refused'
-  capture_owner_user_packages=$(capture_adb_command shell -n pm list packages --user 0 "$capture_app_package") ||
-    capture_die 'user-0 Owner package absence check failed or timed out'
-  [ -z "$capture_owner_user_packages" ] ||
-    capture_die 'Owner package is already installed for user 0; first-install capture refused'
-else
-  capture_installed_path_output=$(capture_adb_command shell -n pm path --user "$capture_android_user" "$capture_app_package") ||
-    capture_die 'installed package path preflight failed or timed out'
-  case "$capture_installed_path_output" in
-    package:/data/app/*/base.apk) capture_installed_apk=${capture_installed_path_output#package:} ;;
-    *) capture_die 'installed package path is invalid' ;;
-  esac
-  case "$capture_installed_apk" in
-    *[!A-Za-z0-9_./=+~-]*|*/../*|*/./*) capture_die 'installed package path is unsafe' ;;
-  esac
-  capture_installed_dump=$(capture_adb_command shell -n dumpsys package "$capture_app_package") ||
-    capture_die 'installed package version preflight failed or timed out'
-  capture_installed_version_code=$(printf '%s\n' "$capture_installed_dump" |
-    sed -n 's/^[[:space:]]*versionCode=\([0-9][0-9]*\).*/\1/p' | sort -u)
-  capture_installed_version_name=$(printf '%s\n' "$capture_installed_dump" |
-    sed -n 's/^[[:space:]]*versionName=\([^[:space:]]*\).*/\1/p' | sort -u)
-  [ "$capture_installed_version_code" = "$capture_app_version_code" ] ||
-    capture_die 'installed package versionCode mismatch'
-  [ "$capture_installed_version_name" = "$capture_app_version_name" ] ||
-    capture_die 'installed package versionName mismatch'
-  capture_installed_sha_output=$(capture_adb_command shell -n sha256sum "$capture_installed_apk") ||
-    capture_die 'installed package digest preflight failed or timed out'
-  capture_installed_sha=$(printf '%s\n' "$capture_installed_sha_output" | awk 'NR == 1 {print $1}')
-  [ "$capture_installed_sha" = "$capture_expected_installed_sha" ] ||
-    capture_die 'installed package digest no longer matches the accepted receipt'
-fi
+capture_owner_global_packages=$(capture_adb_command shell -n pm list packages -u "$capture_app_package") ||
+  capture_die 'global Owner package absence check failed or timed out'
+[ -z "$capture_owner_global_packages" ] ||
+  capture_die 'Owner package is already installed globally; first-install capture refused'
+capture_owner_user_packages=$(capture_adb_command shell -n pm list packages --user 0 "$capture_app_package") ||
+  capture_die 'user-0 Owner package absence check failed or timed out'
+[ -z "$capture_owner_user_packages" ] ||
+  capture_die 'Owner package is already installed for user 0; first-install capture refused'
 
 capture_validate_source
 [ "$(capture_sha256 "$capture_apk")" = "$capture_candidate_sha" ] ||
   capture_die 'standalone APK changed after preflight'
 capture_require_current_user
 capture_require_owner_unlocked
-if [ "$capture_app_package" = com.openglucose.app.debug.owner ]; then
-  capture_adb_command install --user 0 --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
-    capture_die 'single approved Owner package first-install failed or timed out'
-else
-  capture_adb_command install -r --user "$capture_android_user" --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
-    capture_die 'single approved package replacement failed or timed out'
-fi
+capture_adb_command install --user 0 --no-streaming "$capture_apk" >>"$capture_log" 2>&1 ||
+  capture_die 'single approved Owner package first-install failed or timed out'
 
 capture_deadline_remaining "$capture_prearmed_deadline_ms" >/dev/null ||
   capture_die 'build-to-ARMED deadline expired before logcat start'
