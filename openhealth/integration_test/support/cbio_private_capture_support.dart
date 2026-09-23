@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -314,6 +315,84 @@ final class CapturePromptTraceSink implements BleTraceSink {
       if (left[index] != right[index]) return false;
     }
     return true;
+  }
+}
+
+typedef CaptureDisconnectReasonCodeProvider = int? Function();
+
+final class CaptureDisconnectTraceSink implements BleTraceSink {
+  CaptureDisconnectTraceSink({
+    required BleTraceSink delegate,
+    required CaptureRunContext context,
+    required int processId,
+    required BleTraceMonotonicClock monotonicNow,
+    required CaptureDisconnectReasonCodeProvider disconnectReasonCode,
+  }) : _delegate = delegate,
+       _context = context,
+       _processId = processId,
+       _monotonicNow = monotonicNow,
+       _disconnectReasonCode = disconnectReasonCode;
+
+  final BleTraceSink _delegate;
+  final CaptureRunContext _context;
+  final int _processId;
+  final BleTraceMonotonicClock _monotonicNow;
+  final CaptureDisconnectReasonCodeProvider _disconnectReasonCode;
+
+  int? _teardownStartedMonotonicMicroseconds;
+  int? _lastNotificationSequence;
+  int? _lastNotificationMonotonicMicroseconds;
+
+  void markTeardownStarted() {
+    _teardownStartedMonotonicMicroseconds ??= _monotonicNow().inMicroseconds;
+  }
+
+  @override
+  FutureOr<void> append(BleTraceEvent event) {
+    if (event.type == BleTraceEventType.notificationData) {
+      _lastNotificationSequence = event.sequence;
+      _lastNotificationMonotonicMicroseconds =
+          event.monotonicElapsed.inMicroseconds;
+    }
+    if (event.type != BleTraceEventType.connectionState ||
+        event.data['state'] != 'disconnected') {
+      return _delegate.append(event);
+    }
+
+    int? reasonCode;
+    var reasonProviderSucceeded = false;
+    try {
+      reasonCode = _disconnectReasonCode();
+      reasonProviderSucceeded = true;
+    } on Object {
+      // Native reason sampling is diagnostic-only. Never suppress the
+      // original connection-state trace when the cached provider is absent.
+    }
+    return _delegate.append(
+      BleTraceEvent(
+        sequence: event.sequence,
+        correlationId: event.correlationId,
+        recordedAtUtc: event.recordedAtUtc,
+        monotonicElapsed: event.monotonicElapsed,
+        type: event.type,
+        operation: event.operation,
+        data: <String, Object?>{
+          ...event.data,
+          'disconnect_reason_code': reasonCode,
+          'disconnect_reason_provider_succeeded': reasonProviderSucceeded,
+          'disconnect_reason_platform': 'android',
+          'capture_run_id': _context.runId,
+          'source_revision': _context.sourceRevision,
+          'app_package': _context.appPackage,
+          'process_id': _processId,
+          'teardown_started_monotonic_microseconds':
+              _teardownStartedMonotonicMicroseconds,
+          'last_notification_sequence': _lastNotificationSequence,
+          'last_notification_monotonic_microseconds':
+              _lastNotificationMonotonicMicroseconds,
+        },
+      ),
+    );
   }
 }
 
