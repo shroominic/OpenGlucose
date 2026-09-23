@@ -23,6 +23,11 @@ fixture, redistribution asset, or physical-device compatibility result.
 - The CT5 calibration-code decoder is a clean-room expression of three strict
   fixed-width layouts and decimal field formulas. It does not require or embed
   the reference app's native library.
+- The internal CT5 selector-11 temperature-state research primitive reproduces
+  only the independently reviewed reachable clamp and binary32 recurrence. It
+  is not wired into the driver and does not implement sample admission,
+  effective-temperature selection, compensation, smoothing, quality, trend,
+  warnings, glucose, or support for another firmware branch.
 - The native algorithm's input, output, reset, and contiguous-index contract is
   documented, but its final stateful glucose mathematics is not implemented.
   This package must fail closed when no independently validated final-value
