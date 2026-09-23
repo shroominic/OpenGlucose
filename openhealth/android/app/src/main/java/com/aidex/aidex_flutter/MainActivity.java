@@ -8,7 +8,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 
-import io.flutter.embedding.android.FlutterActivity;
+import io.flutter.embedding.android.FlutterFragmentActivity;
 import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
@@ -16,7 +16,7 @@ import io.flutter.plugin.common.MethodChannel;
 import java.util.Collections;
 import java.util.Map;
 
-public final class MainActivity extends FlutterActivity {
+public final class MainActivity extends FlutterFragmentActivity {
   private static final String CHANNEL_NAME = "com.aidex.cgm/android_live_update";
   private static final String PROTOCOL_CAPTURE_METADATA =
       "com.openglucose.protocol_capture.available";
