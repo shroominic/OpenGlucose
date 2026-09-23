@@ -1,14 +1,12 @@
 import 'package:cgm_yuwell_anytime/cgm_yuwell_anytime.dart';
+import 'package:openglucose/src/v1140_pair_authority.dart';
+
+export 'package:openglucose/src/v1140_pair_authority.dart'
+    show V1140OneShotAuthorization;
 
 typedef V1140FrameExchange = Future<List<int>> Function(List<int> command);
 typedef V1140IdentityFactory = YuwellCommunicationIdentity Function();
 typedef V1140Clock = DateTime Function();
-
-// The explicit interface keeps consent consumption injectable at this seam.
-// ignore: one_member_abstracts
-abstract interface class V1140OneShotAuthorization {
-  Future<bool> consume({required String runNonce, required String storageKey});
-}
 
 final class V1140FreshSelectorSnapshot {
   V1140FreshSelectorSnapshot({
