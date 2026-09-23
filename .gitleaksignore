@@ -1,0 +1,14 @@
+# Reviewed gitleaks false positives.
+#
+# Each entry below was manually checked against the actual diff and
+# confirmed to contain no real credential, token, or secret material.
+# Do not add an entry here without doing that check first, and say why.
+
+# ct5.macos.selftest.v1 is a FlutterSecureStorage/Keychain *lookup key
+# name* (like a dictionary key), not a credential value. It labels a
+# throwaway self-test entry that _selfTestKeychain() in
+# openhealth/lib/yuwell_macos_debug_main.dart writes, reads back, and
+# deletes to confirm the macOS Keychain is reachable before a debug BLE
+# attempt. generic-api-key matched on the identifier name and the
+# dotted-version-like string shape, not on any secret content.
+164b1705bfab7c622088e526de2cfbb46cf485f3:openhealth/lib/yuwell_macos_debug_main.dart:generic-api-key:103

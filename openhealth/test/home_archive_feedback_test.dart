@@ -14,10 +14,218 @@ import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/ios_export_share.dart';
 import 'package:openglucose/src/sensor_archive.dart';
+import 'package:openglucose/src/persistence/cbio_private_state_adapter.dart';
 import 'package:openglucose/src/sensor_lifecycle_card.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  for (final mixed in [false, true]) {
+    testWidgets(
+      'private raw archives remain retained but absent from shared home and archive mixed=$mixed',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'openHealth.onboarding.completed': true,
+        });
+        final preferences = await SharedPreferences.getInstance();
+        const session = ArchivedSensorSession(
+          id: 'cbio-unreconciled:WyJjYmlvIiwic3ludGhldGljIl0',
+          historyKey: 'openHealth.history.v2.WyJjYmlvIiwic3ludGhldGljIl0',
+          storageKey: 'synthetic',
+          driverId: 'cbio',
+          deviceId: 'synthetic',
+          displayName: 'Private raw CBIO archive',
+          reason: SensorArchiveReason.disconnected,
+          readingCount: 0,
+          isUnreconciled: true,
+        );
+        final fixture = _archivedHistoryFixture();
+        final originalIndex = jsonEncode([
+          session.toJson(),
+          if (mixed) fixture.session.toJson(),
+        ]);
+        final store = _MemoryHealthStateStore({
+          if (mixed) ...fixture.values,
+          session.historyKey: '{unreadable private raw bytes',
+          'openHealth.sensorArchive': originalIndex,
+        });
+        // Same order as bootstrap: migrate privately before normal index load.
+        await CbioPrivateStateAdapter(store).migrateLegacyArchives();
+        final controller = CgmAppController(
+          preferences: preferences,
+          driver: _NoSensorDriver(),
+          healthStateStore: store,
+        );
+        await controller.initialize();
+        await tester.pumpWidget(
+          OpenGlucoseApp(
+            controller: controller,
+            healthExport: HealthExportController(
+              preferences: preferences,
+              writesAllowed: false,
+            )..initialize(),
+            preferences: preferences,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('History needs recovery'), findsNothing);
+        expect(
+          find.byKey(const ValueKey('historicalRecoverySummary')),
+          findsNothing,
+        );
+        expect(
+          find.text('Your glucose history'),
+          mixed ? findsOneWidget : findsNothing,
+        );
+        expect(controller.allHistoricalReadings.length, mixed ? 1 : 0);
+        expect(controller.archivedSensors.length, mixed ? 1 : 0);
+        await tester.tap(find.byTooltip('Settings'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Sensor archive'));
+        await tester.pumpAndSettle();
+        expect(find.text(session.displayName), findsNothing);
+        expect(
+          find.byKey(const ValueKey('archiveRecoveryNotice')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('exportArchivedSensorData')),
+          findsNothing,
+        );
+        if (mixed) {
+          expect(controller.archivedSensors.single.id, fixture.session.id);
+        }
+        expect(
+          store.getString(session.historyKey),
+          '{unreadable private raw bytes',
+        );
+        final manifest =
+            jsonDecode(
+                  store.getString(
+                    'openHealth.driverState.cbio.rawArchives.v1',
+                  )!,
+                )
+                as Map<String, dynamic>;
+        expect(manifest['archives'], [session.toJson()]);
+        expect(manifest['sourceIndexes'], [originalIndex]);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        controller.dispose();
+      },
+    );
+  }
+
+  testWidgets(
+    'home connects inline and offers model help after empty Bluetooth search',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({
+        'openHealth.onboarding.completed': true,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _NoSensorDriver();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        OpenGlucoseApp(
+          controller: controller,
+          healthExport: HealthExportController(
+            preferences: preferences,
+            writesAllowed: false,
+          )..initialize(),
+          preferences: preferences,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text("Can't find your sensor?"), findsNothing);
+      expect(find.text('FreeStyle Libre 2'), findsNothing);
+      expect(find.textContaining('NFC'), findsNothing);
+      expect(driver.scanCalls, 0);
+      await tester.tap(
+        find.byKey(const ValueKey<String>('connectSensorButton')),
+      );
+      await tester.pumpAndSettle();
+      expect(driver.scanCalls, 1);
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(find.text('OpenGlucose'), findsOneWidget);
+      expect(find.text("Can't find your sensor?"), findsOneWidget);
+      expect(find.text('FreeStyle Libre 2'), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('supportedModelCatalog')),
+        findsNothing,
+      );
+      expect(find.textContaining('NFC'), findsNothing);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('sensorHelpButton')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('sensorHelpButton')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Which sensor do you have?'), findsOneWidget);
+      expect(find.text('AiDEX / LinX'), findsOneWidget);
+      expect(find.textContaining('NFC'), findsNothing);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('chooseLibre2Help')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey<String>('chooseLibre2Help')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey<String>('libre2NfcGuide')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('NFC'), findsWidgets);
+      expect(find.byType(BottomSheet), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets('settings connection returns to inline home search', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _NoSensorDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+    );
+    await controller.initialize();
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Connect a sensor').last);
+    await tester.pumpAndSettle();
+    expect(driver.scanCalls, 1);
+    expect(
+      find.byKey(const ValueKey<String>('sensorConnectionScreen')),
+      findsOneWidget,
+    );
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('settingsOverview')),
+      findsNothing,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
   testWidgets(
     'home keeps only compact expiry while Current sensor owns lifecycle card',
     (tester) async {
@@ -42,10 +250,12 @@ void main() {
         ),
       );
       await tester.pump();
-      await tester.tap(find.text('Find my sensor'));
+      await _startNearbySensorScan(tester);
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('Connect'));
-      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(
+        find.byKey(const ValueKey<String>('connectButton-1')),
+      );
+      await _waitForSensorConnectionFlowToClose(tester);
 
       expect(find.byType(SensorLifecycleCard), findsNothing);
       expect(_compactExpiryText(), findsOneWidget);
@@ -375,6 +585,12 @@ void main() {
       expect(sharedFilePaths, hasLength(1));
       expect(File(sharedFilePaths.first).existsSync(), isFalse);
 
+      // The error SnackBar covers the export button once its entrance settles.
+      // Dismiss it through the supported downward gesture before retrying.
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(SnackBar), const Offset(0, 500));
+      await tester.pumpAndSettle();
+      expect(find.byType(SnackBar), findsNothing);
       await _confirmCsvArchiveExport(tester);
       await _pumpUntil(
         tester,
@@ -398,7 +614,7 @@ void main() {
   );
 
   testWidgets(
-    'sample data is offered after first-run onboarding with no history',
+    'sample data stays out of the home and is available from Settings',
     (tester) async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final preferences = await SharedPreferences.getInstance();
@@ -429,6 +645,24 @@ void main() {
 
       expect(controller.archivedSensors, isEmpty);
       expect(controller.allHistoricalReadings, isEmpty);
+      expect(
+        find.byKey(const ValueKey<String>('connectSensorButton')),
+        findsOneWidget,
+      );
+      expect(find.text('Nearby sensors'), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('findNearbySensorsButton')),
+        findsNothing,
+      );
+      expect(find.text('Explore sample data'), findsNothing);
+
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Explore sample data'),
+        250,
+        scrollable: find.byType(Scrollable).last,
+      );
       expect(find.text('Explore sample data'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
@@ -436,7 +670,7 @@ void main() {
     },
   );
 
-  testWidgets('sample data is hidden when archived glucose is retained', (
+  testWidgets('home keeps sample data secondary when archive is retained', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
@@ -467,6 +701,10 @@ void main() {
 
     expect(controller.archivedSensors, hasLength(1));
     expect(controller.allHistoricalReadings, isNotEmpty);
+    expect(
+      find.byKey(const ValueKey<String>('connectSensorButton')),
+      findsOneWidget,
+    );
     expect(find.text('Explore sample data'), findsNothing);
     expect(
       find.byKey(const ValueKey<String>('historicalOverviewCard')),
@@ -476,6 +714,40 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
   });
+}
+
+Future<void> _startNearbySensorScan(WidgetTester tester) async {
+  await tester.tap(
+    find.byKey(const ValueKey<String>('connectSensorButton')),
+  );
+  await tester.pump();
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('nearbyScanProgress'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
+}
+
+Future<void> _waitForSensorConnectionFlowToClose(WidgetTester tester) async {
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('sensorConnectionScreen'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
 }
 
 Finder _compactExpiryText() => find.byWidgetPredicate((widget) {
@@ -517,7 +789,10 @@ Future<void> _confirmCsvArchiveExport(WidgetTester tester) async {
 _archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
   final startedAt = DateTime(2026, 7, 1, 8);
   final endedAt = startedAt.add(const Duration(days: 15));
-  const historyKey = 'openHealth.history.archive.feedback-session';
+  final archiveId = base64Url
+      .encode(utf8.encode('aidex-test|aidex:feedback-archive|1'))
+      .replaceAll('=', '');
+  final historyKey = 'openHealth.history.archive.$archiveId';
   final readings = readingCount == null
       ? <CgmReading>[
           CgmReading(
@@ -545,7 +820,7 @@ _archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
           growable: false,
         );
   final session = ArchivedSensorSession(
-    id: 'feedback-session',
+    id: archiveId,
     historyKey: historyKey,
     storageKey: 'aidex:feedback-archive',
     driverId: 'aidex-test',
@@ -571,6 +846,7 @@ _archivedHistoryFixture({bool includePostWarmup = true, int? readingCount}) {
 }
 
 class _NoSensorDriver implements CgmDriver {
+  int scanCalls = 0;
   @override
   String get driverId => 'aidex-test';
 
@@ -578,7 +854,9 @@ class _NoSensorDriver implements CgmDriver {
   Stream<DiscoveredSensor> scan({
     Duration? timeout,
     bool allowDuplicates = true,
-  }) async* {}
+  }) async* {
+    scanCalls++;
+  }
 
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) {

@@ -5,6 +5,244 @@ import 'package:openglucose/src/session_presentation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'raw or provisional CBIO values never publish advertisement glucose',
+    () {
+      final now = DateTime.utc(2026, 9, 19, 12);
+      const sensor = DiscoveredSensor(
+        driverId: 'cbio',
+        deviceId: 'synthetic-cbio',
+        displayName: 'GS1',
+        storageKey: 'synthetic-cbio',
+        rssi: -40,
+        capabilities: CgmCapabilities(supportsDirectBle: true),
+      );
+      for (final reading in <CgmReading>[
+        CgmReading(
+          valueMgdl: 5.9,
+          source: CgmRecordSource.raw,
+          recordedAt: now,
+        ),
+        CgmReading(
+          valueMgdl: 5.9,
+          source: CgmRecordSource.vendor,
+          isDisplayProvisional: true,
+          recordedAt: now,
+        ),
+      ]) {
+        final snapshot = CgmSessionSnapshot(
+          stage: CgmSyncStage.ready,
+          statusText: 'Ready',
+          sensor: sensor,
+          capabilities: sensor.capabilities,
+          latestReading: reading,
+          history: [reading],
+          lastAdvertisement: const CgmAdvertisement(
+            payloadHex: '',
+            displayValueMgdl: 59,
+          ),
+        );
+        expect(
+          shouldPublishLiveActivity(
+            snapshot: snapshot,
+            latestReading: reading,
+            now: now,
+          ),
+          isFalse,
+        );
+        final payload = buildLiveActivityPayload(
+          snapshot: snapshot,
+          latestReading: reading,
+          preferences: const DisplayPreferences(),
+          now: now,
+        );
+        expect(payload.valueText, '--');
+        expect(
+          payload.unitText,
+          reading.isDisplayProvisional ? isEmpty : 'mg/dL',
+        );
+        expect(payload.trendSymbol, isEmpty);
+        expect(payload.deltaText, isEmpty);
+        expect(payload.recordedAtIso8601, isNull);
+      }
+    },
+  );
+
+  test('provisional readings never publish an unqualified live value', () {
+    final now = DateTime.utc(2026, 9, 6, 8);
+    const sensor = DiscoveredSensor(
+      driverId: 'libre2-gen1',
+      deviceId: 'synthetic-libre',
+      displayName: 'FreeStyle Libre 2',
+      storageKey: 'synthetic-libre',
+      rssi: -40,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    final reading = CgmReading(
+      valueMgdl: 123,
+      source: CgmRecordSource.vendor,
+      recordedAt: now,
+      isDisplayProvisional: true,
+    );
+    final snapshot = CgmSessionSnapshot(
+      stage: CgmSyncStage.ready,
+      statusText: 'Ready',
+      sensor: sensor,
+      capabilities: sensor.capabilities,
+      latestReading: reading,
+      history: [reading],
+    );
+    expect(
+      shouldPublishLiveActivity(
+        snapshot: snapshot,
+        latestReading: reading,
+        now: now,
+      ),
+      isFalse,
+    );
+    final payload = buildLiveActivityPayload(
+      snapshot: snapshot,
+      latestReading: reading,
+      preferences: const DisplayPreferences(),
+      now: now,
+    );
+    expect(payload.valueText, '--');
+    expect(payload.trendSymbol, isEmpty);
+    expect(payload.deltaText, isEmpty);
+    expect(payload.recordedAtIso8601, isNull);
+    expect(payload.detailText, contains('Experimental'));
+  });
+
+  test('Libre live payload never exposes cached glucose during setup', () {
+    final now = DateTime.utc(2026, 9, 5, 8);
+    const sensor = DiscoveredSensor(
+      driverId: 'libre2-gen1',
+      deviceId: 'synthetic-libre',
+      displayName: 'FreeStyle Libre 2',
+      storageKey: 'synthetic-libre',
+      rssi: -40,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    final reading = CgmReading(
+      valueMgdl: 123,
+      source: CgmRecordSource.standard,
+      recordedAt: now,
+    );
+    for (final entry in <(CgmSyncStage, String, String)>[
+      (
+        CgmSyncStage.connecting,
+        'awaitingAdvertisement',
+        'Looking for your Libre 2 sensor',
+      ),
+      (
+        CgmSyncStage.syncing,
+        'validatedPacket',
+        'Receiving sensor data. Glucose decoding is not ready.',
+      ),
+      (
+        CgmSyncStage.disconnected,
+        'validatedPacket',
+        'Sensor disconnected. Connect again to receive data.',
+      ),
+      (
+        CgmSyncStage.error,
+        'validatedPacket',
+        'Could not connect to your Libre 2 sensor. Keep it close and try again.',
+      ),
+    ]) {
+      final snapshot = CgmSessionSnapshot(
+        stage: entry.$1,
+        statusText: 'synthetic-private-status',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        latestReading: reading,
+        history: [reading],
+        lastAdvertisement: const CgmAdvertisement(
+          payloadHex: '',
+          displayValueMgdl: 222,
+        ),
+        metadata: {'cgm.libre2.phase': entry.$2},
+        lastError: entry.$1 == CgmSyncStage.error
+            ? 'libre2.connectionFailed'
+            : null,
+      );
+      final payload = buildLiveActivityPayload(
+        snapshot: snapshot,
+        latestReading: reading,
+        preferences: const DisplayPreferences(),
+        now: now,
+      );
+      expect(payload.valueText, '--');
+      expect(payload.lastReadingText, '--');
+      expect(payload.recordedAtIso8601, isNull);
+      expect(payload.stageCode, isNot('live'));
+      expect(payload.trendSymbol, '');
+      expect(payload.deltaText, '');
+      expect(payload.detailText, entry.$3);
+      expect(payload.toMap().toString(), isNot(contains('synthetic-private')));
+      expect(
+        shouldPublishLiveActivity(
+          snapshot: snapshot,
+          latestReading: reading,
+          now: now,
+        ),
+        isFalse,
+      );
+    }
+  });
+
+  test('Libre advertisement or raw samples never become current glucose', () {
+    final now = DateTime.utc(2026, 9, 5, 8);
+    const sensor = DiscoveredSensor(
+      driverId: 'libre2-gen1',
+      deviceId: 'synthetic-libre',
+      displayName: 'FreeStyle Libre 2',
+      storageKey: 'synthetic-libre',
+      rssi: -40,
+      capabilities: CgmCapabilities(supportsDirectBle: true),
+    );
+    for (final reading in <CgmReading?>[
+      null,
+      CgmReading(
+        valueMgdl: 123,
+        source: CgmRecordSource.raw,
+        recordedAt: now,
+      ),
+    ]) {
+      final snapshot = CgmSessionSnapshot(
+        stage: CgmSyncStage.ready,
+        statusText: 'synthetic-private-status',
+        sensor: sensor,
+        capabilities: sensor.capabilities,
+        latestReading: reading,
+        history: [if (reading != null) reading],
+        lastAdvertisement: const CgmAdvertisement(
+          payloadHex: '',
+          displayValueMgdl: 222,
+        ),
+      );
+      final payload = buildLiveActivityPayload(
+        snapshot: snapshot,
+        latestReading: reading,
+        preferences: const DisplayPreferences(),
+        now: now,
+      );
+      expect(payload.stageCode, 'progress');
+      expect(payload.stageLabel, 'Waiting');
+      expect(payload.valueText, '--');
+      expect(payload.recordedAtIso8601, isNull);
+      expect(payload.detailText, 'Waiting for a verified glucose reading.');
+      expect(
+        shouldPublishLiveActivity(
+          snapshot: snapshot,
+          latestReading: reading,
+          now: now,
+        ),
+        isFalse,
+      );
+    }
+  });
+
   test('toMap omits an unavailable reading timestamp', () {
     const payload = LiveActivityPayload(
       sensorName: 'Demo sensor',

@@ -171,6 +171,9 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
     final samples = <_ReadingSample>[];
     var fallbackMinute = 0;
     for (final reading in readings) {
+      if (reading.source == CgmRecordSource.raw) {
+        continue;
+      }
       final minute = reading.sensorMinute ?? fallbackMinute;
       fallbackMinute = minute + 1;
       samples.add(

@@ -72,6 +72,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get exploreSampleData => 'Explore sample data';
 
   @override
+  String get previewSampleDataSubtitle =>
+      'Preview OpenGlucose without connecting a sensor';
+
+  @override
   String get sampleDataNotSensor => 'Sample data — not from a sensor';
 
   @override
@@ -267,28 +271,28 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get howItWorksBody =>
-      'Apply your Aidex X sensor, pair it over Bluetooth, and let it warm up. After that, readings stream straight to your phone.';
+      'Choose a sensor model, check its support status, and follow the setup steps available in this build. Connected supported sensors use the same OpenGlucose dashboard.';
 
   @override
-  String get applySensorTitle => 'Apply the sensor';
+  String get chooseModelTitle => 'Choose your model';
 
   @override
-  String get applySensorBody =>
-      'A small all-in-one sensor you wear for up to 15 days.';
+  String get chooseModelBody =>
+      'See which sensor models this build can connect.';
 
   @override
-  String get warmupTitle => 'About 1 hour warm-up';
+  String get followSetupTitle => 'Follow its setup';
 
   @override
-  String get warmupBody =>
-      'The sensor calibrates itself before the first reading.';
+  String get followSetupBody =>
+      'Connection and warm-up steps depend on the sensor model.';
 
   @override
-  String get readingEveryMinuteTitle => 'A reading every minute';
+  String get seeTrendsTitle => 'See your trends';
 
   @override
-  String get readingEveryMinuteBody =>
-      'Live values and trends, refreshed continuously.';
+  String get seeTrendsBody =>
+      'Supported sensors use the same OpenGlucose dashboard.';
 
   @override
   String get targetRangeTitle => 'Set your target range';
@@ -306,24 +310,24 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get readyBody =>
-      'Have your Aidex X sensor on and nearby. We’ll scan for it over Bluetooth and connect — then your live dashboard takes over.';
+      'Next, select Connect a sensor to choose a model. OpenGlucose will show its support status and the setup method available in this build.';
 
   @override
-  String get turnOnBluetoothTitle => 'Turn on Bluetooth';
+  String get checkModelSupportTitle => 'Check model support';
 
   @override
-  String get turnOnBluetoothBody =>
-      'Keep your phone close to the sensor while it pairs.';
+  String get checkModelSupportBody =>
+      'Availability is shown before any connection starts.';
 
   @override
-  String get watchItComeAliveTitle => 'Watch it come alive';
+  String get guidedStepsTitle => 'Use the guided steps';
 
   @override
-  String get watchItComeAliveBody =>
-      'Trends and readings appear as soon as warm-up finishes.';
+  String get guidedStepsBody =>
+      'Requirements can differ between sensor models.';
 
   @override
-  String get connectMySensor => 'Connect my sensor';
+  String get finishSetup => 'Finish setup';
 
   @override
   String get lifeRemainingUnavailable => 'Life remaining unavailable';
@@ -542,8 +546,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get noActiveSensor => 'No active sensor';
 
   @override
-  String get previousDataStaysOnThisPhone =>
-      'Your previous data stays on this phone.';
+  String get previousDataStaysOnThisDevice =>
+      'Your previous data stays on this device.';
 
   @override
   String get inactiveSensorExpired =>

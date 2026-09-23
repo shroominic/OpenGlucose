@@ -1,0 +1,111 @@
+# CBIO release readiness implementation plan
+
+> **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans for implementation and independent review. The latest user direction below overrides historical raw-UI tasks and visual acceptance.
+
+> Use test-driven development and independent task review. Retain the single feature/cbio-gs1 branch and PR #209. Do not merge or publish release artifacts.
+
+**Goal:** Deliver verified GS1 data through the unchanged existing AiDEX/Libre2 multi-sensor UI.
+
+**Architecture:** Correct the driver/private data adapter boundary so raw protocol archives never masquerade as normalized public readings. Restore only CBIO-induced UI hunks from the current reconciled source, preserving Libre2/Anytime and main-derived localization/export changes. Verified decoding remains necessary for completion.
+
+**Tech Stack:** Flutter/Dart, existing cgm_core/cgm_ble contracts, isolated worktrees, repository-pinned native build tools.
+
+**Spec:** [Unchanged shared UI and source-bound restoration map](../specs/2026-09-19-cbio-shared-ui-restoration.md).
+
+## Active user-directed restoration work
+
+This section supersedes the historical raw-screen/support-reference/recovery-UI
+work and its screenshot approvals. Audit baseline is published `ac016e3`;
+pre-CBIO sensor line is `02140e7` (parent `821f9a3`), combined with retained
+main-derived behavior from `5b3a78e`. Do not reset whole files to either tip.
+
+Root approved the exact private-store/app-hook signatures now recorded in the
+spec's "Accepted ownership and interfaces" section. The host owner may begin
+staged RED-to-GREEN boundary implementation; production UI restoration follows
+independent boundary proof. All public reading fields, including `rawHistory`,
+must remain normalized-only. This authorization does not waive the unresolved
+decoder, restart-witness investigation or physical release-evidence gates.
+
+- [x] Verify canonical/PR identity and map the dual baseline without modifying user code.
+- [x] Inventory CBIO-only production UI, localization, messaging and health-surface branches; record retained host/persistence responsibilities in the linked spec.
+- [ ] Review the host owner's exact file/interface plan before implementation. Root approved existing raw-v1 envelopes unchanged, private manifest `openHealth.driverState.cbio.rawArchives.v1` in the restricted store, and normalized route `openHealth.history.normalized.v1.<canonical encoded driver+sensor binding>`. Persist the private descriptor before normal archive-index update; preserve old blobs/lists and test idempotent interruption/failure. No general framework/core redesign or data clearing.
+- [ ] Pin optional app-only prepare-target/flush-private-state/history-namespace hook signatures with no-op defaults. Test prepare failure retaining old session, durable flush failure blocking new identity, successful retry, canceled/superseded handoff, no cross-driver namespace collisions and no raw fallback. Preserve prepare → durable old flush → identity commit ordering and AiDEX default behavior.
+- [ ] RED: feed actual driver raw acquisition and legacy restores through the host; assert no normalized latest/history or glucose-side consumers, unchanged raw durable state and all existing witness/terminal guards.
+- [ ] Implement the smallest private driver/data boundary satisfying those tests. This safe interim empty normalized output is not sensor feature completion; decoding remains open.
+- [ ] RED: assert shared production screens have no CBIO raw/support/history/recovery UI, while normalized-equivalent AiDEX/Libre2/GS1 fixtures use existing components and retain multi-sensor setup behavior.
+- [ ] Restore only the mapped CBIO UI hunks and remove unused CBIO presentation/localization helpers. Preserve unrelated main/Libre2/Anytime/user changes; temporary private diagnostics must not become permanent production UI.
+- [ ] Run focused regression tests, full app and affected package tests, formatting/analyzers, secret/vendor-material scans and affected native builds. Use existing Make targets; failures remain gates.
+- [ ] Capture and inspect Playwright screenshots of English/Chinese shared UI at narrow/phone widths, both units and normal/error/empty/stale states. Iterate until the existing design is restored, not redesigned.
+- [ ] Independently review the exact driver/host/UI restoration, update PR #209 with source-bound evidence, and request the separately gated private phone demonstration without erasing data.
+- [ ] Complete verified decoder/model/lifecycle work and real-sensor live/history/restart/reconnect/screen-off proof before claiming GS1 release readiness. Unchanged UI alone does not close these requirements.
+
+## Objective and acceptance
+
+Deliver production GS1 support through the unchanged existing AiDEX/Libre2 multi-sensor UI, with evidence-backed normalized glucose decoding and units, accurate lifecycle, durable history, reliable live/reconnect behavior, reproducible release artifacts, and real-phone verification. No GS1-specific raw labels/screens/support references/history widgets belong in production. Neither a raw-data-only screen nor an empty-reading substitute satisfies the completed sensor objective.
+
+Risk: R2 for protocol/reliability/data work; R3 approval required for activation, destructive commands, signing or changes to distribution of vendor material. Accountable product owner: @shroominic.
+
+## Global constraints
+
+- Preserve all sensor/user data and unrelated work. No reset, unbind, activation, calibration, firmware or phone-profile changes.
+- Do not claim that raw / 10 is mg/dL or mmol/L without independent evidence. Preserve raw data and do not retrospectively relabel persisted samples.
+- Preserve the existing AiDEX/Libre2 multi-sensor presentation and normalized contracts. Keep sensor-specific protocol/composition/private data migration behind that boundary, not as vendor conditionals in production UI. Do not disguise incomplete data as production glucose.
+- Synthetic fixtures only. No credentials, health records, private reference code or identifiers in tracked artifacts.
+- SDK: repository-pinned `.toolchains/flutter/bin`. Tests, analysis and formatting run in the dedicated worktree. Use apply_patch for edits.
+- Independent review plus focused RED/GREEN evidence are required for each code task. Final make check, native builds and phone proof remain release gates.
+
+## Task 1: Close session I/O failure and serialization defects
+
+Files: packages/cgm_cbio/lib/src/cbio_glucose_session.dart; packages/cgm_cbio/test/cbio_glucose_session_test.dart; packages/cgm_cbio/CHANGELOG.md.
+
+- [x] Read the existing fake BLE boundaries and the session state machine. Run the existing package tests as baseline.
+- [x] Add failing tests demonstrating that the serial characteristic must use its discovered service UUID (including an iOS-style opaque device ID), rather than a fabricated empty service UUID. Assert the actual characteristic reference used at the BLE boundary.
+- [x] Resolve the serial from discovered services; retain existing correctly validated MAC fallback when no usable serial exists. No new wire commands.
+- [x] Add failing tests for initial history-write and live-write failures. A failure must publish a structured terminal failure, cease live timers and settle pending callers; it must not later emit ready from an idle/deadline callback.
+- [x] Test topology/auth/write terminal errors releasing the established GATT connection and preserving the failure snapshot. Cleanup errors are caught without replacing the closed failure code; dedicated throwing-cleanup tests remain a verification follow-up.
+- [x] Add failing tests for overlapping refresh/history requests and disconnect during an outstanding read. Ensure every caller settles and queries are single-flight/serialized; do not overwrite a pending completer or allow timers to resurrect a closed/error session.
+- [x] Implement the smallest fixes satisfying those tests. Keep the current read-budget policy unchanged in this task; it is a subsequent release defect, not waived.
+- [x] Run package tests, dart analyze --fatal-infos, and format-check. Update package changelog, self-review and commit only owned files.
+
+Task review must separately verdict requirement compliance and code quality. Report the base/head, RED failures, GREEN results, modified files and remaining concerns.
+
+## Remaining release work (not waived or declared complete)
+
+1. Trace the reference payload/processed/native algorithm and lifecycle evidence; implement verified normalized glucose and model admission only when source and target evidence justify them.
+2. Restore the unchanged shared UI after isolating raw data from the normalized contract; remove CBIO-specific production presentation. Keep all raw-unit safety and durable-data guarantees at the driver/private data boundary. Test both unit preferences, raw/provisional/mixed/archived data and shared-screen screenshots.
+3. Persist history epoch/counter and clock provenance across process restarts with migrations and interruption tests; prevent old/new sensor eras merging.
+4. Replace the finite production polling halt with bounded recoverable operation and verify overnight/screen-off freshness, drop/reconnect, restart and history completion.
+5. Establish evidence-backed warmup/activation/expiry/model behavior, without deriving activation from first observation.
+6. Resolve source policy versus artifact-embedded vendor material, malformed configuration checks, signing provenance and reproducible builds. Do not silently redesign provisioning or assert runtime injection.
+7. Update contradictory compatibility/release docs and PR claims; retain Libre2 ancestry. Run independent full review, complete native/check matrix and real-phone release-artifact demonstration without clearing app data.
+
+## Progress ledger
+
+Historical entries below record what was implemented and tested at their named commits, not approval to retain the superseded GS1-specific raw UI. Current restoration scope and acceptance are the active section and linked spec above; current runtime/source evidence remains in the ignored coordination ledger.
+
+- Latest reviewed code head: `4510b739f924c0495cbc7424dc78592759f54394`. Fixture integration `7f0e8f5` was independently reviewed and integrated as `4510b73`; seven focused suites passed 130 tests, fatal-info analysis and seven-file formatting passed. Real producer/fake-BLE tests cover fresh acquisition, atomic save, recreated controller, held pending witness, exact confirmed proof and mismatched-era preservation. Controlled UI fixtures now supply documented synthetic witnesses without relaxing any production gate; malformed-quality presentation/export coverage remains.
+- Latest complete `make check` invocation (session 75795, unchanged code `4510b73`) is **partial, not green**. Passed: tooling/contracts, vendor canary/tree guard, all nine format/analyzer lanes, package unit tests (core 123; BLE 17; BLE-Flutter 27; AiDEX 82; CBIO 196 plus 2 real-material skips; Libre2 175; Libre glucose 33; Anytime 105), app unit/widget 599, host integration 1, Android debug APK, web build and Android missing-signing-credentials guard. Device-backed integration was explicitly deferred, not passed. The invocation exited 2 at `build-ios` because CocoaPods was unavailable; Xcode was also not discovered and xcode-select selected CommandLineTools. Required pins are Xcode 26.6 / CocoaPods 1.16.2; no Apple toolchain installation was attempted. iOS/macOS builds and native tests remain unverified.
+- Environment recovery, not source changes: session 44456 selected an incomplete Homebrew Android SDK; the existing `/Users/fungus/dev/.cbio-android-sdk` has the required NDK and was reused without license acceptance. Session 86333 then exhausted disk at Android packaging. Root approved removal of only six verified, inactive GS1 `build/app/intermediates` directories, preserving every final output, signer, source and capture; free space rose from 59 MiB to 6.4 GiB. The subsequent session 75795 passed Android packaging. Logs are retained locally as `/tmp/cbio-check-4510b73-after-cleanup-part{1,2,3}.log`.
+- Current-head visual gate passed: 14 screenshots cover English/Chinese, both unit preferences, stale state, current-sensor details and recovery home/list/detail. The product coordinator independently inspected representative states. This is synthetic UI proof, not radio or calibrated glucose proof. Android private build 32 preparation is a separate authorized lane; no installation is implied by these checks.
+- Publication preparation only: live PR #209 remains OPEN at `7e58f862ce44c1049cca428ed76b5d26bbd742bb`; it is an ancestor of the reviewed code head. Both repository secret and vendor-material rules scanned the 21-commit code update with no findings. The local replacement PR body states WIP and corrects the old calibrated-glucose, sole-reference-dependency and runtime-material claims. No push or PR edit is authorized until the product coordinator confirms the final commands.
+- Current integration checkpoint, superseding the historical pending-host entries below: source HEAD `9b0d8c9`. Reviewed host persistence `9c83632` and cross-driver fix `dafecc5` are integrated as `c7fe61f` and `b60d805`; recovery home summary `ddabf5c` and preview `0df6b81` are integrated as `dce71a0` and `6905e1f`. English/Chinese recovery home, list and detail visuals were independently reviewed. Factual raw-support and configured-artifact policy corrections are integrated as `9b0d8c9`; artifact distribution approval is still open.
+- Combined `make check` at `9b0d8c9` (terminal session 49983) exited 2 at app `test-unit`: **582 passed, 14 failed**. Tooling/workflow/Libre harness contracts, vendor-material guard, formatting, fatal-info analysis and preceding package tests completed; integration/native/build stages were not reached. The first attempt (session 79776) failed because inherited `C.UTF-8` is unsupported by macOS Perl; the unchanged-source rerun used verified `en_US.UTF-8` and explicit Java 17.
+- Independent focused rerun (session 53854) reproduced all 14 failures with 16 passes across `cbio_app_surface_test.dart` (9), `cbio_clock_anchor_surface_test.dart` (2), `cbio_timestamp_guard_test.dart` (1) and `session_sync_failure_test.dart` (2). Exact assertion output is retained locally at `/tmp/cbio-integration-9b0d8c9-focused-red.log`. Old controlled snapshots lack the newly required proof/checkpoint contract. The host owner must trace real fresh/resumed `CbioGlucoseSession` output into the controller and add real-session/fake-BLE coverage before repairing synthetic fixtures; do not relax admission gates or erase negative old-producer tests. Preview fixtures must follow the same valid contract.
+- Build 32 remains held pending independently reviewed integration fixes and a clean combined rerun. Lifecycle work is paused at design review; public `cgm_core` compatibility must be resolved before changing field nullability. No push, release, main merge or combined-build installation has been performed by the integration owner.
+- Original base: `7e58f862ce44c1049cca428ed76b5d26bbd742bb`.
+- Task 1 implementation `4cca7d1`, independent-review timer fix `c219345`, and nine-case terminal callback regression matrix `b0fc74b` are on the single feature branch. Mutation RED reproduced four history-resurrection and two catch-up-emission failures; restored guards passed all nine cases. Explicit-close cases remain independently protected by closed-session helpers. See `docs/superpowers/task-1-report.md`.
+- Reviewed containment `31097a9` was cherry-picked as `9b46082`: raw integer display, unit-free notice, no CBIO glucose chart, blank raw glucose export cells, and CBIO identity gates for wellness/HealthKit/live surfaces. This is interim containment, not calibrated sensor completion.
+- Reviewed UI polish `78b607f` was cherry-picked without conflict as `d5075a7`: shared compact dashboard layout, one raw-value notice, neutral Connected/Disconnected labels, explicit freshness, hidden unsupported lifecycle/expiry, and range/clock/history details under Current sensor. English/Chinese wording and unchanged AiDEX paths were independently inspected. Fresh canonical checks: four app suites (`cbio_app_surface`, `cbio_clock_anchor_surface`, `cbio_timestamp_guard`, `session_presentation`) passed 72 tests; six touched Dart files passed format check; app analysis passed. This integrates source only; the separate UI lane owns its isolated build/device evidence.
+- Producer `51b7b7b` was independently reviewed and integrated as `5f3a650`; exact input-checkpoint proof is emitted only after witness confirmation, never copied from caller metadata. Its reviewer reran the session/checkpoint suites (74 passed) and fatal-info analysis. Independently reviewed polling worker `9b650346026187f33c714c14f004f552395f1bec` was then integrated as `7057f68` without conflict. It removes the production lifetime cap while preserving an explicit nullable bench cap, coalesces paced reads, preserves earliest catch-up cursors, and settles callers at terminal boundaries. Fresh canonical package evidence at `7057f68`: 196 passed, two real-material skips, clean fatal-info analysis and 30-file format check. RED covered cap/pacing/coalescing/late-write/paused-status defects; synthetic 1001-tick runs cover empty and growing archives. No radio or sustained phone behavior is proved by those tests. Host app persistence remains unintegrated pending fixes and final independent review; do not deploy the combined branch yet.
+- Reviewed package checkpoint `a442826` and review fixes `832d206` were cherry-picked as `8447528` and `a597034`: versioned sensor-bound witness, fail-closed counter reconciliation, explicit anchor provenance, retained validated checkpoint on disconnect. **Host atomic checkpoint/archive persistence and legacy-era separation are not implemented by these commits. Do not deploy this combined build until that integration is reviewed.**
+- Combined code verification head: `a5970344bd7580d354cd035012e950a753f4c92a`. Cherry-picks had no conflicts. Both the terminal-callback matrix and checkpoint tests survived the automatic test-file merge. No push, main merge, release, or combined-build phone install performed.
+- Fresh package checks at that head: `dart format --output=none --set-exit-if-changed lib test` (30 files, no changes), `dart analyze --fatal-infos` (no issues), `dart test --reporter expanded` (182 passed, two existing real-material-injection skips).
+- Fresh app checks: `dart format --output=none --set-exit-if-changed lib test` (123 files, no changes), `flutter analyze --no-pub` (no issues). `flutter test --no-pub --reporter expanded` over the twelve files listed below passed 192 tests. Commands used the pinned SDK from each package/app directory.
+- App test files: `cbio_app_surface_test.dart`, `dashboard_chart_test.dart`, `live_activity_payload_test.dart`, `sensor_archive_export_test.dart`, `session_presentation_test.dart`, `healthkit_export_test.dart`, `cbio_timestamp_guard_test.dart`, `cbio_clock_anchor_surface_test.dart`, `cbio_live_freshness_test.dart`, `app_controller_persistence_test.dart`, `expired_sensor_archive_test.dart`, and `home_archive_feedback_test.dart` (all under `openhealth/test/`). These existing host tests do not prove new CBIO atomic checkpoint integration.
+- Remaining release gates are unchanged in scope: verified calibrated decoder and exact model admission; sensor-derived typed lifecycle; host atomic persistence/migration/interruption behavior; sustained polling beyond the current 480-read cap; vendor-material artifact distribution/provisioning policy; full workspace/native artifact checks; and real-phone live/history/reconnect/restart/screen-off release proof. Source review and synthetic checks do not replace these gates.
+- Integration ownership: the isolated host-persistence lane may add only a closed resume-status signal and exact confirmed input-checkpoint binding to `cbio_glucose_session.dart`, emitted after witness reconciliation. Polling work must remain read-only/design-only until that producer commit is available, then rebase on it. Do not overlap edits or bypass the confirmed-witness host gate. The separate UI lane owns visual/device follow-ups; canonical integration does not install its combined artifact.
+- Ruling: fix deterministic reliability defects while investigating decoding in parallel. No sensor commands or unit promotion are authorized by passing tests. Cost if wrong: follow-up adaptation to the independently established protocol, not a shipped incorrect glucose claim.
+- Current host review: `9c83632` remains unintegrated. Independent four-suite rerun passed 125 tests, but a P2 selected-CBIO/foreign-driver snapshot bypass was found; the owner is adding a focused fix that also prevents rejected activation/expiry side effects. Earlier flush-failure, corrupt-target handoff, malformed legacy archive opening, and counter-era archive collisions have regression-backed source fixes. Final host source and archive recovery visuals must be reviewed before integration.
+- Coordination ledger: `.superpowers/sdd/2026-09-19-cbio-release-readiness/progress.md` links completed commits and active owners; this tracked plan remains the authoritative recovery map. Queue post-integration corrections to `docs/compatibility.md` and `docs/dependencies.md`: existing offline-only/no-registration and committed-vendor-constant claims are stale, but their replacement must not imply verified glucose or release completion.
+- Ancestry check at `0c56123`: Libre2/Anytime multi-sensor base `821f9a3` and `origin/feature/libre-protocol-capture` are ancestors. The separate local remote-tracking `origin/codex/libre-readiness` tip is not; no `feature/libre2` ref exists locally. Do not silently merge that unrelated tip or claim its newer work is included.
+- Evidence report: `docs/superpowers/cbio-offset4-evidence-report.md` confirms offset 4 is raw algorithm input and activation state is unresolved; this blocks any raw `/10` promotion and corrects the stale “not activated” hypothesis.
