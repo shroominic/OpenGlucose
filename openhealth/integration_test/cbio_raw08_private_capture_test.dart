@@ -8,6 +8,7 @@ import 'package:cgm_cbio/cgm_cbio.dart';
 import 'package:cgm_core/cgm_core.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/widgets.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:openglucose/src/local_ble_trace_sink.dart';
@@ -81,6 +82,7 @@ Future<void> _runCapture() async {
     root: captureRoot,
     runId: _context.runId,
   );
+  final stopwatch = Stopwatch();
   final traceSink = LocalBleTraceSink(
     directoryProvider: () async => Directory('${runDirectory.path}/trace'),
     sessionToken: 'gs1-${_context.runId}',
@@ -90,9 +92,20 @@ Future<void> _runCapture() async {
     runId: _context.runId,
     expectedPrompt: credentials.authenticationTrigger,
   );
+  final disconnectDevice = fbp.BluetoothDevice.fromId(
+    _context.targetDeviceId,
+  );
+  final disconnectSink = CaptureDisconnectTraceSink(
+    delegate: promptSink,
+    context: _context,
+    processId: pid,
+    monotonicNow: () => stopwatch.elapsed,
+    disconnectReasonCode: () => disconnectDevice.disconnectReason?.code,
+  );
   final recording = RecordingBleTransport(
     delegate: const FlutterBluePlusTransport(),
-    sink: promptSink,
+    sink: disconnectSink,
+    monotonicNow: () => stopwatch.elapsed,
   );
   final exactTransport = ExactCaptureTransport(
     delegate: recording,
@@ -127,7 +140,7 @@ Future<void> _runCapture() async {
   _emit('CBIO-CAPTURE-ARMED run=${_context.runId} start=start.json');
   await _waitForStart(handshake);
 
-  final stopwatch = Stopwatch()..start();
+  stopwatch.start();
   _emit('CBIO-CAPTURE-STARTED run=${_context.runId}');
 
   CgmSession? session;
@@ -174,6 +187,7 @@ Future<void> _runCapture() async {
   } finally {
     if (session != null) {
       try {
+        disconnectSink.markTeardownStarted();
         await session.disconnect().timeout(
           _bounded(stopwatch, _teardownBudget),
         );

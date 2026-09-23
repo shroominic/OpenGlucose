@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -284,6 +285,277 @@ void main() {
     expect(delegate.events, hasLength(2));
   });
 
+  test(
+    'disconnect observer preserves event order and adds only closed context',
+    () async {
+      final delegate = _OrderedTraceSink();
+      final context = CaptureRunContext.fromValues(
+        _contextValues()
+          ..['CBIO_CAPTURE_APP_PACKAGE'] = 'com.openglucose.app.debug.owner',
+      );
+      var monotonicNow = const Duration(microseconds: 500);
+      final observer = CaptureDisconnectTraceSink(
+        delegate: delegate,
+        context: context,
+        processId: 4242,
+        monotonicNow: () => monotonicNow,
+        disconnectReasonCode: () {
+          delegate.order.add('provider');
+          return 19;
+        },
+      );
+      final connected = _traceEvent(
+        sequence: 10,
+        monotonicMicroseconds: 100,
+        type: BleTraceEventType.connectionState,
+        operation: BleTraceOperation.connectionState,
+        data: const <String, Object?>{
+          'device_id': 'AA:BB:CC:DD:EE:FF',
+          'state': 'connected',
+        },
+      );
+      final notification = _traceEvent(
+        sequence: 11,
+        monotonicMicroseconds: 200,
+        type: BleTraceEventType.notificationData,
+        operation: BleTraceOperation.notifications,
+        data: const <String, Object?>{
+          'device_id': 'AA:BB:CC:DD:EE:FF',
+          'bytes': <int>[1, 2, 3],
+        },
+      );
+      final disconnected = _traceEvent(
+        sequence: 12,
+        monotonicMicroseconds: 300,
+        type: BleTraceEventType.connectionState,
+        operation: BleTraceOperation.connectionState,
+        data: const <String, Object?>{
+          'device_id': 'AA:BB:CC:DD:EE:FF',
+          'state': 'disconnected',
+          'existing': true,
+        },
+      );
+
+      await observer.append(connected);
+      await observer.append(notification);
+      monotonicNow = const Duration(microseconds: 600);
+      await observer.append(disconnected);
+
+      expect(delegate.order, <String>[
+        'delegate:10',
+        'delegate:11',
+        'provider',
+        'delegate:12',
+      ]);
+      expect(delegate.events.map((event) => event.sequence), <int>[10, 11, 12]);
+      expect(delegate.events[0], same(connected));
+      expect(delegate.events[1], same(notification));
+      final enriched = delegate.events[2];
+      expect(enriched.sequence, disconnected.sequence);
+      expect(enriched.correlationId, disconnected.correlationId);
+      expect(enriched.recordedAtUtc, disconnected.recordedAtUtc);
+      expect(enriched.monotonicElapsed, disconnected.monotonicElapsed);
+      expect(enriched.type, disconnected.type);
+      expect(enriched.operation, disconnected.operation);
+      expect(enriched.data, <String, Object?>{
+        'device_id': 'AA:BB:CC:DD:EE:FF',
+        'state': 'disconnected',
+        'existing': true,
+        'disconnect_reason_code': 19,
+        'disconnect_reason_provider_succeeded': true,
+        'disconnect_reason_platform': 'android',
+        'capture_run_id': _runId,
+        'source_revision': 'd' * 40,
+        'app_package': 'com.openglucose.app.debug.owner',
+        'process_id': 4242,
+        'teardown_started_monotonic_microseconds': null,
+        'last_notification_sequence': 11,
+        'last_notification_monotonic_microseconds': 200,
+      });
+    },
+  );
+
+  test(
+    'disconnect observer samples before an asynchronous delegate settles',
+    () async {
+      final delegate = _PendingTraceSink();
+      final observer = CaptureDisconnectTraceSink(
+        delegate: delegate,
+        context: CaptureRunContext.fromValues(_contextValues()),
+        processId: 7,
+        monotonicNow: () => const Duration(microseconds: 300),
+        disconnectReasonCode: () {
+          delegate.order.add('provider');
+          return 19;
+        },
+      );
+      final notification = _traceEvent(
+        sequence: 1,
+        monotonicMicroseconds: 100,
+        type: BleTraceEventType.notificationData,
+        operation: BleTraceOperation.notifications,
+        data: const <String, Object?>{
+          'bytes': <int>[1, 2, 3],
+        },
+      );
+      final disconnected = _traceEvent(
+        sequence: 2,
+        monotonicMicroseconds: 200,
+        type: BleTraceEventType.connectionState,
+        operation: BleTraceOperation.connectionState,
+        data: const <String, Object?>{'state': 'disconnected'},
+      );
+
+      final firstAppend = observer.append(notification);
+      final secondAppend = observer.append(disconnected);
+
+      expect(delegate.order, <String>['delegate:1', 'provider', 'delegate:2']);
+      expect(delegate.events, hasLength(2));
+      expect(delegate.events.first, same(notification));
+      expect(delegate.events.last.data['last_notification_sequence'], 1);
+      expect(
+        delegate.events.last.data['last_notification_monotonic_microseconds'],
+        100,
+      );
+      expect(
+        delegate.events.last.data['disconnect_reason_provider_succeeded'],
+        isTrue,
+      );
+      expect(firstAppend, same(delegate.gate.future));
+      expect(secondAppend, same(delegate.gate.future));
+      delegate.gate.complete();
+      await firstAppend;
+      await secondAppend;
+    },
+  );
+
+  test('disconnect observer records numeric and null cached codes', () async {
+    for (final code in <int?>[8, 19, 22, 133, 147, null]) {
+      final delegate = _CollectingTraceSink();
+      final observer = CaptureDisconnectTraceSink(
+        delegate: delegate,
+        context: CaptureRunContext.fromValues(_contextValues()),
+        processId: 7,
+        monotonicNow: () => Duration.zero,
+        disconnectReasonCode: () => code,
+      );
+
+      await observer.append(
+        _traceEvent(
+          sequence: 1,
+          monotonicMicroseconds: 1,
+          type: BleTraceEventType.connectionState,
+          operation: BleTraceOperation.connectionState,
+          data: const <String, Object?>{'state': 'disconnected'},
+        ),
+      );
+
+      expect(
+        delegate.events.single.data['disconnect_reason_code'],
+        code,
+        reason: 'code $code',
+      );
+      expect(
+        delegate.events.single.data['disconnect_reason_provider_succeeded'],
+        isTrue,
+        reason: 'code $code',
+      );
+      expect(
+        delegate.events.single.data.containsKey(
+          'disconnect_reason_sample_available',
+        ),
+        isFalse,
+        reason: 'code $code',
+      );
+    }
+  });
+
+  test(
+    'disconnect observer contains provider failure without trace loss',
+    () async {
+      final delegate = _CollectingTraceSink();
+      final observer = CaptureDisconnectTraceSink(
+        delegate: delegate,
+        context: CaptureRunContext.fromValues(_contextValues()),
+        processId: 7,
+        monotonicNow: () => Duration.zero,
+        disconnectReasonCode: () => throw StateError(
+          'native description and private detail must not escape',
+        ),
+      );
+
+      await observer.append(
+        _traceEvent(
+          sequence: 2,
+          monotonicMicroseconds: 2,
+          type: BleTraceEventType.connectionState,
+          operation: BleTraceOperation.connectionState,
+          data: const <String, Object?>{'state': 'disconnected'},
+        ),
+      );
+
+      final event = delegate.events.single;
+      expect(event.data['disconnect_reason_code'], isNull);
+      expect(event.data['disconnect_reason_provider_succeeded'], isFalse);
+      expect(
+        event.data.containsKey('disconnect_reason_sample_available'),
+        isFalse,
+      );
+      expect(jsonEncode(event.toSensitiveJson()), isNot(contains('native')));
+      expect(
+        jsonEncode(event.toSensitiveJson()),
+        isNot(contains('private detail')),
+      );
+    },
+  );
+
+  test(
+    'disconnect observer distinguishes pre-teardown and teardown events',
+    () async {
+      final delegate = _CollectingTraceSink();
+      var monotonicNow = const Duration(microseconds: 700);
+      final observer = CaptureDisconnectTraceSink(
+        delegate: delegate,
+        context: CaptureRunContext.fromValues(_contextValues()),
+        processId: 7,
+        monotonicNow: () => monotonicNow,
+        disconnectReasonCode: () => 8,
+      );
+
+      await observer.append(
+        _traceEvent(
+          sequence: 20,
+          monotonicMicroseconds: 600,
+          type: BleTraceEventType.connectionState,
+          operation: BleTraceOperation.connectionState,
+          data: const <String, Object?>{'state': 'disconnected'},
+        ),
+      );
+      monotonicNow = const Duration(microseconds: 800);
+      observer.markTeardownStarted();
+      monotonicNow = const Duration(microseconds: 900);
+      observer.markTeardownStarted();
+      await observer.append(
+        _traceEvent(
+          sequence: 21,
+          monotonicMicroseconds: 850,
+          type: BleTraceEventType.connectionState,
+          operation: BleTraceOperation.connectionState,
+          data: const <String, Object?>{'state': 'disconnected'},
+        ),
+      );
+
+      expect(
+        delegate.events[0].data['teardown_started_monotonic_microseconds'],
+        isNull,
+      );
+      expect(
+        delegate.events[1].data['teardown_started_monotonic_microseconds'],
+        800,
+      );
+    },
+  );
+
   test('manifest keeps declared version separate from prompt evidence', () {
     final context = CaptureRunContext.fromValues(
       _contextValues()
@@ -411,9 +683,49 @@ BleTraceEvent _notificationEvent(List<int> bytes) => BleTraceEvent(
   data: {'bytes': bytes},
 );
 
+BleTraceEvent _traceEvent({
+  required int sequence,
+  required int monotonicMicroseconds,
+  required BleTraceEventType type,
+  required BleTraceOperation operation,
+  required Map<String, Object?> data,
+}) => BleTraceEvent(
+  sequence: sequence,
+  correlationId: 'correlation-$sequence',
+  recordedAtUtc: DateTime.utc(2026, 9, 23, 8, 0, 0, 0, sequence),
+  monotonicElapsed: Duration(microseconds: monotonicMicroseconds),
+  type: type,
+  operation: operation,
+  data: data,
+);
+
 final class _CollectingTraceSink implements BleTraceSink {
   final events = <BleTraceEvent>[];
 
   @override
   void append(BleTraceEvent event) => events.add(event);
+}
+
+final class _OrderedTraceSink implements BleTraceSink {
+  final events = <BleTraceEvent>[];
+  final order = <String>[];
+
+  @override
+  void append(BleTraceEvent event) {
+    order.add('delegate:${event.sequence}');
+    events.add(event);
+  }
+}
+
+final class _PendingTraceSink implements BleTraceSink {
+  final gate = Completer<void>();
+  final events = <BleTraceEvent>[];
+  final order = <String>[];
+
+  @override
+  Future<void> append(BleTraceEvent event) {
+    order.add('delegate:${event.sequence}');
+    events.add(event);
+    return gate.future;
+  }
 }
