@@ -530,6 +530,7 @@ ruby -rjson -e '
   exact = ->(value, keys) {
     value.is_a?(Hash) && value.keys.sort == keys.sort
   }
+  hex32 = ->(value) { value.is_a?(String) && value.match?(/\A[0-9a-f]{32}\z/) }
   hex64 = ->(value) { value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/) }
   integer = ->(value) { value.is_a?(Integer) }
 
@@ -607,7 +608,7 @@ ruby -rjson -e '
   abort "full shape" unless exact.call(full, full_keys)
   abort "full binding" unless full["schemaVersion"] == 1 && full["driverId"] == "cbio" &&
     full["profile"] == "raw08-observed" && full["sensorKey"] == target &&
-    full["captureId"] == run && exact.call(full["bootstrap"], ["kind"]) &&
+    hex32.call(full["captureId"]) && exact.call(full["bootstrap"], ["kind"]) &&
     full["bootstrap"]["kind"] == "fresh" && full["records"].is_a?(Array) &&
     full["records"].length <= 65_535 && manifest["state"] == full["state"]
   rows = full["records"]

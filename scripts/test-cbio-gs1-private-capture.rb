@@ -28,6 +28,44 @@ def assert(condition, message)
   raise message unless condition
 end
 
+def build_real_owner_envelope
+  root = Dir.mktmpdir("cbio-real-owner-envelope.")
+  File.chmod(0o700, root)
+  output = File.join(root, "full-records.json")
+  package_root = File.expand_path("../packages/cgm_cbio", __dir__)
+  emitter = File.join("test", "support", "emit_full_record_fixture.dart")
+  stdout, stderr, status = Open3.capture3(
+    ENV.fetch("DART_BIN", "dart"),
+    "run",
+    emitter,
+    DEVICE_ID,
+    output,
+    chdir: package_root
+  )
+  raise "real-owner fixture failed: #{stdout}#{stderr}" unless status.success?
+
+  File.chmod(0o600, output)
+  full = JSON.parse(File.binread(output))
+  assert(full.fetch("sensorKey") == DEVICE_ID, "real-owner sensor binding")
+  assert(
+    full.fetch("captureId").match?(/\A[0-9a-f]{32}\z/),
+    "real-owner capture ID shape"
+  )
+  assert(full.fetch("captureId") != RUN_ID, "real-owner capture ID reused run ID")
+  assert(
+    full.fetch("records") == [
+      [1, 120, 9, 321, 7, 432, 5],
+      [2, 180, 9, 322, 8, 433, 5],
+      [3, 240, 9, 323, 9, 434, 5]
+    ],
+    "real-owner records"
+  )
+  at_exit { FileUtils.remove_entry(root) if File.exist?(root) }
+  output
+end
+
+REAL_OWNER_ENVELOPE = build_real_owner_envelope
+
 def write_executable(path, body)
   File.write(path, body)
   File.chmod(0o755, path)
@@ -70,7 +108,8 @@ def run_capture(
   owner_global_present: false,
   owner_user_present: false,
   owner_user_state: "RUNNING_UNLOCKED",
-  mutate_candidate_after_signer: false
+  mutate_candidate_after_signer: false,
+  real_full_envelope: nil
 )
   Dir.mktmpdir("cbio-private-capture-contract.") do |temporary|
     candidate_package ||= app_package
@@ -85,6 +124,7 @@ def run_capture(
     context = File.join(private_root, "context.json")
     destination = File.join(private_root, "destination")
     mutation_file = File.join(private_root, "mutation.json")
+    real_full_file = File.join(private_root, "real-full-records.json")
     [File.join(repo, "scripts"), File.join(repo, "openhealth"), private_root, bin, device].each do |path|
       FileUtils.mkdir_p(path, mode: 0o700)
     end
@@ -117,6 +157,10 @@ def run_capture(
     if mutation
       File.write(mutation_file, JSON.generate(mutation))
       File.chmod(0o600, mutation_file)
+    end
+    if real_full_envelope
+      FileUtils.cp(real_full_envelope, real_full_file)
+      File.chmod(0o600, real_full_file)
     end
     File.write(user_file, "#{initial_user}\n")
     if matching_ready_host_file
@@ -370,7 +414,8 @@ def run_capture(
       printf 'capture-start-seen\n' >>"$FAKE_AUDIT"
       printf 'CBIO-CAPTURE-STARTED run=%s\n' "$run"
       ruby -rjson -rdigest -e '
-        root, run, revision, target, mutation_path, scenario, package = ARGV
+        root, run, revision, target, mutation_path, scenario, package,
+          real_full_path = ARGV
         mutation = mutation_path.empty? ? nil : JSON.parse(File.read(mutation_path))
         apply = lambda do |name, value|
           next value unless mutation && mutation.fetch("artifact") == name
@@ -380,24 +425,32 @@ def run_capture(
           mutation["delete"] ? cursor.delete(path.last) : cursor[path.last] = mutation["value"]
           value
         end
-        pending = scenario == "pending"
-        rows = pending ? [] : [
-          [1, 120, 9, 321, 7, 432, 5],
-          [2, 180, 9, 322, 8, 433, 5],
-          [3, 240, 9, 323, 9, 434, 5]
-        ]
-        full = {
-          "schemaVersion" => 1, "driverId" => "cbio", "profile" => "raw08-observed",
-          "sensorKey" => target, "captureId" => run,
-          "state" => pending ? "pending" : "observing",
-          "bootstrap" => {"kind" => "fresh"}, "records" => rows
-        }
-        unless pending
-          full["firstObservation"] = rows.first.take(2)
-          full["currentCheckpoint"] = JSON.generate({
-            "version" => 1, "sensorKey" => target,
-            "index" => rows.last[0], "rawTime" => rows.last[1]
-          })
+        if real_full_path.empty?
+          pending = scenario == "pending"
+          rows = pending ? [] : [
+            [1, 120, 9, 321, 7, 432, 5],
+            [2, 180, 9, 322, 8, 433, 5],
+            [3, 240, 9, 323, 9, 434, 5]
+          ]
+          full = {
+            "schemaVersion" => 1, "driverId" => "cbio", "profile" => "raw08-observed",
+            "sensorKey" => target, "captureId" => "e" * 32,
+            "state" => pending ? "pending" : "observing",
+            "bootstrap" => {"kind" => "fresh"}, "records" => rows
+          }
+          unless pending
+            full["firstObservation"] = rows.first.take(2)
+            full["currentCheckpoint"] = JSON.generate({
+              "version" => 1, "sensorKey" => target,
+              "index" => rows.last[0], "rawTime" => rows.last[1]
+            })
+          end
+          full_json = nil
+        else
+          full_json = File.binread(real_full_path)
+          full = JSON.parse(full_json)
+          pending = full.fetch("state") == "pending"
+          rows = full.fetch("records")
         end
         full = apply.call("full", full)
         prompt = apply.call("prompt", {
@@ -411,7 +464,9 @@ def run_capture(
           "successfulFrameSha256" => digests.dup,
           "writeGateFailed" => false, "commandSequenceComplete" => true
         })
-        full_json = JSON.generate(full)
+        if full_json.nil? || mutation&.fetch("artifact", nil) == "full"
+          full_json = JSON.generate(full)
+        end
         prompt_json = JSON.generate(prompt)
         audit_json = JSON.generate(audit)
         full_sha = Digest::SHA256.hexdigest(full_json)
@@ -455,7 +510,7 @@ def run_capture(
         File.write(File.join(root, "auth-prompt-receipt.json"), prompt_json)
         File.write(File.join(root, "command-audit.json"), audit_json)
         File.write(File.join(root, "manifest.json"), JSON.generate(manifest))
-      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE" "$FAKE_SCENARIO" "$FAKE_APP_PACKAGE"
+      ' "$FAKE_DEVICE/$relative" "$run" "$FAKE_SOURCE_REVISION" "$FAKE_TARGET" "$FAKE_MUTATION_FILE" "$FAKE_SCENARIO" "$FAKE_APP_PACKAGE" "$FAKE_REAL_FULL_ENVELOPE"
       full_bytes=$(wc -c <"$FAKE_DEVICE/$relative/full-records.json" | tr -d ' ')
       full_sha=$(shasum -a 256 "$FAKE_DEVICE/$relative/full-records.json" | awk '{print $1}')
       manifest_bytes=$(wc -c <"$FAKE_DEVICE/$relative/manifest.json" | tr -d ' ')
@@ -518,6 +573,7 @@ def run_capture(
       "FAKE_LAUNCH_ACTIVITY" => LAUNCH_ACTIVITY,
       "FAKE_RUN_ID" => RUN_ID, "FAKE_SOURCE_REVISION" => head, "FAKE_TARGET" => DEVICE_ID,
       "FAKE_MUTATION_FILE" => mutation ? mutation_file : "",
+      "FAKE_REAL_FULL_ENVELOPE" => real_full_envelope ? real_full_file : "",
       "FAKE_SCENARIO" => scenario.to_s,
       "FAKE_CORRUPT_PULL" => corrupt_pull ? "1" : "0",
       "FAKE_SWITCH_AFTER_READY" => switch_after_ready ? "1" : "0",
@@ -572,8 +628,48 @@ def assert_rejected(result, label, pulled: false)
   end
 end
 
+def assert_accepted(result, label, expected_full: nil)
+  assert(
+    result[:status].success?,
+    "#{label} failed: #{result[:stderr]} log=#{result[:flutter_log]}"
+  )
+  assert(File.exist?(ack_path(result)), "#{label} missing ACK")
+  FINAL_ARTIFACTS.each do |name|
+    assert(
+      File.file?(File.join(result[:destination], name)),
+      "#{label} missing #{name}"
+    )
+  end
+  return unless expected_full
+
+  actual = File.binread(File.join(result[:destination], "full-records.json"))
+  assert(actual == File.binread(expected_full), "#{label} rewrote full envelope")
+end
+
 def audit_lines(result, pattern)
   File.read(result[:audit]).lines.grep(pattern)
+end
+
+run_capture(
+  mutation: {"artifact" => "full", "path" => ["captureId"], "value" => RUN_ID}
+) do |result|
+  assert_accepted(result, "equal capture and run IDs")
+end
+
+run_capture(real_full_envelope: REAL_OWNER_ENVELOPE) do |result|
+  assert_accepted(
+    result,
+    "real-owner distinct capture ID",
+    expected_full: REAL_OWNER_ENVELOPE
+  )
+end
+
+run_capture(
+  real_full_envelope: REAL_OWNER_ENVELOPE,
+  scenario: :premature_disconnect
+) do |result|
+  assert_rejected(result, "real-owner terminal disconnect", pulled: true)
+  assert(result[:stderr].include?("manifest driver"), "driver gate moved")
 end
 
 run_capture(
@@ -874,10 +970,22 @@ end
   {"artifact" => "audit", "path" => ["attemptedFrameSha256"], "value" => ["0" * 64, "1" * 64]},
   {"artifact" => "audit", "path" => ["successfulFrameSha256"], "value" => ["2" * 64, "1" * 64, "0" * 64]},
   {"artifact" => "audit", "path" => ["writeGateFailed"], "value" => true},
-  {"artifact" => "audit", "path" => ["commandSequenceComplete"], "value" => false},
-  {"artifact" => "full", "path" => ["captureId"], "value" => "f" * 32}
+  {"artifact" => "audit", "path" => ["commandSequenceComplete"], "value" => false}
 ].each_with_index do |mutation, index|
   run_capture(mutation: mutation) { |result| assert_rejected(result, "cross-artifact mutation #{index}", pulled: true) }
+end
+
+[
+  {"artifact" => "full", "path" => ["captureId"], "delete" => true},
+  {"artifact" => "full", "path" => ["captureId"], "value" => "E" * 32},
+  {"artifact" => "full", "path" => ["captureId"], "value" => "g" * 32},
+  {"artifact" => "full", "path" => ["captureId"], "value" => "e" * 31},
+  {"artifact" => "full", "path" => ["captureId"], "value" => "e" * 33},
+  {"artifact" => "full", "path" => ["captureId"], "value" => 7}
+].each_with_index do |mutation, index|
+  run_capture(mutation: mutation) do |result|
+    assert_rejected(result, "invalid full capture ID #{index}", pulled: true)
+  end
 end
 
 run_capture(switch_after_ready: true) do |result|
