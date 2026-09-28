@@ -45,9 +45,31 @@ void main() {
       expect(find.text('Settings'), findsWidgets);
       expect(find.text('No active sensor'), findsOneWidget);
       expect(find.text('Connect a sensor'), findsOneWidget);
+      expect(
+        find.text('Your previous data stays on this device.'),
+        findsOneWidget,
+      );
       expect(find.text('Sensor archive'), findsOneWidget);
       expect(find.byType(TabBar), findsNothing);
       expect(find.byType(BottomSheet), findsNothing);
+
+      await tester.tap(find.text('Connect a sensor'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey<String>('sensorConnectionScreen')),
+        findsOneWidget,
+      );
+      expect(overview, findsNothing);
+      expect(find.byType(BottomSheet), findsNothing);
+      await tester.tap(find.byTooltip('Close sensor setup'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey<String>('sensorConnectionScreen')),
+        findsNothing,
+      );
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      expect(overview, findsOneWidget);
 
       await tester.scrollUntilVisible(
         find.text('Apple Health'),
@@ -55,6 +77,13 @@ void main() {
         scrollable: find.byType(Scrollable).last,
       );
       expect(find.text('Apple Health'), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.text('Explore sample data'),
+        250,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('Explore sample data'), findsOneWidget);
 
       final route = ModalRoute.of(tester.element(overview));
       expect(route, isA<MaterialPageRoute<void>>());

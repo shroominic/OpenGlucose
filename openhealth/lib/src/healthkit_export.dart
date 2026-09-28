@@ -141,6 +141,10 @@ class HealthKitExportService implements GlucoseExporter {
 
       final pending = <CgmReading>[];
       for (final reading in readings) {
+        if (reading.isDisplayProvisional ||
+            reading.source == CgmRecordSource.raw) {
+          continue;
+        }
         final recordedAt = reading.recordedAt;
         if (recordedAt == null) {
           continue;
@@ -358,7 +362,18 @@ class HealthExportController extends ChangeNotifier {
     _statusMessage = null;
     notifyListeners();
     try {
-      final result = await _service.export(readings, since: _watermark);
+      // Enforce the same boundary before an injected exporter as in the
+      // native service. Raw/experimental values are not blood-glucose exports.
+      final exportable = readings
+          .where(
+            (reading) =>
+                !reading.isDisplayProvisional &&
+                reading.source != CgmRecordSource.raw,
+          )
+          .toList(growable: false);
+      final result = exportable.isEmpty
+          ? const HealthExportResult(status: HealthExportStatus.noData)
+          : await _service.export(exportable, since: _watermark);
       switch (result.status) {
         case HealthExportStatus.ok:
           _lastSyncedAt = DateTime.now();

@@ -36,6 +36,7 @@ class ArchivedSensorSession {
     this.startedAt,
     this.endedAt,
     this.lastReadingAt,
+    this.isUnreconciled = false,
   });
 
   /// Stable identity for one physical sensor session. This deliberately
@@ -59,6 +60,9 @@ class ArchivedSensorSession {
   final DateTime? endedAt;
   final DateTime? lastReadingAt;
 
+  /// Retained legacy data without counter-era proof. Raw export only.
+  final bool isUnreconciled;
+
   bool get hasReadings => readingCount > 0;
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -76,6 +80,7 @@ class ArchivedSensorSession {
     'startedAt': startedAt?.toUtc().toIso8601String(),
     'endedAt': endedAt?.toUtc().toIso8601String(),
     'lastReadingAt': lastReadingAt?.toUtc().toIso8601String(),
+    if (isUnreconciled) 'isUnreconciled': true,
   };
 
   factory ArchivedSensorSession.fromJson(Map<String, Object?> json) {
@@ -102,6 +107,9 @@ class ArchivedSensorSession {
       startedAt: startedAt,
       endedAt: endedAt,
       lastReadingAt: lastReadingAt,
+      isUnreconciled:
+          json['isUnreconciled'] == true ||
+          (json['id'] as String? ?? '').startsWith('cbio-unreconciled:'),
     );
   }
 

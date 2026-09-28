@@ -7,7 +7,249 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('platform transport advertises the explicit one-attempt contract', () {
+    const transport = FlutterBluePlusTransport();
+    expect(transport, isA<BleSingleAttemptTransport>());
+    expect(transport.supportsSingleAttemptConnect, isTrue);
+  });
+  group('SingleFlightTeardown', () {
+    test('synchronous failure is shared without rerunning teardown', () async {
+      final guard = SingleFlightTeardown();
+      final failure = StateError('synchronous stop failure');
+      var calls = 0;
+
+      Future<void> teardown() {
+        calls += 1;
+        throw failure;
+      }
+
+      final first = guard.run(teardown);
+      final second = guard.run(teardown);
+      await expectLater(first, throwsA(same(failure)));
+      await expectLater(second, throwsA(same(failure)));
+      expect(second, same(first));
+      expect(calls, 1);
+    });
+
+    test('reentrant closure observes the published first teardown', () async {
+      final guard = SingleFlightTeardown();
+      Future<void>? reentrant;
+      var duplicateCalls = 0;
+
+      final first = guard.run(() {
+        reentrant = guard.run(() async {
+          duplicateCalls += 1;
+        });
+        return Future<void>.value();
+      });
+
+      await first;
+      expect(duplicateCalls, 0);
+      expect(reentrant, same(first));
+    });
+
+    test('runs teardown once for two concurrent callers', () async {
+      var teardownCalls = 0;
+      final gate = Completer<void>();
+      final guard = SingleFlightTeardown();
+
+      Future<void> teardown() async {
+        teardownCalls += 1;
+        await gate.future;
+      }
+
+      final first = guard.run(teardown);
+      final second = guard.run(teardown);
+
+      expect(teardownCalls, 1);
+      expect(identical(first, second), isTrue);
+
+      gate.complete();
+      await Future.wait(<Future<void>>[first, second]);
+      expect(teardownCalls, 1);
+    });
+
+    test('a later caller observes the first outcome, not a new run', () async {
+      var firstTeardownCalls = 0;
+      var secondTeardownCalls = 0;
+      final guard = SingleFlightTeardown();
+
+      await guard.run(() async {
+        firstTeardownCalls += 1;
+      });
+      await guard.run(() async {
+        secondTeardownCalls += 1;
+      });
+
+      expect(firstTeardownCalls, 1);
+      expect(secondTeardownCalls, 0);
+    });
+
+    test('propagates the first outcome\'s error to every caller', () async {
+      final failure = StateError('stopScan wedged');
+      final guard = SingleFlightTeardown();
+
+      Future<void> failingTeardown() async {
+        throw failure;
+      }
+
+      final first = guard.run(failingTeardown);
+      final second = guard.run(() async {
+        fail('a concurrent caller must not run a second teardown');
+      });
+
+      await expectLater(first, throwsA(same(failure)));
+      await expectLater(second, throwsA(same(failure)));
+    });
+
+    test('started flips true as soon as run is called, before it settles', () {
+      final guard = SingleFlightTeardown();
+      final gate = Completer<void>();
+
+      expect(guard.started, isFalse);
+      unawaited(guard.run(() => gate.future));
+      expect(guard.started, isTrue);
+
+      gate.complete();
+    });
+  });
+
+  test(
+    'scan cleanup runs every step and preserves the first failure',
+    () async {
+      final firstFailure = StateError('results cancel failed');
+      final steps = <String>[];
+
+      await expectLater(
+        closeFlutterBluePlusScanResources(
+          cancelResults: () async {
+            steps.add('results');
+            throw firstFailure;
+          },
+          cancelScanning: () async {
+            steps.add('scanning');
+            throw StateError('scanning cancel failed');
+          },
+          stopScan: () async {
+            steps.add('stop');
+          },
+          closeController: () async {
+            steps.add('close');
+          },
+        ),
+        throwsA(same(firstFailure)),
+      );
+
+      // The caller's stream closes first: plugin cancellations can stay
+      // pending, and a stream the platform already stopped must not wait on
+      // them.
+      expect(steps, <String>['close', 'results', 'scanning', 'stop']);
+    },
+  );
+
+  test('pending start cleanup completes before a replacement scan', () async {
+    final startFinished = Completer<void>();
+    final cleanupFinished = Completer<void>();
+    final steps = <String>[];
+
+    final cleanup = closeFlutterBluePlusScanResources(
+      cancelResults: () async {
+        steps.add('results');
+      },
+      cancelScanning: () async {
+        steps.add('scanning');
+      },
+      awaitPendingStart: () async {
+        steps.add('await-start');
+        await startFinished.future;
+        steps.add('start-finished');
+      },
+      stopScan: () async {
+        steps.add('stop');
+      },
+      closeController: () async {
+        steps.add('close');
+      },
+    ).whenComplete(cleanupFinished.complete);
+    final replacement = cleanup.then((_) {
+      steps.add('replacement-start');
+    });
+
+    await Future<void>.delayed(Duration.zero);
+    expect(steps, <String>['close', 'results', 'scanning', 'await-start']);
+    expect(cleanupFinished.isCompleted, isFalse);
+    expect(steps, isNot(contains('replacement-start')));
+
+    startFinished.complete();
+    await replacement;
+
+    expect(steps, <String>[
+      'close',
+      'results',
+      'scanning',
+      'await-start',
+      'start-finished',
+      'stop',
+      'replacement-start',
+    ]);
+  });
+
   group('Android connection sequencing', () {
+    test(
+      'one-shot path makes one connect call and never retries 133',
+      () async {
+        final events = <String>[];
+        final scanStopped = Completer<void>();
+        var connectCalls = 0;
+        final status133 = fbp.FlutterBluePlusException(
+          fbp.ErrorPlatform.android,
+          'connect',
+          133,
+          'ANDROID_SPECIFIC_ERROR',
+        );
+
+        final result = connectWithScanStoppedOnce<String>(
+          stopScan: () {
+            events.add('stop-scan');
+            return scanStopped.future;
+          },
+          connect: () async {
+            connectCalls += 1;
+            events.add('connect-$connectCalls');
+            throw status133;
+          },
+        );
+
+        expect(events, <String>['stop-scan']);
+        expect(connectCalls, 0);
+
+        scanStopped.complete();
+        await expectLater(result, throwsA(same(status133)));
+
+        expect(events, <String>['stop-scan', 'connect-1']);
+        expect(connectCalls, 1);
+      },
+    );
+
+    test('one-shot path returns after its first successful connect', () async {
+      var stopCalls = 0;
+      var connectCalls = 0;
+
+      final result = await connectWithScanStoppedOnce<String>(
+        stopScan: () async {
+          stopCalls += 1;
+        },
+        connect: () async {
+          connectCalls += 1;
+          return 'connected';
+        },
+      );
+
+      expect(result, 'connected');
+      expect(stopCalls, 1);
+      expect(connectCalls, 1);
+    });
+
     test('awaits scan shutdown before the initial connect and retry', () async {
       final events = <String>[];
       final firstScanStopped = Completer<void>();

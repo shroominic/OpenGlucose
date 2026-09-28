@@ -10,6 +10,79 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep CBIO raw sensor values out of glucose charts, target ranges, native live
+  values, wellness summaries and glucose export columns, including restored
+  CBIO records with missing quality flags. Show the unscaled raw integer without
+  a glucose unit; preserve stored raw records and diagnostic export fields.
+
+### Added
+
+- Add the `cgm_cbio` GS1 live driver and app surface: `FF30` discovery mapping,
+  read-only `FF31` reply inspection, an authenticated, fail-closed read session
+  with bounded history sync, and live glucose rows. Vendor link material is
+  injected at build time, never compiled into the package. SiSensing UUID and
+  protocol evidence stay recorded. Record a separately authorized Mac bench
+  probe in the evidence document.
+- Add a durable, redacted GS1 evidence artifact for device-backed runs:
+  `make cbio-gs1-evidence` records one `gs1-session-<utc>-<harness>.json` per run
+  with the session outcome, record counts and index ranges, closed error
+  taxonomy, and app/harness identity, and indexes it. Both device harnesses now
+  assert the record's invariants instead of printing lines for a human to read.
+- Add a self-proving vendor-material guard (`make vendor-material-guard`, a
+  dedicated security workflow job): the rule rejects a synthetic canary and must
+  also clear the checked-out tree, so a rule that stops matching fails the check
+  rather than reporting a clean repository.
+- Add a private Android Gen1 Libre 2 receiver path with an explicitly initiated
+  NFC streaming exchange, encrypted receiver state, durable login counters,
+  exact-target Bluetooth connection, and CRC-validated packet diagnostics.
+  A separate GPL reference decoder can display provisional current estimates
+  in the explicit private bench build. Neither path is enabled in normal builds.
+- Keep sensor setup inline on the home screen with automatic Bluetooth
+  discovery. A `Can't find your sensor?` action opens model-specific help;
+  AiDEX/LinX stays on Bluetooth, while an explicit FreeStyle Libre 2 selection
+  opens guided NFC in debug capture builds. Move sample data to Settings.
+- Add an identifier-free Libre NFC scan event bridge with an animated
+  listening state, neutral tag detection, verified model identification, and
+  generic retry states. Raw tag identifiers and protocol bytes stay in the
+  bounded app-private capture.
+- Add a pure-Dart, target-unverified Libre 2-family offline protocol core for
+  UUID/topology classification, observation-only sequence validation, and
+  strict opaque fragment assembly. It contains no live sensor I/O, keys,
+  authentication, activation, decryption, or glucose decoding.
+- Add a pure-Dart, target-unverified Yuwell Anytime CT5 offline protocol core
+  with synthetic checksum, framing, transform, authentication-arithmetic, and
+  record-parser tests. It contains no BLE transport, live driver, activation,
+  proprietary binary, real identifier, or vendor-native glucose algorithm.
+- Add an app-owned multi-driver registry that routes one physical BLE scan by
+  stable vendor driver ID while preserving existing AiDEX identifiers, storage
+  keys, histories, and presentation behavior.
+
+### Changed
+
+- Keep the current NFC calibration patch separate from the frozen Libre 2
+  Bluetooth receiver patch. Verify the receiver binding and all FRAM CRCs
+  before saving calibration for the private debug decoder.
+- Reuse a confirmed Libre receiver after a fresh, same-sensor NFC read instead
+  of repeating streaming setup. Failed or stale verification cannot start a
+  new NFC enable attempt.
+- Restore the saved Libre receiver before discovery, and wait for a fresh
+  exact-target advertisement before one explicit Bluetooth connection attempt.
+  Preserve the completed NFC setup and login counters across app restarts.
+- Show closed, user-readable Libre connection failures instead of raw internal
+  codes, and distinguish radio search from successful data reception.
+- Full-product protocol capture builds can keep the existing AiDEX and LinX
+  driver available while passively recording Libre-family observations. The
+  strict capture-only entry point remains observation-only.
+- The one-shot target-unverified Libre patch-information probe now requires an
+  exact eight-byte ISO 15693 identity, derives its manufacturer byte from that
+  identity, accepts only an exact successful seven-byte response, and rejects
+  unknown model signatures before publishing a UI result.
+- The Libre NFC animation now starts only after the native reader confirms NFC
+  and capture readiness. Reader loss publishes a closed retry state; reopening
+  or retrying waits for a fresh native state instead of inventing readiness.
+
 ## [0.1.6] - 2026-08-31
 
 ### Added

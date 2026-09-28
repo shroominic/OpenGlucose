@@ -3,7 +3,12 @@
 OpenGlucose is an open-source, local-first Flutter workspace for exploring
 continuous glucose monitor (CGM) data. It includes a reference mobile app, a
 sensor-agnostic domain API, reusable Bluetooth Low Energy (BLE) contracts, and
-an AiDEX/LinX protocol driver.
+an AiDEX/LinX protocol driver. The workspace also contains a target-unverified
+offline Libre 2-family analysis core and a safety-gated Yuwell Anytime driver
+for private Android hardware validation. The Yuwell path is not enabled in
+normal builds. An explicit Android debug-capture build can display the exact
+V1150 packed field as a clearly provisional engineering value; this is not a
+production compatibility or clinical-accuracy claim.
 
 > [!CAUTION]
 > OpenGlucose is early-stage wellness and reference software. It is not a
@@ -20,6 +25,8 @@ an AiDEX/LinX protocol driver.
 | [`packages/cgm_core/`](packages/cgm_core/)               | Sensor-neutral readings, capabilities, snapshots, and session contracts | Dart    |
 | [`packages/cgm_ble/`](packages/cgm_ble/)                 | Platform-neutral BLE transport interfaces                               | Dart    |
 | [`packages/cgm_aidex/`](packages/cgm_aidex/)             | AiDEX/LinX protocol, session, history, calibration, and diagnostics     | Dart    |
+| [`packages/cgm_libre2/`](packages/cgm_libre2/)           | Target-unverified offline Libre 2 classification and framing            | Dart    |
+| [`packages/cgm_yuwell_anytime/`](packages/cgm_yuwell_anytime/) | Target-unverified Yuwell CT5 primitives and gated live session driver | Dart    |
 | [`packages/cgm_ble_flutter/`](packages/cgm_ble_flutter/) | `flutter_blue_plus` adapter for the BLE contracts                       | Flutter |
 
 The package dependency direction and extension rules are documented in the

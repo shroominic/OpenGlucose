@@ -4,9 +4,11 @@ SHELL := /bin/sh
 
 .PHONY: help bootstrap tooling-bootstrap tooling-check hooks format \
 	format-check lint typecheck test-unit test-integration test-e2e test \
+	cbio-gs1-evidence \
+	cbio-gs1-decode-comparison \
 	build build-android build-web build-ios build-macos test-ios-native \
 	test-macos-native \
-	verify-android-release-signing check
+	verify-android-release-signing vendor-material-guard check
 
 platform_checks :=
 ifeq ($(shell uname -s),Darwin)
@@ -25,6 +27,9 @@ tooling-bootstrap: ## Install checksum-pinned repository quality tools.
 
 tooling-check: tooling-bootstrap ## Run ShellCheck and actionlint with pinned versions.
 	@./scripts/check-tooling.sh
+
+vendor-material-guard: tooling-bootstrap ## Reject vendor material and prove the guard with a canary.
+	@./scripts/check-cbio-vendor-material.sh
 
 hooks: ## Install the pinned Lefthook Git hooks.
 	@./scripts/install-lefthook.sh
@@ -49,6 +54,12 @@ test-integration: ## Run every tagged or directory-based integration test.
 
 test-e2e: ## Report the explicitly deferred device end-to-end lane.
 	@./scripts/flutter-workspace.sh test-e2e
+
+cbio-gs1-evidence: ## Run one GS1 session on a device and record a redacted artifact.
+	@./scripts/cbio-gs1-evidence.sh
+
+cbio-gs1-decode-comparison: ## Replay one captured GS1 log as a side-by-side decode.
+	@./scripts/cbio-gs1-decode-comparison.sh
 
 test: test-unit test-integration ## Run all locally configured automated tests.
 
@@ -75,4 +86,4 @@ test-macos-native: ## Run the macOS RunnerTests on this Mac.
 verify-android-release-signing: ## Prove Android release signing fails closed without credentials.
 	@./scripts/flutter-workspace.sh verify-android-release-signing
 
-check: tooling-check format-check lint test build verify-android-release-signing $(platform_checks) ## Run every required CI gate supported by this host.
+check: tooling-check vendor-material-guard format-check lint test build verify-android-release-signing $(platform_checks) ## Run every required CI gate supported by this host.

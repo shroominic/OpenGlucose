@@ -90,3 +90,61 @@ package's popularity.
 See [NOTICE.md](../NOTICE.md) for distribution guidance and
 [docs/compatibility.md](compatibility.md) for dependency-related support-floor
 changes.
+
+## Cbio GS1 interoperability package
+
+`cgm_cbio` 0.1.0 uses the in-repository `cgm_core` and `cgm_ble` contracts,
+plus `lints` and `test` development tools. The unpublished package introduces
+no external runtime dependency, vendor-native algorithm binary, FFI, network
+destination or telemetry. Its live driver uses the app's existing BLE
+transport and permissions. Durable raw-history/checkpoint storage is owned by
+the host controller and existing restricted native store, not the package.
+Library lockfiles remain uncommitted.
+
+Real vendor link material is not supplied as a committed default.
+`CbioCredentialSource` resolves it from injected values; tests use synthetic
+material. The app currently uses `CbioDefineCredentialSource`, implemented
+with Dart `String.fromEnvironment` constants. Supplying a private
+`--dart-define`/`--dart-define-from-file` at build time therefore embeds those
+values in the resulting artifact. Source exclusion is not runtime provisioning
+and does not make a configured APK safe to redistribute. Builds without
+configured material omit the CBIO driver from the platform registry.
+The historical derivation record is
+[testing/cbio-gs1-auth-material.md](testing/cbio-gs1-auth-material.md); do not
+copy credential bytes into documentation, tests, logs or release metadata.
+
+Distribution gates remain open: rights/notices and artifact inventory for
+vendor-derived material, approved provisioning/distribution policy, and
+signing provenance for configured artifacts. A source canary/secret check
+does not prove an APK contains no embedded values. There is no approved
+vendor-algorithm binary or calibrated-glucose implementation in this package;
+external reference repositories do not themselves grant redistribution rights.
+
+Disabling credential configuration prevents new CBIO registrations but is
+not a data rollback. Preserve the versioned restricted checkpoint/history
+envelopes and separate legacy recovery archives; older apps cannot resume the
+new state. See [durable history and recovery](testing/cbio-gs1-durable-history.md).
+Do not remove the package or clear storage as a substitute for a reviewed
+migration. Exact-model, lifecycle and glucose-algorithm validation are still
+required before claiming production sensor compatibility.
+
+## Private Libre Gen1 receiver integration
+
+The application depends on the in-repository `cgm_libre2` package; that
+package uses the existing `cgm_ble` and `cgm_core` workspace contracts, as
+specified by ADR 0001. These internal path dependencies introduce no external
+package version, native plugin, permission, network destination, telemetry,
+or background service. Native receiver storage uses the existing Android
+Keystore and backup-excluded app directory. Normal builds leave the receiver
+unregistered. Removing the debug registration disables new connections;
+preserve the receiver journal and counter rather than rolling them back after
+a sensor operation.
+
+The optional `cgm_libre2_glucose` workspace package is separately GPL-licensed.
+The maintainer approved this route for private Android bench work after a
+bounded permissive-source search. It adds pure Dart factory conversion, not a
+new native plugin, permission, service, telemetry, or network destination.
+The normal app entry point does not import its adapter. Package separation is
+not a GPL exception for a combined binary. Follow [ADR 0004](architecture/adr/0004-private-libre-glucose-decoder.md)
+and its exact-source notices before any external distribution. No general
+MIT-only license claim is made for the decoder-enabled debug executable.

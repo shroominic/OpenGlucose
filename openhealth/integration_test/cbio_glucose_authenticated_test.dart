@@ -1,0 +1,825 @@
+// Bounded, device-backed authenticated GS1 session: auth, live glucose, history.
+//
+// Scope: connect to the real sensor, send the vendor's masked link setup and
+// read frames, and record every notification with its unmasked plaintext.
+// Authorised writes only:
+//
+//   * `19 01 00 <6 reversed address octets> <16 auth material> C` (masked)
+//   * `06 03 LE32(epoch) C` vendor clock frame, sent once (masked)
+//   * `06 0A LE16(index) 00 00 C` glucose read (masked)
+//   * `06 08 LE16(index) 00 00 C` raw/history read (masked)
+//
+// Activation (0x07), reset, thresholds, and key registration are never sent.
+// Pairing/bonding is never requested and the GATT link is released at the end.
+//
+// Masked bytes are logged; the authentication frame's plaintext is not, because
+// it carries the link credential.
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:cgm_cbio/cgm_cbio.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:integration_test/integration_test.dart';
+
+const Duration _scanWindow = Duration(seconds: 8);
+const Duration _scanOverhead = Duration(seconds: 3);
+const Duration _acquisitionBudget = Duration(seconds: 80);
+const Duration _acquireGap = Duration(seconds: 1);
+const Duration _connectWindow = Duration(seconds: 25);
+const Duration _connectRetryGap = Duration(milliseconds: 800);
+
+/// Ceiling for a FlutterBluePlus call the harness cancels by hand. The plugin
+/// owns its own operation timeouts; this only bounds the harness's wait for a
+/// plugin future whose radio has already stopped.
+const Duration _pluginCallWindow = Duration(seconds: 8);
+
+/// The service the sensor advertises, in canonical form. Android reports the
+/// 16-bit form (`FF30`) while an advertisement may carry either.
+const String _sensorServiceUuid = '0000ff30-0000-1000-8000-00805f9b34fb';
+const List<String> _sensorServiceFilter = <String>[_sensorServiceUuid];
+const Duration _discoveryWindow = Duration(seconds: 25);
+const Duration _subscribeWindow = Duration(seconds: 15);
+const Duration _writeWindow = Duration(seconds: 15);
+const Duration _authWindow = Duration(seconds: 12);
+const Duration _replyWindow = Duration(seconds: 8);
+const Duration _streamWindow = Duration(
+  seconds: int.fromEnvironment('CBIO_STREAM_SECONDS', defaultValue: 20),
+);
+const Duration _teardownWindow = Duration(seconds: 15);
+
+const int _maxWrites = 9;
+
+const String _targetDeviceId = String.fromEnvironment('CBIO_TARGET_DEVICE_ID');
+
+/// Vendor material for this run.
+///
+/// Nothing in the repository carries the stream key or the link credential, so
+/// the harness reads them from the process environment or from `--dart-define`
+/// and aborts before touching the radio when they are absent. Provide them
+/// without writing them to a committed file, for example with
+/// `--dart-define-from-file` against a git-ignored local file.
+final CbioMapCredentialSource _credentials = CbioMapCredentialSource(
+  <String, String>{
+    ...Platform.environment,
+    if (cbioStreamKeyHex.isNotEmpty) cbioStreamKeyDefine: cbioStreamKeyHex,
+    if (cbioAuthMaterialHex.isNotEmpty)
+      cbioAuthMaterialDefine: cbioAuthMaterialHex,
+    if (cbioAuthTriggerHex.isNotEmpty)
+      cbioAuthTriggerDefine: cbioAuthTriggerHex,
+  },
+);
+
+/// Build identity, supplied by the evidence run script. Never the sensor
+/// address and never credential material.
+const String _harnessRevision = String.fromEnvironment(
+  'CBIO_REVISION',
+  defaultValue: 'unknown',
+);
+const String _appPackage = String.fromEnvironment(
+  'CBIO_APP_PACKAGE',
+  defaultValue: 'unknown',
+);
+const String _appRevision = String.fromEnvironment(
+  'CBIO_APP_REVISION',
+  defaultValue: 'unknown',
+);
+
+/// Writes this harness may send: link setup, one clock set, and read queries.
+/// A frame that does not classify into this set fails before it is transmitted.
+const Set<CbioWriteKind> _allowedWrites = <CbioWriteKind>{
+  CbioWriteKind.authentication,
+  CbioWriteKind.clockSet,
+  CbioWriteKind.glucoseRead,
+  CbioWriteKind.rawHistoryRead,
+};
+const Set<CbioWriteKind> _requiredWrites = <CbioWriteKind>{
+  CbioWriteKind.authentication,
+  CbioWriteKind.glucoseRead,
+  CbioWriteKind.rawHistoryRead,
+};
+
+/// First raw (`08`) index to request. Zero starts a full history replay; a
+/// higher value resumes partway so a bounded window can reach the newest
+/// stored record instead of re-reading the whole archive.
+const int _rawStartIndex = int.fromEnvironment('CBIO_RAW_START_INDEX');
+
+/// Records carried in the emitted comparison. The window itself is not
+/// truncated; only the artifact's per-record table is.
+const int _comparisonRecords = int.fromEnvironment(
+  'CBIO_COMPARISON_RECORDS',
+  defaultValue: 1520,
+);
+
+String _hex(List<int> bytes) =>
+    bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+
+void _emit(String line) {
+  // The harness reports through stdout so the run script can tee it to a file.
+  // ignore: avoid_print
+  print(line);
+}
+
+void main() {
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'Cbio GS1 authenticated session: auth, live glucose, history',
+    (tester) async {
+      final run = _SessionRun(startedAtUtc: DateTime.now().toUtc());
+      await tester.runAsync(() => _runSession(run));
+      final evidence = run.evidence();
+      // The artifact is emitted before the verdict, so a failed run still
+      // leaves a reviewable record behind.
+      _emit('CBIO-EVIDENCE ${jsonEncode(evidence.toJson())}');
+      expect(
+        evidence.invariantViolations(),
+        isEmpty,
+        reason: 'session invariants',
+      );
+      expect(
+        evidence.outcome,
+        CbioSessionOutcome.completed,
+        reason: 'the session did not reach a completed verdict',
+      );
+      expect(
+        evidence.notifications,
+        greaterThan(0),
+        reason: 'the link produced no FF31 notification',
+      );
+      expect(
+        evidence.glucoseIndices.isNotEmpty || evidence.rawIndices.isNotEmpty,
+        isTrue,
+        reason: 'the link produced no glucose and no raw history record',
+      );
+      // Gate G1: the reading-bearing field must carry content, and the app's
+      // live path and the harness path must report the same field for the same
+      // records. A run that reports an empty field is not a passing run.
+      final comparison = run.comparison;
+      expect(comparison, isNotNull, reason: 'no side-by-side decode');
+      expect(
+        comparison!.processedCount,
+        evidence.rawIndices.length,
+        reason:
+            'every raw record must contribute one payload and one '
+            'processed sample',
+      );
+      expect(
+        comparison.payloadNonZero,
+        greaterThan(0),
+        reason: 'the payload field the app renders decoded to zero everywhere',
+      );
+      expect(
+        run.appPathAgrees,
+        isTrue,
+        reason:
+            'the app path and the harness path disagree on the payload '
+            'word',
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 8)),
+  );
+}
+
+/// Mutable verdict inputs for one authenticated session.
+final class _SessionRun {
+  _SessionRun({required this.startedAtUtc});
+
+  final DateTime startedAtUtc;
+  final Map<CbioWriteKind, int> writeKinds = <CbioWriteKind, int>{};
+  final Map<int, int> glucoseByIndex = <int, int>{};
+  final Map<int, int> rawByIndex = <int, int>{};
+  final Map<int, int> processedByIndex = <int, int>{};
+  final Map<String, int> errors = <String, int>{};
+  int notifications = 0;
+  bool targetAcquired = false;
+  bool gattReleased = false;
+  bool authenticationObserved = false;
+  bool appPathAgrees = false;
+  CbioDecodeComparison? comparison;
+  CbioSessionOutcome outcome = CbioSessionOutcome.failed;
+
+  void wrote(CbioWriteKind kind) =>
+      writeKinds[kind] = (writeKinds[kind] ?? 0) + 1;
+
+  void noteError(String reason) => errors[reason] = (errors[reason] ?? 0) + 1;
+
+  CbioSessionEvidence evidence() => CbioSessionEvidence(
+    harness: 'openhealth/integration_test/cbio_glucose_authenticated_test.dart',
+    harnessRevision: _harnessRevision,
+    appPackage: _appPackage,
+    appRevision: _appRevision,
+    platform: '${Platform.operatingSystem} ${Platform.operatingSystemVersion}',
+    unitStatus: 'unverified',
+    startedAtUtc: startedAtUtc,
+    endedAtUtc: DateTime.now().toUtc(),
+    outcome: outcome,
+    targetAcquired: targetAcquired,
+    gattReleased: gattReleased,
+    notifications: notifications,
+    writeKinds: writeKinds,
+    requiredWrites: _requiredWrites,
+    allowedWrites: _allowedWrites,
+    glucoseIndices: glucoseByIndex.keys.toList()..sort(),
+    rawIndices: rawByIndex.keys.toList()..sort(),
+    rawPayloadValues: rawByIndex.values.toList(),
+    processedGlucoseValues: [
+      ...glucoseByIndex.values,
+      ...processedByIndex.values,
+    ],
+    errors: errors,
+  );
+}
+
+Future<void> _runSession(_SessionRun run) async {
+  if (!_credentials.isConfigured) {
+    _emit(
+      'CBIO-A abort=vendor-material-missing '
+      'missing=${_credentials.missing.join(",")}',
+    );
+    run.noteError('vendor_material_missing');
+    run.outcome = CbioSessionOutcome.failed;
+    return;
+  }
+  final vendor = _credentials.read();
+
+  _emit(
+    'CBIO-A session-start adapter=${fbp.FlutterBluePlus.adapterStateNow.name} '
+    'target=${_targetDeviceId.isEmpty ? "scan" : "defined"}',
+  );
+  final targetId = _targetDeviceId.isNotEmpty
+      ? _targetDeviceId
+      : await _acquireTargetId(run);
+  if (targetId == null) {
+    _emit('CBIO-A abort=no-target');
+    run.noteError('target_missing');
+    run.outcome = CbioSessionOutcome.abortedNoTarget;
+    return;
+  }
+  run.targetAcquired = true;
+  _emit('CBIO-A target-found');
+
+  final device = fbp.BluetoothDevice.fromId(targetId);
+  final masked = <(int, List<int>)>[];
+  StreamSubscription<List<int>>? subscription;
+  final started = DateTime.now().toUtc();
+  int elapsed() => DateTime.now().toUtc().difference(started).inMilliseconds;
+
+  try {
+    await _releaseBeforeConnect();
+    await _connectTarget(run, device);
+    _emit('CBIO-A connect-ok');
+
+    // The plugin owns this timeout and holds its global Bluetooth mutex until
+    // the call it wrapped has finished. An outer Dart timeout would abandon the
+    // plugin future while it still owned that mutex.
+    final services = await device.discoverServices(
+      subscribeToServicesChanged: false,
+      timeout: _discoveryWindow.inSeconds,
+    );
+    fbp.BluetoothCharacteristic? notify;
+    fbp.BluetoothCharacteristic? write;
+    fbp.BluetoothCharacteristic? serial;
+    for (final service in services) {
+      for (final characteristic in service.characteristics) {
+        final uuid = characteristic.uuid.str.toLowerCase();
+        if (characteristic.properties.notify && uuid == 'ff31') {
+          notify = characteristic;
+        }
+        if (characteristic.properties.write && uuid == 'ff32') {
+          write = characteristic;
+        }
+        if (characteristic.properties.read && uuid == '2a25') {
+          serial = characteristic;
+        }
+      }
+    }
+    if (notify == null || write == null) {
+      _emit('CBIO-A abort=missing-characteristics');
+      run.noteError('characteristic_missing');
+      run.outcome = CbioSessionOutcome.abortedMissingCharacteristics;
+      return;
+    }
+
+    // The ATT MTU exchange is not a vendor frame and the sensor may ignore it.
+    // The app treats a refused negotiation as "keep the default MTU" rather
+    // than as a failed session, so this does the same.
+    var mtu = 0;
+    try {
+      mtu = await device.requestMtu(247, timeout: _writeWindow.inSeconds);
+      _emit('CBIO-A mtu=$mtu');
+    } on Object catch (error) {
+      run.noteError('mtu_failed');
+      _emit('CBIO-A mtu-default error=${error.runtimeType}');
+    }
+
+    subscription = notify.onValueReceived.listen((bytes) {
+      masked.add((elapsed(), List<int>.from(bytes)));
+      run.notifications = masked.length;
+      final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
+      _emit(
+        'CBIO-A notify t=${elapsed()} masked=${_hex(bytes)} '
+        'plaintext=${_hex(plaintext)}',
+      );
+    });
+    await notify.setNotifyValue(true, timeout: _subscribeWindow.inSeconds);
+    _emit('CBIO-A notify-enabled=ff31');
+
+    // The vendor's authentication address is the sensor address in reversed
+    // octet order, and the serial characteristic already reports it that way.
+    // The first attempt at this step reversed the read a second time and was
+    // rejected with `result=0 status=2`; the bytes below are used as read.
+    List<int>? serialOctets;
+    try {
+      final serialBytes = await serial?.read(timeout: _writeWindow.inSeconds);
+      if (serialBytes != null && serialBytes.length == 6) {
+        serialOctets = serialBytes.toList();
+        _emit('CBIO-A serial-read ok octets=6');
+      } else {
+        _emit('CBIO-A serial-read unusable length=${serialBytes?.length}');
+      }
+    } on Object catch (error) {
+      _emit('CBIO-A serial-read failed error=${error.runtimeType}');
+      run.noteError('serial_read_failed');
+    }
+
+    List<int> reversedFromDeviceId() {
+      final parts = targetId.split(':');
+      if (parts.length != 6) return const [];
+      return [
+        for (final part in parts.reversed) int.tryParse(part, radix: 16) ?? 0,
+      ];
+    }
+
+    var writes = 0;
+    Future<bool> send(List<int> bytes, String label, {bool wait = true}) async {
+      if (writes >= _maxWrites) {
+        _emit('CBIO-A skip label=$label reason=write-budget');
+        return false;
+      }
+      final kind = CbioWriteKind.classify(
+        unmaskCbioFrame(bytes, key: vendor.streamKey),
+      );
+      expect(
+        _allowedWrites,
+        contains(kind),
+        reason: 'write $label is outside the allowed set',
+      );
+      writes += 1;
+      run.wrote(kind);
+      _emit('CBIO-A write n=$writes label=$label masked=${_hex(bytes)}');
+      try {
+        await write!.write(
+          bytes,
+          withoutResponse: false,
+          timeout: _writeWindow.inSeconds,
+        );
+        _emit('CBIO-A write-ok n=$writes label=$label');
+      } on Object catch (error) {
+        _emit(
+          'CBIO-A write-failed n=$writes label=$label error=${error.runtimeType}',
+        );
+        run.noteError('write_failed');
+        return false;
+      }
+      if (wait) {
+        await Future<void>.delayed(_replyWindow);
+      }
+      return true;
+    }
+
+    /// Returns true when the newest unmasked reply is an auth success ACK.
+    bool authSucceeded() {
+      for (final (_, bytes) in masked.reversed) {
+        final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
+        if (plaintext.length != 5) continue;
+        if (plaintext.fold<int>(0, (a, b) => a + b) & 255 != 0) continue;
+        if (plaintext[1] == 0x01) {
+          run.authenticationObserved = true;
+          _emit(
+            'CBIO-A auth-reply opcode=01 result=${plaintext[2]} '
+            'status=${plaintext[3]}',
+          );
+          return plaintext[2] == 1;
+        }
+      }
+      return false;
+    }
+
+    final addressCandidates = <(String, List<int>)>[
+      if (serialOctets != null) ('serial-2a25', serialOctets),
+      if (reversedFromDeviceId().length == 6)
+        ('remote-id', reversedFromDeviceId()),
+    ];
+    var authenticated = false;
+    for (final (source, octets) in addressCandidates) {
+      _emit('CBIO-A auth-attempt source=$source');
+      final authFrame = buildMaskedCbioAuthentication(
+        octets,
+        key: vendor.streamKey,
+        material: vendor.authMaterial,
+      );
+      await send(authFrame, 'auth-$source');
+      final deadline = DateTime.now().add(_authWindow);
+      while (DateTime.now().isBefore(deadline)) {
+        if (authSucceeded()) {
+          authenticated = true;
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      if (authenticated) {
+        _emit('CBIO-A auth-ok source=$source');
+        break;
+      }
+      _emit('CBIO-A auth-failed source=$source');
+      run.noteError('auth_rejected');
+    }
+    if (!authenticated) {
+      _emit('CBIO-A abort=authentication-failed');
+      run.outcome = CbioSessionOutcome.abortedAuthenticationFailed;
+      return;
+    }
+
+    // One logged vendor clock frame so history timestamps are meaningful.
+    await send(
+      buildMaskedCbioClock(
+        DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+        key: vendor.streamKey,
+      ),
+      'clock',
+    );
+
+    final beforeReads = masked.length;
+    await send(
+      buildMaskedCbioGlucoseQuery(0, key: vendor.streamKey),
+      'glucose-0a-index0',
+    );
+    await send(
+      buildMaskedCbioRawQuery(_rawStartIndex, key: vendor.streamKey),
+      'raw-08-index$_rawStartIndex',
+    );
+
+    // The sensor continues pushing records on the same characteristic.
+    final streamDeadline = DateTime.now().add(_streamWindow);
+    while (DateTime.now().isBefore(streamDeadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+
+    final glucoseRecords = <CbioGlucoseRecord>[];
+    final rawRecords = <CbioRawRecord>[];
+    final plaintextFrames = <List<int>>[];
+    for (final (_, bytes) in masked.sublist(beforeReads)) {
+      final plaintext = unmaskCbioFrame(bytes, key: vendor.streamKey);
+      plaintextFrames.add(plaintext);
+      try {
+        final batch = parseCbioGlucoseBatch(plaintext);
+        glucoseRecords.addAll(batch.records);
+        for (final record in batch.records) {
+          run.glucoseByIndex[record.index] = record.rawGlucose;
+        }
+        _emit(
+          'CBIO-A 0a-batch count=${batch.count} initial=${batch.initialIndex} '
+          'last=${batch.lastIndex} baseReindex=${batch.baseReindex}',
+        );
+      } on CbioFrameException {
+        // Not a 0A batch.
+      }
+      try {
+        final rawBatch = parseCbioRawDataFrame(plaintext);
+        rawRecords.addAll(rawBatch.records);
+        for (final record in rawBatch.records) {
+          run.rawByIndex[record.processed.index] = record.rawPayload;
+          run.processedByIndex[record.processed.index] =
+              record.processed.rawGlucose;
+        }
+        _emit(
+          'CBIO-A 08-batch count=${rawBatch.records.length} '
+          'first=${rawBatch.records.first.processed.index} '
+          'last=${rawBatch.records.last.processed.index} '
+          'payload=${rawBatch.records.map((r) => r.rawPayload).join(',')} '
+          'processed=${rawBatch.records.map((r) => r.processed.rawGlucose).join(',')} '
+          'temp=${rawBatch.records.map((r) => r.rawTemperature).join(',')}',
+        );
+      } on CbioFrameException {
+        // Not a 08 batch.
+      }
+    }
+
+    _emit(
+      'CBIO-A summary writes=$writes notifications=${masked.length} '
+      'glucoseRecords=${glucoseRecords.length} rawRecords=${rawRecords.length} '
+      'frames=${plaintextFrames.length}',
+    );
+    if (glucoseRecords.isNotEmpty) {
+      _emit(
+        'CBIO-A glucose first=${glucoseRecords.first.index} '
+        'last=${glucoseRecords.last.index} '
+        'raw=${glucoseRecords.map((r) => r.rawGlucose).join(',')} '
+        'unit=unverified',
+      );
+    }
+    if (rawRecords.isNotEmpty) {
+      _emit(
+        'CBIO-A raw first=${rawRecords.first.processed.index} '
+        'last=${rawRecords.last.processed.index} '
+        'payload=${rawRecords.map((r) => r.rawPayload).join(',')}',
+      );
+    }
+    // Both decoders see the same bytes in the same session: the app's live path
+    // (the history archive, which is what the installed app renders) and the
+    // frame parser the evidence path uses. They must report the same field.
+    final comparison = compareCbioDecode(
+      plaintextFrames,
+      maxRecords: _comparisonRecords,
+    );
+    final appPath = CbioHistoryArchive();
+    plaintextFrames.forEach(appPath.ingest);
+    final agreement = compareCbioWithArchive(comparison, appPath.records);
+    run.appPathAgrees = agreement.agrees;
+    run.comparison = comparison;
+    _emit(
+      'CBIO-A compare appPath agrees=${agreement.agrees} '
+      'agreeing=${agreement.agreeing}/${agreement.compared} '
+      'missing=${agreement.missing} disagreeing=${agreement.disagreeing} '
+      'records=${comparison.recordCount} '
+      'payload=${comparison.payloadMinimum}..${comparison.payloadMaximum} '
+      'payloadNonZero=${comparison.payloadNonZero} '
+      'processed=${comparison.processedMinimum}..${comparison.processedMaximum} '
+      'processedNonZero=${comparison.processedNonZero} '
+      'index=${comparison.firstIndex}..${comparison.lastIndex}',
+    );
+    _emit('CBIO-COMPARISON ${jsonEncode(comparison.toJson())}');
+    run.outcome = CbioSessionOutcome.completed;
+  } on TestFailure {
+    // An in-flight assertion (an out-of-envelope write) is not a session
+    // failure: record it and let the test fail loudly.
+    run.noteError('unexpected_error');
+    run.outcome = CbioSessionOutcome.failed;
+    rethrow;
+  } on Object catch (error) {
+    _emit('CBIO-A failed error=${error.runtimeType}');
+    run.noteError('unexpected_error');
+    run.outcome = CbioSessionOutcome.failed;
+  } finally {
+    await _releaseLink(run, device, subscription);
+  }
+}
+
+/// Stops the platform scanner without letting a pending plugin future block the
+/// caller. By the time this is usually reached the radio is already stopped;
+/// this only releases the platform scan registration.
+Future<void> _stopRadio() async {
+  try {
+    if (fbp.FlutterBluePlus.isScanningNow) {
+      await fbp.FlutterBluePlus.stopScan().timeout(_pluginCallWindow);
+    }
+  } on Object {
+    // A scan the platform already stopped needs no second stop.
+  }
+}
+
+/// Clears the radio before a connect attempt.
+///
+/// Some Android Bluetooth stacks cannot bring up GATT while a BLE scan is
+/// active, and `flutter_blue_plus` serializes a scan that is still starting
+/// against the next connect. A scan that is already stopped is left alone.
+Future<void> _releaseBeforeConnect() async {
+  if (!fbp.FlutterBluePlus.isScanningNow) {
+    return;
+  }
+  _emit('CBIO-A connect-preflight=stop-scan');
+  await _stopRadio();
+}
+
+/// Whether an Android connect failure is the transient status-133 class the
+/// app transport retries once.
+bool _isRetryableAndroidConnect(Object error) {
+  final message = error.toString().toUpperCase();
+  return message.contains('133') || message.contains('ANDROID_SPECIFIC_ERROR');
+}
+
+/// Brings up the GATT link, retrying one status-133 failure.
+///
+/// The app's live sensor path connects only after the scanner is stopped and
+/// gives an Android stack one more attempt when it answers with the transient
+/// status-133 class.
+Future<void> _connectTarget(_SessionRun run, fbp.BluetoothDevice device) async {
+  Future<void> attempt() async {
+    await device.connect(
+      license: fbp.License.free,
+      timeout: _connectWindow,
+      // flutter_blue_plus defaults this to 512 and, on Android, appends a
+      // `requestMtu(512)` to the connect call itself. That exchange is not part
+      // of the app's working link setup, so the harness negotiates its own MTU
+      // after discovery exactly as the app does.
+      mtu: null,
+      autoConnect: false,
+    );
+  }
+
+  final attemptStarted = DateTime.now().toUtc();
+  try {
+    await attempt();
+    return;
+  } on Object catch (error) {
+    final waited = DateTime.now().toUtc().difference(attemptStarted);
+    if (!_isRetryableAndroidConnect(error) || waited > _connectWindow) {
+      run.noteError('connect_failed');
+      _emit(
+        'CBIO-A connect-failed error=${error.runtimeType} '
+        't=${waited.inMilliseconds}',
+      );
+      rethrow;
+    }
+    run.noteError('connect_failed');
+    _emit(
+      'CBIO-A connect-retry n=1 error=${error.runtimeType} '
+      't=${waited.inMilliseconds}',
+    );
+  }
+  await Future<void>.delayed(_connectRetryGap);
+  try {
+    await attempt();
+  } on Object catch (error) {
+    run.noteError('connect_failed');
+    _emit('CBIO-A connect-failed-after-retry error=${error.runtimeType}');
+    rethrow;
+  }
+}
+
+/// Releases the notify subscription and the GATT link, and only reports the
+/// link released once the plugin has actually finished the disconnect.
+///
+/// The plugin owns the disconnect timeout. Wrapping it in an outer Dart timeout
+/// used to abandon the plugin future while its operation was still in flight,
+/// which left the GATT client registered, kept the Android Bluetooth mutex held
+/// for the rest of the process, and made the next run's connect fail against a
+/// sensor that still saw itself connected.
+Future<void> _releaseLink(
+  _SessionRun run,
+  fbp.BluetoothDevice device,
+  StreamSubscription<List<int>>? subscription,
+) async {
+  try {
+    await subscription?.cancel().timeout(_teardownWindow);
+  } on Object {
+    // Best effort: the link is released below regardless.
+  }
+  if (!device.isConnected) {
+    // The link never came up, so there is no client to release.
+    run.gattReleased = true;
+    _emit('CBIO-A disconnect-skip not-connected');
+    return;
+  }
+  for (var attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await device.disconnect(timeout: _teardownWindow.inSeconds);
+      run.gattReleased = !device.isConnected;
+      _emit(
+        'CBIO-A disconnect-ok attempt=$attempt '
+        'connected=${device.isConnected}',
+      );
+      if (run.gattReleased) {
+        return;
+      }
+    } on Object catch (error) {
+      _emit(
+        'CBIO-A disconnect-failed attempt=$attempt '
+        'error=${error.runtimeType}',
+      );
+    }
+    if (attempt == 1) {
+      await Future<void>.delayed(_connectRetryGap);
+    }
+  }
+  run.noteError('disconnect_failed');
+}
+
+/// Canonicalises a UUID the way the app driver does, so Android's short
+/// `FF30` form compares equal to the full Bluetooth base form.
+String _canonicalUuid(String uuid) {
+  final normalized = uuid.trim().toLowerCase();
+  return switch (normalized.length) {
+    4 => '0000$normalized-0000-1000-8000-00805f9b34fb',
+    8 => '$normalized-0000-1000-8000-00805f9b34fb',
+    _ => normalized,
+  };
+}
+
+/// Whether one advertisement is an FF30 Cbio / SiSensing candidate.
+///
+/// The unfiltered pass runs without a platform scan filter, so this mapping is
+/// what keeps a foreign advertiser from being surfaced as a sensor.
+bool _isCbioCandidate(fbp.ScanResult result) =>
+    result.advertisementData.serviceUuids.any(
+      (uuid) =>
+          _canonicalUuid(uuid.toString()) == _canonicalUuid(_sensorServiceUuid),
+    );
+
+/// Runs one bounded scan pass and returns the first FF30 candidate seen, or
+/// null when the window closes without one.
+///
+/// The pass owns its whole lifecycle. Results are subscribed before the radio
+/// starts, so an advertisement that arrives during start-up is not lost, and
+/// the pass ends when the plugin reports the scan stopped or when its own
+/// deadline elapses, whichever comes first: `flutter_blue_plus` can finish a
+/// timed scan without ever publishing `isScanning = false`, and it can leave
+/// the `startScan` future pending, so neither signal may be the only bound.
+Future<String?> _scanPass({
+  required List<fbp.Guid> withServices,
+  required _SessionRun run,
+}) async {
+  final collected = <String>{};
+  final done = Completer<void>();
+  StreamSubscription<List<fbp.ScanResult>>? results;
+  StreamSubscription<bool>? scanning;
+  var started = false;
+
+  void finish() {
+    if (!done.isCompleted) done.complete();
+  }
+
+  final deadline = Timer(_scanWindow + _scanOverhead, finish);
+  try {
+    results = fbp.FlutterBluePlus.onScanResults.listen((batch) {
+      for (final result in batch) {
+        if (_isCbioCandidate(result)) {
+          collected.add(result.device.remoteId.str);
+        }
+      }
+    });
+    scanning = fbp.FlutterBluePlus.isScanning.listen((isScanning) {
+      if (started && !isScanning) {
+        finish();
+      }
+    });
+    final startup = fbp.FlutterBluePlus.startScan(
+      withServices: withServices,
+      timeout: _scanWindow,
+      continuousUpdates: true,
+      oneByOne: true,
+      androidUsesFineLocation: true,
+    );
+    unawaited(
+      startup.then<void>(
+        (_) {
+          started = true;
+          // A window that elapsed while the radio was still starting must not
+          // leave the scanner registered behind the pass.
+          if (done.isCompleted && fbp.FlutterBluePlus.isScanningNow) {
+            unawaited(_stopRadio());
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          run.noteError('scan_failed');
+          _emit('CBIO-A scan-start-failed error=${error.runtimeType}');
+          finish();
+        },
+      ),
+    );
+    await done.future;
+  } on Object catch (error) {
+    run.noteError('scan_failed');
+    _emit('CBIO-A scan-failed error=${error.runtimeType}');
+  } finally {
+    deadline.cancel();
+    await results?.cancel();
+    await scanning?.cancel();
+    await _stopRadio();
+  }
+  return collected.isEmpty ? null : collected.first;
+}
+
+/// Locates the sensor inside the acquisition budget.
+///
+/// The FF30-filtered pass is first because it is the cheapest, but this sensor's
+/// advertisement does not always carry the service UUID in the field Android
+/// filters on, so a filtered pass can finish empty while the sensor is
+/// centimetres away. One unfiltered retry follows each empty filtered pass, and
+/// every result still has to classify as an FF30 candidate before it is
+/// returned, so a foreign advertiser is never surfaced as a sensor.
+Future<String?> _acquireTargetId(_SessionRun run) async {
+  final deadline = DateTime.now().add(_acquisitionBudget);
+  while (DateTime.now().isBefore(deadline)) {
+    final filtered = await _scanPass(
+      withServices: _sensorServiceFilter.map(fbp.Guid.new).toList(),
+      run: run,
+    );
+    if (filtered != null) {
+      _emit('CBIO-A scan-source=filtered');
+      return filtered;
+    }
+    if (!DateTime.now().isBefore(deadline)) {
+      break;
+    }
+    final unfiltered = await _scanPass(withServices: const [], run: run);
+    if (unfiltered != null) {
+      _emit('CBIO-A scan-source=unfiltered');
+      return unfiltered;
+    }
+    await Future<void>.delayed(_acquireGap);
+  }
+  return null;
+}

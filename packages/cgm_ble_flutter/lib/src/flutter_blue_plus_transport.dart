@@ -6,7 +6,31 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 
-class FlutterBluePlusTransport implements BleTransport {
+/// Instance-owned proof that a FlutterBluePlus scan start completed.
+///
+/// The process-global `isScanning` signal can become true before the native
+/// start request completes. Debug capture code uses this tracker to bind
+/// readiness to the exact transport scan attempt that completed successfully.
+final class FlutterBluePlusScanStartTracker {
+  final StreamController<int> _acknowledgements =
+      StreamController<int>.broadcast(sync: true);
+
+  var _latestAttempt = 0;
+
+  int get latestAttempt => _latestAttempt;
+  Stream<int> get acknowledgements => _acknowledgements.stream;
+
+  int _beginAttempt() => ++_latestAttempt;
+
+  void _acknowledge(int attempt) {
+    if (!_acknowledgements.isClosed) {
+      _acknowledgements.add(attempt);
+    }
+  }
+}
+
+class FlutterBluePlusTransport
+    implements BleTransport, BleSingleAttemptTransport {
   const FlutterBluePlusTransport({
     this.androidUsesFineLocation = true,
     this.androidCheckLocationServices = true,
@@ -15,6 +39,7 @@ class FlutterBluePlusTransport implements BleTransport {
     this.discoveryTimeout = const Duration(seconds: 30),
     this.showPowerAlert = true,
     this.restoreState = false,
+    this.scanStartTracker,
   });
 
   final bool androidUsesFineLocation;
@@ -24,8 +49,21 @@ class FlutterBluePlusTransport implements BleTransport {
   final Duration discoveryTimeout;
   final bool showPowerAlert;
   final bool restoreState;
+  final FlutterBluePlusScanStartTracker? scanStartTracker;
+
+  @override
+  bool get supportsSingleAttemptConnect => true;
 
   static Future<void>? _setOptionsFuture;
+
+  /// Process-wide scan activity reported by flutter_blue_plus.
+  ///
+  /// This does not expose scan results or payloads. Capture tooling can use it
+  /// to prove that a requested passive scan reached the platform scanner.
+  static Stream<bool> get scanStates => fbp.FlutterBluePlus.isScanning;
+
+  /// The current process-wide scan state reported by flutter_blue_plus.
+  static bool get isScanningNow => fbp.FlutterBluePlus.isScanningNow;
 
   @override
   Stream<BleScanResult> scan({
@@ -33,25 +71,108 @@ class FlutterBluePlusTransport implements BleTransport {
     bool allowDuplicates = true,
     List<String>? withServices,
   }) {
+    final tracker = scanStartTracker;
+    final scanAttempt = tracker?._beginAttempt();
     final controller = StreamController<BleScanResult>();
     final seen = <String, String>{};
 
     StreamSubscription<List<fbp.ScanResult>>? resultsSubscription;
     StreamSubscription<bool>? scanningSubscription;
+    Future<void>? startupFuture;
+    final closeOnce = SingleFlightTeardown();
+    final stopOnce = SingleFlightTeardown();
+    Timer? scanDeadline;
     var startedScan = false;
     var closed = false;
 
-    Future<void> closeStream({bool stopScan = true}) async {
-      if (closed) {
-        return;
+    Future<void> stopStartedScan() {
+      if (!stopOnce.started && !fbp.FlutterBluePlus.isScanningNow) {
+        return Future<void>.value();
       }
+      // startScan and stopScan share the plugin's scan mutex. A pending stop
+      // therefore follows a late native start; both close and late-start
+      // cleanup must await that same stop rather than queue a second one.
+      return stopOnce.run(fbp.FlutterBluePlus.stopScan);
+    }
+
+    Future<void> closeStream({
+      bool stopScan = true,
+      bool waitForStartup = true,
+    }) {
+      // `closed`/`scanDeadline.cancel()` are safe to repeat — the guard that
+      // must not repeat is `closeOnce.run`. Only the first caller's `stopScan`/
+      // `waitForStartup` are honored; later concurrent or sequential callers
+      // (the bound timer, a consumer cancel, the `isScanning` listener, a
+      // startup error) all observe that same first outcome instead of
+      // re-running teardown. See [SingleFlightTeardown].
       closed = true;
-      await resultsSubscription?.cancel();
-      await scanningSubscription?.cancel();
-      if (stopScan && fbp.FlutterBluePlus.isScanningNow) {
-        await fbp.FlutterBluePlus.stopScan();
-      }
-      await controller.close();
+      scanDeadline?.cancel();
+      scanDeadline = null;
+      final results = resultsSubscription;
+      final scanning = scanningSubscription;
+      // Close the caller's stream before cleanup. Cleanup awaits plugin
+      // futures that can stay pending on some Android stacks, and a scan the
+      // platform already stopped must not hold its caller open behind them.
+      unawaited(
+        controller.close().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
+      );
+      return closeOnce.run(
+        () =>
+            closeFlutterBluePlusScanResources(
+              cancelResults: results?.cancel,
+              cancelScanning: scanning?.cancel,
+              awaitPendingStart: waitForStartup
+                  ? () async {
+                      final pending = startupFuture;
+                      if (pending != null) {
+                        await pending;
+                      }
+                    }
+                  : null,
+              stopScan: stopScan ? stopStartedScan : null,
+              closeController: controller.close,
+            ).timeout(
+              // Native cleanup may still be pending; it must not leave caller
+              // cancellation pending forever.
+              const Duration(seconds: 5),
+              onTimeout: () {},
+            ),
+      );
+    }
+
+    void closeStreamSafely({bool stopScan = true, bool waitForStartup = true}) {
+      unawaited(
+        closeStream(
+          stopScan: stopScan,
+          waitForStartup: waitForStartup,
+        ).then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+    }
+
+    /// Closes this scan when the requested window elapses.
+    ///
+    /// The wrapper owns the only timeout, including adapter/startup time:
+    /// the plugin's pending `startScan` future can stay pending past the
+    /// window without publishing `isScanning = false`.
+    void armScanDeadline(Duration window) {
+      scanDeadline?.cancel();
+      scanDeadline = Timer(window + const Duration(milliseconds: 750), () {
+        if (closed) {
+          return;
+        }
+        // Close the caller's stream first: cleanup below awaits plugin
+        // futures that may themselves be the pending signal.
+        unawaited(
+          controller.close().then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          ),
+        );
+        closeStreamSafely(waitForStartup: false);
+      });
     }
 
     String signatureOf(BleScanResult result) {
@@ -71,16 +192,35 @@ class FlutterBluePlusTransport implements BleTransport {
         }
         seen[mapped.deviceId] = signature;
       }
-      if (!controller.isClosed) {
+      if (!closed && !controller.isClosed) {
         controller.add(mapped);
       }
     }
 
-    controller.onCancel = closeStream;
+    void emitScanError(Object error, StackTrace stackTrace) {
+      if (closed || controller.isClosed) {
+        return;
+      }
+      controller.addError(
+        classifyFlutterBluePlusFailure(error, operation: BleOperation.scan),
+        stackTrace,
+      );
+    }
 
-    unawaited(() async {
+    // Closing the controller also invokes onCancel. That natural completion
+    // must not await its own cleanup future and delay stream-first closure.
+    controller.onCancel = () => closed ? null : closeStream();
+
+    startupFuture = () async {
       try {
+        final window = timeout;
+        if (window != null) {
+          armScanDeadline(window);
+        }
         await _ensureAdapterReady();
+        if (closed) {
+          return;
+        }
         resultsSubscription = fbp.FlutterBluePlus.onScanResults.listen(
           (results) {
             for (final result in results) {
@@ -88,50 +228,66 @@ class FlutterBluePlusTransport implements BleTransport {
             }
           },
           onError: (Object error, StackTrace stackTrace) {
-            controller.addError(
-              classifyFlutterBluePlusFailure(
-                error,
-                operation: BleOperation.scan,
-              ),
-              stackTrace,
-            );
+            emitScanError(error, stackTrace);
           },
         );
         scanningSubscription = fbp.FlutterBluePlus.isScanning.listen(
           (scanning) {
             if (startedScan && !scanning) {
-              unawaited(closeStream(stopScan: false));
+              closeStreamSafely(stopScan: false);
             }
           },
           onError: (Object error, StackTrace stackTrace) {
-            controller.addError(
-              classifyFlutterBluePlusFailure(
-                error,
-                operation: BleOperation.scan,
-              ),
-              stackTrace,
-            );
+            emitScanError(error, stackTrace);
           },
         );
+        if (closed) {
+          return;
+        }
+        // No `timeout:` passed to the plugin here, on purpose. flutter_blue_plus
+        // races its own internal `Timer(timeout, stopScan)` against whatever
+        // stops this wrapper's stream (consumer cancel, error, or the
+        // `isScanning` listener below) — both paths call the plugin's public
+        // `stopScan()`, which serializes on a process-global mutex
+        // (`_MutexFactory.getMutexForKey("scan")`). If the plugin's own
+        // timer wins that race and its native stop invocation never returns
+        // (observed on macOS: see "M3" in the Yuwell Anytime 5P status
+        // notes), the loser blocks on that mutex forever — wedging every
+        // later scan/connect call in the process, since the mutex is never
+        // released. Owning the single bound timer here instead means exactly
+        // one stop (`stopStartedScan`, idempotent via `stopOnce`) ever calls
+        // the plugin's `stopScan()` for a given scan attempt.
         await fbp.FlutterBluePlus.startScan(
           withServices: (withServices ?? const <String>[])
               .map(fbp.Guid.new)
               .toList(growable: false),
-          timeout: timeout,
           continuousUpdates: true,
           oneByOne: true,
           androidUsesFineLocation: androidUsesFineLocation,
           androidCheckLocationServices: androidCheckLocationServices,
         );
         startedScan = true;
+        if (closed) {
+          await stopStartedScan();
+        } else {
+          if (scanAttempt != null) {
+            tracker!._acknowledge(scanAttempt);
+          }
+        }
       } catch (error, stackTrace) {
-        controller.addError(
-          classifyFlutterBluePlusFailure(error, operation: BleOperation.scan),
-          stackTrace,
-        );
-        await closeStream(stopScan: false);
+        if (!closed && !controller.isClosed) {
+          emitScanError(error, stackTrace);
+        }
+        if (closed) {
+          await stopStartedScan();
+        } else {
+          closeStreamSafely(waitForStartup: false);
+        }
       }
-    }());
+    }();
+    unawaited(
+      startupFuture.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
 
     return controller.stream;
   }
@@ -140,26 +296,58 @@ class FlutterBluePlusTransport implements BleTransport {
   Future<BleConnection> connect(
     String deviceId, {
     Duration timeout = const Duration(seconds: 10),
+  }) {
+    return _connect(deviceId, timeout: timeout, retryAndroidStatus133: true);
+  }
+
+  /// Connects with one direct FlutterBluePlus connect invocation.
+  ///
+  /// This path still waits for the process-wide scanner to stop, but it never
+  /// uses the Android status-133 retry from [connect]. It also does not create,
+  /// remove, or otherwise reconcile an Android bond. Protocols with one-shot
+  /// connection semantics, such as the audited Libre Gen1 handshake, must use
+  /// this method instead of [connect].
+  @override
+  Future<BleConnection> connectOnce(
+    String deviceId, {
+    Duration timeout = const Duration(seconds: 10),
+  }) {
+    return _connect(deviceId, timeout: timeout, retryAndroidStatus133: false);
+  }
+
+  Future<BleConnection> _connect(
+    String deviceId, {
+    required Duration timeout,
+    required bool retryAndroidStatus133,
   }) async {
     try {
       await _ensureAdapterReady();
-      final device = await connectWithScanStoppedRetry<fbp.BluetoothDevice>(
-        stopScan: fbp.FlutterBluePlus.stopScan,
-        connect: () async {
-          final device = fbp.BluetoothDevice.fromId(deviceId);
-          await device.connect(
-            // Keep compatibility with the app's locked flutter_blue_plus 2.2.x.
-            // ignore: deprecated_member_use
-            license: fbp.License.free,
-            timeout: timeout,
-            mtu: null,
-          );
-          return device;
-        },
-        shouldRetry: _shouldRetryAndroidConnect,
-        waitBeforeRetry: () =>
-            Future<void>.delayed(const Duration(milliseconds: 800)),
-      );
+      Future<fbp.BluetoothDevice> connectDevice() async {
+        final device = fbp.BluetoothDevice.fromId(deviceId);
+        await device.connect(
+          // Keep compatibility with the app's locked flutter_blue_plus 2.2.x.
+          // ignore: deprecated_member_use
+          license: fbp.License.free,
+          timeout: timeout,
+          mtu: null,
+          // A one-shot protocol must not install a background reconnect.
+          autoConnect: false,
+        );
+        return device;
+      }
+
+      final device = retryAndroidStatus133
+          ? await connectWithScanStoppedRetry<fbp.BluetoothDevice>(
+              stopScan: fbp.FlutterBluePlus.stopScan,
+              connect: connectDevice,
+              shouldRetry: _shouldRetryAndroidConnect,
+              waitBeforeRetry: () =>
+                  Future<void>.delayed(const Duration(milliseconds: 800)),
+            )
+          : await connectWithScanStoppedOnce<fbp.BluetoothDevice>(
+              stopScan: fbp.FlutterBluePlus.stopScan,
+              connect: connectDevice,
+            );
       return _FlutterBluePlusConnection(
         device,
         operationTimeout: operationTimeout,
@@ -245,6 +433,7 @@ class FlutterBluePlusTransport implements BleTransport {
       deviceId: result.device.remoteId.str,
       deviceName: name,
       rssi: result.rssi,
+      observedAt: result.timeStamp.toUtc(),
       serviceUuids: advertisement.serviceUuids
           .map((uuid) => _normalizeUuid(uuid.toString()))
           .toList(growable: false),
@@ -276,6 +465,76 @@ class FlutterBluePlusTransport implements BleTransport {
   }
 }
 
+/// Runs one teardown at most once; every caller — the first and any later
+/// concurrent or sequential one — awaits that same first outcome.
+///
+/// [FlutterBluePlusTransport.scan] keys one of these per scan attempt so a
+/// consumer cancelling its subscription, the wrapper's own bound timeout
+/// timer, an externally observed `isScanning` drop, and a startup error can
+/// all race to end the scan without [run] ever executing [teardown] twice.
+/// A second, concurrent call to the plugin's `stopScan()` for the same
+/// attempt can hang forever on this transport's process-wide scan mutex —
+/// see the comment above the `startScan` call in
+/// [FlutterBluePlusTransport.scan].
+@visibleForTesting
+final class SingleFlightTeardown {
+  Future<void>? _future;
+
+  /// True once [run] has been called at least once.
+  bool get started => _future != null;
+
+  Future<void> run(Future<void> Function() teardown) {
+    final existing = _future;
+    if (existing != null) {
+      return existing;
+    }
+    final completer = Completer<void>();
+    _future = completer.future;
+    // Publish first: closing a stream can re-enter through onCancel.
+    completer.complete(Future<void>.sync(teardown));
+    return completer.future;
+  }
+}
+
+/// Cancels all scan resources even when an earlier cleanup step fails.
+@visibleForTesting
+Future<void> closeFlutterBluePlusScanResources({
+  required Future<void> Function()? cancelResults,
+  required Future<void> Function()? cancelScanning,
+  Future<void> Function()? awaitPendingStart,
+  required Future<void> Function()? stopScan,
+  required Future<void> Function() closeController,
+  Duration stepTimeout = const Duration(seconds: 5),
+}) async {
+  Object? firstError;
+  StackTrace? firstStackTrace;
+
+  Future<void> run(Future<void> Function()? action) async {
+    if (action == null) {
+      return;
+    }
+    try {
+      // A radio that already stopped can leave these plugin futures pending
+      // forever. Bound each one so cleanup always finishes.
+      await action().timeout(stepTimeout, onTimeout: () {});
+    } catch (error, stackTrace) {
+      firstError ??= error;
+      firstStackTrace ??= stackTrace;
+    }
+  }
+
+  // Close the caller's stream first. This is the step every caller depends on;
+  // it must not sit behind plugin futures that may never complete.
+  await run(closeController);
+  await run(cancelResults);
+  await run(cancelScanning);
+  await run(awaitPendingStart);
+  await run(stopScan);
+  if (firstError != null) {
+    Error.throwWithStackTrace(firstError!, firstStackTrace!);
+  }
+}
+
 /// Runs both the initial connection attempt and its optional retry only after
 /// FlutterBluePlus has finished stopping its scanner.
 ///
@@ -304,6 +563,21 @@ Future<T> connectWithScanStoppedRetry<T>({
 
   await waitBeforeRetry();
   return attempt();
+}
+
+/// Runs one connection invocation after FlutterBluePlus stops its scanner.
+///
+/// Unlike [connectWithScanStoppedRetry], this helper has no retry callback or
+/// delay hook. A connect error, including Android GATT status 133, is returned
+/// to the caller after the first invocation. No bond operation is part of this
+/// sequence.
+@visibleForTesting
+Future<T> connectWithScanStoppedOnce<T>({
+  required Future<void> Function() stopScan,
+  required Future<T> Function() connect,
+}) async {
+  await stopScan();
+  return connect();
 }
 
 /// Discovers the GATT table without subscribing to the optional Service
@@ -364,7 +638,7 @@ Future<T> disconnectWithPluginTimeout<T>(
   return disconnect(_flutterBluePlusTimeoutSeconds(timeout));
 }
 
-class _FlutterBluePlusConnection implements BleConnection {
+class _FlutterBluePlusConnection implements BleConnection, BleNegotiatedMtu {
   _FlutterBluePlusConnection(
     this._device, {
     required this.operationTimeout,
@@ -376,6 +650,10 @@ class _FlutterBluePlusConnection implements BleConnection {
   final Duration discoveryTimeout;
   final Map<String, fbp.BluetoothCharacteristic> _characteristics =
       <String, fbp.BluetoothCharacteristic>{};
+  int? _negotiatedMtu;
+
+  @override
+  int? get negotiatedMtu => _negotiatedMtu;
 
   @override
   String get deviceId => _device.remoteId.str;
@@ -443,7 +721,7 @@ class _FlutterBluePlusConnection implements BleConnection {
       if (kIsWeb || !Platform.isAndroid) {
         return;
       }
-      await _device.requestMtu(mtu).timeout(operationTimeout);
+      _negotiatedMtu = await _device.requestMtu(mtu).timeout(operationTimeout);
     });
   }
 

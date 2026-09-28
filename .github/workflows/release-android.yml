@@ -174,6 +174,24 @@ jobs:
             }
           done
 
+      - name: Require CBIO vendor material for the release build
+        shell: bash
+        env:
+          CBIO_VENDOR_STREAM_KEY_HEX: ${{ secrets.CBIO_VENDOR_STREAM_KEY_HEX }}
+          CBIO_VENDOR_AUTH_MATERIAL_HEX: ${{ secrets.CBIO_VENDOR_AUTH_MATERIAL_HEX }}
+          CBIO_VENDOR_AUTH_TRIGGER_HEX: ${{ secrets.CBIO_VENDOR_AUTH_TRIGGER_HEX }}
+        run: |
+          set -euo pipefail
+          for secret_name in \
+            CBIO_VENDOR_STREAM_KEY_HEX \
+            CBIO_VENDOR_AUTH_MATERIAL_HEX \
+            CBIO_VENDOR_AUTH_TRIGGER_HEX; do
+            test -n "${!secret_name:-}" || {
+              printf 'Required android-release secret %s is missing.\n' "$secret_name" >&2
+              exit 1
+            }
+          done
+
       - name: Set up Java
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
@@ -200,12 +218,16 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          CBIO_VENDOR_STREAM_KEY_HEX: ${{ secrets.CBIO_VENDOR_STREAM_KEY_HEX }}
+          CBIO_VENDOR_AUTH_MATERIAL_HEX: ${{ secrets.CBIO_VENDOR_AUTH_MATERIAL_HEX }}
+          CBIO_VENDOR_AUTH_TRIGGER_HEX: ${{ secrets.CBIO_VENDOR_AUTH_TRIGGER_HEX }}
         run: |
           set -euo pipefail
           umask 077
           keystore_path="$RUNNER_TEMP/openglucose-release.jks"
+          cbio_defines_path="$RUNNER_TEMP/openglucose-cbio-vendor.json"
           cleanup() {
-            rm -f -- "$keystore_path"
+            rm -f -- "$keystore_path" "$cbio_defines_path"
           }
           trap cleanup EXIT
           trap 'exit 130' INT
@@ -214,9 +236,18 @@ jobs:
             > "$keystore_path"
           test -s "$keystore_path"
           unset ANDROID_KEYSTORE_BASE64
+          jq -n \
+            '{CBIO_VENDOR_STREAM_KEY_HEX: env.CBIO_VENDOR_STREAM_KEY_HEX,
+              CBIO_VENDOR_AUTH_MATERIAL_HEX: env.CBIO_VENDOR_AUTH_MATERIAL_HEX,
+              CBIO_VENDOR_AUTH_TRIGGER_HEX: env.CBIO_VENDOR_AUTH_TRIGGER_HEX}' \
+            > "$cbio_defines_path"
+          chmod 600 "$cbio_defines_path"
+          test -s "$cbio_defines_path"
+          unset CBIO_VENDOR_STREAM_KEY_HEX CBIO_VENDOR_AUTH_MATERIAL_HEX CBIO_VENDOR_AUTH_TRIGGER_HEX
           export ANDROID_KEYSTORE_PATH="$keystore_path"
           cd openhealth
-          flutter build apk --release --no-pub
+          flutter build apk --release --no-pub \
+            --dart-define-from-file="$cbio_defines_path"
 
       - name: Verify signer, identity, version, and digest
         id: verify

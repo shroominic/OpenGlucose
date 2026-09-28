@@ -13,9 +13,9 @@ const Color _kMuted = Color(0xFF5B6E6A);
 /// Light, skippable first-run onboarding.
 ///
 /// A short sequence of intro screens: welcome, how it works, a target-range
-/// picker, and a "connect your sensor" handoff. On completion (or skip) it
+/// picker, and a sensor-model chooser handoff. On completion (or skip) it
 /// persists state via [OnboardingStore] and invokes [onFinished], which the
-/// launch gate uses to hand off to the existing scan/connect flow.
+/// launch gate uses to show the no-sensor home.
 class OnboardingFlow extends StatefulWidget {
   const OnboardingFlow({
     super.key,
@@ -220,7 +220,7 @@ class _Footer extends StatelessWidget {
                     )
                   : Text(
                       isLast
-                          ? context.l10n.connectMySensor
+                          ? context.l10n.finishSetup
                           : context.l10n.continueLabel,
                     ),
             ),
@@ -435,19 +435,19 @@ class _HowItWorksStep extends StatelessWidget {
       body: l10n.howItWorksBody,
       bullets: <_Bullet>[
         _Bullet(
-          icon: Icons.touch_app_rounded,
-          title: l10n.applySensorTitle,
-          body: l10n.applySensorBody,
+          icon: Icons.fact_check_outlined,
+          title: l10n.chooseModelTitle,
+          body: l10n.chooseModelBody,
         ),
         _Bullet(
-          icon: Icons.hourglass_bottom_rounded,
-          title: l10n.warmupTitle,
-          body: l10n.warmupBody,
+          icon: Icons.device_hub_rounded,
+          title: l10n.followSetupTitle,
+          body: l10n.followSetupBody,
         ),
         _Bullet(
-          icon: Icons.timelapse_rounded,
-          title: l10n.readingEveryMinuteTitle,
-          body: l10n.readingEveryMinuteBody,
+          icon: Icons.show_chart_rounded,
+          title: l10n.seeTrendsTitle,
+          body: l10n.seeTrendsBody,
         ),
       ],
     );
@@ -612,19 +612,19 @@ class _ConnectStep extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     return _StepScaffold(
-      icon: Icons.bluetooth_searching_rounded,
+      icon: Icons.sensors_rounded,
       title: l10n.readyTitle,
       body: l10n.readyBody,
       bullets: <_Bullet>[
         _Bullet(
-          icon: Icons.bluetooth_rounded,
-          title: l10n.turnOnBluetoothTitle,
-          body: l10n.turnOnBluetoothBody,
+          icon: Icons.verified_outlined,
+          title: l10n.checkModelSupportTitle,
+          body: l10n.checkModelSupportBody,
         ),
         _Bullet(
-          icon: Icons.show_chart_rounded,
-          title: l10n.watchItComeAliveTitle,
-          body: l10n.watchItComeAliveBody,
+          icon: Icons.route_outlined,
+          title: l10n.guidedStepsTitle,
+          body: l10n.guidedStepsBody,
         ),
       ],
     );
