@@ -37,7 +37,7 @@ void main() {
       );
       final store = _SeededHealthStateStore(<String, String>{
         'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-        'openHealth.history.${sensor.storageKey}': jsonEncode(<Object?>[
+        _historyStateKey(sensor): jsonEncode(<Object?>[
           reading.toJson(),
         ]),
       });
@@ -103,7 +103,7 @@ void main() {
           jsonEncode(sensor.toJson()),
         );
         await store.setString(
-          'openHealth.history.${sensor.storageKey}',
+          _historyStateKey(sensor),
           jsonEncode(<Object?>[reading.toJson()]),
         );
         final controller = CgmAppController(
@@ -142,7 +142,7 @@ void main() {
       // The mutable active-history slot may be reused by the next session,
       // but neither archived session may follow that overwrite.
       await store.setString(
-        'openHealth.history.${sensor.storageKey}',
+        _historyStateKey(sensor),
         jsonEncode(<Object?>[
           CgmReading(
             valueMgdl: 222,
@@ -190,7 +190,7 @@ void main() {
       );
       final store = _SeededHealthStateStore(<String, String>{
         'openHealth.lastSensor': jsonEncode(sensor.toJson()),
-        'openHealth.history.${sensor.storageKey}': jsonEncode(<Object?>[
+        _historyStateKey(sensor): jsonEncode(<Object?>[
           reading.toJson(),
         ]),
       });
@@ -235,6 +235,13 @@ void main() {
     },
   );
 }
+
+String _historyStateKey(DiscoveredSensor sensor) => sensor.driverId == 'aidex'
+    ? 'openHealth.history.${sensor.storageKey}'
+    : 'openHealth.history.v2.${base64Url.encode(utf8.encode(jsonEncode(<String>[
+        sensor.driverId,
+        sensor.storageKey,
+      ]))).replaceAll('=', '')}';
 
 class _NeverConnectDriver implements CgmDriver {
   int connectCount = 0;

@@ -12,6 +12,21 @@ import 'timeline.dart';
 const cgmAllowSessionActivationMetadataKey =
     'cgm.connect.allowSessionActivation';
 
+/// Persisted discovery metadata for a sensor family's expected wear time.
+///
+/// This lets the host avoid retiring a restored sensor with a longer life
+/// before its driver reconnects and publishes authoritative session data.
+const cgmExpectedLifetimeMinutesMetadataKey =
+    'cgm.sensor.expectedLifetimeMinutes';
+
+/// Closed session metadata that blocks background reconnect for a failure
+/// which needs a new explicit user action or an application update.
+///
+/// Drivers set the string value `false`. The host must treat only that exact
+/// value as a prohibition so older drivers remain backward compatible.
+const cgmAutomaticReconnectAllowedMetadataKey =
+    'cgm.session.automaticReconnectAllowed';
+
 enum CgmSyncStage {
   disconnected,
   scanning,
@@ -333,6 +348,7 @@ class CgmSessionInfo {
     this.elapsedMinutes,
     this.sessionStopped = false,
     this.warmupMinutes = 60,
+    this.expectedLifetimeMinutes = 15 * 24 * 60,
   });
 
   final String manufacturer;
@@ -344,6 +360,7 @@ class CgmSessionInfo {
   final int? elapsedMinutes;
   final bool sessionStopped;
   final int warmupMinutes;
+  final int expectedLifetimeMinutes;
 
   CgmSessionInfo copyWith({
     String? manufacturer,
@@ -355,6 +372,7 @@ class CgmSessionInfo {
     int? elapsedMinutes,
     bool? sessionStopped,
     int? warmupMinutes,
+    int? expectedLifetimeMinutes,
   }) {
     return CgmSessionInfo(
       manufacturer: manufacturer ?? this.manufacturer,
@@ -367,6 +385,8 @@ class CgmSessionInfo {
       elapsedMinutes: elapsedMinutes ?? this.elapsedMinutes,
       sessionStopped: sessionStopped ?? this.sessionStopped,
       warmupMinutes: warmupMinutes ?? this.warmupMinutes,
+      expectedLifetimeMinutes:
+          expectedLifetimeMinutes ?? this.expectedLifetimeMinutes,
     );
   }
 }

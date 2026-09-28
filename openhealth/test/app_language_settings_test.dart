@@ -43,7 +43,7 @@ void main() {
         AppLanguage.simplifiedChinese,
       );
       expect(find.byTooltip('设置'), findsOneWidget);
-      expect(find.text('查找我的传感器'), findsOneWidget);
+      expect(find.text('连接传感器'), findsOneWidget);
 
       await tester.tap(find.byTooltip('设置'));
       await tester.pumpAndSettle();

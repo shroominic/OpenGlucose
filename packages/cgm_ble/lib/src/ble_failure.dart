@@ -2,6 +2,13 @@ enum BleFailureKind {
   permissionRequired,
   bluetoothOff,
   bluetoothUnavailable,
+
+  /// The platform declined to run the scan, so no result is meaningful.
+  ///
+  /// Android defers an unfiltered scan while the display is off. That is a
+  /// scan this app could not perform, not a scan that found nothing, and the
+  /// two must never render the same way.
+  scanUnavailable,
   bondRejected,
   bondTimedOut,
   sensorPossiblyInUse,

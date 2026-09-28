@@ -82,19 +82,69 @@ abstract final class AidexSubscribeAttempt {
   static const Set<String> values = <String>{initial, recovery};
 }
 
+/// Pure discovery mapping for AiDEX/LinX advertisements.
+///
+/// The application composition layer can reuse this mapper while it owns one
+/// physical scan shared by multiple vendor drivers. Keeping discovery here
+/// prevents AiDEX matching rules from leaking into the app.
+final class AidexDiscovery {
+  const AidexDiscovery();
+
+  static const List<String> scanServiceUuids = <String>[AidexUuids.cgmService];
+
+  DiscoveredSensor? mapScanResult(BleScanResult result) {
+    final name = result.deviceName.trim();
+    final serviceMatch = result.serviceUuids
+        .map((uuid) => uuid.toUpperCase())
+        .contains(AidexUuids.cgmService);
+    final manufacturer = result.manufacturerData
+        .cast<BleManufacturerData?>()
+        .firstWhere((entry) => entry?.companyId == 0x0059, orElse: () => null);
+    final nameMatch =
+        name.contains('AiDEX') ||
+        name.contains('LinX') ||
+        name.contains('AIDEX');
+    if (!nameMatch && !(serviceMatch && manufacturer != null)) {
+      return null;
+    }
+
+    final advertisement = manufacturer == null
+        ? null
+        : parseAidexManufacturerData(
+            Uint8List.fromList(<int>[0x59, 0x00, ...manufacturer.bytes]),
+          );
+    final serial = extractAidexSerial(name);
+    return DiscoveredSensor(
+      driverId: 'aidex',
+      deviceId: result.deviceId,
+      displayName: name.isEmpty ? result.deviceId : name,
+      storageKey: serial.isEmpty ? result.deviceId : 'serial:$serial',
+      rssi: result.rssi,
+      capabilities: AidexSensorDriver.capabilities,
+      advertisement: advertisement,
+      notes: nameMatch
+          ? 'Matched by AiDEX/LinX device name.'
+          : 'Matched by CGM service and manufacturer prefix 0x0059.',
+      metadata: <String, String>{if (serial.isNotEmpty) 'serial': serial},
+    );
+  }
+}
+
 class AidexSensorDriver implements CgmDriver {
   AidexSensorDriver(
     this._transport, {
     DateTime Function()? clock,
     AidexTimingProfile timingProfile = AidexTimingProfile.production,
+    this.discovery = const AidexDiscovery(),
   }) : _clock = clock ?? DateTime.now,
        _timingProfile = timingProfile;
 
   final BleTransport _transport;
   final DateTime Function() _clock;
   final AidexTimingProfile _timingProfile;
+  final AidexDiscovery discovery;
 
-  static const CgmCapabilities _capabilities = CgmCapabilities(
+  static const CgmCapabilities capabilities = CgmCapabilities(
     supportsDirectBle: true,
     supportsVendorPairing: true,
     supportsAdvertisementGlucose: true,
@@ -119,9 +169,9 @@ class AidexSensorDriver implements CgmDriver {
     await for (final result in _transport.scan(
       timeout: timeout,
       allowDuplicates: allowDuplicates,
-      withServices: const <String>[AidexUuids.cgmService],
+      withServices: AidexDiscovery.scanServiceUuids,
     )) {
-      final candidate = _mapScanResult(result);
+      final candidate = discovery.mapScanResult(result);
       if (candidate == null) {
         continue;
       }
@@ -147,43 +197,6 @@ class AidexSensorDriver implements CgmDriver {
     );
     unawaited(session.initialize());
     return session;
-  }
-
-  DiscoveredSensor? _mapScanResult(BleScanResult result) {
-    final name = result.deviceName.trim();
-    final serviceMatch = result.serviceUuids
-        .map((uuid) => uuid.toUpperCase())
-        .contains(AidexUuids.cgmService);
-    final manufacturer = result.manufacturerData
-        .cast<BleManufacturerData?>()
-        .firstWhere((entry) => entry?.companyId == 0x0059, orElse: () => null);
-    final nameMatch =
-        name.contains('AiDEX') ||
-        name.contains('LinX') ||
-        name.contains('AIDEX');
-    if (!nameMatch && !(serviceMatch && manufacturer != null)) {
-      return null;
-    }
-
-    final advertisement = manufacturer == null
-        ? null
-        : parseAidexManufacturerData(
-            Uint8List.fromList(<int>[0x59, 0x00, ...manufacturer.bytes]),
-          );
-    final serial = extractAidexSerial(name);
-    return DiscoveredSensor(
-      driverId: driverId,
-      deviceId: result.deviceId,
-      displayName: name.isEmpty ? result.deviceId : name,
-      storageKey: serial.isEmpty ? result.deviceId : 'serial:$serial',
-      rssi: result.rssi,
-      capabilities: _capabilities,
-      advertisement: advertisement,
-      notes: nameMatch
-          ? 'Matched by AiDEX/LinX device name.'
-          : 'Matched by CGM service and manufacturer prefix 0x0059.',
-      metadata: <String, String>{if (serial.isNotEmpty) 'serial': serial},
-    );
   }
 }
 

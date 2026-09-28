@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:openglucose/main.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/app_language_controller.dart';
+import 'package:openglucose/src/display_awake_gate.dart';
 import 'package:openglucose/src/health_state_store.dart';
 import 'package:openglucose/src/healthkit_export.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -88,6 +89,35 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets('a terminal scan error completes under widget fake async', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: _FailingScanDriver(
+        BleFailure(
+          kind: BleFailureKind.bluetoothOff,
+          operation: BleOperation.scan,
+          diagnosticCode: 'test.scan.terminal',
+        ),
+      ),
+      healthStateStore: PreferencesHealthStateStore(preferences),
+    );
+    await controller.initialize();
+
+    var completed = false;
+    final scan = controller.scan().whenComplete(() => completed = true);
+    await tester.pump();
+    await tester.pump();
+
+    expect(completed, isTrue);
+    expect(controller.scanning, isFalse);
+    await scan;
+    controller.dispose();
+  });
+
   testWidgets('Bluetooth-off scan shows enable guidance and retry', (
     tester,
   ) async {
@@ -122,7 +152,7 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey<String>('scanSensorsButton')));
+    await _startNearbySensorScan(tester);
     await tester.pumpAndSettle();
 
     expect(
@@ -180,10 +210,10 @@ void main() {
         preferences: preferences,
       ),
     );
-    await tester.tap(find.byKey(const ValueKey<String>('scanSensorsButton')));
+    await _startNearbySensorScan(tester);
     await tester.pumpAndSettle();
 
-    expect(find.text('Sensor partial'), findsOneWidget);
+    expect(find.text('Supported sensor'), findsOneWidget);
     expect(
       find.byKey(const ValueKey<String>('sensorScanInlineFailure')),
       findsOneWidget,
@@ -295,6 +325,348 @@ void main() {
       controller.dispose();
     },
   );
+
+  test('a failed scan replacement is contained and does not rescan', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _CancelFailingScanDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: PreferencesHealthStateStore(preferences),
+    );
+    await controller.initialize();
+
+    final firstScan = controller.scan();
+    await _drainEventQueue();
+    expect(driver.scanCalls, 1);
+
+    await controller.scan();
+
+    expect(driver.scanCalls, 1);
+    expect(controller.scanning, isFalse);
+    expect(controller.scanFailure, isNull);
+    expect(
+      controller.lastError,
+      'Sensor scan could not be completed. Check Bluetooth and try again.',
+    );
+    await firstScan.timeout(const Duration(seconds: 1));
+    controller.dispose();
+  });
+
+  test(
+    'back-to-back scans start only the newest stream and cancel once',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _CancellationTrackedScanDriver();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: PreferencesHealthStateStore(preferences),
+      );
+      await controller.initialize();
+
+      final initialScan = controller.scan();
+      await _drainEventQueue();
+      expect(driver.scans, hasLength(1));
+
+      final firstReplacement = controller.scan();
+      final secondReplacement = controller.scan();
+      await _drainEventQueue();
+
+      expect(driver.scans, hasLength(2));
+      expect(driver.scans.map((scan) => scan.cancellations), <int>[1, 0]);
+
+      controller.dispose();
+      await Future.wait(<Future<void>>[
+        initialScan,
+        firstReplacement,
+        secondReplacement,
+      ]).timeout(const Duration(seconds: 1));
+      await _drainEventQueue();
+
+      expect(driver.scans.map((scan) => scan.cancellations), <int>[1, 1]);
+    },
+  );
+
+  test(
+    'the display is held awake for the scan window and released after',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _ControlledScanDriver();
+      final display = _FakeDisplayAwake(interactive: true);
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: PreferencesHealthStateStore(preferences),
+        displayAwake: display,
+      );
+      await controller.initialize();
+
+      final scan = controller.scan();
+      await _drainEventQueue();
+
+      expect(display.holdCalls, 1);
+      expect(
+        display.held,
+        isTrue,
+        reason: 'the window needs the display awake',
+      );
+
+      driver.scans.single.add(_sensor('held'));
+      await driver.scans.single.close();
+      await scan;
+
+      expect(
+        display.held,
+        isFalse,
+        reason: 'the hold must not outlive the scan',
+      );
+      expect(display.releaseCalls, 1);
+      expect(controller.sensors, hasLength(1));
+      expect(controller.scanFailure, isNull);
+
+      controller.dispose();
+    },
+  );
+
+  test(
+    'a scan the display switched off is unavailable, not an absent sensor',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _ControlledScanDriver();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: PreferencesHealthStateStore(preferences),
+        displayAwake: _FakeDisplayAwake(interactive: false),
+      );
+      await controller.initialize();
+
+      final scan = controller.scan();
+      await _drainEventQueue();
+      await driver.scans.single.close();
+      await scan;
+
+      expect(controller.scanFailure?.kind, BleFailureKind.scanUnavailable);
+      expect(controller.scanFailure?.operation, BleOperation.scan);
+      expect(
+        controller.scanFailure?.diagnosticCode,
+        'cgm.ble.scan.display-off',
+      );
+      expect(controller.scanning, isFalse);
+      final message = controller.lastError ?? '';
+      expect(message, contains('screen'));
+      expect(
+        message,
+        isNot(contains('No Bluetooth sensors found')),
+        reason: 'a scan we could not perform must never blame the sensor',
+      );
+      expect(message, isNot(contains('Keep the sensor close')));
+
+      controller.dispose();
+    },
+  );
+
+  test('an empty scan the platform did run stays an empty scan', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _ControlledScanDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: PreferencesHealthStateStore(preferences),
+      displayAwake: _FakeDisplayAwake(interactive: true),
+    );
+    await controller.initialize();
+
+    final scan = controller.scan();
+    await _drainEventQueue();
+    await driver.scans.single.close();
+    await scan;
+
+    expect(controller.scanFailure, isNull);
+    expect(controller.lastError, isNull);
+
+    controller.dispose();
+  });
+
+  test('a build with no display bridge never invents a declined scan', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final driver = _ControlledScanDriver();
+    // No gate injected: the default is the no-op used by platforms without the
+    // bridge, and it must never turn an empty scan into a platform refusal.
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: PreferencesHealthStateStore(preferences),
+    );
+    await controller.initialize();
+
+    final scan = controller.scan();
+    await _drainEventQueue();
+    await driver.scans.single.close();
+    await scan;
+
+    expect(controller.scanFailure, isNull);
+    expect(controller.lastError, isNull);
+
+    controller.dispose();
+  });
+
+  test(
+    'a sensor found while the display is off still reports the sensor',
+    () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final preferences = await SharedPreferences.getInstance();
+      final driver = _ControlledScanDriver();
+      final controller = CgmAppController(
+        preferences: preferences,
+        driver: driver,
+        healthStateStore: PreferencesHealthStateStore(preferences),
+        displayAwake: _FakeDisplayAwake(interactive: false),
+      );
+      await controller.initialize();
+
+      final scan = controller.scan();
+      await _drainEventQueue();
+      driver.scans.single.add(_sensor('filtered'));
+      await driver.scans.single.close();
+      await scan;
+
+      expect(controller.sensors, hasLength(1));
+      expect(controller.scanFailure, isNull);
+
+      controller.dispose();
+    },
+  );
+
+  testWidgets('a scan the screen turned off cannot run is not "no sensors"', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'openHealth.onboarding.completed': true,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final stateStore = PreferencesHealthStateStore(preferences);
+    final driver = _ControlledScanDriver();
+    final controller = CgmAppController(
+      preferences: preferences,
+      driver: driver,
+      healthStateStore: stateStore,
+      displayAwake: _FakeDisplayAwake(interactive: false),
+    );
+    await controller.initialize();
+    await tester.pumpWidget(
+      OpenGlucoseApp(
+        controller: controller,
+        healthExport: HealthExportController(
+          preferences: preferences,
+          healthStateStore: stateStore,
+          writesAllowed: false,
+        )..initialize(),
+        preferences: preferences,
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('connectSensorButton')));
+    await tester.pump();
+    await driver.scans.single.close();
+    await _pumpUntilScanSettles(tester);
+
+    expect(
+      find.byKey(const ValueKey<String>('sensorScanFailureTitle')),
+      findsOneWidget,
+    );
+    expect(find.text('Bluetooth scan could not run'), findsOneWidget);
+    expect(find.textContaining('screen is off'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('nearbyNoResults')),
+      findsNothing,
+      reason: 'a scan we could not perform is not an empty scan',
+    );
+    expect(find.text('No Bluetooth sensors found'), findsNothing);
+    expect(find.textContaining('Keep the sensor close'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('retrySensorScanButton')),
+    );
+    await tester.pump();
+    await driver.scans.last.close();
+    await _pumpUntilScanSettles(tester);
+    expect(driver.scans, hasLength(2), reason: 'the user can retry');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+}
+
+/// Pumps until the scan progress card is gone, then settles the result card.
+///
+/// The scanning card animates, so `pumpAndSettle` alone never returns while a
+/// scan is open.
+Future<void> _pumpUntilScanSettles(WidgetTester tester) async {
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('nearbyScanProgress'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+/// A display that can be told to look asleep, for the screen-off scan cases.
+class _FakeDisplayAwake implements DisplayAwakeGate {
+  _FakeDisplayAwake({required this.interactive});
+
+  bool interactive;
+  bool held = false;
+  int holdCalls = 0;
+  int releaseCalls = 0;
+
+  @override
+  Future<void> hold() async {
+    holdCalls += 1;
+    held = true;
+  }
+
+  @override
+  Future<void> release() async {
+    releaseCalls += 1;
+    held = false;
+  }
+
+  @override
+  Future<bool> isInteractive() async => interactive;
+}
+
+Future<void> _startNearbySensorScan(WidgetTester tester) async {
+  await tester.tap(
+    find.byKey(const ValueKey<String>('connectSensorButton')),
+  );
+  await tester.pump();
+  for (
+    var attempt = 0;
+    attempt < 30 &&
+        find
+            .byKey(const ValueKey<String>('nearbyScanProgress'))
+            .evaluate()
+            .isNotEmpty;
+    attempt += 1
+  ) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  await tester.pump();
 }
 
 class _FailingScanDriver implements CgmDriver {
@@ -365,6 +737,64 @@ class _ControlledScanDriver implements CgmDriver {
   @override
   Future<CgmSession> connect(DiscoveredSensor sensor) async =>
       _StaticSession(sensor);
+}
+
+class _CancelFailingScanDriver implements CgmDriver {
+  int scanCalls = 0;
+
+  @override
+  String get driverId => 'cancel-failing-scan';
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) {
+    scanCalls += 1;
+    return StreamController<DiscoveredSensor>(
+      onCancel: () => throw StateError('synthetic scan cleanup failure'),
+    ).stream;
+  }
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) {
+    throw UnsupportedError('This driver only exercises scan cancellation.');
+  }
+}
+
+class _CancellationTrackedScanDriver implements CgmDriver {
+  final List<_CancellationTrackedScan> scans = <_CancellationTrackedScan>[];
+
+  @override
+  String get driverId => 'cancellation-tracked-scan';
+
+  @override
+  Stream<DiscoveredSensor> scan({
+    Duration? timeout,
+    bool allowDuplicates = true,
+  }) {
+    final scan = _CancellationTrackedScan();
+    scans.add(scan);
+    return scan.controller.stream;
+  }
+
+  @override
+  Future<CgmSession> connect(DiscoveredSensor sensor) {
+    throw UnsupportedError('This driver only exercises scan replacement.');
+  }
+}
+
+class _CancellationTrackedScan {
+  _CancellationTrackedScan() {
+    controller = StreamController<DiscoveredSensor>(
+      onCancel: () {
+        cancellations += 1;
+      },
+    );
+  }
+
+  late final StreamController<DiscoveredSensor> controller;
+  int cancellations = 0;
 }
 
 class _StaticSession implements CgmSession {

@@ -6,6 +6,81 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  for (final locale in <Locale>[const Locale('en'), const Locale('zh')]) {
+    testWidgets(
+      'raw-only history uses the shared empty chart in ${locale.languageCode}',
+      (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _chartHarness(
+            locale: locale,
+            readings: const [
+              CgmReading(
+                valueMgdl: 5.9,
+                source: CgmRecordSource.raw,
+                sensorMinute: 120,
+                rawValue: 59,
+                isDisplayProvisional: true,
+              ),
+            ],
+            historySync: const CgmHistorySyncState(),
+          ),
+        );
+        expect(find.byKey(const ValueKey('rawSensorHistory')), findsNothing);
+        expect(find.textContaining('Raw sensor history'), findsNothing);
+        expect(find.textContaining('59'), findsNothing);
+        expect(find.textContaining('5.9'), findsNothing);
+        expect(
+          find.descendant(
+            of: find.byType(CgmDashboardChart),
+            matching: find.byType(CustomPaint),
+          ),
+          findsWidgets,
+        );
+      },
+    );
+  }
+
+  testWidgets('mixed chart tooltips never select a raw-source value', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _chartHarness(
+        readings: [
+          CgmReading(
+            valueMgdl: 110,
+            source: CgmRecordSource.vendor,
+            sensorMinute: 120,
+            recordedAt: DateTime.utc(2026, 9, 19, 12),
+            isDisplayProvisional: true,
+          ),
+          CgmReading(
+            valueMgdl: 5.9,
+            source: CgmRecordSource.raw,
+            sensorMinute: 121,
+            recordedAt: DateTime.utc(2026, 9, 19, 12, 1),
+            rawValue: 59,
+          ),
+        ],
+        historySync: const CgmHistorySyncState(),
+      ),
+    );
+    final chart = find
+        .descendant(
+          of: find.byType(CgmDashboardChart),
+          matching: find.byType(CustomPaint),
+        )
+        .first;
+    final gesture = await tester.startGesture(
+      tester.getBottomRight(chart) - const Offset(20, 50),
+    );
+    await tester.pump();
+    expect(find.textContaining('110 mg/dL'), findsOneWidget);
+    expect(find.textContaining('6 mg/dL'), findsNothing);
+    await gesture.up();
+  });
+
   testWidgets('shows multi-day timeframe controls for long history', (
     tester,
   ) async {

@@ -1,5 +1,12 @@
 ## Unreleased
 
+- Expose the single-attempt capability through the shared transport contract
+  and carry the plugin advertisement timestamp into scan results. Default
+  AiDEX connection retry behavior is unchanged.
+- Add a direct `connectOnce` path that stops scanning and performs no Android
+  status-133 retry or bond operation.
+- Add an opt-in, instance-owned scan-start acknowledgement for debug capture
+  readiness, and complete all scan cleanup steps after cancellation failures.
 - Give notification subscriptions a timeout owned by FlutterBluePlus, so a
   failed CCCD write releases the plugin operation mutex before setup recovery.
 - Observe Android bond transitions before starting `createBond`, so an

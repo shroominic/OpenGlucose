@@ -69,10 +69,15 @@ bool shouldPublishLiveActivity({
   required CgmReading? latestReading,
   DateTime? now,
 }) {
+  final reading = currentReadingForSnapshot(snapshot, latestReading);
+  if (latestReading?.isDisplayProvisional == true ||
+      latestReading?.source == CgmRecordSource.raw) {
+    return false;
+  }
   final effectiveNow = now ?? DateTime.now();
   final warmup = computeWarmupStatus(
     snapshot,
-    latestReading: latestReading,
+    latestReading: reading,
     now: effectiveNow,
   );
   if (warmup?.phase == WarmupPhase.warming) {
@@ -81,7 +86,7 @@ bool shouldPublishLiveActivity({
   if (snapshot.stage != CgmSyncStage.ready) {
     return false;
   }
-  final recordedAt = latestReading?.recordedAt;
+  final recordedAt = reading?.recordedAt;
   if (recordedAt == null) {
     return false;
   }
@@ -96,10 +101,34 @@ LiveActivityPayload buildLiveActivityPayload({
   AppLanguage language = AppLanguage.english,
   DateTime? now,
 }) {
+  final reading = currentReadingForSnapshot(snapshot, latestReading);
   final effectiveNow = now ?? DateTime.now();
+  // Freshness follows the normalized reading's own timestamp, never receipt.
+  final freshnessAt = liveSurfaceFreshnessAt(
+    snapshot: snapshot,
+    reading: reading,
+    now: effectiveNow,
+  );
+  final isStale = liveSurfaceIsStale(freshnessAt, now: effectiveNow);
+  if (reading?.isDisplayProvisional == true) {
+    return LiveActivityPayload(
+      sensorName: liveSurfaceBrandName,
+      stageCode: 'progress',
+      stageLabel: 'VERIFYING',
+      valueText: '--',
+      unitText: '',
+      lastReadingText: '--',
+      lifeText: '',
+      detailText: 'Experimental readings are available in the app only.',
+      trendSymbol: '',
+      deltaText: '',
+      isStale: isStale,
+      languageCode: language.nativePayloadCode,
+    );
+  }
   final warmup = computeWarmupStatus(
     snapshot,
-    latestReading: latestReading,
+    latestReading: reading,
     now: effectiveNow,
   );
   if (warmup != null) {
@@ -116,6 +145,9 @@ LiveActivityPayload buildLiveActivityPayload({
         snapshot.sessionInfo.sessionStart,
         now: effectiveNow,
         language: language,
+        totalLife: Duration(
+          minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+        ),
       ),
       detailText: warmupSubtext(warmup, language: language),
       trendSymbol: '',
@@ -125,9 +157,13 @@ LiveActivityPayload buildLiveActivityPayload({
       isWarmup: warmup.phase == WarmupPhase.warming,
     );
   }
-  final fallbackValue = snapshot.lastAdvertisement?.displayValueMgdl;
+  final fallbackValue =
+      isLibreGen1Snapshot(snapshot) ||
+          latestReading?.source == CgmRecordSource.raw
+      ? null
+      : snapshot.lastAdvertisement?.displayValueMgdl;
   final displayedValue =
-      latestReading?.displayValue(preferences) ??
+      reading?.displayValue(preferences) ??
       (fallbackValue == null
           ? null
           : preferences.unit.convertFromMgdl(fallbackValue));
@@ -137,33 +173,32 @@ LiveActivityPayload buildLiveActivityPayload({
           preferences.unit == GlucoseUnit.mgdl ? 0 : 1,
         );
   final readingTime = readingTimeText(
-    latestReading,
+    reading,
     now: effectiveNow,
     language: language,
   );
   final displayRecordedAt = clampedDisplayRecordedAt(
-    latestReading?.recordedAt,
+    reading?.recordedAt,
     now: effectiveNow,
   );
-  final isStale =
-      displayRecordedAt == null ||
-      effectiveNow.difference(displayRecordedAt) > const Duration(minutes: 10);
-  final trend = glucoseTrendSummary(snapshot.history, preferences);
+  final trend = glucoseTrendSummary(
+    isLibreGen1Snapshot(snapshot) && reading == null
+        ? const <CgmReading>[]
+        : readingsForWellness(snapshot.history),
+    preferences,
+  );
   final stageCode = stageCodeForSnapshot(snapshot);
   final stageLabel = stageLabelForSnapshot(snapshot, language: language);
-  final detailText = snapshot.lastError != null
-      ? (language == AppLanguage.simplifiedChinese
-            ? '需要注意'
-            : 'Attention needed')
-      : readingTime == '--'
-      ? (snapshot.historySync.inProgress
-            ? (language == AppLanguage.simplifiedChinese
-                  ? '正在等待首次读数'
-                  : 'Waiting for first reading')
-            : stageLabel)
-      : (language == AppLanguage.simplifiedChinese
-            ? '更新于 $readingTime'
-            : 'Updated $readingTime');
+  final chinese = language == AppLanguage.simplifiedChinese;
+  final detailText =
+      libreConnectionDetailForSnapshot(snapshot) ??
+      (snapshot.lastError != null
+          ? (chinese ? '需要注意' : 'Attention needed')
+          : readingTime == '--'
+          ? (snapshot.historySync.inProgress
+                ? (chinese ? '正在等待首次读数' : 'Waiting for first reading')
+                : stageLabel)
+          : (chinese ? '更新于 $readingTime' : 'Updated $readingTime'));
 
   return LiveActivityPayload(
     sensorName: liveSurfaceBrandName,
@@ -176,6 +211,9 @@ LiveActivityPayload buildLiveActivityPayload({
       snapshot.sessionInfo.sessionStart,
       now: effectiveNow,
       language: language,
+      totalLife: Duration(
+        minutes: snapshot.sessionInfo.expectedLifetimeMinutes,
+      ),
     ),
     detailText: detailText,
     trendSymbol: trend.symbol,

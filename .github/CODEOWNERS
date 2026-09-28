@@ -8,6 +8,8 @@
 /packages/cgm_ble/ @shroominic
 /packages/cgm_ble_flutter/ @shroominic
 /packages/cgm_aidex/ @shroominic
+/packages/cgm_libre2/ @shroominic
+/packages/cgm_yuwell_anytime/ @shroominic
 /.github/ @shroominic
 /docs/ @shroominic
 /SECURITY.md @shroominic

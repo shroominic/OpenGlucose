@@ -1,0 +1,14 @@
+name: cgm_libre2_glucose
+description: GPL-isolated, reference-derived Libre 2 Gen1 factory glucose decoder.
+version: 0.0.1
+publish_to: none
+environment:
+  sdk: ^3.11.4
+dependencies:
+  cgm_libre2:
+    path: ../cgm_libre2
+dev_dependencies:
+  crypto: ^3.0.7
+  ffi: ^2.2.0
+  lints: ^6.0.0
+  test: ^1.25.6

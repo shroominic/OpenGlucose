@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Expose the pure `AidexDiscovery` mapper so an application can route one
+  physical Bluetooth scan across multiple vendor drivers without changing
+  existing AiDEX identifiers or storage keys.
 - Subscribe only to the two pre-authentication AiDEX channels before the
   vendor handshake, then enable the remaining channels after authentication.
   A notification timeout or disconnect gets one bounded fresh-GATT recovery

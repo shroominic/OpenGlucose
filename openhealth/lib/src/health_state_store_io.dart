@@ -635,6 +635,7 @@ class FileHealthStateStore implements HealthStateStore {
   static bool _isRestrictedKey(String key) {
     return key == _lastSensorKey ||
         key == _sensorArchiveKey ||
+        key == 'openHealth.driverState.cbio.rawArchives.v1' ||
         key.startsWith(_historyPrefix) ||
         key.startsWith(_bondTransferPrefix) ||
         key == _healthExportLastSyncedKey ||

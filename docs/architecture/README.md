@@ -12,7 +12,13 @@ openhealth (Flutter app, demo driver, platform lifecycle and presentation)
     ├── cgm_aidex ───────────────┐
     │       ├── cgm_core         │
     │       └── cgm_ble          │
-    └── cgm_ble_flutter ─────────┘
+    ├── cgm_libre2 (explicit Gen1 debug receiver, target-unverified)
+    │       ├── cgm_core
+    │       └── cgm_ble
+    ├── cgm_yuwell_anytime (debug-gated, target-unverified) ──┐
+    │       ├── cgm_core                                     │
+    │       └── cgm_ble                                      │
+    └── cgm_ble_flutter ─────────────────────────────────────┘
             └── cgm_ble
                     │
                     └── flutter_blue_plus / native BLE APIs
@@ -20,8 +26,15 @@ openhealth (Flutter app, demo driver, platform lifecycle and presentation)
 
 Dependencies point toward contracts. `cgm_core` and `cgm_ble` are pure Dart
 leaves. `cgm_aidex` composes those contracts without importing Flutter.
-`cgm_ble_flutter` implements the transport boundary. The app is the composition
-root and owns platform-specific user experience.
+`cgm_libre2` uses the domain and BLE contracts for an explicit Gen1 receiver;
+its classification and cryptographic primitives remain pure Dart.
+`cgm_yuwell_anytime` depends on the domain and
+BLE contracts for an explicit private-debug validation path. Its normal policy
+publishes no glucose; the gated Android validation build can project only the
+exact V1150 packed field as provisional engineering data. It is absent from
+the normal driver registry. `cgm_ble_flutter`
+implements the transport boundary. The app is the composition root and owns
+platform-specific user experience.
 
 ## Responsibilities
 
@@ -46,6 +59,29 @@ explicit unsafe administration. It depends only on the domain and BLE
 contracts. New sensor vendors should be separate drivers rather than conditionals
 inside this package.
 
+### `packages/cgm_libre2`
+
+Owns Libre 2-family reference classification, sequence validation, Gen1
+cryptographic primitives, and opaque fragment assembly. Its explicit Gen1
+driver connects only to the target from a completed native NFC streaming
+bootstrap. It reserves a durable login counter before one write-with-response
+login and subscribes only after acknowledgement. The Android app owns the
+encrypted receiver journal and the separately initiated NFC state changes.
+The driver reports CRC-validated packet status; it does not interpret raw
+measurements as glucose. Gen2 and Libre 3 live operation remain unimplemented.
+
+### `packages/cgm_yuwell_anytime`
+
+Owns target-unverified CT5 name/UUID classification, checksum and framing
+helpers, reversible byte transforms, synthetic authentication arithmetic,
+strict record parsers, and a safety-gated BLE session state machine. The live
+path requires explicit activation authorization and Android Keystore-backed
+credentials plus a durable write journal. It cannot unbind, reset, update,
+calibrate, or load vendor code. Its default output policy publishes no glucose.
+Only the explicit private Android debug-capture composition can opt in to a
+fail-closed, provisional V1150 engineering projection until physical 5P
+evidence passes the documented production-promotion gates.
+
 ### `packages/cgm_ble_flutter`
 
 Translates the `cgm_ble` contracts to `flutter_blue_plus`. It owns adapter and
@@ -54,17 +90,24 @@ physical-device verification on every affected platform.
 
 ### `openhealth`
 
-Composes drivers, stores presentation preferences/history, owns runtime
-permissions, communicates connection and freshness state, and renders the UI.
-On IO platforms it constructs the AiDEX driver and Flutter transport. On web
-and in widget tests it uses a deterministic demo driver.
+Composes drivers through one physical-scan registry, stores presentation
+preferences/history, owns runtime permissions, communicates connection and
+freshness state, and renders the UI. On IO platforms the registry currently
+contains the verified AiDEX driver and Flutter transport. On web and in widget
+tests the app uses a deterministic demo driver. Libre 2 is registered only
+with `OG_PROTOCOL_CAPTURE_LIVE_LIBRE=true` in an Android debug trace build
+using the Libre capture profile. Normal builds do not register it. Yuwell can
+be registered only by the explicit Android debug trace
+flags; normal debug and release builds do not include it in the driver registry.
 
 ## Runtime flow
 
-1. The app asks a `CgmDriver` to scan.
-2. The driver maps advertisements into sensor-neutral `DiscoveredSensor`
+1. The app asks its `CgmDriver` registry to scan once for all registered
+   service UUIDs.
+2. Pure vendor matchers map advertisements into sensor-neutral `DiscoveredSensor`
    values with explicit capabilities.
-3. The app connects and observes `CgmSessionSnapshot` values.
+3. The registry stops scanning, routes connection by stable `driverId`, and the
+   app observes `CgmSessionSnapshot` values.
 4. The protocol driver uses `BleTransport` for I/O and translates bytes into
    normalized readings and status.
 5. The app displays current and historical data together with connection,

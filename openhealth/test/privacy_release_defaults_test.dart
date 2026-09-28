@@ -323,7 +323,16 @@ void main() {
       final gradle = _read('android/app/build.gradle.kts');
       final debugManifest = _read('android/app/src/debug/AndroidManifest.xml');
 
-      expect(gradle, contains('applicationIdSuffix = ".debug"'));
+      expect(
+        gradle,
+        contains('OPENGLUCOSE_DEBUG_APPLICATION_ID_SUFFIX'),
+      );
+      expect(gradle, contains('.orElse(".debug")'));
+      expect(gradle, contains('setOf(".debug", ".debug.owner")'));
+      expect(
+        gradle,
+        contains('applicationIdSuffix = debugApplicationIdSuffix.get()'),
+      );
       expect(gradle, contains('versionNameSuffix = "-debug"'));
       expect(debugManifest, contains('android:label="OpenGlucose Debug"'));
     });

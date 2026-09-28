@@ -56,6 +56,14 @@ app.*.map.json
 *.log
 *.swp
 
+# Private physical-device captures (the harness also rejects Git-local output)
+openglucose-protocol-captures/
+.openglucose-passive-capture
+bugreport-*.zip
+btsnoop_hci.log
+*.pcap
+*.pcapng
+
 # Apple credentials / certs (defense in depth — these should never be in repo)
 *.p8
 *.p12

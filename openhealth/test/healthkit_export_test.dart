@@ -164,6 +164,52 @@ void main() {
   HealthStateStore stateStore(SharedPreferences preferences) =>
       PreferencesHealthStateStore(preferences);
 
+  test('native exporter excludes provisional and raw samples', () async {
+    final native = _FakeHealth(writeOutcomes: [true]);
+    final service = HealthKitExportService(
+      health: native,
+      supportCheck: () => true,
+    );
+    final at = DateTime.utc(2026, 9, 6, 8);
+    final result = await service.export([
+      _reading(100, at),
+      _reading(
+        101,
+        at.add(const Duration(minutes: 1)),
+      ).copyWith(isDisplayProvisional: true),
+      _reading(
+        102,
+        at.add(const Duration(minutes: 2)),
+      ).copyWith(source: CgmRecordSource.raw),
+    ]);
+    expect(result.written, 1);
+    expect(native.writtenAt, [at.toLocal()]);
+    expect(result.latestReadingAt, at);
+  });
+
+  test('controller filters experimental samples before any exporter', () async {
+    final exporter = _FakeExporter();
+    final preferences = await prefs();
+    final controller = HealthExportController(
+      preferences: preferences,
+      healthStateStore: stateStore(preferences),
+      service: exporter,
+    )..initialize();
+    await controller.setEnabled(enabled: true);
+    final at = DateTime.utc(2026, 9, 6, 8);
+    final provisional = _reading(101, at).copyWith(isDisplayProvisional: true);
+    final raw = _reading(102, at).copyWith(source: CgmRecordSource.raw);
+    final skipped = await controller.syncNow([provisional, raw]);
+    expect(skipped.status, HealthExportStatus.noData);
+    expect(exporter.exportCalls, 0);
+    expect(stateStore(preferences).getString(_watermarkKey), isNull);
+    final verified = _reading(100, at.add(const Duration(minutes: 1)));
+    final result = await controller.syncNow([provisional, verified, raw]);
+    expect(result.written, 1);
+    expect(exporter.exported, [verified]);
+    controller.dispose();
+  });
+
   test('enabling triggers authorization and persists opt-in', () async {
     final exporter = _FakeExporter();
     final preferences = await prefs();
@@ -464,6 +510,10 @@ void main() {
       preferences: preferences,
       driver: DemoCgmDriver(),
     );
+    // The controller only exports vendor readings, so the sync needs a
+    // populated session before the scripted exporter failure can be reached.
+    await appController.initialize();
+    await appController.connect(MockScenarioCatalog.sensor);
     await tester.pumpWidget(
       _localizedApp(
         IntegrationsSettingsPane(
@@ -621,8 +671,10 @@ void main() {
     await healthExport.setEnabled(enabled: true);
     final appController = CgmAppController(
       preferences: preferences,
-      driver: DemoCgmDriver(),
+      driver: DemoCgmDriver(initialScenario: MockScenario.multiSensorHistory),
     );
+    await appController.initialize();
+    await appController.connect(MockScenarioCatalog.sensor);
     await tester.pumpWidget(
       _localizedApp(
         IntegrationsSettingsPane(

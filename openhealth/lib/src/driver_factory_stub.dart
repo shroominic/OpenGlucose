@@ -1,6 +1,8 @@
 import 'package:cgm_core/cgm_core.dart';
+import 'package:cgm_cbio/cgm_cbio.dart';
 
 import 'demo_driver.dart';
+import 'display_awake_gate.dart';
 import 'mock_scenarios.dart';
 
 /// Initial mock scenario for web/demo builds, e.g.
@@ -10,5 +12,17 @@ const String kOgScenario = String.fromEnvironment('OG_SCENARIO');
 
 Future<void> configurePlatformPrivacyDefaults() async {}
 
-CgmDriver buildPlatformDriver() =>
+Future<void> stopPlatformProtocolCapture() async {}
+
+bool get platformProtocolCaptureEnabled => false;
+
+bool get platformLibreGen1StreamingEnabled => false;
+
+Future<DiscoveredSensor?> preparePlatformLibreGen1Connection() async => null;
+
+CgmDriver buildPlatformDriver({CbioPrivateStateStore? privateStateStore}) =>
     DemoCgmDriver(initialScenario: MockScenario.fromId(kOgScenario));
+
+/// Web/demo builds have no display to hold and no unfiltered scan to protect.
+DisplayAwakeGate buildPlatformDisplayAwakeGate() =>
+    const NoopDisplayAwakeGate();
