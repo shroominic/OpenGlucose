@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import 'app_localizations_extension.dart';
 import 'display_preferences.dart';
+import 'theme/og_theme.dart';
 
 /// Explainable, wellness-framed metrics section for the dashboard.
 ///
@@ -29,7 +30,7 @@ class MetricsSection extends StatefulWidget {
 class _MetricsSectionState extends State<MetricsSection> {
   AnalyticsTimeframe _timeframe = AnalyticsTimeframe.last24h;
 
-  static const Color _muted = Color(0xFF5B6E6A);
+  static const Color _muted = OgColors.ash;
 
   String _formatGlucose(double mgdl) {
     final value = widget.preferences.unit.convertFromMgdl(mgdl);
@@ -65,7 +66,7 @@ class _MetricsSectionState extends State<MetricsSection> {
                   child: Text(
                     l10n.patterns,
                     style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
@@ -154,8 +155,8 @@ class _InsufficientCoverage extends StatelessWidget {
       key: const ValueKey<String>('patternsInsufficientData'),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFF1F5F4),
-        borderRadius: BorderRadius.circular(12),
+        color: OgColors.paper,
+        borderRadius: BorderRadius.circular(OgRadius.inset),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -239,8 +240,8 @@ class _MetricRow extends StatelessWidget {
   final String explanation;
   final bool isLast;
 
-  static const Color _muted = Color(0xFF5B6E6A);
-  static const Color _accent = Color(0xFF24443F);
+  static const Color _muted = OgColors.ash;
+  static const Color _accent = OgColors.ink;
 
   @override
   Widget build(BuildContext context) {
@@ -265,8 +266,11 @@ class _MetricRow extends StatelessWidget {
               Text(
                 value,
                 style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
+                  fontWeight: FontWeight.w700,
                   color: _accent,
+                  fontFeatures: const <FontFeature>[
+                    FontFeature.tabularFigures(),
+                  ],
                 ),
               ),
             ],

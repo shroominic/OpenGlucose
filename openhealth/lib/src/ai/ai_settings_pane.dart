@@ -188,7 +188,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
         Text(
           l10n.aiInsights,
           style: theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w900,
+            fontWeight: FontWeight.w700,
           ),
         ),
         const SizedBox(height: 8),
@@ -199,7 +199,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
             leading: const Icon(Icons.phone_iphone_rounded),
             title: Text(
               l10n.onDeviceModel,
-              style: TextStyle(fontWeight: FontWeight.w800),
+              style: TextStyle(fontWeight: FontWeight.w600),
             ),
             subtitle: Text(l10n.onDeviceModelDescription),
             trailing: const _ComingSoonBadge(),
@@ -225,7 +225,7 @@ class _AiSettingsPaneState extends State<AiSettingsPane> {
             leading: const Icon(Icons.cloud_outlined),
             title: Text(
               l10n.customCloudProvider,
-              style: TextStyle(fontWeight: FontWeight.w800),
+              style: TextStyle(fontWeight: FontWeight.w600),
             ),
             subtitle: Text(l10n.advancedSendsAggregatesOffDevice),
             childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),

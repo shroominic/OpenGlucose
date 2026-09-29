@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 
 import 'app_localizations_extension.dart';
 import 'display_preferences.dart';
+import 'theme/og_theme.dart';
 
 class CgmDashboardChart extends StatefulWidget {
   const CgmDashboardChart({
@@ -112,10 +113,8 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
                                       ),
                                       decoration: BoxDecoration(
                                         color: selected
-                                            ? const Color(0xFF113437)
-                                            : Colors.white.withValues(
-                                                alpha: 0.78,
-                                              ),
+                                            ? OgColors.ink
+                                            : OgColors.fog,
                                         borderRadius: BorderRadius.circular(8),
                                       ),
                                       child: Text(
@@ -123,9 +122,9 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
                                         style: theme.textTheme.labelLarge
                                             ?.copyWith(
                                               color: selected
-                                                  ? Colors.white
-                                                  : const Color(0xFF5C6E69),
-                                              fontWeight: FontWeight.w700,
+                                                  ? OgColors.paper
+                                                  : OgColors.graphite,
+                                              fontWeight: FontWeight.w600,
                                             ),
                                       ),
                                     ),
@@ -486,7 +485,7 @@ class _SelectionTooltip extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 156),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF121A1A).withValues(alpha: 0.96),
+          color: OgColors.ink.withValues(alpha: 0.96),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Padding(
@@ -498,14 +497,15 @@ class _SelectionTooltip extends StatelessWidget {
               Text(
                 valueText,
                 style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
+                  color: OgColors.paper,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
                 ),
               ),
               const SizedBox(height: 2),
               Text(
                 timeText,
-                style: const TextStyle(color: Color(0xFFD4E4DE), fontSize: 12),
+                style: const TextStyle(color: OgColors.inkMuted, fontSize: 12),
               ),
             ],
           ),
@@ -522,13 +522,8 @@ class _LoadingChart extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: <Color>[Color(0xFFF4FBF8), Color(0xFFE8F2EF)],
-        ),
+        color: OgColors.paper,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE0E7E2)),
       ),
       child: const Center(
         child: SizedBox.square(
@@ -565,21 +560,12 @@ class _DashboardChartPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final backgroundPaint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: <Color>[Color(0xFFF4FBF8), Color(0xFFE8F2EF)],
-      ).createShader(Offset.zero & size);
-    final outline = Paint()
-      ..color = const Color(0xFFE0E7E2)
-      ..style = PaintingStyle.stroke;
+    final backgroundPaint = Paint()..color = OgColors.paper;
     final chartRect = RRect.fromRectAndRadius(
       Offset.zero & size,
       const Radius.circular(20),
     );
     canvas.drawRRect(chartRect, backgroundPaint);
-    canvas.drawRRect(chartRect, outline);
 
     if (points.isEmpty) {
       return;
@@ -600,7 +586,7 @@ class _DashboardChartPainter extends CustomPainter {
 
     final bandTop = _yForValue(bandHigh, plotRect, chartMin, chartMax);
     final bandBottom = _yForValue(bandLow, plotRect, chartMin, chartMax);
-    final bandPaint = Paint()..color = const Color(0x1725A66C);
+    final bandPaint = Paint()..color = OgColors.fog;
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTRB(plotRect.left, bandTop, plotRect.right, bandBottom),
@@ -610,11 +596,11 @@ class _DashboardChartPainter extends CustomPainter {
     );
 
     final gridPaint = Paint()
-      ..color = const Color(0xFFD8E3DE)
+      ..color = OgColors.mist
       ..strokeWidth = 1;
     final labelStyle =
-        theme.textTheme.labelSmall?.copyWith(color: const Color(0xFF63746F)) ??
-        const TextStyle(color: Color(0xFF63746F));
+        theme.textTheme.labelSmall?.copyWith(color: OgColors.ash) ??
+        const TextStyle(color: OgColors.ash);
 
     for (var step = 0; step < 4; step++) {
       final value = chartMin + ((chartMax - chartMin) * (step / 3));
@@ -664,13 +650,13 @@ class _DashboardChartPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: <Color>[Color(0x443BAE97), Color(0x00FFFFFF)],
+          colors: <Color>[Color(0x140A0A0A), Color(0x000A0A0A)],
         ).createShader(plotRect);
       canvas.drawPath(fillPath, fillPaint);
 
       final linePaint = Paint()
-        ..color = const Color(0xFF177E73)
-        ..strokeWidth = effectiveStyle == ChartStyle.dots ? 2.0 : 3.0
+        ..color = OgColors.ink
+        ..strokeWidth = effectiveStyle == ChartStyle.dots ? 1.5 : 2.5
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
@@ -682,11 +668,11 @@ class _DashboardChartPainter extends CustomPainter {
     for (var index = 0; index < points.length; index++) {
       final point = points[index];
       final offset = chartPoints[index];
-      pointPaint.color = point.value < bandLow
-          ? const Color(0xFFF48C6A)
-          : point.value > bandHigh
-          ? const Color(0xFFE9A23B)
-          : const Color(0xFF177E73);
+      // Monochrome encoding: in-range readings are solid, out-of-range
+      // readings are hollow so the state survives greyscale and colour-vision
+      // differences.
+      final outOfRange = point.value < bandLow || point.value > bandHigh;
+      pointPaint.color = OgColors.ink;
 
       if (point.sampleCount > 1) {
         final lowY = _yForValue(point.low, plotRect, chartMin, chartMax);
@@ -702,23 +688,45 @@ class _DashboardChartPainter extends CustomPainter {
       }
 
       if (effectiveStyle == ChartStyle.candles) {
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromCenter(
-              center: offset,
-              width: 6,
-              height: math.max(10, plotRect.bottom - offset.dy),
-            ),
-            const Radius.circular(4),
+        final candle = RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: offset,
+            width: 6,
+            height: math.max(10, plotRect.bottom - offset.dy),
           ),
-          pointPaint..color = pointPaint.color.withValues(alpha: 0.5),
+          const Radius.circular(4),
         );
+        if (outOfRange) {
+          canvas.drawRRect(
+            candle,
+            Paint()
+              ..color = OgColors.ink
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5
+              ..isAntiAlias = true,
+          );
+        } else {
+          canvas.drawRRect(
+            candle,
+            Paint()..color = OgColors.ink.withValues(alpha: 0.55),
+          );
+        }
       } else if (points.length <= 120) {
-        canvas.drawCircle(
-          offset,
-          effectiveStyle == ChartStyle.dots ? 3.4 : 2.6,
-          pointPaint,
-        );
+        final radius = effectiveStyle == ChartStyle.dots ? 3.6 : 2.8;
+        if (outOfRange) {
+          canvas.drawCircle(offset, radius, Paint()..color = OgColors.paper);
+          canvas.drawCircle(
+            offset,
+            radius,
+            Paint()
+              ..color = OgColors.ink
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5
+              ..isAntiAlias = true,
+          );
+        } else {
+          canvas.drawCircle(offset, radius, pointPaint);
+        }
       }
     }
 
@@ -733,21 +741,25 @@ class _DashboardChartPainter extends CustomPainter {
           Offset(selected.dx, plotRect.top),
           Offset(selected.dx, plotRect.bottom),
           Paint()
-            ..color = const Color(0xFF516864).withValues(alpha: 0.5)
+            ..color = OgColors.ash.withValues(alpha: 0.5)
             ..strokeWidth = 1
             ..strokeCap = StrokeCap.round,
         );
-        canvas.drawCircle(selected, 7, Paint()..color = Colors.white);
+        final selectedOutOfRange =
+            selectedPoint.value < bandLow || selectedPoint.value > bandHigh;
+        canvas.drawCircle(selected, 8, Paint()..color = OgColors.paper);
         canvas.drawCircle(
           selected,
-          4.2,
+          8,
           Paint()
-            ..color = selectedPoint.value < bandLow
-                ? const Color(0xFFF48C6A)
-                : selectedPoint.value > bandHigh
-                ? const Color(0xFFE9A23B)
-                : const Color(0xFF177E73),
+            ..color = OgColors.ink
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5
+            ..isAntiAlias = true,
         );
+        if (!selectedOutOfRange) {
+          canvas.drawCircle(selected, 4, Paint()..color = OgColors.ink);
+        }
       }
     }
 

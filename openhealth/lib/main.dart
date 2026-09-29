@@ -31,6 +31,7 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/theme/og_theme.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -172,7 +173,7 @@ class _SplashApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       home: Builder(
         builder: (context) => Scaffold(
-          backgroundColor: Colors.white,
+          backgroundColor: OgColors.paper,
           body: Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -185,7 +186,7 @@ class _SplashApp extends StatelessWidget {
                     child: Text(
                       context.l10n.failedToStart(error.runtimeType.toString()),
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: Color(0xFFB24A3B)),
+                      style: const TextStyle(color: OgColors.ink),
                     ),
                   ),
                 ],
@@ -222,7 +223,7 @@ class _SpinningLogoState extends State<_SpinningLogo>
   Widget build(BuildContext context) {
     return RotationTransition(
       turns: _controller,
-      child: Image.asset('assets/icon/logo.png', width: 140, height: 140),
+      child: const OgLogoMark(size: 104),
     );
   }
 }
@@ -378,12 +379,6 @@ class _OpenGlucoseAppState extends State<OpenGlucoseApp> {
 
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFF0B6E69);
-    final colorScheme = ColorScheme.fromSeed(
-      seedColor: seed,
-      brightness: Brightness.light,
-      surface: const Color(0xFFFFF8F1),
-    );
     return AnimatedBuilder(
       animation: _languageController,
       builder: (context, _) => AppLanguageScope(
@@ -398,36 +393,7 @@ class _OpenGlucoseAppState extends State<OpenGlucoseApp> {
               supportedLocales: AppLocalizations.supportedLocales,
               localizationsDelegates: AppLocalizations.localizationsDelegates,
               debugShowCheckedModeBanner: false,
-              theme: ThemeData(
-                colorScheme: colorScheme,
-                scaffoldBackgroundColor: const Color(0xFFF6EFE6),
-                useMaterial3: true,
-                appBarTheme: const AppBarTheme(
-                  backgroundColor: Colors.transparent,
-                  elevation: 0,
-                  surfaceTintColor: Colors.transparent,
-                ),
-                cardTheme: CardThemeData(
-                  color: Colors.white.withValues(alpha: 0.94),
-                  surfaceTintColor: Colors.transparent,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                inputDecorationTheme: InputDecorationTheme(
-                  filled: true,
-                  fillColor: const Color(0xFFF4F6F2),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    borderSide: const BorderSide(color: Color(0xFFD8E3DE)),
-                  ),
-                ),
-              ),
+              theme: buildOpenGlucoseTheme(),
               // --- TASK-007 onboarding gate ---
               // First-run only: show the skippable onboarding flow, then hand
               // off to the existing scan/connect home. Persisted via
@@ -557,18 +523,8 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
           });
         }
         return Scaffold(
-          body: DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[
-                  Color(0xFFF7F0E4),
-                  Color(0xFFE9F3EF),
-                  Color(0xFFF7F5EE),
-                ],
-              ),
-            ),
+          body: ColoredBox(
+            color: OgColors.paper,
             child: SafeArea(
               child: snapshot == null
                   ? _ScanView(controller: widget.controller)
@@ -610,7 +566,10 @@ class _ScanView extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
             child: Card(
-              color: const Color(0xFF103B3C),
+              color: OgColors.ink,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(OgRadius.hero),
+              ),
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -618,28 +577,33 @@ class _ScanView extends StatelessWidget {
                   children: <Widget>[
                     Row(
                       children: <Widget>[
+                        const OgLogoMark(
+                          size: 30,
+                          color: OgColors.paper,
+                          cutout: OgColors.ink,
+                        ),
+                        const SizedBox(width: 12),
                         Expanded(
                           child: Text(
                             l10n.appTitle,
                             style: theme.textTheme.headlineSmall?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w800,
+                              color: OgColors.paper,
                             ),
                           ),
                         ),
                         IconButton(
                           tooltip: l10n.settings,
                           onPressed: () => _showSettings(context, controller),
-                          color: Colors.white,
+                          color: OgColors.paper,
                           icon: const Icon(Icons.settings_outlined),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 14),
                     Text(
                       inactiveMessage,
                       style: theme.textTheme.bodyLarge?.copyWith(
-                        color: const Color(0xFFD8EEE8),
+                        color: OgColors.inkMuted,
                         height: 1.35,
                       ),
                     ),
@@ -666,6 +630,12 @@ class _ScanView extends StatelessWidget {
                                 ? l10n.scanning
                                 : l10n.findMySensor,
                           ),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: OgColors.paper,
+                            foregroundColor: OgColors.ink,
+                            disabledBackgroundColor: OgColors.inkRaised,
+                            disabledForegroundColor: OgColors.inkMuted,
+                          ),
                         ),
                         if (controller.allHistoricalReadings.isEmpty)
                           OutlinedButton.icon(
@@ -682,8 +652,10 @@ class _ScanView extends StatelessWidget {
                             icon: const Icon(Icons.visibility_outlined),
                             label: Text(l10n.exploreSampleData),
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.white,
-                              side: const BorderSide(color: Color(0xFF9CC9C1)),
+                              foregroundColor: OgColors.paper,
+                              side: const BorderSide(
+                                color: OgColors.inkOutline,
+                              ),
                             ),
                           ),
                       ],
@@ -694,7 +666,7 @@ class _ScanView extends StatelessWidget {
                       Text(
                         controller.lastError!,
                         style: theme.textTheme.bodyMedium?.copyWith(
-                          color: const Color(0xFFFFC4AA),
+                          color: OgColors.paper,
                         ),
                       ),
                     ],
@@ -726,14 +698,14 @@ class _ScanView extends StatelessWidget {
                 Text(
                   l10n.nearbySensors,
                   style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 const Spacer(),
                 Text(
                   l10n.sensorsFound(controller.sensors.length),
                   style: theme.textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFF5E726D),
+                    color: OgColors.ash,
                   ),
                 ),
               ],
@@ -791,7 +763,7 @@ class _ScanView extends StatelessWidget {
                                   Text(
                                     sensor.displayName,
                                     style: theme.textTheme.titleMedium
-                                        ?.copyWith(fontWeight: FontWeight.w800),
+                                        ?.copyWith(fontWeight: FontWeight.w600),
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
@@ -799,7 +771,7 @@ class _ScanView extends StatelessWidget {
                                         ? serial!
                                         : sensor.deviceId,
                                     style: theme.textTheme.bodyMedium?.copyWith(
-                                      color: const Color(0xFF5E726D),
+                                      color: OgColors.ash,
                                     ),
                                   ),
                                 ],
@@ -871,7 +843,7 @@ class _ScanView extends StatelessWidget {
                           Text(
                             l10n.unknownSensorResponse,
                             style: theme.textTheme.bodyMedium?.copyWith(
-                              color: const Color(0xFF9A4D00),
+                              color: OgColors.ink,
                               height: 1.35,
                             ),
                           ),
@@ -957,7 +929,7 @@ class _ScanFailureState extends StatelessWidget {
             const Icon(
               Icons.bluetooth_disabled_rounded,
               size: 48,
-              color: Color(0xFF0B6E69),
+              color: OgColors.ink,
             ),
             const SizedBox(height: 14),
             Text(
@@ -966,7 +938,7 @@ class _ScanFailureState extends StatelessWidget {
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Text(
@@ -974,7 +946,7 @@ class _ScanFailureState extends StatelessWidget {
               key: const ValueKey<String>('sensorScanFailureMessage'),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: const Color(0xFF5B6E6A),
+                color: OgColors.ash,
                 height: 1.35,
               ),
             ),
@@ -1006,7 +978,7 @@ class _ScanFailureBanner extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
       child: Card(
         key: const ValueKey<String>('sensorScanInlineFailure'),
-        color: const Color(0xFFFFF3E8),
+        color: OgColors.fog,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -1016,14 +988,14 @@ class _ScanFailureBanner extends StatelessWidget {
                 children: <Widget>[
                   const Icon(
                     Icons.bluetooth_disabled_rounded,
-                    color: Color(0xFF9A4D00),
+                    color: OgColors.ink,
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       _scanFailureTitle(context, failure),
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ),
@@ -1034,12 +1006,12 @@ class _ScanFailureBanner extends StatelessWidget {
                 controller.scanFailureMessage ??
                     context.l10n.scanSensorHelpShort,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF6B5542),
+                  color: OgColors.ink,
                   height: 1.35,
                 ),
               ),
               const SizedBox(height: 10),
-              FilledButton.tonalIcon(
+              FilledButton.icon(
                 key: const ValueKey<String>('retryPartialSensorScanButton'),
                 onPressed: () => unawaited(controller.scan()),
                 icon: const Icon(Icons.refresh_rounded),
@@ -1093,13 +1065,13 @@ class _HistoricalOverviewCard extends StatelessWidget {
             children: <Widget>[
               Row(
                 children: <Widget>[
-                  const Icon(Icons.history_rounded, color: Color(0xFF0B6E69)),
+                  const Icon(Icons.history_rounded, color: OgColors.ink),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       l10n.yourGlucoseHistory,
                       style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ),
@@ -1114,7 +1086,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
                     l10n.lastAt(_localizedShortDateTime(context, latest)),
                 ].join(' · '),
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF5B6E6A),
+                  color: OgColors.ash,
                 ),
               ),
               if (timestampedReadings.isNotEmpty) ...<Widget>[
@@ -1123,8 +1095,8 @@ class _HistoricalOverviewCard extends StatelessWidget {
                   key: const ValueKey<String>('historicalTimestampSummary'),
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF1F5F4),
-                    borderRadius: BorderRadius.circular(14),
+                    color: OgColors.paper,
+                    borderRadius: BorderRadius.circular(OgRadius.inset),
                   ),
                   child: Column(
                     children: <Widget>[
@@ -1142,7 +1114,7 @@ class _HistoricalOverviewCard extends StatelessWidget {
                       ),
                       Text(
                         l10n.historySessionSeparation,
-                        style: TextStyle(color: Color(0xFF5B6E6A)),
+                        style: TextStyle(color: OgColors.ash),
                       ),
                     ],
                   ),
@@ -1210,21 +1182,7 @@ class _DashboardView extends StatelessWidget {
         slivers: <Widget>[
           if (controller.isMockDriver)
             SliverToBoxAdapter(
-              child: ColoredBox(
-                color: Color(0xFFFFD166),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  child: Text(
-                    l10n.demoDataWarning,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFF4A2B00),
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-              ),
+              child: OgNoticeBar(label: l10n.demoDataWarning),
             ),
           SliverToBoxAdapter(
             child: Padding(
@@ -1235,27 +1193,31 @@ class _DashboardView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        Text(
-                          'OpenGlucose',
-                          style: theme.textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.w900,
-                          ),
+                        Row(
+                          children: <Widget>[
+                            const OgLogoMark(size: 26),
+                            const SizedBox(width: 10),
+                            Text(
+                              'OpenGlucose',
+                              style: theme.textTheme.headlineSmall,
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 6),
                         Row(
                           key: const ValueKey<String>('sensorExpiryIndicator'),
                           children: <Widget>[
                             const Icon(
                               Icons.event_outlined,
                               size: 16,
-                              color: Color(0xFF5B6E6A),
+                              color: OgColors.ash,
                             ),
                             const SizedBox(width: 5),
                             Flexible(
                               child: Text(
                                 remainingLife,
                                 style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: const Color(0xFF5B6E6A),
+                                  color: OgColors.ash,
                                 ),
                               ),
                             ),
@@ -1304,14 +1266,14 @@ class _DashboardView extends StatelessWidget {
                               child: Text(
                                 l10n.history,
                                 style: theme.textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w900,
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
                             ),
                             Text(
                               l10n.readingCount(history.length),
                               style: theme.textTheme.bodySmall?.copyWith(
-                                color: const Color(0xFF5B6E6A),
+                                color: OgColors.ash,
                               ),
                             ),
                           ],
@@ -1383,16 +1345,18 @@ class _MetricChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFE6EFEA),
+        color: OgColors.paper,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         child: Text(
           label,
-          style: TextStyle(
-            color: const Color(0xFF24443F),
-            fontWeight: FontWeight.w700,
+          style: const TextStyle(
+            color: OgColors.ink,
+            fontWeight: FontWeight.w600,
+            fontSize: 13,
+            fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
           ),
         ),
       ),
@@ -1491,9 +1455,12 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Card(
-        color: const Color(0xFF113437),
+        color: OgColors.ink,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(OgRadius.hero),
+        ),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+          padding: const EdgeInsets.fromLTRB(24, 22, 24, 22),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
@@ -1510,10 +1477,10 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                             maxLines: 1,
                             overflow: TextOverflow.fade,
                             softWrap: false,
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              color: Colors.white,
-                              height: 0.92,
-                              fontWeight: FontWeight.w900,
+                            style: theme.textTheme.displayLarge?.copyWith(
+                              color: OgColors.paper,
+                              fontSize: 64,
+                              height: 0.95,
                             ),
                           ),
                         ),
@@ -1523,8 +1490,7 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                           child: Text(
                             unitLabel,
                             style: theme.textTheme.titleMedium?.copyWith(
-                              color: const Color(0xFFC7E4DD),
-                              fontWeight: FontWeight.w700,
+                              color: OgColors.inkMuted,
                             ),
                           ),
                         ),
@@ -1543,11 +1509,11 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               Text(
                 subtitle,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  color: const Color(0xFFD6ECE7),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: OgColors.inkMuted,
                 ),
               ),
               if (primaryError != null) ...<Widget>[
@@ -1555,7 +1521,8 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                 Text(
                   primaryError,
                   style: theme.textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFFFFC4AA),
+                    color: OgColors.paper,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 if (widget.controller.connectionRequiresUserAction) ...<Widget>[
@@ -1577,8 +1544,8 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                         onPressed: () =>
                             unawaited(widget.controller.chooseAnotherSensor()),
                         style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: const BorderSide(color: Color(0xFF9CC9C1)),
+                          foregroundColor: OgColors.paper,
+                          side: const BorderSide(color: OgColors.inkOutline),
                         ),
                         child: Text(context.l10n.chooseAnotherSensor),
                       ),
@@ -1593,8 +1560,8 @@ class _DashboardHeroCardState extends State<_DashboardHeroCard> {
                   onPressed: () =>
                       unawaited(_copySupportCode(privateSupportCode)),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFFD6ECE7),
-                    side: const BorderSide(color: Color(0xFF9CC9C1)),
+                    foregroundColor: OgColors.paper,
+                    side: const BorderSide(color: OgColors.inkOutline),
                   ),
                   icon: const Icon(Icons.copy_rounded),
                   label: Text(context.l10n.copySupportCode),
@@ -1616,29 +1583,16 @@ class _StagePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = switch (stageCode) {
-      'live' => const Color(0xFF2AB67D),
-      'error' => const Color(0xFFF26D5B),
-      'progress' => const Color(0xFFF2A65A),
-      _ => const Color(0xFF78A5A3),
+    final tone = switch (stageCode) {
+      'live' => OgTone.solid,
+      'error' => OgTone.outline,
+      _ => OgTone.soft,
     };
-    return DecoratedBox(
+    return OgPill(
       key: const ValueKey<String>('sessionStagePill'),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        child: Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0,
-          ),
-        ),
-      ),
+      label: label,
+      tone: tone,
+      onInk: true,
     );
   }
 }
@@ -1659,12 +1613,14 @@ class _KeyValueRow extends StatelessWidget {
         children: <Widget>[
           SizedBox(
             width: 116,
+            child: Text(label, style: const TextStyle(color: OgColors.ash)),
+          ),
+          Expanded(
             child: Text(
-              label,
-              style: const TextStyle(fontWeight: FontWeight.w700),
+              effectiveValue,
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
-          Expanded(child: Text(effectiveValue)),
         ],
       ),
     );
@@ -1806,6 +1762,7 @@ class _SettingsOverview extends StatelessWidget {
     );
     return Column(
       key: const ValueKey<String>('settingsOverview'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
@@ -1972,19 +1929,15 @@ class _SettingsHero extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: const Color(0xFF103B3C),
-        borderRadius: BorderRadius.circular(20),
+        color: OgColors.ink,
+        borderRadius: BorderRadius.circular(OgRadius.hero),
       ),
       child: Row(
         children: <Widget>[
-          Container(
-            width: 48,
-            height: 48,
-            decoration: const BoxDecoration(
-              color: Color(0xFF245756),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.water_drop_rounded, color: Colors.white),
+          const OgLogoMark(
+            size: 44,
+            color: OgColors.paper,
+            cutout: OgColors.ink,
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -1996,8 +1949,7 @@ class _SettingsHero extends StatelessWidget {
                       ? context.l10n.noActiveSensor
                       : snapshot.sensor.displayName,
                   style: theme.textTheme.titleMedium?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w900,
+                    color: OgColors.paper,
                   ),
                 ),
                 const SizedBox(height: 3),
@@ -2009,7 +1961,7 @@ class _SettingsHero extends StatelessWidget {
                           language: context.appLanguage,
                         ),
                   style: theme.textTheme.bodyMedium?.copyWith(
-                    color: const Color(0xFFD8EEE8),
+                    color: OgColors.inkMuted,
                   ),
                 ),
               ],
@@ -2054,12 +2006,12 @@ class _AppLanguagePane extends StatelessWidget {
             l10n.appLanguage,
             style: Theme.of(
               context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 8),
           Text(
             l10n.languageChangeDescription,
-            style: const TextStyle(color: Color(0xFF5B6E6A), height: 1.35),
+            style: const TextStyle(color: OgColors.ash, height: 1.35),
           ),
           const SizedBox(height: 16),
           Card(
@@ -2116,8 +2068,8 @@ class _SettingsSectionLabel extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-          color: const Color(0xFF5B6E6A),
-          fontWeight: FontWeight.w800,
+          color: OgColors.ash,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0.8,
         ),
       ),
@@ -2133,8 +2085,8 @@ class _SettingsGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white.withValues(alpha: 0.96),
-      borderRadius: BorderRadius.circular(18),
+      color: OgColors.fog,
+      borderRadius: BorderRadius.circular(OgRadius.card),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: <Widget>[
@@ -2174,7 +2126,7 @@ class _SettingsDestination extends StatelessWidget {
     return ListTile(
       minTileHeight: 68,
       leading: _SettingsIcon(icon),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
       trailing: const Icon(Icons.chevron_right_rounded),
       onTap: () => Navigator.of(context).push(
@@ -2216,7 +2168,7 @@ class _SettingsAction extends StatelessWidget {
     return ListTile(
       minTileHeight: 68,
       leading: _SettingsIcon(icon),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(subtitle),
       trailing: const Icon(Icons.chevron_right_rounded),
       onTap: onTap,
@@ -2235,10 +2187,10 @@ class _SettingsIcon extends StatelessWidget {
       width: 36,
       height: 36,
       decoration: BoxDecoration(
-        color: const Color(0xFFE6EFEA),
-        borderRadius: BorderRadius.circular(10),
+        color: OgColors.paper,
+        borderRadius: BorderRadius.circular(12),
       ),
-      child: Icon(icon, size: 20, color: const Color(0xFF0B6E69)),
+      child: Icon(icon, size: 20, color: OgColors.ink),
     );
   }
 }
@@ -2257,7 +2209,7 @@ class _InactiveSensorSettingsPane extends StatelessWidget {
             const Icon(
               Icons.sensors_off_rounded,
               size: 42,
-              color: Color(0xFF0B6E69),
+              color: OgColors.ink,
             ),
             const SizedBox(height: 14),
             Text(
@@ -2265,7 +2217,7 @@ class _InactiveSensorSettingsPane extends StatelessWidget {
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Text(
@@ -2318,7 +2270,7 @@ class _SensorArchivePane extends StatelessWidget {
             leading: const _SettingsIcon(Icons.sensors_off_rounded),
             title: Text(
               session.serial.isEmpty ? session.displayName : session.serial,
-              style: const TextStyle(fontWeight: FontWeight.w800),
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
             subtitle: Text(
               context.l10n.archiveSessionSummary(
@@ -2426,7 +2378,7 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
           Text(
             session.serial.isEmpty ? session.displayName : session.serial,
             style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w700,
             ),
           ),
           const SizedBox(height: 4),
@@ -2435,7 +2387,7 @@ class _ArchivedSensorDetailState extends State<_ArchivedSensorDetail> {
               _archiveReasonLabel(context, session.reason),
             ),
             style: theme.textTheme.bodyMedium?.copyWith(
-              color: const Color(0xFF5B6E6A),
+              color: OgColors.ash,
             ),
           ),
           const SizedBox(height: 16),
@@ -2590,7 +2542,7 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
               const SizedBox(height: 18),
               Text(
                 context.l10n.fileFormat,
-                style: TextStyle(fontWeight: FontWeight.w800),
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
               SizedBox(
@@ -2634,7 +2586,7 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
               const SizedBox(height: 18),
               Text(
                 context.l10n.includedInFile,
-                style: TextStyle(fontWeight: FontWeight.w800),
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
               Text(context.l10n.exportIncludesGlucose),
@@ -2648,7 +2600,7 @@ Future<ArchivedSensorExportFormat?> _chooseArchivedSensorExportFormat(
                   Icon(
                     Icons.privacy_tip_outlined,
                     size: 20,
-                    color: Color(0xFF0B6E69),
+                    color: OgColors.ink,
                   ),
                   SizedBox(width: 8),
                   Expanded(child: Text(context.l10n.exportExcludesIdentity)),
@@ -2817,18 +2769,14 @@ class _AboutPane extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: <Widget>[
-        const Icon(
-          Icons.water_drop_rounded,
-          size: 56,
-          color: Color(0xFF0B6E69),
-        ),
+        const Center(child: OgLogoMark(size: 64)),
         const SizedBox(height: 12),
         Text(
           'OpenGlucose',
           textAlign: TextAlign.center,
           style: Theme.of(
             context,
-          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 6),
         Text(
@@ -2858,7 +2806,7 @@ Widget _buildDisplaySettingsPane({
         context.l10n.displaySettings,
         style: Theme.of(
           context,
-        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 16),
       DropdownButtonFormField<GlucoseUnit>(
@@ -3016,7 +2964,7 @@ Widget _buildSensorSettingsPane(
         context.l10n.sensorDetails,
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
       _KeyValueRow(
@@ -3098,7 +3046,7 @@ Widget _buildSensorSettingsPane(
         const SizedBox(height: 12),
         Text(
           context.l10n.unknownSensorResponse,
-          style: TextStyle(color: Color(0xFF9A4D00), height: 1.35),
+          style: TextStyle(color: OgColors.ink, height: 1.35),
         ),
       ],
     ],
@@ -3289,7 +3237,7 @@ Widget _buildDeveloperSettingsPane({
         context.l10n.developer,
         style: Theme.of(
           context,
-        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 16),
       if (controller.isMockDriver) ...<Widget>[
@@ -3297,7 +3245,7 @@ Widget _buildDeveloperSettingsPane({
           context.l10n.mockScenario,
           style: Theme.of(
             context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
         DropdownButtonFormField<MockScenario>(
@@ -3329,7 +3277,7 @@ Widget _buildDeveloperSettingsPane({
           ),
           style: Theme.of(
             context,
-          ).textTheme.bodyMedium?.copyWith(color: const Color(0xFF5B6E6A)),
+          ).textTheme.bodyMedium?.copyWith(color: OgColors.ash),
         ),
         const Divider(height: 28),
       ],
@@ -3337,12 +3285,12 @@ Widget _buildDeveloperSettingsPane({
         context.l10n.engineeringControls,
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 6),
       Text(
         context.l10n.engineeringControlsDescription,
-        style: TextStyle(color: Color(0xFF5B6E6A)),
+        style: TextStyle(color: OgColors.ash),
       ),
       const SizedBox(height: 12),
       TextField(
@@ -3414,7 +3362,7 @@ Widget _buildDeveloperSettingsPane({
         const SizedBox(height: 8),
         Text(
           context.l10n.clearActiveSensorCacheDescription,
-          style: TextStyle(color: Color(0xFF5B6E6A)),
+          style: TextStyle(color: OgColors.ash),
         ),
       ],
       const Divider(height: 28),
@@ -3422,7 +3370,7 @@ Widget _buildDeveloperSettingsPane({
         context.l10n.metadata,
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
       for (final entry in metadataEntries) _MetadataRow(entry: entry),
@@ -3431,14 +3379,14 @@ Widget _buildDeveloperSettingsPane({
         context.l10n.diagnostics,
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
       if (diagnostics.isEmpty)
         Text(context.l10n.noDiagnosticsLoaded)
       else
         for (final item in diagnostics) ...<Widget>[
-          Text(item.title, style: const TextStyle(fontWeight: FontWeight.w800)),
+          Text(item.title, style: const TextStyle(fontWeight: FontWeight.w600)),
           if (item.summary.isNotEmpty) ...<Widget>[
             const SizedBox(height: 4),
             Text(item.summary),
@@ -3464,7 +3412,7 @@ Widget _buildDeveloperSettingsPane({
         context.l10n.calibrations,
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
       if (calibrations.isEmpty)
@@ -3482,7 +3430,7 @@ Widget _buildDeveloperSettingsPane({
         context.l10n.logs,
         style: Theme.of(
           context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
       if (logs.isEmpty)
@@ -3503,7 +3451,7 @@ Widget _buildDeveloperSettingsPane({
                 width: 72,
                 child: Text(
                   entry.level.name.toUpperCase(),
-                  style: const TextStyle(color: Color(0xFF5B6E6A)),
+                  style: const TextStyle(color: OgColors.ash),
                 ),
               ),
               Expanded(child: Text(entry.message)),
