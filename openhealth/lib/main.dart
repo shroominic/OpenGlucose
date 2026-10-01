@@ -179,12 +179,14 @@ class _SplashApp extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 const _SpinningLogo(),
-                if (error != null) ...<Widget>[
+                if (error case final Object failure) ...<Widget>[
                   const SizedBox(height: 24),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Text(
-                      context.l10n.failedToStart(bootstrapFailureLabel(error)),
+                      context.l10n.failedToStart(
+                        bootstrapFailureLabel(failure),
+                      ),
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: Color(0xFFB24A3B)),
                     ),
