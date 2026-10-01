@@ -9,6 +9,7 @@ import 'package:openglucose/src/app_language_controller.dart';
 import 'package:openglucose/src/app_localizations_extension.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/archived_sensor_export_diagnostics.dart';
+import 'package:openglucose/src/bootstrap_failure_label.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
@@ -183,7 +184,7 @@ class _SplashApp extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 32),
                     child: Text(
-                      context.l10n.failedToStart(error.runtimeType.toString()),
+                      context.l10n.failedToStart(bootstrapFailureLabel(error)),
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: Color(0xFFB24A3B)),
                     ),

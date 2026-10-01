@@ -41,6 +41,14 @@ dependencies:
   sqflite: ^2.4.1
   path: ^1.9.0
 
+# path_provider 2.1.6 resolves foundation 2.6.0 (Darwin FFI) and android 2.3.x
+# (JNI). Both rewrites have produced production path-resolution failures; pin to
+# the last method-channel implementations until Flutter's endorsed releases are
+# verified on OpenGlucose's iOS/Android startup storage path.
+dependency_overrides:
+  path_provider_android: 2.2.23
+  path_provider_foundation: 2.5.1
+
 dev_dependencies:
   flutter_launcher_icons: ^0.14.3
   flutter_test:

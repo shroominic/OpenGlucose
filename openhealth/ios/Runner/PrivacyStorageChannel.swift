@@ -96,8 +96,16 @@ final class PrivacyStorageChannel {
   }
 }
 
-/// Establishes a dedicated database directory with the strongest iOS data-at-
-/// rest class that remains practical for foreground health-data access.
+/// Establishes a dedicated database directory with startup-accessible iOS
+/// data-at-rest protection.
+///
+/// Protection is `completeUntilFirstUserAuthentication`, matching the native
+/// restricted-state store. `FileProtectionType.complete` is intentionally
+/// avoided: it is unavailable before first unlock after reboot and can fail
+/// Flutter startup with `PathAccessException` when BLE/background launch races
+/// the first unlock. Intermediate directories (notably the shared
+/// `OpenGlucose` parent) are created without a protection attribute so sibling
+/// stores such as restricted health state are not locked out.
 ///
 /// The directory and every SQLite artifact are protected and excluded before
 /// sqflite opens the database. Empty sidecars are valid SQLite inputs and let
@@ -105,6 +113,8 @@ final class PrivacyStorageChannel {
 enum ProtectedHealthDatabaseStorage {
   private static let fileManager = FileManager.default
   private static let sidecarSuffixes = ["", "-wal", "-shm", "-journal"]
+  private static let startupAccessibleProtection =
+    FileProtectionType.completeUntilFirstUserAuthentication
 
   static func prepare(directoryPath: String, databasePath: String) throws {
     let locations = try validatedLocations(
@@ -122,6 +132,9 @@ enum ProtectedHealthDatabaseStorage {
     guard fileManager.fileExists(atPath: sourceURL.path) else {
       throw PrivacyStorageError.invalidArtifact
     }
+    // Repair any previously applied complete-protection class that would make
+    // restricted paths unreadable at the next cold start before first unlock.
+    try applyAndVerifyStartupAccessibleProtection(sourceURL)
     var url = sourceURL
     do {
       var values = URLResourceValues()
@@ -174,18 +187,31 @@ enum ProtectedHealthDatabaseStorage {
   }
 
   private static func prepareDirectory(_ directory: URL) throws {
+    let parent = directory.deletingLastPathComponent()
+    // Create shared ancestors without a protection attribute. FileManager
+    // applies createDirectory attributes to intermediate directories too, so
+    // putting complete/until-first-auth on this call would poison OpenGlucose
+    // for sibling restricted-state paths.
+    if parent.path != directory.path {
+      try fileManager.createDirectory(
+        at: parent,
+        withIntermediateDirectories: true,
+        attributes: nil
+      )
+      try applyAndVerifyStartupAccessibleProtection(parent)
+    }
     try fileManager.createDirectory(
       at: directory,
-      withIntermediateDirectories: true,
+      withIntermediateDirectories: false,
       attributes: [
-        .protectionKey: FileProtectionType.complete,
+        .protectionKey: startupAccessibleProtection,
       ]
     )
     let attributes = try fileManager.attributesOfItem(atPath: directory.path)
     guard attributes[.type] as? FileAttributeType == .typeDirectory else {
       throw PrivacyStorageError.invalidArtifact
     }
-    try applyAndVerifyCompleteProtection(directory)
+    try applyAndVerifyStartupAccessibleProtection(directory)
     try excludeFromBackupAndVerify(directory)
   }
 
@@ -199,26 +225,28 @@ enum ProtectedHealthDatabaseStorage {
       let created = fileManager.createFile(
         atPath: file.path,
         contents: Data(),
-        attributes: [.protectionKey: FileProtectionType.complete]
+        attributes: [.protectionKey: startupAccessibleProtection]
       )
       guard created else {
         throw PrivacyStorageError.fileCreationFailed
       }
     }
-    try applyAndVerifyCompleteProtection(file)
+    try applyAndVerifyStartupAccessibleProtection(file)
     try excludeFromBackupAndVerify(file)
   }
 
-  private static func applyAndVerifyCompleteProtection(_ url: URL) throws {
+  private static func applyAndVerifyStartupAccessibleProtection(
+    _ url: URL
+  ) throws {
     do {
       try fileManager.setAttributes(
-        [.protectionKey: FileProtectionType.complete],
+        [.protectionKey: startupAccessibleProtection],
         ofItemAtPath: url.path
       )
       let attributes = try fileManager.attributesOfItem(atPath: url.path)
       guard
         let protection = attributes[.protectionKey] as? FileProtectionType,
-        protection == .complete
+        protection == startupAccessibleProtection
       else {
         throw PrivacyStorageError.fileProtectionFailed
       }

@@ -54,14 +54,19 @@ Never hand-edit a resolved lockfile to imitate a package-manager result.
    repository, advisory, and license sources.
 3. Prefer the smallest maintained dependency with a compatible license and no
    unnecessary permissions, services, telemetry, or build-time downloads.
-4. Update through the native package manager; inspect manifest, lockfile,
+4. `dependency_overrides` need a time-bounded exception with an in-manifest
+   comment naming the defect and removal condition. The app currently pins
+   `path_provider_foundation`/`path_provider_android` off the FFI/JNI rewrites
+   that failed OpenGlucose startup path resolution; remove the pins once
+   endorsed releases are re-verified on iOS and Android launch.
+5. Update through the native package manager; inspect manifest, lockfile,
    platform project, permission, entitlement, and generated-registration diffs.
-5. Run package-wide checks plus affected native builds and integration tests.
-6. Exercise timeout, denial, unavailable-service, malformed-input, and rollback
+6. Run package-wide checks plus affected native builds and integration tests.
+7. Exercise timeout, denial, unavailable-service, malformed-input, and rollback
    behavior for third-party integrations.
-7. Update documentation, license inventory/notice material, compatibility notes,
+8. Update documentation, license inventory/notice material, compatibility notes,
    and changelogs as appropriate.
-8. Record the rollback version and any migration constraint in the pull request.
+9. Record the rollback version and any migration constraint in the pull request.
 
 Do not combine a dependency upgrade with unrelated behavior or broad formatting.
 

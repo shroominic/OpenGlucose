@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -83,23 +84,42 @@ class FileHealthStateStore implements HealthStateStore {
   }
 
   Future<void> _initialize() async {
+    try {
+      await _initializeStorage();
+    } on PathAccessException catch (error) {
+      throw StateError(
+        'Restricted health-state storage is not writable at startup: '
+        '${error.osError?.message ?? error.message}',
+      );
+    }
+  }
+
+  Future<void> _initializeStorage() async {
     final applicationSupport = await _directoryProvider();
-    final directory = Directory(
-      '${applicationSupport.path}${Platform.pathSeparator}OpenGlucose'
-      '${Platform.pathSeparator}$_storageDirectoryName',
+    final productDirectory = Directory(
+      p.join(applicationSupport.path, 'OpenGlucose'),
     );
+    final directory = Directory(
+      p.join(productDirectory.path, _storageDirectoryName),
+    );
+    await productDirectory.create(recursive: true);
+    // Repair the shared product directory before creating restricted files.
+    // A prior HealthDatabase prepare used FileProtectionType.complete with
+    // intermediate directories, which could leave OpenGlucose unreadable at
+    // the next cold start and surface as PathAccessException on launch.
+    await _excludeFromBackup(productDirectory.path);
     await directory.create(recursive: true);
     // Exclude and verify the dedicated directory before any transaction file
     // can contain sensor identity or glucose history. File-level verification
     // remains in place so every committed artifact is independently checked.
     await _excludeFromBackup(directory.path);
     final historyDirectory = Directory(
-      '${directory.path}${Platform.pathSeparator}$_historyDirectoryName',
+      p.join(directory.path, _historyDirectoryName),
     );
     await historyDirectory.create(recursive: true);
     await _excludeFromBackup(historyDirectory.path);
     _historyDirectory = historyDirectory;
-    final file = File('${directory.path}${Platform.pathSeparator}$_fileName');
+    final file = File(p.join(directory.path, _fileName));
     _file = file;
 
     await _restoreInterruptedCommit(file);
