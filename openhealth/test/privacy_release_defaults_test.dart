@@ -191,6 +191,23 @@ void main() {
         expect(store, contains('restricted-health-state.json'));
         expect(store, contains('RestrictedHealthState'));
         expect(
+          store,
+          contains("p.join(applicationSupport.path, 'OpenGlucose')"),
+        );
+        expect(
+          store.indexOf("p.join(applicationSupport.path, 'OpenGlucose')") <
+              store.indexOf('await _excludeFromBackup(productDirectory.path)'),
+          isTrue,
+          reason:
+              'The shared OpenGlucose directory must be repaired/excluded '
+              'before restricted files are created under it.',
+        );
+        expect(
+          store.indexOf('await _excludeFromBackup(productDirectory.path)') <
+              store.indexOf('await _excludeFromBackup(directory.path)'),
+          isTrue,
+        );
+        expect(
           store.indexOf('await _excludeFromBackup(directory.path)') <
               store.indexOf('final file = File('),
           isTrue,
@@ -207,6 +224,7 @@ void main() {
         expect(store, contains('_filesHaveEqualContents'));
         expect(store, contains('openHealth.lastSensor'));
         expect(store, contains('excludeFromBackup'));
+        expect(store, contains('PathAccessException'));
         expect(privacyStorageChannel, contains('case "excludeFromBackup"'));
         expect(
           privacyStorageChannel,
@@ -217,6 +235,24 @@ void main() {
           contains('values.isExcludedFromBackup = true'),
         );
         expect(privacyStorageChannel, contains('.isExcludedFromBackupKey'));
+        expect(
+          privacyStorageChannel,
+          contains('completeUntilFirstUserAuthentication'),
+        );
+        expect(
+          privacyStorageChannel,
+          contains('withIntermediateDirectories: false'),
+          reason:
+              'HealthDatabase protection must not be applied to OpenGlucose '
+              'ancestors that sibling restricted stores also use.',
+        );
+        expect(
+          privacyStorageChannel,
+          isNot(contains('FileProtectionType.complete,')),
+          reason:
+              'complete protection is unavailable before first unlock and '
+              'fails Flutter startup with PathAccessException.',
+        );
         expect(appDelegate, contains('initializeAndPurgeLegacyDefaults()'));
         expect(nativeStore, contains('RestrictedNativeState'));
         expect(nativeStore, contains('restricted-native-state.json'));
@@ -290,6 +326,19 @@ void main() {
       expect(cleanup, contains('entry is File'));
       expect(cleanup, contains('entry is Directory'));
       expect(cleanup, contains(r'\.csv$'));
+    });
+
+    test('path_provider platform impls stay on method-channel pins', () {
+      final manifest = _read('pubspec.yaml');
+      final lockfile = _read('pubspec.lock');
+
+      expect(manifest, contains('dependency_overrides:'));
+      expect(manifest, contains('path_provider_foundation: 2.5.1'));
+      expect(manifest, contains('path_provider_android: 2.2.23'));
+      expect(lockfile, contains('path_provider_foundation:'));
+      expect(lockfile, contains('version: "2.5.1"'));
+      expect(lockfile, contains('path_provider_android:'));
+      expect(lockfile, contains('version: "2.2.23"'));
     });
   });
 

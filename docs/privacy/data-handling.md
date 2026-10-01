@@ -30,11 +30,17 @@ target even on failure so a recoverable rescan is preferred to backup exposure.
 Android configuration disables backup/device transfer and excludes app domains;
 final device verification remains release evidence. On iOS, the implementation
 requests `NSURLIsExcludedFromBackupKey`, reads the attribute back, and fails the
-restricted-store startup if it is not confirmed. Local tests exercise the
-storage behavior. Physical app-container inspection on `Shroominic` confirmed
-the current restricted directory and files were backup-excluded in build 17 on
-2026-08-14; a full backup/restore rehearsal remains separate evidence. These are
-implementation and device-check claims, not proof of store enforcement.
+restricted-store startup if it is not confirmed. Restricted health-state and
+local SQLite health-database paths use
+`FileProtectionType.completeUntilFirstUserAuthentication` so they remain
+readable after first unlock; startup also repairs the shared `OpenGlucose`
+parent if an older build applied `complete` protection to intermediate
+directories (which previously failed launch with `PathAccessException`). Local
+tests exercise the storage behavior. Physical app-container inspection on
+`Shroominic` confirmed the current restricted directory and files were
+backup-excluded in build 17 on 2026-08-14; a full backup/restore rehearsal
+remains separate evidence. These are implementation and device-check claims,
+not proof of store enforcement.
 
 The dedicated file is JSON and is not encrypted by OpenGlucose itself. It
 relies on the application sandbox and operating-system at-rest protections;

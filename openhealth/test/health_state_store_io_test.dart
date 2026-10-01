@@ -51,7 +51,11 @@ void main() {
       expect(preferences.containsKey('openHealth.history.sensor-1'), isFalse);
       expect(preferences.containsKey('openHealth.displayPreferences'), isTrue);
       expect(excludedPaths, isNotEmpty);
-      expect(excludedPaths.first, endsWith(_storageDirectory));
+      expect(excludedPaths.first, endsWith('OpenGlucose'));
+      expect(
+        excludedPaths,
+        contains(endsWith(_storageDirectory)),
+      );
       expect(excludedPaths.last, endsWith(_fileName));
 
       final envelope = await _readEnvelope(directory);
@@ -163,6 +167,33 @@ void main() {
     await expectLater(store.initialize(), throwsStateError);
 
     expect(preferences.containsKey(_lastSensorKey), isTrue);
+  });
+
+  test('maps PathAccessException into a startup StateError', () async {
+    SharedPreferences.setMockInitialValues(const <String, Object>{});
+    final preferences = await SharedPreferences.getInstance();
+    final store = FileHealthStateStore(
+      legacyPreferences: preferences,
+      directoryProvider: () async {
+        throw const PathAccessException(
+          'Creation failed',
+          OSError('Operation not permitted', 1),
+          '/tmp/openglucose-denied',
+        );
+      },
+      requiresBackupExclusion: false,
+    );
+
+    await expectLater(
+      store.initialize(),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          contains('not writable at startup'),
+        ),
+      ),
+    );
   });
 
   test('serializes mutations and exposes only committed snapshots', () async {

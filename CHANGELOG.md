@@ -10,6 +10,16 @@ expectations are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- App startup no longer fails with `PathAccessException` when the shared
+  `OpenGlucose` application-support directory had been created with iOS
+  `FileProtectionType.complete` (applied to intermediate directories by an
+  older HealthDatabase prepare). Restricted storage now uses
+  `completeUntilFirstUserAuthentication`, repairs the product directory on
+  launch, and pins `path_provider` platform implementations away from the
+  FFI/JNI rewrites that have produced production path-resolution failures.
+
 ## [0.1.6] - 2026-08-31
 
 ### Added
