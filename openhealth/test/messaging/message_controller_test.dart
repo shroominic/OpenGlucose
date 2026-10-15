@@ -29,6 +29,86 @@ Future<MessageController> _build(
 
 void main() {
   group('selection', () {
+    test(
+      'selects the exact recurring sharp-rise nudge with live quantification',
+      () async {
+        final controller = await _build(defaultMessageCatalog);
+        controller.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 36,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+
+        final message = controller.topMessage;
+        expect(message?.id, 'nudge.sharpRise');
+        expect(message?.title, '↑↑ Glucose is spiking');
+        expect(
+          message?.body,
+          'Up 36 mg/dL in 10 minutes\n'
+          'If walking is safe for you, take a short walk now and watch how your glucose responds.',
+        );
+        expect(message?.priority, 200);
+        expect(message?.persistence, AppMessagePersistence.recurring);
+
+        await controller.dismiss(message!);
+        expect(controller.topMessage, isNull);
+
+        final preferences = await SharedPreferences.getInstance();
+        final freshController = MessageController(
+          preferences: preferences,
+          messages: defaultMessageCatalog,
+        );
+        freshController.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 36,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+        expect(freshController.topMessage?.id, 'nudge.sharpRise');
+      },
+    );
+
+    test(
+      'notifies when live sharp-rise quantification changes under one id',
+      () async {
+        final controller = await _build(defaultMessageCatalog);
+        controller.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 36,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+        var notifications = 0;
+        controller.addListener(() => notifications += 1);
+
+        controller.updateContext(
+          _context().copyWith(
+            sharpRise: SharpRiseSignal(
+              changeMgdl: 42,
+              durationMinutes: 10,
+              tailStart: DateTime(2026, 6, 22, 11, 50),
+            ),
+          ),
+        );
+
+        expect(notifications, 1);
+        expect(
+          controller.topMessage?.body,
+          startsWith('Up 42 mg/dL in 10 minutes'),
+        );
+      },
+    );
+
     test('surfaces only messages whose trigger matches the context', () async {
       final controller = await _build(defaultMessageCatalog);
 
@@ -52,37 +132,45 @@ void main() {
       expect(controller.topMessage?.id, 'always');
     });
 
-    test('orders by priority, then kind (alert>info>tip), then id', () async {
-      final controller = await _build(const <AppMessage>[
-        AppMessage(id: 'tip', kind: AppMessageKind.tip, title: 't', body: 'b'),
-        AppMessage(
-          id: 'info',
-          kind: AppMessageKind.info,
-          title: 't',
-          body: 'b',
-        ),
-        AppMessage(
-          id: 'alertLow',
-          kind: AppMessageKind.alert,
-          title: 't',
-          body: 'b',
-        ),
-        AppMessage(
-          id: 'alertHigh',
-          kind: AppMessageKind.alert,
-          title: 't',
-          body: 'b',
-          priority: 50,
-        ),
-      ]);
-      controller.updateContext(_context());
-      expect(controller.visibleMessages.map((m) => m.id).toList(), <String>[
-        'alertHigh',
-        'alertLow',
-        'info',
-        'tip',
-      ]);
-    });
+    test(
+      'orders by priority, then kind (alert>nudge>info>tip), then id',
+      () async {
+        final controller = await _build(const <AppMessage>[
+          AppMessage(
+            id: 'tip',
+            kind: AppMessageKind.tip,
+            title: 't',
+            body: 'b',
+          ),
+          AppMessage(
+            id: 'info',
+            kind: AppMessageKind.info,
+            title: 't',
+            body: 'b',
+          ),
+          AppMessage(
+            id: 'alertLow',
+            kind: AppMessageKind.alert,
+            title: 't',
+            body: 'b',
+          ),
+          AppMessage(
+            id: 'alertHigh',
+            kind: AppMessageKind.alert,
+            title: 't',
+            body: 'b',
+            priority: 50,
+          ),
+        ]);
+        controller.updateContext(_context());
+        expect(controller.visibleMessages.map((m) => m.id).toList(), <String>[
+          'alertHigh',
+          'alertLow',
+          'info',
+          'tip',
+        ]);
+      },
+    );
   });
 
   group('dismissal', () {

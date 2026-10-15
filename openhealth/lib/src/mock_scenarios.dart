@@ -158,12 +158,12 @@ class MockScenarioCatalog {
       MockScenario.activeNormal => _active(scenario, _normalShape),
       MockScenario.activeHigh => _active(scenario, _highShape),
       MockScenario.activeLow => _active(scenario, _lowShape),
-      // Fewer samples so the per-5-minute slope is steep enough that the
-      // dashboard's trend arrow reads as a genuine rapid rise/fall.
+      // The final ten-minute tail is deliberately in range so the demo can
+      // exercise the bounded wellness nudge without becoming a high alert.
       MockScenario.rapidRise => _active(
         scenario,
         _rapidRiseShape,
-        sampleCount: 18,
+        sampleCount: 3,
       ),
       MockScenario.rapidFall => _active(
         scenario,
@@ -190,10 +190,11 @@ class MockScenarioCatalog {
   double _lowShape(int index, int count) =>
       58 + (math.sin(index / 6) * 6) + ((index % 3) - 1);
 
-  double _rapidRiseShape(int index, int count) =>
-      // Climb steadily from ~80 to ~230 across the window (monotonic so the
-      // last-step delta clearly reads as rising).
-      80 + (index / (count - 1)) * 150 + (math.sin(index / 5) * 2);
+  double _rapidRiseShape(int index, int count) => switch (index) {
+    0 => 95,
+    1 => 111,
+    _ => 131,
+  };
 
   double _rapidFallShape(int index, int count) =>
       // Drop steadily from ~240 to ~70 across the window.

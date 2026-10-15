@@ -15,11 +15,16 @@ class CgmDashboardChart extends StatefulWidget {
     required this.readings,
     required this.preferences,
     required this.historySync,
+    this.sharpRiseTailStart,
   });
 
   final List<CgmReading> readings;
   final DisplayPreferences preferences;
   final CgmHistorySyncState historySync;
+
+  /// The start of a currently qualifying, deterministic sharp-rise tail.
+  /// Null leaves every chart element in its ordinary presentation.
+  final DateTime? sharpRiseTailStart;
 
   @override
   State<CgmDashboardChart> createState() => _CgmDashboardChartState();
@@ -53,6 +58,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
           samples,
           timeframeMinutes: effectiveTimeframe,
           maxWidth: constraints.maxWidth,
+          sharpRiseTailStart: widget.sharpRiseTailStart,
         );
         final hasTimeframeControls = timeframes.length > 1;
         final overlayInsetTop = hasTimeframeControls ? 42.0 : 0.0;
@@ -75,6 +81,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
                             minuteLabel: context.l10n.chartAxisMinute,
                             selectedPointId: _selectedPointId,
                             overlayInsetTop: overlayInsetTop,
+                            sharpRiseTailStart: widget.sharpRiseTailStart,
                             onSelectPoint: _handleSelection,
                             onClearSelection: _clearSelection,
                           ),
@@ -219,6 +226,7 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
     List<_ReadingSample> samples, {
     required int timeframeMinutes,
     required double maxWidth,
+    DateTime? sharpRiseTailStart,
   }) {
     if (samples.isEmpty) {
       return const <_PlottedPoint>[];
@@ -239,26 +247,59 @@ class _CgmDashboardChartState extends State<CgmDashboardChart> {
       width: maxWidth,
     );
     if (visibleSamples.length <= targetPoints) {
-      return visibleSamples
-          .map(
-            (sample) => _PlottedPoint(
-              id: sample.minute,
-              minute: sample.minute,
-              recordedAt: sample.recordedAt,
-              value: sample.value,
-              low: sample.value,
-              high: sample.value,
-              sampleCount: 1,
-            ),
-          )
-          .toList(growable: false);
+      return _rawPoints(visibleSamples);
     }
 
-    final bucketSize = (visibleSamples.length / targetPoints).ceil();
+    final tail = sharpRiseTailStart == null
+        ? const <_ReadingSample>[]
+        : visibleSamples
+              .where(
+                (sample) =>
+                    sample.recordedAt != null &&
+                    !sample.recordedAt!.isBefore(sharpRiseTailStart),
+              )
+              .toList(growable: false);
+    final beforeTail = tail.isEmpty
+        ? visibleSamples
+        : visibleSamples
+              .where(
+                (sample) =>
+                    sample.recordedAt == null ||
+                    sample.recordedAt!.isBefore(sharpRiseTailStart!),
+              )
+              .toList(growable: false);
+    return <_PlottedPoint>[
+      ..._aggregatePoints(beforeTail, targetPoints: targetPoints),
+      ..._rawPoints(tail),
+    ];
+  }
+
+  List<_PlottedPoint> _rawPoints(List<_ReadingSample> samples) => samples
+      .map(
+        (sample) => _PlottedPoint(
+          id: sample.minute,
+          minute: sample.minute,
+          recordedAt: sample.recordedAt,
+          value: sample.value,
+          low: sample.value,
+          high: sample.value,
+          sampleCount: 1,
+        ),
+      )
+      .toList(growable: false);
+
+  List<_PlottedPoint> _aggregatePoints(
+    List<_ReadingSample> samples, {
+    required int targetPoints,
+  }) {
+    if (samples.length <= targetPoints) {
+      return _rawPoints(samples);
+    }
+    final bucketSize = (samples.length / targetPoints).ceil();
     final points = <_PlottedPoint>[];
-    for (var start = 0; start < visibleSamples.length; start += bucketSize) {
-      final end = math.min(start + bucketSize, visibleSamples.length);
-      final bucket = visibleSamples.sublist(start, end);
+    for (var start = 0; start < samples.length; start += bucketSize) {
+      final end = math.min(start + bucketSize, samples.length);
+      final bucket = samples.sublist(start, end);
       final anchor = bucket[bucket.length ~/ 2];
       final values = bucket
           .map((sample) => sample.value)
@@ -313,6 +354,7 @@ class _InteractiveHistoryChart extends StatelessWidget {
     required this.minuteLabel,
     required this.selectedPointId,
     required this.overlayInsetTop,
+    required this.sharpRiseTailStart,
     required this.onSelectPoint,
     required this.onClearSelection,
   });
@@ -325,6 +367,7 @@ class _InteractiveHistoryChart extends StatelessWidget {
   final String Function(int minute) minuteLabel;
   final int? selectedPointId;
   final double overlayInsetTop;
+  final DateTime? sharpRiseTailStart;
   final ValueChanged<_PlottedPoint?> onSelectPoint;
   final VoidCallback onClearSelection;
 
@@ -362,19 +405,28 @@ class _InteractiveHistoryChart extends StatelessWidget {
           onPointerCancel: (_) => onClearSelection(),
           child: Stack(
             children: <Widget>[
-              CustomPaint(
-                painter: _DashboardChartPainter(
-                  points: points,
-                  preferences: preferences,
-                  theme: Theme.of(context),
-                  timeframeMinutes: timeframeMinutes,
-                  selectedPointId: selectedPointId,
-                  chartStyle: chartStyle,
-                  overlayInsetTop: overlayInsetTop,
-                  localeName: localeName,
-                  minuteLabel: minuteLabel,
+              Semantics(
+                label: sharpRiseTailStart == null
+                    ? null
+                    : context.l10n.sharpRiseChartTailSemantics,
+                child: RepaintBoundary(
+                  key: const ValueKey<String>('dashboardChartPaint'),
+                  child: CustomPaint(
+                    painter: _DashboardChartPainter(
+                      points: points,
+                      preferences: preferences,
+                      theme: Theme.of(context),
+                      timeframeMinutes: timeframeMinutes,
+                      selectedPointId: selectedPointId,
+                      chartStyle: chartStyle,
+                      overlayInsetTop: overlayInsetTop,
+                      sharpRiseTailStart: sharpRiseTailStart,
+                      localeName: localeName,
+                      minuteLabel: minuteLabel,
+                    ),
+                    child: const SizedBox.expand(),
+                  ),
                 ),
-                child: const SizedBox.expand(),
               ),
               if (selectedPoint != null && selectedOffset != null)
                 Positioned(
@@ -549,6 +601,7 @@ class _DashboardChartPainter extends CustomPainter {
     required this.selectedPointId,
     required this.chartStyle,
     required this.overlayInsetTop,
+    required this.sharpRiseTailStart,
     required this.localeName,
     required this.minuteLabel,
   });
@@ -560,6 +613,7 @@ class _DashboardChartPainter extends CustomPainter {
   final int? selectedPointId;
   final ChartStyle chartStyle;
   final double overlayInsetTop;
+  final DateTime? sharpRiseTailStart;
   final String localeName;
   final String Function(int minute) minuteLabel;
 
@@ -676,13 +730,52 @@ class _DashboardChartPainter extends CustomPainter {
         ..strokeJoin = StrokeJoin.round
         ..isAntiAlias = true;
       canvas.drawPath(linePath, linePaint);
+
+      final sharpRiseStartIndex = sharpRiseTailStart == null
+          ? -1
+          : points.indexWhere(
+              (point) =>
+                  point.recordedAt != null &&
+                  !point.recordedAt!.isBefore(sharpRiseTailStart!),
+            );
+      if (sharpRiseStartIndex >= 0 &&
+          chartPoints.length - sharpRiseStartIndex >= 2) {
+        final sharpRisePath = Path()
+          ..moveTo(
+            chartPoints[sharpRiseStartIndex].dx,
+            chartPoints[sharpRiseStartIndex].dy,
+          );
+        for (
+          var index = sharpRiseStartIndex + 1;
+          index < chartPoints.length;
+          index += 1
+        ) {
+          sharpRisePath.lineTo(chartPoints[index].dx, chartPoints[index].dy);
+        }
+        canvas.drawPath(
+          sharpRisePath,
+          Paint()
+            ..color = const Color(0xFFB86B00)
+            ..strokeWidth = effectiveStyle == ChartStyle.dots ? 2.5 : 3.5
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..isAntiAlias = true,
+        );
+      }
     }
 
     final pointPaint = Paint()..isAntiAlias = true;
     for (var index = 0; index < points.length; index++) {
       final point = points[index];
       final offset = chartPoints[index];
-      pointPaint.color = point.value < bandLow
+      final isSharpRiseTail =
+          sharpRiseTailStart != null &&
+          point.recordedAt != null &&
+          !point.recordedAt!.isBefore(sharpRiseTailStart!);
+      pointPaint.color = isSharpRiseTail
+          ? const Color(0xFFB86B00)
+          : point.value < bandLow
           ? const Color(0xFFF48C6A)
           : point.value > bandHigh
           ? const Color(0xFFE9A23B)
@@ -742,7 +835,12 @@ class _DashboardChartPainter extends CustomPainter {
           selected,
           4.2,
           Paint()
-            ..color = selectedPoint.value < bandLow
+            ..color =
+                sharpRiseTailStart != null &&
+                    selectedPoint.recordedAt != null &&
+                    !selectedPoint.recordedAt!.isBefore(sharpRiseTailStart!)
+                ? const Color(0xFFB86B00)
+                : selectedPoint.value < bandLow
                 ? const Color(0xFFF48C6A)
                 : selectedPoint.value > bandHigh
                 ? const Color(0xFFE9A23B)
@@ -782,6 +880,7 @@ class _DashboardChartPainter extends CustomPainter {
         oldDelegate.timeframeMinutes != timeframeMinutes ||
         oldDelegate.chartStyle != chartStyle ||
         oldDelegate.overlayInsetTop != overlayInsetTop ||
+        oldDelegate.sharpRiseTailStart != sharpRiseTailStart ||
         oldDelegate.localeName != localeName;
   }
 }

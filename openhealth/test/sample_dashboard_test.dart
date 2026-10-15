@@ -51,6 +51,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Sample data — not from a sensor'), findsOneWidget);
+      expect(find.text('↑↑ Glucose is spiking'), findsNothing);
       expect(find.textContaining('Connected'), findsNothing);
       expect(controller.snapshot, isNull);
       expect(controller.sensors, isEmpty);
