@@ -9,6 +9,7 @@ import 'package:openglucose/src/app_language_controller.dart';
 import 'package:openglucose/src/app_localizations_extension.dart';
 import 'package:openglucose/src/app_controller.dart';
 import 'package:openglucose/src/archived_sensor_export_diagnostics.dart';
+import 'package:openglucose/src/body_timeline_context.dart';
 import 'package:openglucose/src/dashboard_chart.dart';
 import 'package:openglucose/src/display_preferences.dart';
 import 'package:openglucose/src/driver_factory.dart';
@@ -16,6 +17,7 @@ import 'package:openglucose/src/healthkit_export.dart';
 import 'package:openglucose/src/health_state_store_factory.dart';
 import 'package:openglucose/src/integrations_settings_pane.dart';
 import 'package:openglucose/src/ios_export_share.dart';
+import 'package:openglucose/src/journal_quick_add.dart';
 import 'package:openglucose/src/macos_preview_notice.dart';
 import 'package:openglucose/src/metrics_section.dart';
 import 'package:openglucose/src/messaging/message_catalog.dart';
@@ -31,6 +33,7 @@ import 'package:openglucose/src/sensor_archive_export.dart';
 import 'package:openglucose/src/sensor_archive_share_file.dart';
 import 'package:openglucose/src/sample_dashboard_screen.dart';
 import 'package:openglucose/src/session_presentation.dart';
+import 'package:openglucose/src/today_cockpit.dart';
 import 'package:openglucose/src/weekly_recap/weekly_recap_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -330,6 +333,7 @@ class OpenGlucoseApp extends StatefulWidget {
     this.languageController,
     this.messageController,
     this.archivedSensorShareAction,
+    this.journalServiceFactory,
   });
 
   final CgmAppController controller;
@@ -343,6 +347,9 @@ class OpenGlucoseApp extends StatefulWidget {
 
   /// Optional share-sheet seam used by export integration tests.
   final ArchivedSensorShareAction? archivedSensorShareAction;
+
+  /// Optional local journal seam for deterministic dashboard/widget tests.
+  final JournalServiceFactory? journalServiceFactory;
 
   @override
   State<OpenGlucoseApp> createState() => _OpenGlucoseAppState();
@@ -440,6 +447,7 @@ class _OpenGlucoseAppState extends State<OpenGlucoseApp> {
                 home: CgmHomePage(
                   controller: widget.controller,
                   messageController: widget.messageController,
+                  journalServiceFactory: widget.journalServiceFactory,
                 ),
               ),
               // --- end TASK-007 onboarding gate ---
@@ -501,10 +509,12 @@ class CgmHomePage extends StatefulWidget {
     super.key,
     required this.controller,
     this.messageController,
+    this.journalServiceFactory,
   });
 
   final CgmAppController controller;
   final MessageController? messageController;
+  final JournalServiceFactory? journalServiceFactory;
 
   @override
   State<CgmHomePage> createState() => _CgmHomePageState();
@@ -514,19 +524,32 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
   static const _foregroundFreshnessInterval = Duration(seconds: 45);
 
   Timer? _freshnessTimer;
+  late final JournalQuickAddController _journalController;
+  late final BodyTimelineContextController _bodyTimelineController;
 
   @override
   void initState() {
     super.initState();
+    _journalController = JournalQuickAddController(
+      serviceFactory:
+          widget.journalServiceFactory ?? defaultJournalServiceFactory,
+    );
+    _bodyTimelineController = BodyTimelineContextController(
+      serviceFactory:
+          widget.journalServiceFactory ?? defaultJournalServiceFactory,
+    );
+    unawaited(_bodyTimelineController.load());
     WidgetsBinding.instance.addObserver(this);
     _freshnessTimer = Timer.periodic(_foregroundFreshnessInterval, (_) {
-      unawaited(widget.controller.ensureFreshData());
+      unawaited(_refreshForegroundContext());
     });
   }
 
   @override
   void dispose() {
     _freshnessTimer?.cancel();
+    _journalController.dispose();
+    _bodyTimelineController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -536,7 +559,12 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
     if (state != AppLifecycleState.resumed) {
       return;
     }
-    unawaited(widget.controller.ensureFreshData(force: true));
+    unawaited(_refreshForegroundContext(force: true));
+  }
+
+  Future<void> _refreshForegroundContext({bool force = false}) async {
+    await widget.controller.ensureFreshData(force: force);
+    await _bodyTimelineController.load(force: force);
   }
 
   @override
@@ -576,6 +604,8 @@ class _CgmHomePageState extends State<CgmHomePage> with WidgetsBindingObserver {
                       controller: widget.controller,
                       snapshot: snapshot,
                       messageController: widget.messageController,
+                      journalController: _journalController,
+                      bodyTimelineController: _bodyTimelineController,
                     ),
             ),
           ),
@@ -1178,11 +1208,15 @@ class _DashboardView extends StatelessWidget {
     required this.controller,
     required this.snapshot,
     this.messageController,
+    this.journalController,
+    this.bodyTimelineController,
   });
 
   final CgmAppController controller;
   final CgmSessionSnapshot snapshot;
   final MessageController? messageController;
+  final JournalQuickAddController? journalController;
+  final BodyTimelineContextController? bodyTimelineController;
 
   @override
   Widget build(BuildContext context) {
@@ -1265,7 +1299,11 @@ class _DashboardView extends StatelessWidget {
                     ),
                   ),
                   IconButton.filledTonal(
-                    onPressed: () => _showSettings(context, controller),
+                    onPressed: () => _showSettings(
+                      context,
+                      controller,
+                      bodyTimelineController: bodyTimelineController,
+                    ),
                     icon: const Icon(Icons.tune_rounded),
                   ),
                 ],
@@ -1287,6 +1325,45 @@ class _DashboardView extends StatelessWidget {
               snapshot: snapshot,
             ),
           ),
+          if (!isWarmingUp)
+            SliverToBoxAdapter(
+              key: const ValueKey<String>('dashboardTodayCockpitSection'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                child: TodayCockpit(
+                  readings: history,
+                  preferences: preferences,
+                  onAddContext: journalController == null
+                      ? null
+                      : () => unawaited(_openJournalQuickAdd(context)),
+                  journalSummaryBuilder: journalController == null
+                      ? null
+                      : () => journalController!.summaryText,
+                  journalListenable: journalController,
+                  mealResponseBuilder: bodyTimelineController == null
+                      ? null
+                      : () {
+                          final timelineController = bodyTimelineController;
+                          final context = timelineController?.context;
+                          if (context == null) return null;
+                          return MealResponseAnalytics.analyze(
+                            events: context.events,
+                            readings: history,
+                            now: DateTime.now(),
+                          );
+                        },
+                  bodyTimelineListenable: bodyTimelineController,
+                  bodyTimelineContextBuilder: () =>
+                      bodyTimelineController?.context ??
+                      journalController?.todayContext,
+                  bodyTimelineContextStatus:
+                      bodyTimelineController?.status ??
+                      BodyTimelineContextStatus.idle,
+                  bodyTimelineContextError: bodyTimelineController?.error,
+                  showBodyTimeline: history.isNotEmpty,
+                ),
+              ),
+            ),
           if (!isWarmingUp)
             SliverToBoxAdapter(
               key: const ValueKey<String>('dashboardHistorySection'),
@@ -1371,6 +1448,11 @@ class _DashboardView extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _openJournalQuickAdd(BuildContext context) async {
+    await showJournalQuickAddSheet(context, controller: journalController);
+    await bodyTimelineController?.load(force: true);
   }
 }
 
@@ -1690,8 +1772,9 @@ String _localizedShortDateTime(BuildContext context, DateTime? value) {
 
 Future<void> _showSettings(
   BuildContext context,
-  CgmAppController controller,
-) async {
+  CgmAppController controller, {
+  BodyTimelineContextController? bodyTimelineController,
+}) async {
   if (controller.snapshot != null) {
     unawaited(controller.refreshDiagnostics());
     unawaited(controller.loadCalibrations());
@@ -1745,6 +1828,7 @@ Future<void> _showSettings(
                     child: _SettingsOverview(
                       controller: controller,
                       healthExport: healthExport,
+                      bodyTimelineController: bodyTimelineController,
                       displayPane: displayPane,
                       hasActiveSensor: snapshot != null,
                       developerPane: snapshot == null
@@ -1785,6 +1869,7 @@ class _SettingsOverview extends StatelessWidget {
   const _SettingsOverview({
     required this.controller,
     required this.healthExport,
+    this.bodyTimelineController,
     required this.displayPane,
     required this.hasActiveSensor,
     this.developerPane,
@@ -1792,6 +1877,7 @@ class _SettingsOverview extends StatelessWidget {
 
   final CgmAppController controller;
   final HealthExportController healthExport;
+  final BodyTimelineContextController? bodyTimelineController;
   final Widget displayPane;
   final bool hasActiveSensor;
   final Widget? developerPane;
@@ -1900,6 +1986,9 @@ class _SettingsOverview extends StatelessWidget {
                 child: IntegrationsSettingsPane(
                   healthExport: healthExport,
                   controller: controller,
+                  onHealthContextSyncCompleted: bodyTimelineController == null
+                      ? null
+                      : () => bodyTimelineController!.load(force: true),
                 ),
               ),
               if (macosSecureStorageDisabled)

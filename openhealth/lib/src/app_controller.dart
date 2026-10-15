@@ -117,10 +117,7 @@ class CgmAppController extends ChangeNotifier {
   BleFailure? get scanFailure => _scanFailure;
 
   String? get scanFailureMessage => switch (_scanFailure) {
-    final failure? => userMessageForBleFailure(
-      failure,
-      language: _appLanguage,
-    ),
+    final failure? => userMessageForBleFailure(failure, language: _appLanguage),
     null => null,
   };
 
@@ -560,10 +557,7 @@ class CgmAppController extends ChangeNotifier {
             nextSnapshot.stage == CgmSyncStage.error;
         if (nextSnapshot.lastError != null && reconnectingStage) {
           _lastError =
-              primaryErrorTextForSnapshot(
-                _snapshot!,
-                language: _appLanguage,
-              ) ??
+              primaryErrorTextForSnapshot(_snapshot!, language: _appLanguage) ??
               safeOperationFailureText('Connection', language: _appLanguage);
         } else if (!reconnectingStage) {
           _lastError = null;
@@ -1720,10 +1714,7 @@ class CgmAppController extends ChangeNotifier {
 
   String _safeError(String context, Object error) {
     if (error is CgmBondTransferException) {
-      return userMessageForBondTransferFailure(
-        error,
-        language: _appLanguage,
-      );
+      return userMessageForBondTransferFailure(error, language: _appLanguage);
     }
     return userMessageForBleError(error, language: _appLanguage) ??
         safeOperationFailureText(context, language: _appLanguage);

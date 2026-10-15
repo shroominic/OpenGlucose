@@ -5,8 +5,7 @@ enum ArchivedSensorExportStage {
   preparing('P01'),
   storing('P02'),
   sharing('P03'),
-  cleanup('P04')
-  ;
+  cleanup('P04');
 
   const ArchivedSensorExportStage(this.phase);
 

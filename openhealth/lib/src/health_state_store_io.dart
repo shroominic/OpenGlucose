@@ -47,6 +47,7 @@ class FileHealthStateStore implements HealthStateStore {
       'openHealth.healthExport.lastSyncedMs';
   static const _healthExportWatermarkKey =
       'openHealth.healthExport.watermarkMs';
+  static const _glucoseAlertHistoryKey = 'openHealth.glucoseAlertHistory';
   static const _privacyChannel = MethodChannel(
     'com.openglucose.app/privacy_storage',
   );
@@ -638,7 +639,8 @@ class FileHealthStateStore implements HealthStateStore {
         key.startsWith(_historyPrefix) ||
         key.startsWith(_bondTransferPrefix) ||
         key == _healthExportLastSyncedKey ||
-        key == _healthExportWatermarkKey;
+        key == _healthExportWatermarkKey ||
+        key == _glucoseAlertHistoryKey;
   }
 
   static bool _isHistoryKey(String key) => key.startsWith(_historyPrefix);

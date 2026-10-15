@@ -1,7 +1,9 @@
 # Health-data recovery and erasure
 
-Owner: data owner, with privacy review. OpenGlucose currently has no verified
-full backup/restore or delete-all feature; do not promise either to users.
+Owner: data owner, with privacy review. OpenGlucose has a core deletion
+coordinator contract, but the production store adapter and user confirmation
+flow remain release work; do not promise verified delete-all until those checks
+are complete.
 
 ## Recovery
 
@@ -26,8 +28,24 @@ a release blocker.
 
 ## Erasure
 
-Stop sensor/background writers first. Remove all sensor histories, selected
-sensor, native background target/payload, notifications/live activities,
-journal/database, AI artifacts/key, exports, preferences, and caches. Relaunch
-offline and verify that no record is restored. Document any OS/provider copy
-outside app control and the user action required there.
+Use `LocalDataDeletionCoordinator` as the single orchestration boundary. First
+call `createPlan()` and show the returned non-sensitive counts and domains in a
+confirmation preview. A dry run must not mutate anything. Execution requires
+the exact plan confirmation phrase; a changed inventory invalidates the plan.
+
+The complete default scope is:
+
+- journal events and imported activity, sleep, and heart-rate samples;
+- AI insights and the secure BYO API key;
+- alert history;
+- active sensor state and every restricted reading history blob;
+- sensor archive manifests and archived reading blobs;
+- native background/live surfaces, derived caches, and temporary exports.
+
+The app adapter must stop sensor/background writers before invoking the plan,
+delete each domain through its durable store, verify it empty, and stop on the
+first delete or verification failure. A partial result must remain visibly
+incomplete and must never be reported as erasure. Relaunch offline and verify
+that no record is restored. Document any OS/provider copy outside app control
+and the user action required there (for example, Apple Health data written by
+an earlier explicit export).

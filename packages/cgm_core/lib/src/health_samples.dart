@@ -1,5 +1,93 @@
 import 'timeline.dart';
 
+/// Provenance retained for a sample imported from a platform health store.
+///
+/// Platform identifiers are kept locally so repeated bounded reads can be
+/// de-duplicated without comparing health values (which can legitimately be
+/// equal).  The identifier is never shown as a user-facing sensor identifier
+/// and is intentionally optional for manually-entered records and legacy
+/// rows.
+class HealthSampleMetadata {
+  const HealthSampleMetadata({
+    required this.externalId,
+    this.sourceId,
+    this.sourceName,
+    this.deviceId,
+    this.deviceModel,
+    this.recordingMethod,
+    this.deleted = false,
+  });
+
+  /// Stable identifier supplied by the source platform (for example a
+  /// HealthKit UUID or Health Connect record id).
+  final String externalId;
+
+  /// Source bundle/package identifier, when the platform provides one.
+  final String? sourceId;
+
+  /// Human-readable source application name, when available.
+  final String? sourceName;
+
+  /// Source device identifier, when available.
+  final String? deviceId;
+
+  /// Source device model, when available.
+  final String? deviceModel;
+
+  /// Source recording method (automatic, manual, or unknown).
+  final String? recordingMethod;
+
+  /// Whether the source reported this record as deleted during an incremental
+  /// sync. Deleted tombstones are not rendered as samples but remain
+  /// representable for an anchored importer.
+  final bool deleted;
+
+  /// Namespaced key used for local uniqueness in a per-sample table.
+  String identityKey(DataSource source) => '${source.key}:$externalId';
+
+  Map<String, Object?> toJson() {
+    if (externalId.trim().isEmpty) {
+      throw const FormatException('externalId must not be empty');
+    }
+    return <String, Object?>{
+      'externalId': externalId,
+      'sourceId': sourceId,
+      'sourceName': sourceName,
+      'deviceId': deviceId,
+      'deviceModel': deviceModel,
+      'recordingMethod': recordingMethod,
+      'deleted': deleted,
+    };
+  }
+
+  factory HealthSampleMetadata.fromJson(Map<String, Object?> json) {
+    final externalId = json['externalId'];
+    if (externalId is! String || externalId.trim().isEmpty) {
+      throw const FormatException('externalId must be a non-empty String');
+    }
+    final deleted = json['deleted'];
+    if (deleted != null && deleted is! bool) {
+      throw const FormatException('deleted must be a bool or null');
+    }
+    return HealthSampleMetadata(
+      externalId: externalId,
+      sourceId: _readOptionalMetadataString(json, 'sourceId'),
+      sourceName: _readOptionalMetadataString(json, 'sourceName'),
+      deviceId: _readOptionalMetadataString(json, 'deviceId'),
+      deviceModel: _readOptionalMetadataString(json, 'deviceModel'),
+      recordingMethod: _readOptionalMetadataString(json, 'recordingMethod'),
+      deleted: deleted as bool? ?? false,
+    );
+  }
+}
+
+String? _readOptionalMetadataString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is! String) throw FormatException('$key must be a String or null');
+  return value;
+}
+
 /// The kind of an [ActivitySample].
 enum ActivityType {
   /// Step count over the sample interval.
@@ -40,6 +128,7 @@ class ActivitySample implements TimelineEntry {
     this.energyKcal,
     this.distanceMeters,
     this.workoutLabel,
+    this.metadata,
   });
 
   /// Interval start.
@@ -66,6 +155,9 @@ class ActivitySample implements TimelineEntry {
   /// Free-text workout label (e.g. `'cycling'`), for [ActivityType.workout].
   final String? workoutLabel;
 
+  /// Optional source identity and import metadata.
+  final HealthSampleMetadata? metadata;
+
   /// Duration of the sample interval.
   Duration get duration => end.difference(start);
 
@@ -84,6 +176,7 @@ class ActivitySample implements TimelineEntry {
     double? energyKcal,
     double? distanceMeters,
     String? workoutLabel,
+    HealthSampleMetadata? metadata,
   }) {
     return ActivitySample(
       start: start ?? this.start,
@@ -94,6 +187,7 @@ class ActivitySample implements TimelineEntry {
       energyKcal: energyKcal ?? this.energyKcal,
       distanceMeters: distanceMeters ?? this.distanceMeters,
       workoutLabel: workoutLabel ?? this.workoutLabel,
+      metadata: metadata ?? this.metadata,
     );
   }
 
@@ -115,6 +209,7 @@ class ActivitySample implements TimelineEntry {
       'energyKcal': energyKcal,
       'distanceMeters': distanceMeters,
       'workoutLabel': workoutLabel,
+      'metadata': metadata?.toJson(),
     };
   }
 
@@ -149,6 +244,7 @@ class ActivitySample implements TimelineEntry {
       energyKcal: energyKcal,
       distanceMeters: distanceMeters,
       workoutLabel: _readOptionalString(json, 'workoutLabel'),
+      metadata: _readOptionalMetadata(json),
     );
   }
 }
@@ -182,6 +278,7 @@ class SleepSample implements TimelineEntry {
     required this.end,
     required this.stage,
     required this.source,
+    this.metadata,
   });
 
   /// Interval start.
@@ -195,6 +292,9 @@ class SleepSample implements TimelineEntry {
 
   /// Where this sample came from.
   final DataSource source;
+
+  /// Optional source identity and import metadata.
+  final HealthSampleMetadata? metadata;
 
   /// Duration of the sleep interval.
   Duration get duration => end.difference(start);
@@ -210,12 +310,14 @@ class SleepSample implements TimelineEntry {
     DateTime? end,
     SleepStage? stage,
     DataSource? source,
+    HealthSampleMetadata? metadata,
   }) {
     return SleepSample(
       start: start ?? this.start,
       end: end ?? this.end,
       stage: stage ?? this.stage,
       source: source ?? this.source,
+      metadata: metadata ?? this.metadata,
     );
   }
 
@@ -227,6 +329,7 @@ class SleepSample implements TimelineEntry {
       'end': end.toUtc().toIso8601String(),
       'stage': stage.key,
       'source': source.key,
+      'metadata': metadata?.toJson(),
     };
   }
 
@@ -244,6 +347,7 @@ class SleepSample implements TimelineEntry {
       end: end,
       stage: _readSleepStage(json),
       source: _readDataSource(json),
+      metadata: _readOptionalMetadata(json),
     );
   }
 }
@@ -254,6 +358,7 @@ class HeartRateSample implements TimelineEntry {
     required this.timestamp,
     required this.bpm,
     required this.source,
+    this.metadata,
   });
 
   /// When the measurement was taken.
@@ -265,6 +370,9 @@ class HeartRateSample implements TimelineEntry {
   /// Where this sample came from.
   final DataSource source;
 
+  /// Optional source identity and import metadata.
+  final HealthSampleMetadata? metadata;
+
   @override
   DateTime get timelineTimestamp => timestamp;
 
@@ -275,11 +383,13 @@ class HeartRateSample implements TimelineEntry {
     DateTime? timestamp,
     double? bpm,
     DataSource? source,
+    HealthSampleMetadata? metadata,
   }) {
     return HeartRateSample(
       timestamp: timestamp ?? this.timestamp,
       bpm: bpm ?? this.bpm,
       source: source ?? this.source,
+      metadata: metadata ?? this.metadata,
     );
   }
 
@@ -290,6 +400,7 @@ class HeartRateSample implements TimelineEntry {
       'timestamp': timestamp.toUtc().toIso8601String(),
       'bpm': bpm,
       'source': source.key,
+      'metadata': metadata?.toJson(),
     };
   }
 
@@ -302,6 +413,7 @@ class HeartRateSample implements TimelineEntry {
       ),
       bpm: _readRequiredPositiveDouble(json, 'bpm'),
       source: _readDataSource(json),
+      metadata: _readOptionalMetadata(json),
     );
   }
 }
@@ -328,6 +440,15 @@ String? _readOptionalString(Map<String, Object?> json, String key) {
   if (value == null) return null;
   if (value is! String) throw FormatException('$key must be a String or null');
   return value;
+}
+
+HealthSampleMetadata? _readOptionalMetadata(Map<String, Object?> json) {
+  final value = json['metadata'];
+  if (value == null) return null;
+  if (value is! Map) {
+    throw const FormatException('metadata must be an object or null');
+  }
+  return HealthSampleMetadata.fromJson(Map<String, Object?>.from(value));
 }
 
 int? _readOptionalNonNegativeInt(Map<String, Object?> json, String key) {

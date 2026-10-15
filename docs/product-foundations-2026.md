@@ -85,10 +85,11 @@ disconnect or replace.
 
 ## Apple Health import and overlays
 
-The current integration exports glucose only. Import must not ship until the
-schema retains HealthKit UUID, source bundle/name, device, recording method,
-interval, and deletion state with unique constraints; the current methods named
-`upsert` are append-only and would duplicate repeated imports.
+The integration exports glucose and now has a bounded context-import contract.
+Imported data is not considered production-complete until the schema retains
+HealthKit/Health Connect UUID, source bundle/name, device, recording method,
+interval, and deletion state with unique constraints; repeated imports must
+replace a source record rather than append a duplicate.
 
 Initial read categories:
 
@@ -102,8 +103,8 @@ glucose line. Imported raw samples remain separate; display normalization uses
 per-type source priority so overlapping Apple Watch, Whoop, Oura, and iPhone
 records are not blindly summed.
 
-MVP can bounded-requery with the existing Flutter `health` package and upsert by
-HealthKit UUID. Production incremental sync uses native
+The MVP bounded-requery contract uses the existing Flutter `health` package and
+upserts by a namespaced source record ID. Production incremental sync uses native
 `HKAnchoredObjectQuery`, one persisted anchor per type, and handles deleted
 objects. Permissions are progressive and requested only when the user enables
 an overlay. iOS can make denied and empty reads indistinguishable, so the UI

@@ -3,7 +3,9 @@ import '../cgm_models.dart';
 import '../glucose_analytics.dart';
 import '../health_event.dart';
 import '../health_repository.dart';
+import '../observations.dart';
 import 'ai_disclaimer.dart';
+import 'ai_output_contract.dart';
 import 'ai_provider.dart';
 import 'glucose_summary.dart';
 
@@ -61,6 +63,15 @@ class InsightService {
     final events = await _repository.queryEvents(
       window: TimeWindow(start: windowStart, end: windowEnd),
     );
+    final activitySamples = await _repository.queryActivitySamples(
+      window: TimeWindow(start: windowStart, end: windowEnd),
+    );
+    final sleepSamples = await _repository.querySleepSamples(
+      window: TimeWindow(start: windowStart, end: windowEnd),
+    );
+    final heartRateSamples = await _repository.queryHeartRateSamples(
+      window: TimeWindow(start: windowStart, end: windowEnd),
+    );
     final windowReadings = readings
         .where((reading) {
           final at = reading.recordedAt;
@@ -94,12 +105,32 @@ class InsightService {
       );
     }
 
+    final observations = MetabolicObservationEngine.generate(
+      readings: windowReadings,
+      events: events,
+      activitySamples: activitySamples,
+      sleepSamples: sleepSamples,
+      heartRateSamples: heartRateSamples,
+      windowStart: windowStart,
+      windowEnd: windowEnd,
+      unit: unit,
+    );
+    final evidenceById = <String, ObservationEvidence>{
+      for (final observation in observations)
+        for (final evidence in observation.evidence) evidence.id: evidence,
+    };
+    if (evidenceById.isEmpty) {
+      throw const AiGenerationException(
+        'No evidence is available for an AI insight.',
+      );
+    }
+
     final request = AiRequest(
       model: _provider.modelId ?? 'gpt-4o-mini',
-      messages: buildMessages(summary),
+      messages: buildMessages(summary, observations: observations),
     );
 
-    final body = await _provider.generate(request);
+    final body = AiOutputContract.validate(await _provider.generate(request));
 
     final insight = AiInsight(
       id: _idFactory(),
@@ -111,6 +142,8 @@ class InsightService {
       windowEnd: windowEnd,
       model: _provider.modelId,
       tags: const <String>[AiDisclaimer.tag, 'ai-generated'],
+      evidence: evidenceById.values.toList(growable: false),
+      safetyBoundary: AiDisclaimer.short,
     );
 
     await _repository.upsertInsight(insight);
@@ -121,10 +154,13 @@ class InsightService {
   ///
   /// Exposed for unit testing of prompt construction. The system message bakes
   /// in the wellness guardrail; the user message carries only aggregate stats.
-  static List<AiMessage> buildMessages(GlucoseSummary summary) {
+  static List<AiMessage> buildMessages(
+    GlucoseSummary summary, {
+    List<MetabolicObservation> observations = const <MetabolicObservation>[],
+  }) {
     return <AiMessage>[
       const AiMessage.system(AiDisclaimer.systemGuardrail),
-      AiMessage.user(buildPrompt(summary)),
+      AiMessage.user(buildPrompt(summary, observations: observations)),
     ];
   }
 
@@ -133,7 +169,10 @@ class InsightService {
   /// Only aggregate numbers and event *counts* are included — never raw
   /// readings or free-text note bodies — so the minimum necessary data leaves
   /// the device on a BYO-key call.
-  static String buildPrompt(GlucoseSummary summary) {
+  static String buildPrompt(
+    GlucoseSummary summary, {
+    List<MetabolicObservation> observations = const <MetabolicObservation>[],
+  }) {
     String fmt(double? value, {int digits = 0}) =>
         value == null ? 'n/a' : value.toStringAsFixed(digits);
     final unit = summary.unit.label;
@@ -160,7 +199,25 @@ class InsightService {
       ..writeln(
         'Give 2-4 short, non-prescriptive observations a curious self-experimenter '
         'might explore. No medical advice, no diagnosis, no dosing.',
-      );
+      )
+      ..writeln(AiOutputContract.promptContract);
+    if (observations.isNotEmpty) {
+      buffer
+        ..writeln(
+          'Evidence available (use these labels; do not invent values):',
+        )
+        ..writeAll(
+          observations.expand((observation) sync* {
+            for (final evidence in observation.evidence) {
+              final value = evidence.value == null
+                  ? 'n/a'
+                  : evidence.value!.toStringAsFixed(1);
+              yield '- ${evidence.id}: ${evidence.label} = $value '
+                  '${evidence.unit ?? ''} (${evidence.sampleCount} samples)\\n';
+            }
+          }),
+        );
+    }
     return buffer.toString();
   }
 

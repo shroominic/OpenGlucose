@@ -38,8 +38,7 @@ enum ArchivedSensorExportFormat {
     extension: 'xlsx',
     mimeType:
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  )
-  ;
+  );
 
   const ArchivedSensorExportFormat({
     required this.label,

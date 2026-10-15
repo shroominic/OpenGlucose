@@ -4,8 +4,7 @@ import 'package:cgm_core/cgm_core.dart';
 enum SensorArchiveReason {
   expired,
   replaced,
-  disconnected
-  ;
+  disconnected;
 
   static SensorArchiveReason fromJson(Object? value) {
     return SensorArchiveReason.values.firstWhere(

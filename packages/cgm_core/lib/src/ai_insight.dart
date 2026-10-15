@@ -1,3 +1,5 @@
+import 'ai/ai_disclaimer.dart';
+import 'observations.dart';
 import 'timeline.dart';
 
 /// The category of an [AiInsight].
@@ -54,6 +56,8 @@ class AiInsight implements TimelineEntry {
     this.confidence,
     this.model,
     this.tags = const <String>[],
+    this.evidence = const <ObservationEvidence>[],
+    this.safetyBoundary = AiDisclaimer.short,
   });
 
   /// Stable unique identifier (caller-supplied; e.g. a UUID).
@@ -86,6 +90,22 @@ class AiInsight implements TimelineEntry {
   /// Free-form tags for filtering and grouping.
   final List<String> tags;
 
+  /// Typed local aggregates that support this insight.
+  ///
+  /// Generated insights always include at least one evidence item. Empty
+  /// evidence remains accepted for backwards-compatible restoration of older
+  /// persisted records; callers should gate newly rendered/generated output
+  /// on [hasEvidence].
+  final List<ObservationEvidence> evidence;
+
+  /// Safety boundary persisted alongside model text so it cannot be separated
+  /// from the wellness framing when an insight is exported or rendered later.
+  final String safetyBoundary;
+
+  bool get hasEvidence => evidence.isNotEmpty;
+
+  bool get isWellnessBounded => safetyBoundary.trim().isNotEmpty;
+
   @override
   DateTime get timelineTimestamp => createdAt;
 
@@ -103,6 +123,8 @@ class AiInsight implements TimelineEntry {
     double? confidence,
     String? model,
     List<String>? tags,
+    List<ObservationEvidence>? evidence,
+    String? safetyBoundary,
     bool clearWindow = false,
     bool clearConfidence = false,
     bool clearModel = false,
@@ -118,6 +140,8 @@ class AiInsight implements TimelineEntry {
       confidence: clearConfidence ? null : (confidence ?? this.confidence),
       model: clearModel ? null : (model ?? this.model),
       tags: tags ?? this.tags,
+      evidence: evidence ?? this.evidence,
+      safetyBoundary: safetyBoundary ?? this.safetyBoundary,
     );
   }
 
@@ -132,6 +156,8 @@ class AiInsight implements TimelineEntry {
     'confidence': confidence,
     'model': model,
     'tags': tags,
+    'evidence': evidence.map((item) => item.toJson()).toList(growable: false),
+    'safetyBoundary': safetyBoundary,
   };
 
   factory AiInsight.fromJson(Map<String, Object?> json) {
@@ -140,6 +166,17 @@ class AiInsight implements TimelineEntry {
       return null;
     }
 
+    final evidenceJson = json['evidence'];
+    final evidence = evidenceJson is List
+        ? evidenceJson
+              .whereType<Map>()
+              .map(
+                (item) => ObservationEvidence.fromJson(
+                  item.map((key, value) => MapEntry('$key', value)),
+                ),
+              )
+              .toList(growable: false)
+        : const <ObservationEvidence>[];
     return AiInsight(
       id: json['id'] as String? ?? '',
       createdAt:
@@ -155,6 +192,8 @@ class AiInsight implements TimelineEntry {
       tags: ((json['tags'] as List<dynamic>?) ?? const <dynamic>[])
           .map((value) => '$value')
           .toList(growable: false),
+      evidence: evidence,
+      safetyBoundary: json['safetyBoundary'] as String? ?? AiDisclaimer.short,
     );
   }
 }

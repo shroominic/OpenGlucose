@@ -6,7 +6,6 @@ import 'app_language_controller.dart';
 extension AppLocalizationsBuildContext on BuildContext {
   AppLocalizations get l10n => AppLocalizations.of(this);
 
-  AppLanguage get appLanguage => AppLanguage.fromLocale(
-    Localizations.localeOf(this),
-  );
+  AppLanguage get appLanguage =>
+      AppLanguage.fromLocale(Localizations.localeOf(this));
 }
