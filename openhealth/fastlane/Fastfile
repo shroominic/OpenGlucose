@@ -272,9 +272,24 @@ def disable_automatic_notification(build)
 end
 
 def associated_groups(app:, build:)
-  app.get_beta_groups.select do |group|
+  groups = app.get_beta_groups
+  associated = groups.select do |group|
     group.fetch_builds.any? { |candidate| candidate.id == build.id }
   end
+
+  # App Store Connect grants an automatic internal group access to every build,
+  # but Fastlane's group.fetch_builds relationship can omit that implicit access.
+  # Add every automatic internal group so callers can reject any unapproved
+  # access. All other group access must remain explicit.
+  automatic_internal_groups = groups.select do |group|
+    group.is_internal_group == true && group.has_access_to_all_builds == true
+  end
+  automatic_internal_groups.each do |group|
+    associated << group unless associated.any? do |candidate|
+      candidate.id == group.id
+    end
+  end
+  associated
 end
 
 def require_exact_external_association(
