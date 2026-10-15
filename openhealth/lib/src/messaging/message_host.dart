@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app_localizations_extension.dart';
+
 import 'app_message.dart';
 import 'message_controller.dart';
 
@@ -90,57 +92,63 @@ class _MessageCard extends StatelessWidget {
         messageTextResolver?.call(context, message) ??
         (title: message.title, body: message.body);
 
-    return DecoratedBox(
-      key: ValueKey<String>('messageCard-${message.id}'),
-      decoration: BoxDecoration(
-        color: palette.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.border),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.only(top: 1, right: 12),
-              child: Icon(palette.icon, size: 20, color: palette.accent),
-            ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    text.title,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      color: palette.foreground,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    text.body,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: palette.foreground,
-                      height: 1.3,
-                    ),
-                  ),
-                ],
+    return Semantics(
+      container: true,
+      label: message.kind == AppMessageKind.nudge
+          ? context.l10n.sharpRiseNudgeSemantics
+          : null,
+      child: DecoratedBox(
+        key: ValueKey<String>('messageCard-${message.id}'),
+        decoration: BoxDecoration(
+          color: palette.background,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: palette.border),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.only(top: 1, right: 12),
+                child: Icon(palette.icon, size: 20, color: palette.accent),
               ),
-            ),
-            if (message.dismissible)
-              IconButton(
-                key: ValueKey<String>('messageDismiss-${message.id}'),
-                onPressed: onDismiss,
-                visualDensity: VisualDensity.compact,
-                iconSize: 18,
-                color: palette.accent,
-                tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
-                icon: const Icon(Icons.close_rounded),
-              )
-            else
-              const SizedBox(width: 8),
-          ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      text.title,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: palette.foreground,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      text.body,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: palette.foreground,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (message.dismissible)
+                IconButton(
+                  key: ValueKey<String>('messageDismiss-${message.id}'),
+                  onPressed: onDismiss,
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  color: palette.accent,
+                  tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                  icon: const Icon(Icons.close_rounded),
+                )
+              else
+                const SizedBox(width: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -178,6 +186,13 @@ _MessagePalette _paletteFor(AppMessageKind kind) {
       foreground: Color(0xFF1F3A57),
       accent: Color(0xFF2C5F94),
       icon: Icons.info_outline_rounded,
+    ),
+    AppMessageKind.nudge => const _MessagePalette(
+      background: Color(0xFFFFF3D6),
+      border: Color(0xFFE3A008),
+      foreground: Color(0xFF4A2B00),
+      accent: Color(0xFFB86B00),
+      icon: Icons.directions_walk_rounded,
     ),
     AppMessageKind.alert => const _MessagePalette(
       background: Color(0xFFFCEDE9),

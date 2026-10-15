@@ -1379,6 +1379,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String get messageTapReadingBody => '点按图表中的数据点可查看准确读数和时间。';
 
   @override
+  String get messageSharpRiseTitle => '↑↑ 血糖正在快速上升';
+
+  @override
+  String messageSharpRiseChange(int change, int minutes) {
+    return '$minutes 分钟内上升 $change mg/dL';
+  }
+
+  @override
+  String get messageSharpRisePrompt => '如果步行对你来说是安全的，现在可以短暂步行，并观察你的血糖如何变化。';
+
+  @override
+  String get sharpRiseBadge => '血糖快速上升';
+
+  @override
+  String get sharpRiseNudgeSemantics => '血糖快速上升提示';
+
+  @override
+  String get sharpRiseChartTailSemantics => '血糖快速上升图表尾段';
+
+  @override
   String get scenarioWarmup => '预热';
 
   @override
